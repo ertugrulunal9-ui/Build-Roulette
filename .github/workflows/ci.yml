@@ -3,6 +3,13 @@ name: CI
 on:
   push:
   pull_request:
+  # Manual runs also offer the network-bound package compatibility suite (job `compat`).
+  workflow_dispatch:
+    inputs:
+      compat:
+        description: Run the R1 package compatibility suite against the npm registry
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -97,3 +104,81 @@ jobs:
         env:
           PG_BIN: /usr/lib/postgresql/${{ env.PG_MAJOR }}/bin
         run: bash supabase/scripts/test.sh
+
+  e2e:
+    name: Runtime e2e (Playwright Chromium)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Installs the Chromium build that matches the pinned @playwright/test (1.56.1) into
+      # the default cache (~/.cache/ms-playwright), plus its system libraries. The config uses
+      # channel 'chromium' (full Chromium, new headless) for site isolation.
+      - name: Install Playwright Chromium
+        run: pnpm --filter @br/runtime exec playwright install --with-deps chromium
+
+      - name: Run e2e tests
+        run: pnpm --filter @br/runtime test:e2e
+
+      - name: Upload Playwright output
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-e2e-results
+          path: packages/runtime/test-results/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  compat:
+    name: Package compatibility suite (R1, npm registry)
+    # Hits the npm registry for ~50 packages, so it only runs when started by hand.
+    if: github.event_name == 'workflow_dispatch' && inputs.compat
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright Chromium
+        run: pnpm --filter @br/pkg-cdn exec playwright install --with-deps chromium
+
+      - name: Run the compatibility suite
+        run: pnpm --filter @br/pkg-cdn compat
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compat-results
+          path: |
+            apps/pkg-cdn/compat/RESULTS.md
+            apps/pkg-cdn/node_modules/.cache/pkg-cdn-compat/results.json
+          if-no-files-found: ignore
+          include-hidden-files: true
+          retention-days: 30

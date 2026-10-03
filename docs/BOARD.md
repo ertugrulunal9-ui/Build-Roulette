@@ -2,13 +2,15 @@
 
 Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 
-## Current milestone: M0 Foundations (+ M1 sandbox prototype started early)
+## Current milestone: M1 Sandbox (M0 code complete; M0 accounts/domains blocked on user)
 
 | ID | Task | Scope | Status | Notes |
 |---|---|---|---|---|
 | T-001 | Monorepo skeleton: pnpm + Turborepo, Next.js app, lint/format/strict TS, Vitest, CI | root config, `apps/web/`, `packages/game/`, `.github/` | done | Merged in b29110a |
 | T-002 | Supabase scaffold: initial schema migration, Supabase-compatible local Postgres test harness, pgTAP | `supabase/` | done | Merged |
 | T-004 | Run DB tests in CI + add a `@br/game` ↔ SQL enum drift test | `.github/workflows/ci.yml`, `packages/game/` | done | Merged |
+| T-005 | `/playground` in apps/web: CodeMirror 6, file tree, `@br/workspace` (limits, templates, IndexedDB, paste-import), runtime + preview wiring, console/diagnostics | `apps/web/`, `packages/workspace/` | in-progress | Wave 3 |
+| T-006 | `@br/pkg-cdn`: esm.sh-compatible package CDN that resolves from the npm registry, plus an R1 compatibility suite and an e2e CI job | `apps/pkg-cdn/`, `.github/workflows/ci.yml` | in-progress | Wave 3 |
 | T-003 | Sandbox prototype: esbuild-wasm bundler worker, runtime shell, postMessage protocol, mock CDN, Playwright test | `packages/runtime/`, `packages/protocol/`, `apps/sandbox-shell/` | done | Merged in 3172db8 |
 
 ## Blocked on the user

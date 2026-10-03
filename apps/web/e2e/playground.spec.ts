@@ -202,4 +202,13 @@ test('the file tree adds, renames and deletes files within the limits', async ({
   await page.getByRole('button', { name: 'Reset to template' }).click();
   await expect(buildFrame(page).locator('h1')).toHaveText('Hello, Build Roulette!');
   await expect(page.locator('[data-testid=file-item]')).toHaveCount(3);
+
+  // Switching templates changes the entry and the dependencies too.
+  await page.getByLabel('Template').selectOption('vanilla-ts');
+  await page.getByRole('button', { name: 'Reset to template' }).click();
+  await expect(page.locator('[data-testid=file-item]')).toHaveCount(2);
+  await expect(page.locator('[data-testid=file-item][data-path="src/main.ts"]')).toHaveCount(1);
+  await expect(buildFrame(page).getByRole('button')).toHaveText('Clicked 0 times');
+  await buildFrame(page).getByRole('button').click();
+  await expect(buildFrame(page).getByRole('button')).toHaveText('Clicked 1 time');
 });

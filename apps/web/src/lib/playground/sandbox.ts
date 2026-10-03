@@ -146,6 +146,8 @@ export class SandboxController {
     const prev = this.synced;
     this.synced = workspace;
     if (this.disposed || prev === null || prev === workspace) return;
+    // Without a bundler every debounced build would only reject; nothing to update.
+    if (this.snapshot.bundler === 'failed') return;
     let changed = false;
     for (const [path, contents] of Object.entries(workspace.files)) {
       if (prev.files[path] !== contents) {

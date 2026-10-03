@@ -12,13 +12,16 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 | T-005 | `/playground` in apps/web: CodeMirror 6, file tree, `@br/workspace` (limits, templates, IndexedDB, paste-import), runtime + preview wiring, console/diagnostics | `apps/web/`, `packages/workspace/` | done | Merged |
 | T-006 | `@br/pkg-cdn`: esm.sh-compatible package CDN that resolves from the npm registry, plus an R1 compatibility suite and an e2e CI job | `apps/pkg-cdn/`, `.github/workflows/ci.yml` | done | Merged |
 | T-007 | Runtime/shell fixes (5 bugs from T-005), `'unsafe-eval'` in shell CSP, `deps=` peer pinning, web e2e in CI, playground template picker fix | `packages/runtime/`, `apps/sandbox-shell/`, `apps/web/`, `ci.yml` | in-progress | Wave 4 |
-| T-008 | Independent security review of sandbox, bridge, playground and package CDN (read-only; M1 exit criterion) | none (report only) | in-progress | Wave 4 |
+| T-008 | Independent security review of sandbox, bridge, playground and package CDN (read-only; M1 exit criterion) | none (report only) | done (partial) | Code review only; PoCs didn't run. Verification moves into T-009. |
+| T-009 | Sandbox hardening from T-008 (F2–F4, F6–F9, I1–I3) with browser PoC tests that prove each fix | `packages/runtime/`, `apps/sandbox-shell/`, `apps/web/` | todo | Starts after T-007 merges (same files) |
+| T-010 | Package CDN hardening (F5): global download/extract limits, streaming extraction, disk quota/LRU | `apps/pkg-cdn/` | in-progress | Wave 4 |
 | T-003 | Sandbox prototype: esbuild-wasm bundler worker, runtime shell, postMessage protocol, mock CDN, Playwright test | `packages/runtime/`, `packages/protocol/`, `apps/sandbox-shell/` | done | Merged in 3172db8 |
 
 ## Blocked on the user
 
 | Item | Needed for |
 |---|---|
+| Register the usercontent domain and submit it to the Public Suffix List (security finding F1: per-build subdomains are otherwise same-site) | Cross-build isolation in production (before launch; PSL inclusion takes weeks) |
 | Hosting choice for `@br/pkg-cdn` origin (Fly.io vs Cloudflare Containers) | Production package CDN (before M5) |
 | Supabase project (staging), Vercel project, Cloudflare account | Deploy previews, hosted environments (M0 end / M2) |
 | App domain + separate usercontent domain | Sandbox origin isolation in production (M1 end) |
@@ -31,6 +34,7 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 - T-004 DB tests in CI + schema drift test
 - T-005 Playground (editor, file tree, workspace persistence)
 - T-006 Package CDN + R1 compatibility suite
+- T-008 Security review (code-level)
 
 ## Review log
 
@@ -144,3 +148,13 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
   - `?exports=` tree-shaking for icon libraries;
   - cache eviction;
   - runtime e2e against pkg-cdn with an offline fixture registry.
+
+### T-008: done, partial (wave 4)
+- Code review only. A safety classifier stopped the reviewer before any PoC ran. The repo was not changed.
+- Findings: 1 High (F1, same-site per-build subdomains, so PSL is needed), 4 Medium (F2 shell takeover → port forgery, F3 shell-realm persistence, F4 app-side flood, F5 CDN DoS), 4 Low, 3 Info.
+- Verified OK by code: no `dangerouslySetInnerHTML`/`innerHTML` in the app (F); the bundler worker fetches only `cdnBaseUrl` with `credentials: 'omit'` (G); pkg-cdn traversal and integrity guards (H).
+- Hub assessment: the findings are credible and consistent with the hub's own T-003 review. The PoCs will be written as regression tests in T-009, so every fix comes with a browser test. Threat model updated (docs/03 §3.9, "Review findings").
+- Hub decisions:
+  - all shell messages are untrusted, and capture readiness is decided server-side;
+  - no `allow-popups`/`clipboard-write` in reveal/capture modes;
+  - PSL submission goes on the user's list.

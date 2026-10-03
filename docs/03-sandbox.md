@@ -245,3 +245,27 @@ from Supabase image transformations at read time.
 | Exfiltrate our secrets | Sandbox calls our APIs | The sandbox has no credentials. Supabase RLS denies the anonymous key on everything relevant. |
 | Malicious npm package | Supply-chain code in a dependency | Same isolation as user code. A CDN denylist for known-bad packages. Pinned versions. |
 | Embed the shell elsewhere | Third-party site frames our shell | `frame-ancestors` is limited to the app origin |
+
+### Review findings (T-008, code review; fixes tracked as T-009/T-010)
+
+**Design rule: treat the shell as hostile.** The build's frame is same-origin with the
+shell, so a build can run code in the shell's realm, use its port, and start a new
+handshake. Every message from the sandbox is therefore *display-only and untrusted*:
+console, errors, `ready`, `heartbeat` and `storage-reset`. Nothing that matters may
+depend on them. In particular:
+- capture readiness (M2) is decided by the capture worker, with a fixed wait and a cap.
+  A shell `ready` is only a hint;
+- destroy never relies on a `storage-reset` acknowledgement;
+- once connected, the app ignores a repeated `hello` unless it started the reload itself.
+
+| Threat | Vector | Mitigation |
+|---|---|---|
+| Builds are same-site with each other | `{build_id}.usercontent` subdomains share a registrable domain, so `Domain=` cookies are shared, a "cookie bomb" can break every preview, and `document.domain` works in some browsers | Add the usercontent apex to the **Public Suffix List** before launch (needs the domain; blocked on the user). Send `Origin-Agent-Cluster: ?1`. |
+| Shell-realm persistence | The build installs timers or prototype patches on `parent`, which survive a frame teardown | A real restart recreates the whole preview iframe (new `PreviewHandle`). In production every build has its own shell iframe anyway. |
+| App-side flood through the bridge | A hijacked port sends unlimited console messages and the app re-renders on each | Rate-limit and cap in `PreviewHandle`; batch UI updates per animation frame |
+| Watchdog spoofing | The port is moved to a worker that keeps sending heartbeats while the main thread loops | Liveness pings must be answered from the main thread. Inherently best-effort; the app stays responsive thanks to site isolation. |
+| Incomplete storage wipe | Cookies with other paths or domains, OPFS, Storage Buckets | Use `Clear-Site-Data` from a shell endpoint, plus OPFS and bucket removal |
+| Popups outlive the build | `allow-popups` windows keep running and can phish outside the app chrome | No `allow-popups` and no `clipboard-write` in `reveal`/`capture` modes. They are allowed only while building your own app. |
+| Headers on other paths | 404s or other paths on the sandbox host have no CSP | Apply the headers to every path. Add `base-uri 'none'`, `form-action` and a fuller Permissions-Policy. |
+| Package CDN availability | Big packuments or tarballs, parallel downloads, a disk cache that never evicts | Global limits on downloads and extraction, streaming extraction, a disk quota/LRU, edge rate limits |
+

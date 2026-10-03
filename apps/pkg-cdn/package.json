@@ -1,0 +1,40 @@
+{
+  "name": "@br/pkg-cdn",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "esm.sh-compatible package CDN backed by the npm registry: resolves, verifies, extracts and bundles npm packages into single ES modules.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "esbuild src/main.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outfile=dist/main.js --log-level=warning",
+    "start": "node dist/main.js",
+    "dev": "tsx src/main.ts",
+    "lint": "eslint . --max-warnings=0",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "compat": "tsx compat/run.ts"
+  },
+  "dependencies": {
+    "cjs-module-lexer": "2.2.1",
+    "es-module-lexer": "3.0.2",
+    "esbuild": "0.28.2",
+    "semver": "7.8.5"
+  },
+  "devDependencies": {
+    "@br/config": "workspace:*",
+    "@br/protocol": "workspace:*",
+    "@br/runtime": "workspace:*",
+    "@br/sandbox-shell": "workspace:*",
+    "@playwright/test": "1.56.1",
+    "@types/node": "22.20.5",
+    "@types/semver": "7.8.0",
+    "esbuild-wasm": "0.28.2",
+    "eslint": "9.39.5",
+    "tsx": "4.23.15",
+    "typescript": "6.0.3",
+    "vite": "8.3.2",
+    "vitest": "5.0.3"
+  }
+}

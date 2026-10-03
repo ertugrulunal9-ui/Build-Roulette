@@ -1,0 +1,44 @@
+{
+  "packages": [
+    {
+      "name": "event-stream",
+      "versions": "3.3.6",
+      "reason": "compromised release (flatmap-stream malware, 2018)"
+    },
+    { "name": "flatmap-stream", "reason": "malware (event-stream incident, 2018)" },
+    {
+      "name": "eslint-scope",
+      "versions": "3.7.2",
+      "reason": "compromised release (credential stealer, 2018)"
+    },
+    {
+      "name": "ua-parser-js",
+      "versions": "0.7.29 || 0.8.0 || 1.0.0",
+      "reason": "hijacked releases (cryptominer, 2021)"
+    },
+    {
+      "name": "coa",
+      "versions": "2.0.3 || 2.0.4 || 2.1.1 || 2.1.3 || 3.0.1 || 3.1.3",
+      "reason": "hijacked releases (2021)"
+    },
+    { "name": "rc", "versions": "1.2.9 || 1.3.9 || 2.3.9", "reason": "hijacked releases (2021)" },
+    {
+      "name": "colors",
+      "versions": "1.4.1 || 1.4.2 || 1.4.44-liberty-2",
+      "reason": "sabotaged releases (infinite loop, 2022)"
+    },
+    { "name": "faker", "versions": "6.6.6", "reason": "sabotaged release (2022)" },
+    {
+      "name": "node-ipc",
+      "versions": "9.2.2 || 10.1.1 || 10.1.2",
+      "reason": "protestware releases (2022)"
+    },
+    { "name": "peacenotwar", "reason": "protestware (node-ipc incident, 2022)" },
+    {
+      "name": "chalk",
+      "versions": "5.6.1",
+      "reason": "compromised release (crypto-clipper, 2025)"
+    },
+    { "name": "debug", "versions": "4.4.2", "reason": "compromised release (crypto-clipper, 2025)" }
+  ]
+}

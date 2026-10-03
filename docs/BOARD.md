@@ -10,13 +10,14 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 | T-002 | Supabase scaffold: initial schema migration, Supabase-compatible local Postgres test harness, pgTAP | `supabase/` | done | Merged |
 | T-004 | Run DB tests in CI + add a `@br/game` ↔ SQL enum drift test | `.github/workflows/ci.yml`, `packages/game/` | done | Merged |
 | T-005 | `/playground` in apps/web: CodeMirror 6, file tree, `@br/workspace` (limits, templates, IndexedDB, paste-import), runtime + preview wiring, console/diagnostics | `apps/web/`, `packages/workspace/` | done | Merged |
-| T-006 | `@br/pkg-cdn`: esm.sh-compatible package CDN that resolves from the npm registry, plus an R1 compatibility suite and an e2e CI job | `apps/pkg-cdn/`, `.github/workflows/ci.yml` | in-progress | Wave 3 |
+| T-006 | `@br/pkg-cdn`: esm.sh-compatible package CDN that resolves from the npm registry, plus an R1 compatibility suite and an e2e CI job | `apps/pkg-cdn/`, `.github/workflows/ci.yml` | done | Merged |
 | T-003 | Sandbox prototype: esbuild-wasm bundler worker, runtime shell, postMessage protocol, mock CDN, Playwright test | `packages/runtime/`, `packages/protocol/`, `apps/sandbox-shell/` | done | Merged in 3172db8 |
 
 ## Blocked on the user
 
 | Item | Needed for |
 |---|---|
+| Hosting choice for `@br/pkg-cdn` origin (Fly.io vs Cloudflare Containers) | Production package CDN (before M5) |
 | Supabase project (staging), Vercel project, Cloudflare account | Deploy previews, hosted environments (M0 end / M2) |
 | App domain + separate usercontent domain | Sandbox origin isolation in production (M1 end) |
 
@@ -27,6 +28,7 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 - T-003 Sandbox runtime prototype
 - T-004 DB tests in CI + schema drift test
 - T-005 Playground (editor, file tree, workspace persistence)
+- T-006 Package CDN + R1 compatibility suite
 
 ## Review log
 
@@ -115,3 +117,28 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
   - Ignore or disable the `AGENTS.md`/`CLAUDE.md` files that `next dev` generates.
   - The template picker shows `react-ts` after a reload.
   - "Add dependency" chip UI.
+
+### T-006: accepted (wave 3)
+- Hub test-merged onto main: the lockfile auto-merged and `pnpm install --frozen-lockfile` passes. Re-ran on a fresh clone:
+  - format, lint, typecheck, build: green;
+  - unit tests: pkg-cdn 81, plus all other packages;
+  - runtime e2e 13/13 (in the worker's run).
+- **Hub reproduced the R1 compat suite on an empty cache against the live npm registry: 52/55 (94.5%), with the same 3 failures.** The R1 exit criterion (≥ 90%) is met.
+- Security skim of `tar.ts`:
+  - regular files only, so symlinks and hardlinks are skipped;
+  - `..` and absolute paths are rejected;
+  - files are written `wx` with mode 0644;
+  - unpacked size is capped while inflating.
+
+  The integrity hash must be sha512. Package code is never executed.
+- CI now has an `e2e` job (Playwright Chromium install) and a manual `compat` job (`workflow_dispatch`). Neither has run on GitHub yet.
+- Hub decisions:
+  - Add `'unsafe-eval'` to the shell `script-src`. Same reasoning as `'unsafe-inline'`: a build is arbitrary JS. It fixes pixi v8 and anything else that uses `new Function`. Goes into T-007.
+  - The runtime's cdn-rewrite appends `&deps=` with the manifest's pinned peers. Goes into T-007.
+  - matter-js named imports: accept as a known limitation, and later add a diagnostic hint suggesting the default import.
+  - Package CDN hosting is a Node origin behind the Cloudflare cache (docs/01 updated). Fly.io vs Cloudflare Containers is a user decision before M5.
+- Follow-ups (later):
+  - shared chunks per package (subpath duplication);
+  - `?exports=` tree-shaking for icon libraries;
+  - cache eviction;
+  - runtime e2e against pkg-cdn with an offline fixture registry.

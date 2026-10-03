@@ -19,6 +19,19 @@ validate it early. The roadmap ([06](06-roadmap.md)) is ordered to retire the to
 ---
 
 ### R1: In-browser runtime speed and package compatibility
+> **Status (M1): retired.** In T-003 and T-006, measured on localhost:
+> - worker cold start ~200 ms, rebuild + preview p50 ~124 ms;
+> - compatibility suite: **52/55 cases, 51/52 packages (94.5%)**, against our own CDN with
+>   real npm packages. The hub reproduced this on an empty cache.
+>
+> Known failures:
+> - pixi.js v8 needs `'unsafe-eval'` in the shell CSP; this is being fixed in T-007;
+> - side-effect subpaths such as `pixi.js/unsafe-eval` would need shared chunks per
+>   package;
+> - matter-js named imports fail (a UMD build, so it needs `import Matter from 'matter-js'`).
+>
+> See `apps/pkg-cdn/compat/RESULTS.md`.
+
 **Why it's hard.** The npm ecosystem assumes Node and a bundler. Some packages are CJS-only,
 expect `process.env`, import CSS or assets, have peer dependency trees, or end up with two
 copies of React (which breaks hooks with "Invalid hook call"). esbuild-wasm is several MB and
@@ -164,7 +177,7 @@ and part of the vibe. Random rules make this less useful, and stats such as edit
 paste counts are shown for fun, not as enforcement.
 
 ### R10: Third-party outage mid-battle
-The package CDN is self-hosted before launch, and the template's core packages (React)
+The package CDN is our own service (`@br/pkg-cdn`) behind the Cloudflare cache, with no dependency on esm.sh, and the template's core packages (React)
 are cached by our Service Worker after the lobby preload. A Supabase blip has no effect
 on editing and preview, which are fully local. Ship retries with backoff, and auto-ship
 covers the deadline. If Browser Rendering is down, the client fallback thumbnail is used.

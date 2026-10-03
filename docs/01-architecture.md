@@ -125,10 +125,18 @@ moderation actions.
   per build. Before launch, apply to add the domain to the Public Suffix List (as
   `github.io` and `csb.app` did) so each subdomain also counts as a separate *site* for
   cookies.
-- **Package CDN:** at first this proxies and caches `esm.sh` behind our own hostname.
-  Before launch it becomes a self-hosted esm.sh instance (open source), so a third-party
-  outage can't end everyone's battle. A package allowlist and denylist is enforced at the
-  edge.
+- **Package CDN:** `@br/pkg-cdn` (`apps/pkg-cdn`, built in T-006) is our own service with
+  esm.sh-compatible URLs, backed directly by the npm registry. It:
+  - verifies tarball integrity (sha512) and extracts tarballs safely;
+  - bundles each package to ESM with esbuild and never runs package code;
+  - enforces a denylist and size and time limits;
+  - writes immutable outputs to a disk cache.
+
+  It is a Node service (native esbuild + filesystem), so it can't run as a Cloudflare
+  Worker. It runs as a small origin (Fly.io machine or Cloudflare Containers; decision
+  pending) **behind the Cloudflare cache**. Exact-version URLs are immutable, so the edge
+  serves almost every request and the origin only bundles cold packages. This replaces the
+  earlier "proxy esm.sh, then self-host esm.sh" plan.
 - **Browser Rendering:** headless Chromium that is called from a Worker. It loads the
   sandbox shell in capture mode for a frozen bundle and returns a PNG. User code therefore
   runs on Cloudflare's isolated browser fleet and not on anything we run. Browserless is an

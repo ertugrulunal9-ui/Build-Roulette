@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
+  MAX_CDN_DEPS,
   buildImportMap,
+  cdnDepsPins,
   decodeAsset,
   isPinnedVersion,
   loaderForPath,
@@ -20,6 +22,9 @@ const DEPS = {
   'animate.css': '4.1.1',
   loose: '^1.0.0',
 };
+/** The query every JS CDN URL of a build with DEPS carries (sorted by package name). */
+const Q =
+  '?external=react,react-dom&deps=@scope/ui@1.2.3-beta.1,animate.css@4.1.1,three@0.170.0,zustand@5.0.15';
 
 describe('normalizePath', () => {
   it('strips leading ./ and /, collapses . and ..', () => {
@@ -126,22 +131,46 @@ describe('resolveBareImport (cdn-rewrite)', () => {
       expect(resolveBareImport(s, DEPS, CDN)).toEqual({ kind: 'import-map' });
     }
   });
-  it('rewrites other packages to pinned CDN URLs with React externals, keeping subpaths', () => {
+  it('rewrites other packages to pinned CDN URLs with React externals and deps pins, keeping subpaths', () => {
     expect(resolveBareImport('zustand', DEPS, CDN)).toEqual({
       kind: 'cdn',
-      url: 'https://pkg.example.net/zustand@5.0.15?external=react,react-dom',
+      url: `https://pkg.example.net/zustand@5.0.15${Q}`,
     });
     expect(resolveBareImport('three/examples/jsm/controls/OrbitControls.js', DEPS, CDN)).toEqual({
       kind: 'cdn',
-      url: 'https://pkg.example.net/three@0.170.0/examples/jsm/controls/OrbitControls.js?external=react,react-dom',
+      url: `https://pkg.example.net/three@0.170.0/examples/jsm/controls/OrbitControls.js${Q}`,
     });
     expect(resolveBareImport('@scope/ui/button', DEPS, CDN)).toEqual({
       kind: 'cdn',
-      url: 'https://pkg.example.net/@scope/ui@1.2.3-beta.1/button?external=react,react-dom',
+      url: `https://pkg.example.net/@scope/ui@1.2.3-beta.1/button${Q}`,
     });
     expect(resolveBareImport('react-dom/server', DEPS, CDN)).toEqual({
       kind: 'cdn',
-      url: 'https://pkg.example.net/react-dom@19.3.0/server?external=react,react-dom',
+      url: `https://pkg.example.net/react-dom@19.3.0/server${Q}`,
+    });
+  });
+  it('gives the user import of a peer the same URL the CDN emits for that peer', () => {
+    // pkg-cdn emits a peer as `/<peer>@<deps pin>` + the query of the request it serves, so
+    // `three` imported by the user and by @react-three/fiber must carry the same query.
+    const deps = {
+      react: '19.3.0',
+      'react-dom': '19.3.0',
+      three: '0.170.0',
+      '@react-three/fiber': '9.4.0',
+    };
+    const three = resolveBareImport('three', deps, CDN);
+    const fiber = resolveBareImport('@react-three/fiber', deps, CDN);
+    const query = '?external=react,react-dom&deps=@react-three/fiber@9.4.0,three@0.170.0';
+    expect(three).toEqual({ kind: 'cdn', url: `https://pkg.example.net/three@0.170.0${query}` });
+    expect(fiber).toEqual({
+      kind: 'cdn',
+      url: `https://pkg.example.net/@react-three/fiber@9.4.0${query}`,
+    });
+  });
+  it('accepts a precomputed deps list (one per build)', () => {
+    expect(resolveBareImport('zustand', DEPS, CDN, [])).toEqual({
+      kind: 'cdn',
+      url: 'https://pkg.example.net/zustand@5.0.15?external=react,react-dom',
     });
   });
   it('routes package CSS to the css fetcher (no query string)', () => {
@@ -167,6 +196,50 @@ describe('resolveBareImport (cdn-rewrite)', () => {
   it('does not treat prototype keys as dependencies', () => {
     expect(resolveBareImport('constructor', DEPS, CDN).kind).toBe('error');
     expect(resolveBareImport('toString', DEPS, CDN).kind).toBe('error');
+  });
+});
+
+describe('cdnDepsPins', () => {
+  it('lists every non-external manifest dependency as name@version, sorted by name', () => {
+    expect(cdnDepsPins(DEPS)).toEqual([
+      '@scope/ui@1.2.3-beta.1',
+      'animate.css@4.1.1',
+      'three@0.170.0',
+      'zustand@5.0.15',
+    ]);
+    // By name, as pkg-cdn sorts them: sorting the `name@version` strings would put
+    // "a-b@1.0.0" before "a@2.0.0" ('-' < '@').
+    expect(cdnDepsPins({ 'a-b': '1.0.0', a: '2.0.0' })).toEqual(['a@2.0.0', 'a-b@1.0.0']);
+    expect(cdnDepsPins({ react: '19.3.0', 'react-dom': '19.3.0' })).toEqual([]);
+  });
+  it('is deterministic regardless of manifest key order', () => {
+    const reversed = Object.fromEntries(Object.entries(DEPS).reverse());
+    expect(cdnDepsPins(reversed)).toEqual(cdnDepsPins(DEPS));
+  });
+  it('leaves out entries the CDN would reject', () => {
+    expect(
+      cdnDepsPins({
+        ok: '1.0.0',
+        ranged: '^1.0.0',
+        meta: '1.0.0+build.5', // build metadata: not an exact version for the CDN
+        'Upper-Case': '1.0.0',
+        'tilde~name': '1.0.0',
+        node_modules: '1.0.0',
+        'a&external=evil': '1.0.0', // never reaches the query string
+        lead0: '01.0.0',
+      }),
+    ).toEqual(['ok@1.0.0']);
+  });
+  it('returns null above the CDN limit, so no URL carries a deps list the CDN rejects', () => {
+    const many: Record<string, string> = { react: '19.3.0', 'react-dom': '19.3.0' };
+    for (let i = 0; i < MAX_CDN_DEPS; i++) many[`pkg-${String(i)}`] = '1.0.0';
+    expect(cdnDepsPins(many)).toHaveLength(MAX_CDN_DEPS);
+    many['one-more'] = '1.0.0';
+    expect(cdnDepsPins(many)).toBeNull();
+    expect(resolveBareImport('pkg-1', many, CDN)).toEqual({
+      kind: 'cdn',
+      url: 'https://pkg.example.net/pkg-1@1.0.0?external=react,react-dom',
+    });
   });
 });
 

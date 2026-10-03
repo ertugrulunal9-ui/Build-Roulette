@@ -8,7 +8,13 @@ export type {
   WorkspaceSnapshot,
 } from './types';
 export { EsmBrowserRuntime, type EsmBrowserRuntimeOptions, type SandboxRuntime } from './runtime';
-export { BundlerClient, type BootTimings, type BundlerClientOptions } from './worker/client';
+export {
+  BundlerAbortError,
+  BundlerClient,
+  isAbortError,
+  type BootTimings,
+  type BundlerClientOptions,
+} from './worker/client';
 export {
   PREVIEW_ALLOW,
   PREVIEW_SANDBOX,
@@ -22,4 +28,4 @@ export {
   type PreviewState,
   type PreviewStats,
 } from './preview/preview-handle';
-export { buildImportMap, resolveBareImport } from './bundler/resolve';
+export { buildImportMap, cdnDepsPins, resolveBareImport } from './bundler/resolve';

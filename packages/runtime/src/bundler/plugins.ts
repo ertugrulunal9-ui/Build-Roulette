@@ -7,6 +7,7 @@ import type { Loader, Plugin } from 'esbuild-wasm';
 import type { FileMap } from '../types';
 import {
   MAX_ASSET_BYTES,
+  cdnDepsPins,
   decodeAsset,
   isRelativeOrAbsolute,
   loaderForPath,
@@ -82,13 +83,15 @@ function loadAsset(path: string, contents: string) {
 
 /**
  * `cdn-rewrite` + package `css`: bare imports become external CDN URLs (React stays bare
- * for the import map), package CSS is fetched and inlined, undeclared packages are errors.
+ * for the import map) that pin the manifest's versions of peers (`deps=`), package CSS is
+ * fetched and inlined, undeclared packages are errors.
  */
 export function cdnPlugin(opts: {
   dependencies: Record<string, string>;
   cdnBaseUrl: string;
   fetchText: FetchText;
 }): Plugin {
+  const deps = cdnDepsPins(opts.dependencies) ?? [];
   return {
     name: 'cdn-rewrite',
     setup(build) {
@@ -107,7 +110,7 @@ export function cdnPlugin(opts: {
 
       build.onResolve({ filter: /^[^./]/ }, (args) => {
         if (args.kind === 'entry-point') return undefined; // handled by vfs
-        const r = resolveBareImport(args.path, opts.dependencies, opts.cdnBaseUrl);
+        const r = resolveBareImport(args.path, opts.dependencies, opts.cdnBaseUrl, deps);
         switch (r.kind) {
           case 'import-map':
             return { path: args.path, external: true };

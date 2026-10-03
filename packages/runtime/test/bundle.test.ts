@@ -69,8 +69,9 @@ describe('bundle() with esbuild-wasm', () => {
     // React entry points stay bare (import map); other packages are pinned CDN URLs.
     expect(r.js).toMatch(/from\s*"react\/jsx-runtime"/);
     expect(r.js).toMatch(/from\s*"react-dom\/client"/);
-    expect(r.js).toContain(`"${CDN}/zustand@5.0.15?external=react,react-dom"`);
-    expect(r.js).toContain(`"${CDN}/zustand@5.0.15/middleware?external=react,react-dom"`);
+    const q = '?external=react,react-dom&deps=animate.css@4.1.1,zustand@5.0.15';
+    expect(r.js).toContain(`"${CDN}/zustand@5.0.15${q}"`);
+    expect(r.js).toContain(`"${CDN}/zustand@5.0.15/middleware${q}"`);
     expect(r.js).not.toMatch(/from\s*"zustand"/);
     // Assets became data URLs, JSON was inlined, TS types stripped.
     expect(r.js).toContain('data:image/png;base64,iVBORw0KGgo');
@@ -188,6 +189,20 @@ describe('bundle() with esbuild-wasm', () => {
     );
     expect(r.ok).toBe(true);
     expect(r.diagnostics).toEqual([expect.objectContaining({ severity: 'warning' })]);
+  });
+
+  it('warns (and still builds without deps pins) above the CDN deps limit', async () => {
+    const deps: Record<string, string> = { react: '19.3.0', 'react-dom': '19.3.0' };
+    for (let i = 0; i <= 32; i++) deps[`pkg-${String(i)}`] = '1.0.0';
+    const r = await bundle(esbuild, input({ 'src/main.tsx': `import 'pkg-1';` }, deps), {
+      cdnBaseUrl: CDN,
+      fetchText,
+    });
+    expect(r.ok).toBe(true);
+    expect(r.js).toContain(`"${CDN}/pkg-1@1.0.0?external=react,react-dom"`);
+    expect(r.diagnostics).toHaveLength(1);
+    expect(r.diagnostics[0]?.severity).toBe('warning');
+    expect(r.diagnostics[0]?.text).toContain('More than 32 packages');
   });
 });
 

@@ -11,7 +11,13 @@ import type {
 } from 'esbuild-wasm';
 import type { BuildResult, BundleInput, Diagnostic } from '../types';
 import { cdnPlugin, vfsPlugin, type FetchText } from './plugins';
-import { buildImportMap, isPinnedVersion, normalizePath } from './resolve';
+import {
+  MAX_CDN_DEPS,
+  buildImportMap,
+  cdnDepsPins,
+  isPinnedVersion,
+  normalizePath,
+} from './resolve';
 
 export interface EsbuildApi {
   build(
@@ -52,6 +58,12 @@ export function validateManifest(input: BundleInput): Diagnostic[] {
         text: `Dependency "${name}" must be pinned to an exact version, got "${version}".`,
       });
     }
+  }
+  if (cdnDepsPins(deps) === null) {
+    out.push({
+      severity: 'warning',
+      text: `More than ${String(MAX_CDN_DEPS)} packages besides React: their peer dependencies are not pinned to your manifest's versions, so a package may get its own copy of a peer (for example two copies of three).`,
+    });
   }
   const react = deps['react'];
   const reactDom = deps['react-dom'];

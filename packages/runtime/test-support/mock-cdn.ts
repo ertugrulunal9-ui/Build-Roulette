@@ -1,7 +1,7 @@
 /**
  * Mock ESM package CDN that emulates the esm.sh URL shape for packages installed locally.
  *
- *   GET /<name>@<version>[/<subpath>][?external=a,b][&dev]
+ *   GET /<name>@<version>[/<subpath>][?external=a,b][&deps=x@1.2.3][&dev]
  *
  * - JS entries are bundled on demand from local node_modules into a single ES module with
  *   esbuild and cached in memory. CommonJS entries (React 18/19 ship CJS) get an ESM wrapper
@@ -10,6 +10,9 @@
  * - `external` keeps the listed packages (and their subpaths) as bare imports, so the page's
  *   import map resolves them to one shared instance. A CommonJS `require('react')` of an
  *   external package is rewritten to an ESM import of it, which is what esm.sh does too.
+ * - `deps` (peer version pins, sent by the runtime's cdn-rewrite) and other unknown
+ *   parameters are ignored: the mock bundles every dependency into the module, so it never
+ *   emits peer URLs that pins would apply to.
  * - Non-JS subpaths (`.css`, fonts, images, `.json`) are served raw from the package.
  * - Only allowlisted packages are served, and only at the exact installed version (a real
  *   CDN would hold many versions; the mock answers 404 with a clear reason instead).

@@ -1,0 +1,28 @@
+{
+  "name": "@br/workspace",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Workspace model for the sandbox editor: file map limits, templates, IndexedDB persistence, paste-import, bare import detection.",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "lint": "eslint . --max-warnings=0",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "idb": "8.0.3"
+  },
+  "devDependencies": {
+    "@br/config": "workspace:*",
+    "@types/node": "22.20.5",
+    "eslint": "9.39.5",
+    "fake-indexeddb": "6.2.5",
+    "typescript": "6.0.3",
+    "vite": "8.3.2",
+    "vitest": "5.0.3"
+  }
+}

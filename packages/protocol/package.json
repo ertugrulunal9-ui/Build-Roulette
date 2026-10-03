@@ -1,0 +1,26 @@
+{
+  "name": "@br/protocol",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Bridge protocol between the Build Roulette app and the sandbox shell: zod schemas, types and size caps.",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "lint": "eslint . --max-warnings=0",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@br/config": "workspace:*",
+    "eslint": "9.39.5",
+    "typescript": "6.0.3",
+    "vite": "8.3.2",
+    "vitest": "5.0.3"
+  }
+}

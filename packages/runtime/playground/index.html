@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sandbox runtime playground</title>
+    <style>
+      body {
+        margin: 0;
+        font:
+          13px/1.4 system-ui,
+          sans-serif;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        height: 100vh;
+      }
+      #left {
+        overflow: auto;
+        padding: 8px;
+        border-right: 1px solid #ccc;
+      }
+      #right {
+        display: grid;
+        grid-template-rows: auto 1fr 180px;
+        min-height: 0;
+      }
+      .file label {
+        font-weight: 600;
+        display: block;
+        margin-top: 8px;
+      }
+      .file textarea {
+        width: 100%;
+        box-sizing: border-box;
+        height: 160px;
+        font:
+          12px/1.4 ui-monospace,
+          monospace;
+      }
+      #preview-container {
+        min-height: 0;
+      }
+      #preview-container iframe {
+        width: 100%;
+        height: 100%;
+        border: 0;
+      }
+      #crashed {
+        padding: 16px;
+        color: #b00;
+      }
+      pre {
+        margin: 0;
+        padding: 6px;
+        overflow: auto;
+        background: #f6f6f6;
+        font-size: 12px;
+      }
+      #toolbar {
+        padding: 6px;
+        display: flex;
+        gap: 6px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="left">
+      <div id="files"></div>
+      <h3>Diagnostics</h3>
+      <pre id="diagnostics"></pre>
+    </div>
+    <div id="right">
+      <div id="toolbar">
+        <button id="build">Build</button>
+        <button id="reset">Reset storage</button>
+        <button id="restart">Restart preview</button>
+        <span id="status">booting…</span>
+      </div>
+      <div id="preview-container"></div>
+      <pre id="console"></pre>
+    </div>
+    <script type="module" src="/playground.js"></script>
+  </body>
+</html>

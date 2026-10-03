@@ -9,7 +9,7 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 | T-001 | Monorepo skeleton: pnpm + Turborepo, Next.js app, lint/format/strict TS, Vitest, CI | root config, `apps/web/`, `packages/game/`, `.github/` | done | Merged in b29110a |
 | T-002 | Supabase scaffold: initial schema migration, Supabase-compatible local Postgres test harness, pgTAP | `supabase/` | done | Merged |
 | T-004 | Run DB tests in CI + add a `@br/game` ↔ SQL enum drift test | `.github/workflows/ci.yml`, `packages/game/` | done | Merged |
-| T-003 | Sandbox prototype: esbuild-wasm bundler worker, runtime shell, postMessage protocol, mock CDN, Playwright test | `packages/runtime/`, `packages/protocol/`, `apps/sandbox-shell/` | in-progress | Wave 1. External CDNs are blocked, so a local mock CDN is used. |
+| T-003 | Sandbox prototype: esbuild-wasm bundler worker, runtime shell, postMessage protocol, mock CDN, Playwright test | `packages/runtime/`, `packages/protocol/`, `apps/sandbox-shell/` | done | Merged in 3172db8 |
 
 ## Blocked on the user
 
@@ -22,6 +22,7 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 
 - T-001 Monorepo skeleton
 - T-002 Supabase schema + RLS + test harness
+- T-003 Sandbox runtime prototype
 - T-004 DB tests in CI + schema drift test
 
 ## Review log
@@ -57,3 +58,35 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 - Drift test replays all migrations, including `alter type ... add value`. Negative checks (swap, add, rename) fail as expected.
 - `packages/game/turbo.json` adds migrations to the test inputs, so the turbo cache can't hide drift.
 - Follow-up: vote categories drift check, once `@br/game` exposes categories.
+
+### T-003: accepted (wave 1)
+- Hub test-merged onto main (clean, no conflicts) and re-ran on a fresh clone:
+  - install, format, lint, typecheck, build: green;
+  - unit tests: game 90, protocol 15, shell 5, runtime 40;
+  - e2e: 13/13;
+  - DB: 194/194.
+- Measured, reproduced by the hub (localhost, 4 vCPU):
+
+  | Metric | Result | Budget |
+  |---|---|---|
+  | Worker cold start | ~200 ms | < 3 s |
+  | First preview | ~525 ms | < 1 s |
+  | Rebuild + refresh | p50 124 ms, p95 190 ms | 300 / 800 ms |
+  | Watchdog | ~5.1 s | ≤ 6 s |
+
+  Budgets from docs/03 §3.8 are met. Download time is not included: esbuild.wasm is 2.7 MB brotli.
+- Security review: both sides of the handshake check origin and source. The port and nonce are used after the handshake. Inbound messages are zod-validated.
+- Design findings, now written into the docs:
+  - Watchdog requires site isolation (docs/02 R2).
+  - CSP needs `'unsafe-inline'` for the import map (docs/03 §3.5).
+  - Fresh child iframe per load (docs/03 §3.5).
+- Hub decisions:
+  - Shell is 12 KB gzip (mostly zod). Accepted for now; hand-written validators in the shell are a low-priority follow-up.
+  - Playwright is pinned to 1.56.1 to match the preinstalled Chromium.
+  - React from the CDN is the production build. Fine.
+- Follow-ups (go into M1 wave 3):
+  - R1 package compatibility suite (curated top-N list) against the mock CDN, which should grow into the self-hosted CDN.
+  - esbuild incremental context, sourcemaps for runtime errors, safe-mode restart.
+  - Integrate into `apps/web`: CodeMirror editor, IndexedDB workspace, worker + wasm serving and lobby preload.
+  - e2e in CI with `channel: 'chromium'` (needs a Playwright browser install step in CI).
+  - Capture mode and client thumbnail (M2).

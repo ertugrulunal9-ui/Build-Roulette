@@ -65,6 +65,17 @@ mobile Chrome don't always isolate cross-site frames in a separate process). We 
 this for a party game among people sharing a room link, and limit exposure with the
 watchdog and the "one live build" rule.
 
+**Confirmed by T-003 (M1 spike):** the watchdog only helps when the browser puts the
+cross-site iframe in its **own process**. Playwright's headless shell keeps it in the app's
+process, and there an infinite loop froze the app page itself, so no JavaScript watchdog
+could run. Full Chromium with site isolation kept the app responsive (worst timer gap
+≤ 58 ms) and the watchdog fired after about 5 s. On browsers without strict site isolation
+(Safari, low-RAM Android Chrome), a looping build can freeze the viewer's tab. Further
+mitigations:
+- reveal shows a "Skip build" control *outside* the iframe that also works after a reload;
+- mobile viewers see screenshots by default and open a live build by tapping;
+- a future option is a loop-guard transform in the bundler (CodePen-style) as defence in depth.
+
 ### R3: Faithful, authentic, reliable screenshots
 **Why it's hard.** The screenshot is the only permanent artifact. Client-side
 DOM-to-canvas libraries (html2canvas, html-to-image) miss WebGL, some CSS, cross-origin

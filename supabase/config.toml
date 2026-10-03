@@ -1,0 +1,47 @@
+# Supabase CLI (v2) configuration for the local development stack.
+# Hand-written and kept minimal; every omitted key uses the CLI default.
+# Reference: https://supabase.com/docs/guides/local-development/cli/config
+
+project_id = "build-roulette"
+
+[api]
+enabled = true
+port = 54321
+# Schemas exposed through the Data API. `public` holds the game tables (SELECT
+# only, through RLS) and, later, the RPCs.
+schemas = ["public", "graphql_public"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[db]
+port = 54322
+shadow_port = 54320
+# Hosted projects are created on Postgres 17. The offline harness
+# (scripts/test.sh) runs on Postgres 16; the schema uses nothing version-specific.
+major_version = 17
+
+[db.seed]
+# Local-only data (e.g. a dev prompt deck) goes in seed.sql. Reference data that
+# production needs (vote categories) lives in migrations instead.
+enabled = true
+sql_paths = ["./seed.sql"]
+
+[realtime]
+enabled = true
+
+[studio]
+enabled = true
+port = 54323
+
+[storage]
+enabled = true
+file_size_limit = "50MiB"
+
+[auth]
+enabled = true
+site_url = "http://127.0.0.1:3000"
+additional_redirect_urls = ["http://localhost:3000"]
+jwt_expiry = 3600
+enable_signup = true
+# Zero-setup onboarding (docs/01 §1.1): players sign in anonymously.
+enable_anonymous_sign_ins = true

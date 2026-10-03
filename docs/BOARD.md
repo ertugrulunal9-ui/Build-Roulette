@@ -8,7 +8,7 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 |---|---|---|---|---|
 | T-001 | Monorepo skeleton: pnpm + Turborepo, Next.js app, lint/format/strict TS, Vitest, CI | root config, `apps/web/`, `packages/game/`, `.github/` | done | Merged in b29110a |
 | T-002 | Supabase scaffold: initial schema migration, Supabase-compatible local Postgres test harness, pgTAP | `supabase/` | done | Merged |
-| T-004 | Run DB tests in CI + add a `@br/game` ↔ SQL enum drift test | `.github/workflows/ci.yml`, `packages/game/` | in-progress | Wave 2 |
+| T-004 | Run DB tests in CI + add a `@br/game` ↔ SQL enum drift test | `.github/workflows/ci.yml`, `packages/game/` | done | Merged |
 | T-003 | Sandbox prototype: esbuild-wasm bundler worker, runtime shell, postMessage protocol, mock CDN, Playwright test | `packages/runtime/`, `packages/protocol/`, `apps/sandbox-shell/` | in-progress | Wave 1. External CDNs are blocked, so a local mock CDN is used. |
 
 ## Blocked on the user
@@ -22,6 +22,7 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 
 - T-001 Monorepo skeleton
 - T-002 Supabase schema + RLS + test harness
+- T-004 DB tests in CI + schema drift test
 
 ## Review log
 
@@ -48,5 +49,11 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
   - Later RPC migrations must grant explicitly (default privileges are revoked) and revoke EXECUTE from `anon`.
   - `config.toml`: add `enable_manual_linking` and captcha (Turnstile) in M3.
   - Extend the shim for `storage` before the storage policy task.
-  - Wire `supabase/scripts/test.sh` into CI (apt install works on ubuntu runners).
-  - Add a drift test `@br/game` ↔ SQL `battle_phase` enum.
+  - ~~Wire DB tests into CI~~ and ~~add the drift test~~: done in T-004.
+
+### T-004: accepted (wave 2)
+- Hub re-ran on a fresh clone: format/lint/typecheck/test (90/90) and DB harness (194/194). All green.
+- New CI job `db`: pinned PostgreSQL 16 + pgTAP from the Ubuntu archive, with a PGDG fallback. Linted with actionlint. A real GitHub run is not verified yet.
+- Drift test replays all migrations, including `alter type ... add value`. Negative checks (swap, add, rename) fail as expected.
+- `packages/game/turbo.json` adds migrations to the test inputs, so the turbo cache can't hide drift.
+- Follow-up: vote categories drift check, once `@br/game` exposes categories.

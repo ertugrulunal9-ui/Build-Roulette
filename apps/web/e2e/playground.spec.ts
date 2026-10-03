@@ -119,6 +119,46 @@ test('a reload restores edited files from IndexedDB', async ({ page }) => {
   expect(await editorText(page)).toContain('Persisted edit');
 });
 
+test('a bundler that failed to start is started again by the next edit', async ({ page }) => {
+  const pageErrors: string[] = [];
+  page.on('pageerror', (e) => pageErrors.push(e.message));
+  let failWasm = true;
+  let wasmRequests = 0;
+  // The bundler worker fetches esbuild.wasm; fail that request until the user edits a file.
+  await page.context().route('**/*.wasm', (route) => {
+    wasmRequests++;
+    return failWasm ? route.abort() : route.continue();
+  });
+  await page.goto('/playground');
+  await expect(page.getByTestId('build-status')).toHaveText('Bundler failed', { timeout: 20_000 });
+  await expect(page.getByText('The bundler failed to start.')).toBeVisible();
+
+  failWasm = false;
+  await replaceEditorText(page, 'export function App() {\n  return <h1>Second try</h1>;\n}\n');
+  await expect(page.getByTestId('build-status')).toHaveText(/^Built in \d+ ms$/, {
+    timeout: 20_000,
+  });
+  await expect(buildFrame(page).locator('h1')).toHaveText('Second try');
+  await expect(page.getByText('The bundler failed to start.')).toHaveCount(0);
+  expect(wasmRequests).toBeGreaterThanOrEqual(2);
+  // No unhandled rejections from the failed start or the retried builds.
+  expect(pageErrors).toEqual([]);
+});
+
+test('after a reload the template menu shows the stored workspace template', async ({ page }) => {
+  await openPlayground(page);
+  const picker = page.getByLabel('Template');
+  await expect(picker).toHaveValue('react-ts');
+  await picker.selectOption('vanilla-ts');
+  await page.getByRole('button', { name: 'Reset to template' }).click(); // confirm() is accepted
+  await expect(page.getByTestId('build-status')).toHaveText(/^Built in/, { timeout: 20_000 });
+  await expect(page.getByTestId('save-status')).toHaveAttribute('data-state', 'saved');
+
+  await page.reload();
+  await expect(page.getByTestId('build-status')).toHaveText(/^Built in/, { timeout: 20_000 });
+  await expect(page.getByLabel('Template')).toHaveValue('vanilla-ts');
+});
+
 test('a runtime error shows the error overlay, and fixing it clears it', async ({ page }) => {
   await openPlayground(page);
   await replaceEditorText(

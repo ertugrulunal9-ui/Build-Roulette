@@ -20,6 +20,9 @@ const nextConfig: NextConfig = {
   // Workspace packages ship TypeScript source (no build step), so Next compiles them.
   transpilePackages: ['@br/game', '@br/protocol', '@br/runtime', '@br/workspace'],
   poweredByHeader: false,
+  // `next dev` would otherwise write AGENTS.md and CLAUDE.md into apps/web when it detects an
+  // AI coding agent. The repository keeps its agent instructions at the root.
+  agentRules: false,
   turbopack: {
     rules: {
       // The playground imports `esbuild-wasm/esbuild.wasm` for its URL: emit it as a

@@ -106,9 +106,9 @@ jobs:
         run: bash supabase/scripts/test.sh
 
   e2e:
-    name: Runtime e2e (Playwright Chromium)
+    name: E2E (runtime + web playground, Playwright Chromium)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -126,20 +126,31 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       # Installs the Chromium build that matches the pinned @playwright/test (1.56.1) into
-      # the default cache (~/.cache/ms-playwright), plus its system libraries. The config uses
+      # the default cache (~/.cache/ms-playwright), plus its system libraries. Both suites
+      # pin the same Playwright version, so they share this browser. The configs use
       # channel 'chromium' (full Chromium, new headless) for site isolation.
       - name: Install Playwright Chromium
         run: pnpm --filter @br/runtime exec playwright install --with-deps chromium
 
-      - name: Run e2e tests
+      - name: Run runtime e2e tests
+        id: runtime-e2e
         run: pnpm --filter @br/runtime test:e2e
+
+      # Runs `next build`, then the /playground tests against `next start` with the local
+      # sandbox shell and mock CDN. Also runs when the runtime suite failed, so one CI run
+      # reports both.
+      - name: Run web playground e2e tests
+        if: ${{ !cancelled() && steps.runtime-e2e.outcome != 'skipped' }}
+        run: pnpm --filter @br/web test:e2e
 
       - name: Upload Playwright output
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: runtime-e2e-results
-          path: packages/runtime/test-results/
+          name: e2e-results
+          path: |
+            packages/runtime/test-results/
+            apps/web/test-results/
           if-no-files-found: ignore
           retention-days: 7
 

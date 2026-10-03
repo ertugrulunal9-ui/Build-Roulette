@@ -75,7 +75,9 @@ export default function Playground() {
   const [activePath, setActivePath] = useState<string | null>(null);
   const [editError, setEditError] = useState<string | null>(null);
   const [pasteOpen, setPasteOpen] = useState(false);
-  const [template, setTemplate] = useState<TemplateId>('react-ts');
+  // The template picked in the menu; until the user picks one, the menu shows the template
+  // the (possibly restored) workspace was created from.
+  const [pickedTemplate, setPickedTemplate] = useState<TemplateId | null>(null);
   const [reveal, setReveal] = useState<RevealRequest | null>(null);
 
   const snapshot = useSyncExternalStore(
@@ -151,6 +153,8 @@ export default function Playground() {
   const activeValue = workspace.files[active] ?? '';
   const showImage = isImagePath(active) && activeValue.startsWith('data:');
   const status = buildStatus(snapshot);
+  // Stored workspaces are validated on load, so their template is always a known id.
+  const template: TemplateId = pickedTemplate ?? workspace.manifest.template;
 
   return (
     <main className="flex h-dvh flex-col bg-zinc-50 dark:bg-zinc-950">
@@ -175,7 +179,7 @@ export default function Playground() {
             id="template"
             value={template}
             onChange={(e) => {
-              if (isTemplateId(e.target.value)) setTemplate(e.target.value);
+              if (isTemplateId(e.target.value)) setPickedTemplate(e.target.value);
             }}
             className="rounded-md border border-zinc-300 bg-white px-1.5 py-1 text-xs dark:border-zinc-700 dark:bg-zinc-900"
           >

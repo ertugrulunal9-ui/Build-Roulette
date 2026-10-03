@@ -48,9 +48,22 @@ a preview in a cross-site sandboxed iframe. It works together with:
   `.module.css` uses esbuild's `local-css`.
 - **cdn-rewrite**: `react`, `react/jsx-runtime`, `react/jsx-dev-runtime`, `react-dom`,
   `react-dom/client` stay bare (import map). Any other bare import becomes the external URL
-  `${cdnBaseUrl}/${name}@${version}${subpath}?external=react,react-dom`. A package that is not in
-  `manifest.dependencies`, a version that is not exact, or a Node built-in is a **diagnostic**
-  with file and line; there is never a silent `latest`.
+  `${cdnBaseUrl}/${name}@${version}${subpath}?external=react,react-dom&deps=…`. A package that is
+  not in `manifest.dependencies`, a version that is not exact, or a Node built-in is a
+  **diagnostic** with file and line; there is never a silent `latest`.
+- **Peer pinning (`deps=`)**: `deps` lists every manifest dependency except React and
+  React DOM as `name@version`, sorted by package name (`cdnDepsPins`), for example
+  `?external=react,react-dom&deps=@react-three/fiber@9.4.0,three@0.186.1`. The package CDN
+  emits peer dependencies as CDN URLs pinned to these versions, so `three` inside
+  `@react-three/fiber` is the manifest's `three` and not npm's newest match. Every CDN URL of
+  a build carries the same list, the package itself included. The CDN emits a peer as
+  `/<peer>@<pin>` plus the query of the request it is serving, so the user's own
+  `import 'three'` and fiber's peer import are byte-identical URLs and load one module
+  instance. If the package itself were left out of its own list, the two URLs would differ
+  and `three` would load twice. Entries the CDN would reject are left out (non-npm names,
+  versions with build metadata). Above the CDN's limit of 32 entries no URL gets `deps=` and
+  the build has a warning. Trade-off: adding or bumping any dependency changes every CDN URL
+  of the build, so those modules are fetched (and, on a cold CDN cache, bundled) again.
 - **css**: local CSS (including `@import` and `url()`) is bundled into one CSS output. Package CSS
   (`pkg/dist/x.css`) is fetched from the CDN by the worker, cached in memory and inlined;
   relative `url()`/`@import` inside it are rewritten to absolute CDN URLs.
@@ -62,7 +75,9 @@ a preview in a cross-site sandboxed iframe. It works together with:
 ### Preview isolation and bridge
 - The iframe gets exactly `sandbox="allow-scripts allow-same-origin allow-forms allow-modals
   allow-pointer-lock allow-popups"`, `allow="autoplay; fullscreen; gamepad; clipboard-write"`,
-  `referrerpolicy="no-referrer"`, `loading="eager"`.
+  `referrerpolicy="no-referrer"`, `loading="eager"`. Fullscreen is delegated through `allow`
+  only, here and on the shell's per-load child frame. Setting the legacy `allowfullscreen` as
+  well makes Chromium warn that `allow` takes precedence.
 - Handshake: the shell posts `hello {protocol}` to each allowlisted app origin (a non-matching
   `targetOrigin` is dropped by the browser). The app accepts it only if `event.origin` is the
   shell origin **and** `event.source === iframe.contentWindow` (`checkHello`), then transfers a
@@ -79,9 +94,37 @@ a preview in a cross-site sandboxed iframe. It works together with:
   every 250 ms, pings after 2 s of silence, and after 5 s emits `crash` and removes the iframe.
   When the app tab is hidden the check pauses, and when the tab becomes visible again the grace
   period restarts, so timer throttling cannot cause a false crash.
+- **`PreviewHandle` removes its iframe from the DOM on `crash`** (and `dispose()` tears it down).
+  Callers must therefore put the iframe in a container that React (or any other view library)
+  does not manage. Create the iframe imperatively in a host element that renders no children,
+  as `apps/web`'s `SandboxController` does. Otherwise the library's reconciliation and the
+  handle both try to own the same node. To recover from a crash, create a new iframe and call
+  `attachPreview` again.
 - **reset-storage**: tears down the running build (an open IndexedDB connection would block
   deletion), then clears `localStorage`, `sessionStorage`, every IndexedDB database,
   CacheStorage and cookies, and acknowledges with `storage-reset {ok, errors?}`.
+
+## Lifecycle and errors
+
+- **Creating the worker**: `BundlerClientOptions` (and so `EsmBrowserRuntimeOptions`) take
+  either `workerUrl` (started as a module worker) or `createWorker`, never both. The type is
+  a union, so passing neither or both is a type error. Untyped callers that pass neither get a
+  `TypeError` from the constructor. Use `createWorker` when the app's bundler needs a literal
+  `new Worker(new URL('./bundler.worker.ts', import.meta.url))` to find the worker entry
+  (Turbopack, Vite).
+- **`terminate()` / `destroy()` settle everything**: a pending `init()` (and so `boot()`) and
+  every in-flight or queued build reject with a `BundlerAbortError` (`name === 'AbortError'`,
+  `isAbortError(e)`). Nothing hangs when `boot()` races `destroy()`, for example under React
+  StrictMode's double effects. After `terminate()`, the `BundlerClient` can be used again
+  (a new worker); an `EsmBrowserRuntime` cannot.
+- **A failed bundler start is retried**: if the worker script fails to load, `createWorker`
+  throws or esbuild-wasm fails to initialize, `boot()` rejects, the failed worker is
+  terminated, and the failure is not cached. The next `build()` (explicit or debounced after
+  `writeFile`) starts a fresh worker.
+- **Build failures are results, not rejections**: when the bundler cannot start, `build()`
+  resolves with `ok: false` and one diagnostic with `code: 'bundler-init-failed'`, and the
+  result goes to `onBuild` listeners like any build. Debounced builds never produce unhandled
+  rejections. `build()` rejects only once the runtime is destroyed.
 
 ## Running it
 
@@ -153,6 +196,10 @@ every 250 ms, so detection after a loop starts falls between about 4.0 s and 5.2
   depend on the pinned React version and the shell is a static file, so a hash or nonce can't be
   used. This doesn't let a build do more than it already can: a build is arbitrary JS and `blob:`
   is already allowed.
+- **CSP `script-src` includes `'unsafe-eval'`** (T-007). Packages such as pixi.js v8 compile
+  code at runtime with `new Function` and fail without it. The reasoning is the same as for
+  `'unsafe-inline'`: a build is arbitrary JS already. An e2e test checks that `eval` and
+  `new Function` work inside a build.
 - **Protocol refinements** (version 1, shell path `/v1/`): `connect {protocol, nonce}` (window)
   and `connected {nonce}` (first port message) make the handshake explicit. `load` carries a
   `loadId` that `ready` echoes. `reset-storage` has a `requestId` and gets a `storage-reset
@@ -200,7 +247,8 @@ every 250 ms, so detection after a loop starts falls between about 4.0 s and 5.2
 - **The mock CDN bundles each package with its dependencies into one module.** A dependency
   shared by two packages is therefore duplicated, which esm.sh avoids. React stays single
   because of `external`. Only `react`, `react-dom`, `zustand` and `animate.css` are served, and
-  only at their installed versions; anything else gets a 404 with the reason.
+  only at their installed versions; anything else gets a 404 with the reason. It accepts and
+  ignores `deps=`, because it never emits peer URLs.
 - Only the React entry points listed above are in the import map. Another `react-dom/*` subpath
   imported *from inside a CDN package* would fail to resolve (loudly).
 - Every rebuild is a full `esbuild.build()` (no incremental context yet), and there are no

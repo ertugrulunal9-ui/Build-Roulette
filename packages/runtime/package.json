@@ -1,0 +1,41 @@
+{
+  "name": "@br/runtime",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "In-browser sandbox runtime: esbuild-wasm bundler worker, PreviewHandle, SandboxRuntime interface.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./worker": "./src/worker/bundler.worker.ts",
+    "./bundler": "./src/bundler/index.ts"
+  },
+  "scripts": {
+    "lint": "eslint . --max-warnings=0",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "playground": "tsx test-support/dev-server.ts",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "@br/protocol": "workspace:*",
+    "esbuild-wasm": "0.28.2"
+  },
+  "devDependencies": {
+    "@br/sandbox-shell": "workspace:*",
+    "@playwright/test": "1.56.1",
+    "@br/config": "workspace:*",
+    "@types/node": "22.20.5",
+    "eslint": "9.39.5",
+    "animate.css": "4.1.1",
+    "cjs-module-lexer": "2.2.1",
+    "es-module-lexer": "3.0.2",
+    "esbuild": "0.28.2",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "tsx": "4.23.15",
+    "typescript": "6.0.3",
+    "vite": "8.3.2",
+    "vitest": "5.0.3",
+    "zustand": "5.0.15"
+  }
+}

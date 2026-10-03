@@ -117,8 +117,9 @@ function teardownFrame(): void {
 function runLoad(msg: LoadMessage): void {
   teardownFrame();
   const f = document.createElement('iframe');
+  // Fullscreen is delegated through `allow` only: adding the legacy `allowfullscreen` too
+  // makes Chromium warn that `allow` takes precedence.
   f.setAttribute('allow', FRAME_ALLOW);
-  f.setAttribute('allowfullscreen', '');
   f.title = 'Build';
   f.style.cssText =
     'position:fixed;inset:0;width:100%;height:100%;border:0;margin:0;padding:0;display:block;background:transparent';

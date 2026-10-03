@@ -20,6 +20,11 @@ export type BuildMode = 'dev' | 'production';
 export interface Diagnostic {
   severity: 'error' | 'warning';
   text: string;
+  /**
+   * Set for problems that are not about the user's code. `bundler-init-failed`: the bundler
+   * (worker or esbuild-wasm) could not start; the next build tries to start it again.
+   */
+  code?: 'bundler-init-failed';
   /** Workspace path, when the problem has a location. */
   file?: string;
   line?: number;

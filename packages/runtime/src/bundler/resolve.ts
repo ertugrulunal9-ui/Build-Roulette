@@ -20,6 +20,9 @@ export const IMPORT_MAP_SPECIFIERS = [
 /** Packages every CDN module is built against as externals, so React is a single instance. */
 export const SHARED_EXTERNALS = ['react', 'react-dom'] as const;
 
+/** Most `deps=` pins the package CDN accepts in one URL (apps/pkg-cdn `MAX_DEPS`). */
+export const MAX_CDN_DEPS = 32;
+
 /** Max size of an image asset file (docs/03 §3.3). */
 export const MAX_ASSET_BYTES = 200 * 1024;
 
@@ -31,6 +34,16 @@ const NODE_BUILTINS = new Set(
 
 const PINNED_VERSION_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 const PACKAGE_NAME_RE = /^(?:@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$/;
+/** Names the package CDN accepts in `deps=` (new-style npm names, as in apps/pkg-cdn). */
+const CDN_DEPS_NAME_RE = /^(?:@[a-z0-9-][a-z0-9._-]*\/)?[a-z0-9-][a-z0-9._-]*$/;
+const CDN_RESERVED_NAMES = new Set(['node_modules', 'favicon.ico']);
+/**
+ * Versions the package CDN accepts in `deps=`: strict SemVer 2.0 without build metadata
+ * (`semver.valid(v) === v`). Build metadata would be dropped by the CDN, and `+` in a query
+ * string reads as a space.
+ */
+const CDN_DEPS_VERSION_RE =
+  /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*)?$/;
 
 /** Normalizes a workspace path: no leading `/` or `./`, `.`/`..` segments collapsed. */
 export function normalizePath(p: string): string {
@@ -117,16 +130,57 @@ function trimBase(cdnBaseUrl: string): string {
   return cdnBaseUrl.replace(/\/+$/, '');
 }
 
-/** esm.sh-shaped URL: `${base}/${name}@${version}${subpath}`, plus `?external=react,react-dom` for JS. */
+/**
+ * The `deps=` pins for CDN module URLs: every manifest dependency except the shared
+ * externals (React stays bare), as `name@version`, sorted by package name. The package CDN
+ * uses them as the versions of peer dependencies it emits as CDN URLs, so a peer like `three`
+ * inside `@react-three/fiber` is the manifest's `three`, not npm's newest match.
+ *
+ * Every CDN URL of a build carries the same list, the package itself included. The CDN
+ * emits peer URLs with the query of the request (`/three@0.186.1?external=…&deps=…`), so
+ * this keeps the user's own `import 'three'` and fiber's peer import byte-identical: one
+ * module instance. The order matches the CDN's (by name, then `name@version`), so the URLs
+ * are deterministic.
+ *
+ * Entries the CDN would reject (non-npm names, versions with build metadata or that are not
+ * exact) are left out. With more than `MAX_CDN_DEPS` entries the CDN would reject every
+ * URL, so this returns null: callers send no `deps=` and peers fall back to the CDN's own
+ * version pick (`validateManifest` warns).
+ */
+export function cdnDepsPins(dependencies: Record<string, string>): string[] | null {
+  const names = Object.keys(dependencies)
+    .filter((name) => {
+      const version = dependencies[name];
+      return (
+        !(SHARED_EXTERNALS as readonly string[]).includes(name) &&
+        name.length <= 214 &&
+        CDN_DEPS_NAME_RE.test(name) &&
+        !CDN_RESERVED_NAMES.has(name) &&
+        version !== undefined &&
+        CDN_DEPS_VERSION_RE.test(version)
+      );
+    })
+    .sort();
+  if (names.length > MAX_CDN_DEPS) return null;
+  return names.map((name) => `${name}@${dependencies[name] ?? ''}`);
+}
+
+/**
+ * esm.sh-shaped URL: `${base}/${name}@${version}${subpath}`, plus
+ * `?external=react,react-dom[&deps=…]` for JS modules.
+ */
 export function cdnModuleUrl(
   cdnBaseUrl: string,
   name: string,
   version: string,
   subpath: string,
   withExternals = true,
+  deps: readonly string[] = [],
 ): string {
   const url = `${trimBase(cdnBaseUrl)}/${name}@${version}${subpath}`;
-  return withExternals ? `${url}?external=${SHARED_EXTERNALS.join(',')}` : url;
+  if (!withExternals) return url;
+  const query = `?external=${SHARED_EXTERNALS.join(',')}`;
+  return deps.length > 0 ? `${url}${query}&deps=${deps.join(',')}` : `${url}${query}`;
 }
 
 export type BareImportResolution =
@@ -138,11 +192,16 @@ export type BareImportResolution =
   | { kind: 'cdn-css'; url: string }
   | { kind: 'error'; message: string };
 
-/** Decides what a bare import (`zustand`, `three/examples/jsm/x`, `pkg/dist/x.css`) becomes. */
+/**
+ * Decides what a bare import (`zustand`, `three/examples/jsm/x`, `pkg/dist/x.css`) becomes.
+ * `deps` defaults to `cdnDepsPins(dependencies)`; callers resolving many imports of one
+ * build pass it in once.
+ */
 export function resolveBareImport(
   spec: string,
   dependencies: Record<string, string>,
   cdnBaseUrl: string,
+  deps: readonly string[] = cdnDepsPins(dependencies) ?? [],
 ): BareImportResolution {
   if (isNodeBuiltin(spec)) {
     return {
@@ -174,7 +233,10 @@ export function resolveBareImport(
       url: cdnModuleUrl(cdnBaseUrl, parsed.name, version, parsed.subpath, false),
     };
   }
-  return { kind: 'cdn', url: cdnModuleUrl(cdnBaseUrl, parsed.name, version, parsed.subpath) };
+  return {
+    kind: 'cdn',
+    url: cdnModuleUrl(cdnBaseUrl, parsed.name, version, parsed.subpath, true, deps),
+  };
 }
 
 /**

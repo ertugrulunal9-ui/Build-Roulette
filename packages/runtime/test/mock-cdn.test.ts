@@ -107,6 +107,17 @@ describe('mock CDN server', () => {
     expect(cdn.stats.builds).toBe(builds);
   });
 
+  it('accepts and ignores deps= pins (it bundles every dependency anyway)', async () => {
+    const builds = cdn.stats.builds;
+    const r = await get(
+      '/zustand@5.0.15?external=react,react-dom&deps=three@0.186.1,zustand@5.0.15',
+    );
+    expect(r.status).toBe(200);
+    expect(r.body).toMatch(/as create[,}]/);
+    // Same bundle as without deps: the cache key ignores them.
+    expect(cdn.stats.builds).toBe(builds);
+  });
+
   it('answers 404 for other versions and unlisted packages, 400 for bad URLs', async () => {
     expect((await get('/react@18.3.1')).status).toBe(404);
     expect((await get('/react@18.3.1')).body).toContain('installed: 19.3.0');

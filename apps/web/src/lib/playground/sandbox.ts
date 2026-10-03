@@ -92,11 +92,10 @@ export class SandboxController {
     this.host = host;
     this.config = config;
     this.runtime = new EsmBrowserRuntime({
-      // Unused because createWorker is given; the literal `new Worker(new URL(...))` below is
-      // what lets Turbopack find and bundle the worker entry.
-      workerUrl: 'bundler.worker',
       wasmUrl,
       cdnBaseUrl: config.cdnBaseUrl,
+      // The literal `new Worker(new URL(...))` is what lets Turbopack find and bundle the
+      // worker entry, so the worker is created here rather than from a `workerUrl`.
       createWorker: () =>
         new Worker(new URL('./bundler.worker.ts', import.meta.url), {
           type: 'module',
@@ -146,8 +145,8 @@ export class SandboxController {
     const prev = this.synced;
     this.synced = workspace;
     if (this.disposed || prev === null || prev === workspace) return;
-    // Without a bundler every debounced build would only reject; nothing to update.
-    if (this.snapshot.bundler === 'failed') return;
+    // If the bundler failed to start, the debounced build retries starting it and reports
+    // the outcome through onBuild like any other build.
     let changed = false;
     for (const [path, contents] of Object.entries(workspace.files)) {
       if (prev.files[path] !== contents) {
@@ -217,7 +216,12 @@ export class SandboxController {
 
   private readonly onBuild = (result: BuildResult): void => {
     if (this.disposed) return;
+    const initFailure = result.diagnostics.find((d) => d.code === 'bundler-init-failed');
     this.update({
+      // A build after a failed start retried starting the bundler: reflect the outcome.
+      ...(initFailure
+        ? { bundler: 'failed' as const, bundlerError: initFailure.text }
+        : { bundler: 'ready' as const, bundlerError: null }),
       building: false,
       lastBuild: { ok: result.ok, durationMs: result.durationMs, diagnostics: result.diagnostics },
     });

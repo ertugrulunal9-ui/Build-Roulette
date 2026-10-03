@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { REACT_MANIFEST, reactApp } from './fixtures';
 import { buildFrame, openPlayground } from './helpers';
 
 const SHELL_URL = `http://127.0.0.1:${process.env['SHELL_PORT'] ?? '4311'}/v1/`;
@@ -61,7 +62,9 @@ test('shell responses carry the CSP / Permissions-Policy headers adapted for loc
   const h = res.headers();
   const csp = h['content-security-policy'] ?? '';
   expect(csp).toContain("default-src 'none'");
-  expect(csp).toMatch(/script-src 'self' 'unsafe-inline' blob: http:\/\/localhost:\d+/);
+  expect(csp).toMatch(
+    /script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: http:\/\/localhost:\d+/,
+  );
   expect(csp).toMatch(/frame-ancestors http:\/\/localhost:\d+/);
   expect(csp).toContain('connect-src https: wss:');
   expect(h['permissions-policy']).toBe(
@@ -88,4 +91,55 @@ test('frame-ancestors blocks other origins from embedding the shell', async ({ p
   // The shell never ran in that frame.
   const child = page.frames().find((f) => f !== page.mainFrame());
   expect(child?.url()).not.toBe(SHELL_URL);
+});
+
+test('builds may use eval and new Function (script-src unsafe-eval)', async ({ page }) => {
+  await openPlayground(page);
+  // pixi.js v8 and other engines compile shaders/accessors with new Function at runtime.
+  const files = reactApp(
+    `<p data-testid="evaluated">{String(fromFunction + fromEval)}</p>`,
+    `const fromFunction = new Function('return 1')() as number;
+const fromEval = (0, eval)('2') as number;`,
+  );
+  const r = await page.evaluate(
+    async ({ files, manifest }) => {
+      await window.__playground.setProject(files, manifest);
+      return window.__playground.buildAndLoad();
+    },
+    { files, manifest: REACT_MANIFEST },
+  );
+  expect(r.ok).toBe(true);
+  await expect(buildFrame(page).getByTestId('evaluated')).toHaveText('3');
+  const errors = await page.evaluate(() =>
+    window.__playground.events.filter((e) => e.type === 'error').map((e) => e.data),
+  );
+  expect(errors).toEqual([]);
+});
+
+test('preview frames allow fullscreen through allow= only (no allowfullscreen warning)', async ({
+  page,
+}) => {
+  const consoleLines: string[] = [];
+  page.on('console', (m) => consoleLines.push(m.text()));
+  await openPlayground(page);
+  const r = await page.evaluate(async () => {
+    window.__playground.writeFile(
+      'src/App.tsx',
+      `export function App() { return <p data-testid="fs">{String(document.fullscreenEnabled)}</p>; }`,
+    );
+    return window.__playground.buildAndLoad();
+  });
+  expect(r.ok).toBe(true);
+
+  const preview = page.locator('#preview');
+  expect(await preview.getAttribute('allow')).toContain('fullscreen');
+  expect(await preview.getAttribute('allowfullscreen')).toBeNull();
+  // The shell's per-load child frame (the build's document).
+  const child = page.frameLocator('#preview').locator('iframe');
+  expect(await child.getAttribute('allow')).toContain('fullscreen');
+  expect(await child.getAttribute('allowfullscreen')).toBeNull();
+  // Fullscreen is still delegated all the way down to the build.
+  await expect(buildFrame(page).getByTestId('fs')).toHaveText('true');
+  // Chromium: "Allow attribute will take precedence over 'allowfullscreen'."
+  expect(consoleLines.filter((l) => /allowfullscreen/i.test(l))).toEqual([]);
 });

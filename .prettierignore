@@ -1,0 +1,21 @@
+# Generated or vendored
+pnpm-lock.yaml
+next-env.d.ts
+
+# Build output and caches
+node_modules/
+.next/
+.turbo/
+dist/
+out/
+build/
+coverage/
+playwright-report/
+test-results/
+
+# Agent worktrees (each is a full checkout with its own node_modules)
+.claude/worktrees/
+
+# Markdown is hand-formatted (aligned tables, intentional line breaks in the design docs).
+# Remove this line and run `pnpm format` to bring it under Prettier.
+*.md

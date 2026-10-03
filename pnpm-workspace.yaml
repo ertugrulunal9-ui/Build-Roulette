@@ -1,0 +1,9 @@
+packages:
+  - apps/*
+  - packages/*
+
+# Dependency install scripts we deliberately do not run.
+ignoredBuiltDependencies:
+  # Only checks for / downloads its native binding, which pnpm already installs as an
+  # optional platform package (@unrs/resolver-binding-*).
+  - unrs-resolver

@@ -18,6 +18,61 @@ importers:
         specifier: 6.0.3
         version: 6.0.3
 
+  apps/pkg-cdn:
+    dependencies:
+      cjs-module-lexer:
+        specifier: 2.2.1
+        version: 2.2.1
+      es-module-lexer:
+        specifier: 3.0.2
+        version: 3.0.2
+      esbuild:
+        specifier: 0.28.2
+        version: 0.28.2
+      semver:
+        specifier: 7.8.5
+        version: 7.8.5
+    devDependencies:
+      '@br/config':
+        specifier: workspace:*
+        version: link:../../packages/config
+      '@br/protocol':
+        specifier: workspace:*
+        version: link:../../packages/protocol
+      '@br/runtime':
+        specifier: workspace:*
+        version: link:../../packages/runtime
+      '@br/sandbox-shell':
+        specifier: workspace:*
+        version: link:../sandbox-shell
+      '@playwright/test':
+        specifier: 1.56.1
+        version: 1.56.1
+      '@types/node':
+        specifier: 22.20.5
+        version: 22.20.5
+      '@types/semver':
+        specifier: 7.8.0
+        version: 7.8.0
+      esbuild-wasm:
+        specifier: 0.28.2
+        version: 0.28.2
+      eslint:
+        specifier: 9.39.5
+        version: 9.39.5(jiti@2.7.0)
+      tsx:
+        specifier: 4.23.15
+        version: 4.23.15
+      typescript:
+        specifier: 6.0.3
+        version: 6.0.3
+      vite:
+        specifier: 8.3.2
+        version: 8.3.2(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)
+      vitest:
+        specifier: 5.0.3
+        version: 5.0.3(@types/node@22.20.5)(vite@8.3.2(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15))
+
   apps/sandbox-shell:
     dependencies:
       '@br/protocol':
@@ -1139,6 +1194,9 @@ packages:
 
   '@types/react@19.3.0':
     resolution: {integrity: sha512-N0rFCuH9YoxG9/m61l9MfpJKfmLOVU0em7ipIz6TRgSSkvReLB9vL85GB+yr8Bs5leqpvg96JSwF4ZS1s4viQg==}
+
+  '@types/semver@7.8.0':
+    resolution: {integrity: sha512-1mAINjtQCXXeLkJ9ehXkwOcBpqtLxiVtKhpUf83DdRNdQKV0iXZpaHYqRr7nj+wvxuJzoAmAwXI+sCNMv1CzLQ==}
 
   '@typescript-eslint/eslint-plugin@8.71.0':
     resolution: {integrity: sha512-pqcS9c1HxZTHt7End4nXqd0s5lJrrFzrgCkKFJrsbUnaL6M3+6oBFZaslg6Gjsl3argl2DDRFROnXARaZ2e4Nw==}
@@ -3601,6 +3659,8 @@ snapshots:
   '@types/react@19.3.0':
     dependencies:
       csstype: 3.2.3
+
+  '@types/semver@7.8.0': {}
 
   '@typescript-eslint/eslint-plugin@8.71.0(@typescript-eslint/parser@8.71.0(eslint@9.39.5(jiti@2.7.0))(typescript@6.0.3))(eslint@9.39.5(jiti@2.7.0))(typescript@6.0.3)':
     dependencies:

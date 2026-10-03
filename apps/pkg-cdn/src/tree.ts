@@ -87,6 +87,11 @@ type DepSpec = { ok: true; realName: string; range: string } | { ok: false; reas
 
 /** Interprets a dependency spec: semver ranges, dist-tags and `npm:` aliases. */
 export function parseDepSpec(name: string, spec: string): DepSpec {
+  // The install name becomes a directory under node_modules: it must be a valid name too
+  // (an alias key like "../../x" would otherwise escape the tree).
+  if (validatePackageName(name, { legacy: true }) !== null) {
+    return { ok: false, reason: `invalid dependency name ${JSON.stringify(name)}` };
+  }
   let realName = name;
   let range = spec.trim();
   if (range.startsWith('npm:')) {

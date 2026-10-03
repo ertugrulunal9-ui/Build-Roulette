@@ -115,6 +115,9 @@ describe('parseDepSpec', () => {
     expect(parseDepSpec('a', 'github:u/r').ok).toBe(false);
     expect(parseDepSpec('a', 'file:../x').ok).toBe(false);
     expect(parseDepSpec('a', 'https://x/y.tgz').ok).toBe(false);
+    // Install names become directories: an alias key must not escape node_modules.
+    expect(parseDepSpec('../../x', 'npm:react@1').ok).toBe(false);
+    expect(parseDepSpec('a/b', '^1').ok).toBe(false);
   });
 });
 
@@ -158,6 +161,19 @@ describe('resolveTree', () => {
       'node_modules/c': 'c@1.2.0',
       'node_modules/b/node_modules/c': 'c@2.0.0',
     });
+  });
+
+  it('refuses dependency names that would escape node_modules', async () => {
+    await expect(
+      resolve(
+        {
+          root: { versions: { '1.0.0': { dependencies: { '../../escape': 'npm:real@^1.0.0' } } } },
+          real: versions('1.0.0'),
+        },
+        'root',
+        '1.0.0',
+      ),
+    ).rejects.toMatchObject({ status: 422, code: 'unsupported' });
   });
 
   it('does not install peers, skips platform-specific optional deps, supports aliases', async () => {

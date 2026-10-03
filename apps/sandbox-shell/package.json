@@ -1,0 +1,30 @@
+{
+  "name": "@br/sandbox-shell",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Versioned runtime shell served from the sandbox (usercontent) origin. Runs untrusted builds.",
+  "exports": {
+    "./server": "./src/server.ts",
+    "./headers": "./src/headers.ts"
+  },
+  "scripts": {
+    "build": "tsx scripts/build.ts",
+    "lint": "eslint . --max-warnings=0",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@br/protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "@br/config": "workspace:*",
+    "@types/node": "22.20.5",
+    "eslint": "9.39.5",
+    "esbuild": "0.28.2",
+    "tsx": "4.23.15",
+    "typescript": "6.0.3",
+    "vite": "8.3.2",
+    "vitest": "5.0.3"
+  }
+}

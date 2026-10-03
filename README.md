@@ -28,6 +28,7 @@ Design phase. Nothing is implemented yet. Start with the design docs:
 | 4 | [Multiplayer state machine](docs/04-state-machine.md) | Room / battle / player / build states, transitions, timers, realtime, reconnects |
 | 5 | [Database schema](docs/05-database.md) | Postgres DDL, RLS, RPCs, storage buckets, jobs, retention |
 | 6 | [Implementation plan](docs/06-roadmap.md) | Milestones with exit criteria, riskiest work first |
+| — | [Workflow](docs/WORKFLOW.md) · [Board](docs/BOARD.md) | How the hub and worker agents operate; live task status |
 
 ## Planned stack (summary)
 

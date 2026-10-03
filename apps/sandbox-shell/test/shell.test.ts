@@ -6,11 +6,11 @@ import { PERMISSIONS_POLICY, renderHeadersFile, shellCsp, shellHeaders } from '.
 const PROD = { appOrigins: ['https://buildroulette.app'], cdnOrigin: 'https://pkg.example.net' };
 
 describe('shell headers', () => {
-  it('matches the docs/03 §3.5 policy (plus the documented inline import-map exception)', () => {
+  it('matches the docs/03 §3.5 policy (plus the documented inline/eval exceptions)', () => {
     expect(shellCsp(PROD)).toBe(
       [
         "default-src 'none'",
-        "script-src 'self' 'unsafe-inline' blob: https://pkg.example.net",
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: https://pkg.example.net",
         "style-src 'self' 'unsafe-inline' blob: https:",
         'img-src * data: blob:',
         'font-src * data:',
@@ -36,7 +36,9 @@ describe('shell headers', () => {
       cdnOrigin: 'http://localhost:4312',
       extraConnectSrc: ['http://localhost:4312'],
     });
-    expect(local).toContain("script-src 'self' 'unsafe-inline' blob: http://localhost:4312");
+    expect(local).toContain(
+      "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: http://localhost:4312",
+    );
     expect(local).toContain("style-src 'self' 'unsafe-inline' blob: https: http://localhost:4312");
     expect(local).toContain('connect-src https: wss: http://localhost:4312');
     expect(local).toContain('frame-ancestors http://localhost:4310');

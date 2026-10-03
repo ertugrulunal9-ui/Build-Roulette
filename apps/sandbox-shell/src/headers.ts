@@ -23,16 +23,20 @@ export interface ShellHeaderOptions {
  * CSP for the shell document. The user's document is created by the shell as a same-origin
  * child (about:blank + document.write), so it inherits this policy.
  *
- * Deviation from docs/03: `script-src` contains `'unsafe-inline'`. The shell installs the
- * import map as an inline `<script type="importmap">`, which CSP treats like any inline
- * script, and its contents depend on the build's pinned React version, so neither a static
- * hash nor a per-response nonce from a static host can allow it. This does not widen what a
- * build can do: the build is arbitrary JS already and `blob:` is allowed for its module.
+ * Deviations from docs/03 in `script-src`:
+ * - `'unsafe-inline'`: the shell installs the import map as an inline
+ *   `<script type="importmap">`, which CSP treats like any inline script, and its contents
+ *   depend on the build's pinned React version, so neither a static hash nor a per-response
+ *   nonce from a static host can allow it.
+ * - `'unsafe-eval'`: packages such as pixi.js v8 compile code with `new Function` at runtime.
+ * Neither widens what a build can do: the build is arbitrary JS already and `blob:` is
+ * allowed for its module.
  */
 export function shellCsp(opts: ShellHeaderOptions): string {
   const scriptSrc = [
     "'self'",
     "'unsafe-inline'",
+    "'unsafe-eval'",
     'blob:',
     opts.cdnOrigin,
     ...(opts.extraScriptSrc ?? []),

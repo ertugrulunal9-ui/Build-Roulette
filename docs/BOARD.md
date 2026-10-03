@@ -9,7 +9,7 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 | T-001 | Monorepo skeleton: pnpm + Turborepo, Next.js app, lint/format/strict TS, Vitest, CI | root config, `apps/web/`, `packages/game/`, `.github/` | done | Merged in b29110a |
 | T-002 | Supabase scaffold: initial schema migration, Supabase-compatible local Postgres test harness, pgTAP | `supabase/` | done | Merged |
 | T-004 | Run DB tests in CI + add a `@br/game` ↔ SQL enum drift test | `.github/workflows/ci.yml`, `packages/game/` | done | Merged |
-| T-005 | `/playground` in apps/web: CodeMirror 6, file tree, `@br/workspace` (limits, templates, IndexedDB, paste-import), runtime + preview wiring, console/diagnostics | `apps/web/`, `packages/workspace/` | in-progress | Wave 3 |
+| T-005 | `/playground` in apps/web: CodeMirror 6, file tree, `@br/workspace` (limits, templates, IndexedDB, paste-import), runtime + preview wiring, console/diagnostics | `apps/web/`, `packages/workspace/` | done | Merged |
 | T-006 | `@br/pkg-cdn`: esm.sh-compatible package CDN that resolves from the npm registry, plus an R1 compatibility suite and an e2e CI job | `apps/pkg-cdn/`, `.github/workflows/ci.yml` | in-progress | Wave 3 |
 | T-003 | Sandbox prototype: esbuild-wasm bundler worker, runtime shell, postMessage protocol, mock CDN, Playwright test | `packages/runtime/`, `packages/protocol/`, `apps/sandbox-shell/` | done | Merged in 3172db8 |
 
@@ -26,6 +26,7 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 - T-002 Supabase schema + RLS + test harness
 - T-003 Sandbox runtime prototype
 - T-004 DB tests in CI + schema drift test
+- T-005 Playground (editor, file tree, workspace persistence)
 
 ## Review log
 
@@ -92,3 +93,25 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
   - Integrate into `apps/web`: CodeMirror editor, IndexedDB workspace, worker + wasm serving and lobby preload.
   - e2e in CI with `channel: 'chromium'` (needs a Playwright browser install step in CI).
   - Capture mode and client thumbnail (M2).
+
+### T-005: accepted (wave 3)
+- Hub test-merged onto main (clean; only `apps/web`, `packages/workspace` and the lockfile changed). Re-ran on a fresh clone:
+  - install, format, lint, typecheck, build: green;
+  - unit tests: workspace 149, game 90, protocol 15, shell 5, runtime 40;
+  - web e2e: 9/9;
+  - runtime e2e: 13/13.
+- Hub took a manual screenshot of `/playground` on `next start`: the editor, file tree and preview render, with "Built in 370 ms" shown.
+- Worker served via `new URL('./bundler.worker.ts', import.meta.url)` (Turbopack). The wasm is a content-hashed asset via a Turbopack rule. The build fails if esbuild-wasm versions drift.
+- The landing page bundle contains no editor or runtime code (verified by grepping the chunks).
+- Bugs found in `@br/runtime` / shell (not fixed in T-005), now T-007:
+  1. `BundlerClient.terminate()` never settles a pending `init()`, so `boot()` hangs under StrictMode.
+  2. `scheduleBuild` → `void this.build()` gives unhandled rejections if init failed, and a failed init is never retried.
+  3. `workerUrl` is required even when `createWorker` is given.
+  4. The shell sets both `allow` (with fullscreen) and `allowfullscreen`, which logs a console warning.
+  5. The README must say that `PreviewHandle` removes the iframe on crash.
+- Other follow-ups:
+  - Switch the sandbox servers and the React-pin drift test to the T-006 CDN.
+  - Add web e2e to CI.
+  - Ignore or disable the `AGENTS.md`/`CLAUDE.md` files that `next dev` generates.
+  - The template picker shows `react-ts` after a reload.
+  - "Add dependency" chip UI.

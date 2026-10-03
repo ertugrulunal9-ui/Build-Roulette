@@ -51,3 +51,49 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+  db:
+    name: Database tests (Postgres 16 + pgTAP)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      # Same major version as the local harness default (supabase/scripts/test.sh).
+      PG_MAJOR: 16
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      # Ubuntu 24.04 has postgresql-16, postgresql-16-pgtap and pg_prove in its own archive
+      # (main/universe), and the runner image already ships PostgreSQL 16. If ubuntu-latest
+      # moves to a release without PostgreSQL 16, fall back to the PGDG repository through
+      # the setup script that postgresql-common ships.
+      - name: Install PostgreSQL ${{ env.PG_MAJOR }}, pgTAP and pg_prove
+        run: |
+          set -euo pipefail
+          pkgs=("postgresql-$PG_MAJOR" "postgresql-$PG_MAJOR-pgtap" libtap-parser-sourcehandler-pgtap-perl)
+          apt_install() {
+            sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "$@"
+          }
+          # The harness initdb's its own throwaway cluster, so a freshly installed server
+          # package must not create and start a default "main" cluster.
+          if [[ -f /etc/postgresql-common/createcluster.conf ]]; then
+            echo 'create_main_cluster = false' | sudo tee -a /etc/postgresql-common/createcluster.conf >/dev/null
+          fi
+          sudo apt-get update -qq
+          if ! apt_install "${pkgs[@]}"; then
+            echo "::notice::PostgreSQL $PG_MAJOR packages are not in the runner's apt sources; adding the PGDG repository"
+            apt_install postgresql-common
+            sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+            apt_install "${pkgs[@]}"
+          fi
+          # Put the matching psql first on PATH (pg_prove runs psql from PATH).
+          echo "/usr/lib/postgresql/$PG_MAJOR/bin" >> "$GITHUB_PATH"
+          "/usr/lib/postgresql/$PG_MAJOR/bin/postgres" --version
+          pg_prove --version
+
+      - name: Run database tests
+        env:
+          PG_BIN: /usr/lib/postgresql/${{ env.PG_MAJOR }}/bin
+        run: bash supabase/scripts/test.sh

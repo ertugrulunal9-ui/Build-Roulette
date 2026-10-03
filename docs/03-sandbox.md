@@ -120,13 +120,16 @@ flowchart TB
   add: `allow-top-navigation*`, `allow-popups-to-escape-sandbox`, `allow-downloads`.
 - **Per-build subdomain** keeps builds from reading each other's `localStorage`.
 - **Shell response headers:**
-  - `Content-Security-Policy: default-src 'none'; script-src 'self' 'unsafe-inline' blob: https://pkg.<cdn> https://<tailwind-runtime-host>; style-src 'self' 'unsafe-inline' blob: https:; img-src * data: blob:; font-src * data:; media-src * data: blob:; connect-src https: wss:; worker-src blob:; frame-ancestors https://<app-domain>`
+  - `Content-Security-Policy: default-src 'none'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: https://pkg.<cdn> https://<tailwind-runtime-host>; style-src 'self' 'unsafe-inline' blob: https:; img-src * data: blob:; font-src * data:; media-src * data: blob:; connect-src https: wss:; worker-src blob:; frame-ancestors https://<app-domain>`
   - `connect-src https:` is a deliberate v1 choice so builds can call public APIs (for
     example PokéAPI or Open-Meteo). The sandbox holds no secrets, so there is nothing
     of ours to exfiltrate.
   - `frame-ancestors` blocks other sites from embedding our sandbox shell.
   - `Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), hid=()`
   - `Cross-Origin-Resource-Policy: same-site`, `Referrer-Policy: no-referrer`
+  - **Why `'unsafe-eval'`** (T-006/T-007): libraries such as pixi.js v8 compile code with
+    `new Function` at runtime. A build is arbitrary JavaScript already, so allowing eval
+    doesn't widen what a build can do. Compatibility went from 52/55 to 54/55.
   - **Why `'unsafe-inline'` in `script-src`** (found in T-003): Chromium applies
     `script-src` to inline `<script type="importmap">`. The import map depends on each
     build's pinned React version, so a static host can't use a hash or a nonce. This

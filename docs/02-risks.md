@@ -21,13 +21,11 @@ validate it early. The roadmap ([06](06-roadmap.md)) is ordered to retire the to
 ### R1: In-browser runtime speed and package compatibility
 > **Status (M1): retired.** In T-003 and T-006, measured on localhost:
 > - worker cold start ~200 ms, rebuild + preview p50 ~124 ms;
-> - compatibility suite: **52/55 cases, 51/52 packages (94.5%)**, against our own CDN with
+> - compatibility suite: **54/55 cases (98.2%) after T-007** (52/55 in T-006), against our own CDN with
 >   real npm packages. The hub reproduced this on an empty cache.
 >
 > Known failures:
-> - pixi.js v8 needs `'unsafe-eval'` in the shell CSP; this is being fixed in T-007;
-> - side-effect subpaths such as `pixi.js/unsafe-eval` would need shared chunks per
->   package;
+> - pixi.js passes now that the shell CSP allows `'unsafe-eval'` (T-007);
 > - matter-js named imports fail (a UMD build, so it needs `import Matter from 'matter-js'`).
 >
 > See `apps/pkg-cdn/compat/RESULTS.md`.

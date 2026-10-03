@@ -11,9 +11,9 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 | T-004 | Run DB tests in CI + add a `@br/game` ↔ SQL enum drift test | `.github/workflows/ci.yml`, `packages/game/` | done | Merged |
 | T-005 | `/playground` in apps/web: CodeMirror 6, file tree, `@br/workspace` (limits, templates, IndexedDB, paste-import), runtime + preview wiring, console/diagnostics | `apps/web/`, `packages/workspace/` | done | Merged |
 | T-006 | `@br/pkg-cdn`: esm.sh-compatible package CDN that resolves from the npm registry, plus an R1 compatibility suite and an e2e CI job | `apps/pkg-cdn/`, `.github/workflows/ci.yml` | done | Merged |
-| T-007 | Runtime/shell fixes (5 bugs from T-005), `'unsafe-eval'` in shell CSP, `deps=` peer pinning, web e2e in CI, playground template picker fix | `packages/runtime/`, `apps/sandbox-shell/`, `apps/web/`, `ci.yml` | in-progress | Wave 4 |
+| T-007 | Runtime/shell fixes (5 bugs from T-005), `'unsafe-eval'` in shell CSP, `deps=` peer pinning, web e2e in CI, playground template picker fix | `packages/runtime/`, `apps/sandbox-shell/`, `apps/web/`, `ci.yml` | done | Merged |
 | T-008 | Independent security review of sandbox, bridge, playground and package CDN (read-only; M1 exit criterion) | none (report only) | done (partial) | Code review only; PoCs didn't run. Verification moves into T-009. |
-| T-009 | Sandbox hardening from T-008 (F2–F4, F6–F9, I1–I3) with browser PoC tests that prove each fix | `packages/runtime/`, `apps/sandbox-shell/`, `apps/web/` | todo | Starts after T-007 merges (same files) |
+| T-009 | Sandbox hardening from T-008 (F2–F4, F6–F9, I1–I3) with browser PoC tests that prove each fix | `packages/runtime/`, `apps/sandbox-shell/`, `apps/web/` | in-progress | Wave 5 |
 | T-010 | Package CDN hardening (F5): global download/extract limits, streaming extraction, disk quota/LRU | `apps/pkg-cdn/` | in-progress | Wave 4 (parallel to T-007) |
 | T-003 | Sandbox prototype: esbuild-wasm bundler worker, runtime shell, postMessage protocol, mock CDN, Playwright test | `packages/runtime/`, `packages/protocol/`, `apps/sandbox-shell/` | done | Merged in 3172db8 |
 
@@ -34,6 +34,7 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 - T-004 DB tests in CI + schema drift test
 - T-005 Playground (editor, file tree, workspace persistence)
 - T-006 Package CDN + R1 compatibility suite
+- T-007 Runtime/shell fixes + polish
 - T-008 Security review (code-level)
 
 ## Review log
@@ -158,3 +159,14 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
   - all shell messages are untrusted, and capture readiness is decided server-side;
   - no `allow-popups`/`clipboard-write` in reveal/capture modes;
   - PSL submission goes on the user's list.
+
+### T-007: accepted (wave 4)
+- Hub test-merged onto main and re-ran on a fresh clone:
+  - install, format, lint, typecheck, build: green;
+  - unit tests: runtime 64 (was 40), all others unchanged;
+  - runtime e2e 15/15, web e2e 11/11.
+- **Hub reproduced compat on an empty cache: 54/55 (98.2%).** Both pixi.js cases now pass thanks to `'unsafe-eval'`. The only failure is matter-js named imports (accepted).
+- Every fix has a regression test that the worker showed failing on the pre-fix code.
+- Accepted deviation: `deps=` includes the package itself. Otherwise the user's import URL and a peer URL emitted by the CDN differ, which duplicates three.js. Cost: changing any dependency changes every CDN URL in that build (cache miss).
+- Docs updated: CSP now includes `'unsafe-eval'` (docs/03 §3.5), R1 at 54/55 (docs/02).
+- Follow-up: refresh `apps/pkg-cdn/compat/RESULTS.md` after T-010 merges (T-010 owns that folder).

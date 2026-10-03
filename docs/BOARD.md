@@ -14,7 +14,7 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 | T-007 | Runtime/shell fixes (5 bugs from T-005), `'unsafe-eval'` in shell CSP, `deps=` peer pinning, web e2e in CI, playground template picker fix | `packages/runtime/`, `apps/sandbox-shell/`, `apps/web/`, `ci.yml` | in-progress | Wave 4 |
 | T-008 | Independent security review of sandbox, bridge, playground and package CDN (read-only; M1 exit criterion) | none (report only) | done (partial) | Code review only; PoCs didn't run. Verification moves into T-009. |
 | T-009 | Sandbox hardening from T-008 (F2–F4, F6–F9, I1–I3) with browser PoC tests that prove each fix | `packages/runtime/`, `apps/sandbox-shell/`, `apps/web/` | todo | Starts after T-007 merges (same files) |
-| T-010 | Package CDN hardening (F5): global download/extract limits, streaming extraction, disk quota/LRU | `apps/pkg-cdn/` | in-progress | Wave 4 |
+| T-010 | Package CDN hardening (F5): global download/extract limits, streaming extraction, disk quota/LRU | `apps/pkg-cdn/` | in-progress | Wave 4 (parallel to T-007) |
 | T-003 | Sandbox prototype: esbuild-wasm bundler worker, runtime shell, postMessage protocol, mock CDN, Playwright test | `packages/runtime/`, `packages/protocol/`, `apps/sandbox-shell/` | done | Merged in 3172db8 |
 
 ## Blocked on the user

@@ -6,9 +6,17 @@ import { defineConfig } from '@playwright/test';
  * `pnpm --filter @br/web test:e2e` (builds first). Not part of `pnpm test`.
  *
  * The shell and CDN ports are the defaults baked into the build (src/lib/playground/config.ts).
+ *
+ * `E2E_APP_SERVER=workers` runs the same tests against the Cloudflare Workers build instead
+ * (OpenNext output served by `wrangler dev`, i.e. workerd). Build it first with
+ * `pnpm cf:build`; `pnpm test:e2e:cf` does both.
  */
 const APP_PORT = Number(process.env['APP_PORT'] ?? 3100);
 const APP_ORIGIN = `http://localhost:${String(APP_PORT)}`;
+const APP_SERVER_COMMAND =
+  process.env['E2E_APP_SERVER'] === 'workers'
+    ? `opennextjs-cloudflare preview --port ${String(APP_PORT)}`
+    : `next start -p ${String(APP_PORT)}`;
 
 export default defineConfig({
   testDir: './e2e',
@@ -37,9 +45,9 @@ export default defineConfig({
       timeout: 60_000,
     },
     {
-      command: `next start -p ${String(APP_PORT)}`,
+      command: APP_SERVER_COMMAND,
       url: `${APP_ORIGIN}/playground`,
-      env: { NEXT_TELEMETRY_DISABLED: '1' },
+      env: { NEXT_TELEMETRY_DISABLED: '1', WRANGLER_SEND_METRICS: 'false' },
       reuseExistingServer: false,
       stdout: 'pipe',
       timeout: 60_000,

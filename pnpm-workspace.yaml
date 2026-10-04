@@ -10,3 +10,6 @@ ignoredBuiltDependencies:
   # Its postinstall only verifies/copies the native binary; the JS API finds it through the
   # optional platform package (@esbuild/<platform>) that pnpm installs anyway.
   - esbuild
+  # wrangler's local runtime. Its postinstall only validates/copies the binary; the package
+  # finds it through the optional platform package (@cloudflare/workerd-<platform>).
+  - workerd

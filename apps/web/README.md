@@ -63,3 +63,14 @@ Runs `next build`, then Playwright starts `next start -p 3100` and `scripts/sand
 'chromium'`), because the infinite-loop test needs site isolation (see
 `packages/runtime/README.md`). `@playwright/test` is pinned to 1.56.1 to match the preinstalled
 browser. Not part of `pnpm test`.
+
+`pnpm --filter @br/web test:e2e:cf` runs the same suite against the Cloudflare Workers build
+(`cf:build`, then `opennextjs-cloudflare preview`, which is `wrangler dev` on workerd)
+instead of `next start` (`E2E_APP_SERVER=workers` in `playwright.config.ts`).
+
+## Cloudflare Workers
+
+Production runs on Cloudflare Workers through OpenNext (`open-next.config.ts`,
+`wrangler.jsonc`). `cf:build` / `cf:preview` build and serve it locally with no Cloudflare
+account; the normal `build` is unaffected. See [DEPLOY.md](DEPLOY.md) for the account setup,
+deploys, secrets, custom domain and caching.

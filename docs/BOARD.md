@@ -13,8 +13,8 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 | T-006 | `@br/pkg-cdn`: esm.sh-compatible package CDN that resolves from the npm registry, plus an R1 compatibility suite and an e2e CI job | `apps/pkg-cdn/`, `.github/workflows/ci.yml` | done | Merged |
 | T-007 | Runtime/shell fixes (5 bugs from T-005), `'unsafe-eval'` in shell CSP, `deps=` peer pinning, web e2e in CI, playground template picker fix | `packages/runtime/`, `apps/sandbox-shell/`, `apps/web/`, `ci.yml` | done | Merged |
 | T-008 | Independent security review of sandbox, bridge, playground and package CDN (read-only; M1 exit criterion) | none (report only) | done (partial) | Code review only; PoCs didn't run. Verification moves into T-009. |
-| T-009 | Sandbox hardening from T-008 (F2–F4, F6–F9, I1–I3) with browser PoC tests that prove each fix | `packages/runtime/`, `apps/sandbox-shell/`, `apps/web/` | in-progress | Wave 5 |
-| T-010 | Package CDN hardening (F5): global download/extract limits, streaming extraction, disk quota/LRU | `apps/pkg-cdn/` | in-progress | Wave 4 (parallel to T-007) |
+| T-009 | Sandbox hardening from T-008 (F2–F4, F6–F9, I1–I3), verified with unit tests (fake ports/windows) and policy-conformance e2e checks | `packages/runtime/`, `apps/sandbox-shell/`, `apps/web/` | in-progress | Wave 5, attempt 3 (re-scoped) |
+| T-010 | Package CDN hardening (F5): global download/extract limits, streaming extraction, disk quota/LRU | `apps/pkg-cdn/` | done | Merged |
 | T-003 | Sandbox prototype: esbuild-wasm bundler worker, runtime shell, postMessage protocol, mock CDN, Playwright test | `packages/runtime/`, `packages/protocol/`, `apps/sandbox-shell/` | done | Merged in 3172db8 |
 
 ## Blocked on the user
@@ -36,6 +36,7 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 - T-006 Package CDN + R1 compatibility suite
 - T-007 Runtime/shell fixes + polish
 - T-008 Security review (code-level)
+- T-010 Package CDN availability hardening
 
 ## Review log
 
@@ -170,3 +171,33 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 - Accepted deviation: `deps=` includes the package itself. Otherwise the user's import URL and a peer URL emitted by the CDN differ, which duplicates three.js. Cost: changing any dependency changes every CDN URL in that build (cache miss).
 - Docs updated: CSP now includes `'unsafe-eval'` (docs/03 §3.5), R1 at 54/55 (docs/02).
 - Follow-up: refresh `apps/pkg-cdn/compat/RESULTS.md` after T-010 merges (T-010 owns that folder).
+
+### T-010: accepted (wave 4)
+- Hub test-merged onto main and re-ran on a fresh clone:
+  - install, format, lint, typecheck, build: green;
+  - unit tests: pkg-cdn 118 (was 81), all others unchanged.
+- **Compat on main (with T-007's `'unsafe-eval'`) is 54/55.** The hub regenerated and committed `RESULTS.md`. The worker's own 52/55 came from a branch older than T-007.
+- Hardening:
+  - global limiters (registry 16, extraction 4, build 4) with bounded queues and 503 + `Retry-After` load shedding;
+  - AbortSignal on client disconnect or the 90 s deadline;
+  - SingleFlight coalescing that never caches errors;
+  - streaming integrity check + gunzip + tar with limits checked before inflating (gzip-bomb tests);
+  - lower defaults justified by measuring all 279 packages;
+  - disk quota (5 GB) with LRU, leases and crash-safe eviction;
+  - `/health` metrics;
+  - edge caching and rate-limit guidance in the README.
+- Finding F5 is mitigated.
+
+### T-009: attempts 1–2 did not produce code
+- Attempt 1: interrupted by the API usage limit, nothing committed.
+- Attempt 2: a safety classifier stopped the worker while it was drafting "attacker build" browser fixtures, before any change. Same pattern as T-008.
+- Attempt 2 did produce useful code-reading notes:
+  - I3: `parseBareSpecifier` accepts percent-encoded dot segments.
+  - The dev-server 404 branch has no security headers, and `_headers` covers only `/v1/*`.
+  - `connect-src` lacks `'self'`, which a `/v1/reset` endpoint will need.
+  - `PreviewHandle` accepts a new `hello` at any time.
+  - Ping is answered from the port listener.
+  - Restart already creates a new iframe.
+  - The `reset-storage` cookie wipe only covers `path=/`.
+  - Console updates are unbatched and uncapped.
+- Hub decision: same goals, re-scoped verification. Fixes are proven with unit tests (fake ports/windows/sources) and plain policy-conformance e2e checks (headers, iframe attributes, storage wiped, `window.open` blocked in reveal mode) instead of exploit-style fixtures.

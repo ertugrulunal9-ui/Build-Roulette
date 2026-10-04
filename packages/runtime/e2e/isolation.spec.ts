@@ -54,24 +54,68 @@ test('e. hello from a wrong origin or a different window is ignored', async ({ p
   await expect(buildFrame(page).getByTestId('title')).toHaveText('still mine');
 });
 
-test('shell responses carry the CSP / Permissions-Policy headers adapted for local origins', async ({
-  request,
-}) => {
-  const res = await request.get(SHELL_URL);
-  expect(res.status()).toBe(200);
-  const h = res.headers();
+const PERMISSIONS_POLICY =
+  'camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), hid=(), ' +
+  'display-capture=(), screen-wake-lock=(), idle-detection=(), midi=(), ' +
+  'publickey-credentials-get=(), publickey-credentials-create=(), xr-spatial-tracking=()';
+
+function expectSecurityHeaders(h: Record<string, string>): void {
   const csp = h['content-security-policy'] ?? '';
   expect(csp).toContain("default-src 'none'");
   expect(csp).toMatch(
     /script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: http:\/\/localhost:\d+/,
   );
   expect(csp).toMatch(/frame-ancestors http:\/\/localhost:\d+/);
-  expect(csp).toContain('connect-src https: wss:');
-  expect(h['permissions-policy']).toBe(
-    'camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), hid=()',
-  );
+  expect(csp).toContain("connect-src 'self' https: wss:");
+  expect(csp).toContain('worker-src blob:;');
+  expect(csp).toContain("base-uri 'none'");
+  expect(csp).toContain("form-action 'none'");
+  expect(h['permissions-policy']).toBe(PERMISSIONS_POLICY);
+  expect(h['origin-agent-cluster']).toBe('?1');
   expect(h['cross-origin-resource-policy']).toBe('same-site');
   expect(h['referrer-policy']).toBe('no-referrer');
+  expect(h['x-content-type-options']).toBe('nosniff');
+}
+
+test('shell responses carry the CSP / Permissions-Policy headers adapted for local origins', async ({
+  request,
+}) => {
+  for (const url of [SHELL_URL, `${SHELL_URL}shell.js`]) {
+    const res = await request.get(url);
+    expect(res.status()).toBe(200);
+    expectSecurityHeaders(res.headers());
+  }
+});
+
+test('every path of the sandbox host carries the security headers, 404s included', async ({
+  request,
+}) => {
+  const origin = new URL(SHELL_URL).origin;
+  for (const path of ['/', '/missing', '/v1/missing.js', '/v9/']) {
+    const res = await request.get(`${origin}${path}`);
+    expect(res.status(), path).toBe(404);
+    expectSecurityHeaders(res.headers());
+  }
+  const reset = await request.get(`${SHELL_URL}reset`);
+  expect(reset.status()).toBe(200);
+  expect(reset.headers()['clear-site-data']).toBe('"cache", "cookies", "storage"');
+  expect(reset.headers()['cache-control']).toBe('no-store');
+  expectSecurityHeaders(reset.headers());
+});
+
+test('Chromium recognises every Permissions-Policy feature (no "Unrecognized feature" warning)', async ({
+  page,
+}) => {
+  const lines: string[] = [];
+  page.on('console', (m) => lines.push(m.text()));
+  // Top-level load of the shell: the header is parsed for this document, and any warning is
+  // logged to this page's console.
+  await page.goto(SHELL_URL);
+  await expect(page).toHaveTitle('Build Roulette sandbox');
+  // The embedded case too: the preview iframe (allow=) and the shell's child frame.
+  await openPlayground(page);
+  await page.waitForTimeout(300);
+  expect(lines.filter((l) => /unrecognized feature|permissions.policy/i.test(l))).toEqual([]);
 });
 
 test('frame-ancestors blocks other origins from embedding the shell', async ({ page }) => {

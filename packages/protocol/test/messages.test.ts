@@ -44,8 +44,8 @@ describe('parseAppToShell', () => {
       { type: 'reset-storage' },
       { type: 'reset-storage', requestId: 3 },
       { type: 'capture-thumbnail', width: 320, height: 200 },
-      { type: 'ping' },
-      { type: 'ping', t: 123.5 },
+      { type: 'ping', seq: 0 },
+      { type: 'ping', seq: 4, t: 123.5 },
     ]) {
       const r = parseAppToShell(m);
       expect(r, JSON.stringify(m)).toMatchObject({ ok: true });
@@ -53,7 +53,7 @@ describe('parseAppToShell', () => {
   });
 
   it('strips unknown keys instead of passing them through', () => {
-    const r = parseAppToShell({ type: 'ping', evil: true });
+    const r = parseAppToShell({ type: 'ping', seq: 1, evil: true });
     expect(r.ok && 'evil' in r.value).toBe(false);
   });
 
@@ -75,6 +75,10 @@ describe('parseAppToShell', () => {
       { type: 'capture-thumbnail', width: 0, height: 10 },
       { type: 'capture-thumbnail', width: 5000, height: 10 },
       { type: 'hello', protocol: 1 }, // shell -> app message on the wrong direction
+      { type: 'ping' }, // seq is required (pongs must echo it)
+      { type: 'ping', seq: -1 },
+      { type: 'ping', seq: 1.5 },
+      { type: 'pong', seq: 1 }, // shell -> app
     ];
     for (const m of bad) {
       const r = parseAppToShell(m);
@@ -122,6 +126,8 @@ describe('parseShellToApp', () => {
       { type: 'ready', loadId: 7 },
       { type: 'heartbeat' },
       { type: 'heartbeat', t: 1 },
+      { type: 'pong', seq: 0 },
+      { type: 'pong', seq: 99 },
       { type: 'console', level: 'warn', args: ['a', 'b'] },
       { type: 'console', level: 'log', args: [] },
       { type: 'runtime-error', message: 'boom' },
@@ -141,6 +147,9 @@ describe('parseShellToApp', () => {
       { type: 'connected', nonce: 'short' },
       { type: 'connected', nonce: 'x'.repeat(20) + '<script>' },
       { type: 'ready' },
+      { type: 'pong' },
+      { type: 'pong', seq: '1' },
+      { type: 'ping', seq: 1 }, // app -> shell
       { type: 'console', level: 'trace', args: [] },
       { type: 'console', level: 'log', args: [1] },
       { type: 'console', level: 'log' },

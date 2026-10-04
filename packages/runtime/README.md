@@ -14,7 +14,7 @@ a preview in a cross-site sandboxed iframe. It works together with:
  App origin (trusted)                                       Sandbox origin (untrusted)
  ┌────────────────────────────────────────────┐            ┌──────────────────────────────────┐
  │ EsmBrowserRuntime (SandboxRuntime)         │            │ shell.js (/v1/, outer realm)     │
- │  ├─ BundlerClient ──postMessage──► Worker  │            │  ├─ handshake, port, heartbeat   │
+ │  ├─ BundlerClient ──postMessage──► Worker  │            │  ├─ handshake, port, ping/pong   │
  │  │                  esbuild-wasm           │            │  ├─ reset-storage                │
  │  │                  plugins: vfs,          │   port     │  └─ per load: NEW child iframe   │
  │  │                  cdn-rewrite, css,      │◄──────────►│       about:blank + doc.write    │
@@ -73,36 +73,144 @@ a preview in a cross-site sandboxed iframe. It works together with:
 - **Import map**: generated from the pinned `react` / `react-dom` versions, one shared instance.
 
 ### Preview isolation and bridge
-- The iframe gets exactly `sandbox="allow-scripts allow-same-origin allow-forms allow-modals
-  allow-pointer-lock allow-popups"`, `allow="autoplay; fullscreen; gamepad; clipboard-write"`,
-  `referrerpolicy="no-referrer"`, `loading="eager"`. Fullscreen is delegated through `allow`
-  only, here and on the shell's per-load child frame. Setting the legacy `allowfullscreen` as
-  well makes Chromium warn that `allow` takes precedence.
+- The iframe's `sandbox` and `allow` depend on the run mode (`PREVIEW_SANDBOX_BY_MODE`,
+  `PREVIEW_ALLOW_BY_MODE`), plus `referrerpolicy="no-referrer"` and `loading="eager"`:
+
+  | Mode | `sandbox` | `allow` |
+  |---|---|---|
+  | `live` (your own build while building) | `allow-scripts allow-same-origin allow-forms allow-modals allow-pointer-lock allow-popups` | `autoplay; fullscreen; gamepad; clipboard-write` |
+  | `reveal`, `capture` (someone else's build, the capture renderer) | `allow-scripts allow-same-origin allow-forms allow-pointer-lock` | `autoplay; fullscreen; gamepad` |
+
+  Reveal and capture drop `allow-popups` (a popup outlives the build and can phish outside
+  the app chrome), `clipboard-write`, and also `allow-modals`: `alert`/`confirm`/`prompt`/`print`
+  from someone else's build would block the viewer's tab (or stall the headless capture
+  renderer) and are a phishing vector, and they are not needed to show a finished build.
+  Without the flag they return at once (`confirm` → `false`, `prompt` → `null`). Live keeps
+  modals for `alert()` debugging. `allow-forms` stays in every mode: without it the `submit`
+  event never fires, so React `onSubmit` handlers would break; actual form navigation is
+  blocked by the shell's `form-action 'none'` instead. Sandbox flags only apply when the
+  frame navigates, so they are set before the shell loads, and a mode switch replaces the
+  iframe element (see "Reset isolation"). The shell's per-load child frame gets the same
+  mode's `allow`. Fullscreen is delegated through `allow` only: setting the legacy
+  `allowfullscreen` as well makes Chromium warn that `allow` takes precedence.
 - Handshake: the shell posts `hello {protocol}` to each allowlisted app origin (a non-matching
   `targetOrigin` is dropped by the browser). The app accepts it only if `event.origin` is the
   shell origin **and** `event.source === iframe.contentWindow` (`checkHello`), then transfers a
   `MessageChannel` port with a random nonce in `connect`. The shell answers `connected {nonce}`
   on the port. After that, both sides use only the port. Every message is validated with
   `@br/protocol` on receipt; invalid messages are dropped and counted (`stats.rejectedMessages`).
+- **One handshake per iframe load.** Every navigation the handle starts itself (attach, mode
+  switch, `resetStorage()`, `restart()`) arms exactly one expected `hello`. Once it has been
+  answered, any further `hello` from the frame (the shell's retry timer, a reload the build
+  triggered, code running in the shell's realm) is ignored and counted
+  (`stats.ignoredHellos`); the port is never replaced behind the app's back. If the real
+  shell went away, the watchdog notices.
 - **Fresh document per load**: for every `load`, the shell removes the previous child iframe and
   creates a new same-origin `about:blank` child. It runs `document.open()`, installs the
   console/error hooks, writes a `<!doctype html>` skeleton with `<div id="root">`, then
   synchronously appends the import map, a `<style>` with the CSS, and
   `<script type="module" src="blob:…">`. `ready {loadId}` is sent on the script's `load`;
   a module graph fetch failure becomes `runtime-error {kind: 'module-load'}`.
-- **Watchdog**: the shell sends `heartbeat` every 1 s and answers `ping`. The PreviewHandle checks
-  every 250 ms, pings after 2 s of silence, and after 5 s emits `crash` and removes the iframe.
-  When the app tab is hidden the check pauses, and when the tab becomes visible again the grace
-  period restarts, so timer throttling cannot cause a false crash.
-- **`PreviewHandle` removes its iframe from the DOM on `crash`** (and `dispose()` tears it down).
-  Callers must therefore put the iframe in a container that React (or any other view library)
-  does not manage. Create the iframe imperatively in a host element that renders no children,
-  as `apps/web`'s `SandboxController` does. Otherwise the library's reconciliation and the
-  handle both try to own the same node. To recover from a crash, create a new iframe and call
-  `attachPreview` again.
-- **reset-storage**: tears down the running build (an open IndexedDB connection would block
-  deletion), then clears `localStorage`, `sessionStorage`, every IndexedDB database,
-  CacheStorage and cookies, and acknowledges with `storage-reset {ok, errors?}`.
+- **Watchdog (ping round trips)**: while connected, the PreviewHandle sends `ping {seq}` every
+  1 s. The shell answers `pong {seq}` from a `setTimeout(0)` task on its main thread, not
+  synchronously in the port listener, so a pong shows that the event loop still runs tasks.
+  A pong counts only for a `seq` that is still outstanding. The handle checks every 250 ms
+  and emits `crash` (reason `heartbeat-timeout`, name kept for compatibility) when no pong
+  arrived for 5 s, then takes the iframe out of the DOM. The shell no longer sends periodic
+  `heartbeat`s; a `heartbeat` that arrives is counted (`stats.heartbeats`) but does not count
+  as liveness, because anything holding the port can send one. When the app tab is hidden
+  the check pauses, and when the tab becomes visible again the grace period restarts, so
+  timer throttling cannot cause a false crash. `setTimeout` rather than
+  `requestAnimationFrame`: an iframe scrolled out of view gets no animation frames.
+- **`PreviewHandle` takes its iframe out of the DOM on `crash`** (a comment node keeps its
+  place), and `dispose()` removes it. Callers must therefore put the iframe in a container
+  that React (or any other view library) does not manage. Create the iframe imperatively in
+  a host element that renders no children, as `apps/web`'s `SandboxController` does.
+  Otherwise the library's reconciliation and the handle both try to own the same node. To
+  recover from a crash, call `restart()` (a new iframe in the same place) and `load()` again.
+- **reset-storage** (shell side): tears down the running build (an open IndexedDB connection
+  would block deletion), then clears `localStorage`, `sessionStorage`, every IndexedDB
+  database, CacheStorage, cookies (see "Reset isolation"), the origin private file system,
+  Storage Buckets and service worker registrations, then fetches `/v1/reset` for
+  `Clear-Site-Data`, and acknowledges with `storage-reset {ok, errors?}`. `load` and
+  `reset-storage` run one at a time in arrival order, so a load sent right after a reset
+  starts only once the wipe is done.
+- **App-side budgets** (`DEFAULT_PREVIEW_BUDGETS`, overridable with `budgets`): the handle
+  does not rely on the shell's own console rate limit, because a build can post to the port
+  directly. Per second it accepts at most 100 `console`, 20 `runtime-error` and 10 `ready`
+  messages; `ready` also only for the latest load, once. The retained console
+  (`consoleEntries()`, console lines, `Uncaught …` lines for errors and the app's own notices)
+  is capped at 200,000 characters and 500 entries, evicting the oldest. Excess messages are
+  dropped and counted (`stats.droppedMessages`), and at most once per second a `dropped`
+  event plus a `[preview] N messages from the build dropped (rate limit)` console line
+  report them. `apps/web` copies the console into React state at most once per animation
+  frame, so a flood costs at most one render per frame.
+
+## Trust model
+
+The build runs same-origin with the shell (its document is the shell's child frame), so a
+build can run code in the shell's realm, use the shell's port and start a new handshake.
+The app therefore treats the sandbox as hostile:
+
+- **Every shell → app message is untrusted display data.** `console`, `runtime-error` and
+  `thumbnail` may be shown (validated, size-capped, rate-limited, rendered as text), never
+  interpreted as commands. The app never takes an action that matters for the game because
+  of a message from the sandbox.
+- **`ready`, `heartbeat`, `pong` and `storage-reset` are hints only.** They may drive UI
+  state (a spinner, "running"), but must never gate capture or destroy:
+  - capture readiness is decided server-side by the capture worker, with a fixed wait and a
+    cap (docs/03 §3.7); a `ready` from the shell can be early, late, forged or missing;
+  - destroy never waits for a `storage-reset` ack, and nothing depends on its `ok`. Isolation
+    comes from per-build origins and from replacing the preview iframe;
+  - the watchdog's `pong`s are best-effort liveness (see "Known limitations").
+- **The handshake happens once per load the app started.** A repeated `hello` is ignored.
+- The protocol schemas in `@br/protocol` carry the same rules as doc comments.
+
+## Reset isolation
+
+- **`resetStorage()` and mode switches replace the whole preview iframe**, not only the
+  shell's per-load child frame. A build can install timers, prototype patches or listeners
+  in the shell's realm (`parent` is same-origin to it), and those survive the child frame's
+  teardown. A new iframe element means a new shell document and realm, and nothing from
+  the old one survives. Order for a reset: replace the iframe, wait for the new shell's
+  handshake, send `reset-storage` as its first message, then any pending `load`. The ack
+  resolves `resetStorage()` and is a hint only.
+- **`load(build, mode)` with a different mode** replaces the iframe with one that has the new
+  mode's `sandbox`/`allow` (flags only apply on navigation) and sends the load to the new
+  shell. Storage is not wiped by a mode switch; call `resetStorage()` when a clean slate is
+  needed. In production each build has its own origin anyway.
+- **`restart()`** replaces the iframe the same way (also after a crash). The `frame` event
+  reports every replacement with the new element. The replacement keeps the old element's
+  other attributes (`id`, `class`, `style`, `data-*`, `title`).
+- **Cookies** are cleared in three layers. (1) The Cookie Store API, where it exists: every
+  visible cookie is overwritten with an expired `SameSite=None` copy, because `delete()`
+  writes `SameSite=Strict`, which Chromium refuses in a cross-site iframe. (2) Without it,
+  and for anything left: every visible name is expired for every path prefix of the
+  shell's path (`/`, `/v1`, `/v1/`), for host-only, `Domain=<host>` and each parent domain,
+  without security attributes, with `Secure; SameSite=None`, and with `Partitioned` on
+  top. (3) `Clear-Site-Data` from `/v1/reset` removes what script cannot see at all:
+  cookies on unrelated paths, HttpOnly cookies, the HTTP cache. With the usercontent apex
+  not yet on the Public Suffix List, `"cookies"` clears the whole registrable domain, so
+  other builds' cookies in the same browser go too. That is harmless and goes away with
+  the PSL entry.
+- **The `/v1/reset` endpoint on the static host.** The shell fetches `./reset` relative to
+  its own URL (same origin, so `connect-src` lists `'self'`). The response needs
+  `Clear-Site-Data: "cache", "cookies", "storage"` and `Cache-Control: no-store`. Two ways
+  to serve it:
+  - **Cloudflare Pages `_headers`** (what `pnpm --filter @br/sandbox-shell build` emits): a
+    static file `dist/v1/reset` plus a `/v1/reset` rule in `dist/_headers`. Pages applies
+    every matching rule and joins repeated header names with a comma, so `/*` carries only
+    the security headers and `Cache-Control` is set by per-file rules (`/v1/`,
+    `/v1/index.html`, `/v1/shell.js`, `/v1/reset`) that cannot overlap. Nothing else is
+    needed, but the response is still a static asset, and a cache in front of Pages must
+    honour `no-store`.
+  - **A small Worker** in front of the static assets (Workers Static Assets or a route on
+    the usercontent zone) that answers `GET /v1/reset` itself with those headers and passes
+    everything else through. Use it if the host cannot set per-path headers, or to add
+    per-request logic later (for example a per-build path check). The headers are the
+    same: `RESET_HEADERS` in `apps/sandbox-shell/src/headers.ts`.
+  Clear-Site-Data is only honoured in secure contexts (https, or http://localhost /
+  127.0.0.1 locally).
 
 ## Lifecycle and errors
 
@@ -170,15 +278,16 @@ last two full e2e runs.
 | First preview after boot (build → `ready`, cold CDN + React eval) | p50 **492–624 ms**, max 691 ms | < 1 s preloaded |
 | Rebuild, bundler only, 10-file project, n=20 | p50 **105–115 ms**, p95 **147–159 ms** | |
 | Rebuild + preview refresh (build → `ready`), 10 files, n=20 | p50 **125–135 ms**, p95 **175–183 ms** | < 300 ms p50, < 800 ms p95 |
-| Watchdog: loop start → `crash` | **4.9–5.2 s** (silence at crash: 5.19–5.21 s) | ≤ 6 s |
-| Watchdog: loop at module top level, build start → `crash` | 4.5–4.6 s | |
-| App page during the loop (site-isolated) | evaluate RTT ≤ 9 ms, worst 50 ms timer gap ≤ 58 ms | responsive |
-| `shell.js` (minified) | **36.6 KB raw, 12.0 KB gzip** | "~5 KB" |
+| Watchdog: loop start → `crash` | **4.1 s** (silence at crash: 5.17 s; T-009, ping/pong) | ≤ 6 s |
+| Watchdog: loop at module top level, build start → `crash` | 4.5 s (T-009) | |
+| App page during the loop (site-isolated) | evaluate RTT ≤ 9 ms, worst 50 ms timer gap ≤ 68 ms | responsive |
+| `resetStorage()` (new iframe + handshake + full wipe incl. Clear-Site-Data + ack) | 100–250 ms | |
+| `shell.js` (minified) | **39.1 KB raw, 13.0 KB gzip** (T-009) | "~5 KB" |
 | `esbuild.wasm` | 13.98 MB raw, 3.75 MB gzip, 2.71 MB brotli | preload in lobby |
 | Bundler worker JS (minified, excl. wasm) | 76.6 KB raw, 22.4 KB gzip | |
 
-The watchdog fires 5 s after the *last heartbeat*. Heartbeats are 1 s apart and the check runs
-every 250 ms, so detection after a loop starts falls between about 4.0 s and 5.25 s.
+The watchdog fires 5 s after the *last pong*. Pings are 1 s apart and the check runs every
+250 ms, so detection after a loop starts falls between about 4.0 s and 5.25 s.
 
 ## Design decisions and deviations from docs/03
 
@@ -188,7 +297,7 @@ every 250 ms, so detection after a loop starts falls between about 4.0 s and 5.2
   remapped once used. A new same-origin child iframe per load gives a genuinely new realm and is
   much cheaper than reloading the shell (no re-handshake). `document.write` is used only because
   the initial `about:blank` document is in quirks mode (`BackCompat`, verified), and a doctype
-  gives standards mode. The heartbeat lives in the shell's outer realm, but same-origin frames
+  gives standards mode. The pong is sent from the shell's outer realm, but same-origin frames
   share one event loop, so a loop in user code stops it too (verified by the e2e).
 - **CSP `script-src` includes `'unsafe-inline'`.** Chromium applies `script-src` to inline
   `<script type="importmap">`. Without `'unsafe-inline'`, React fails with "Failed to resolve
@@ -204,8 +313,10 @@ every 250 ms, so detection after a loop starts falls between about 4.0 s and 5.2
   and `connected {nonce}` (first port message) make the handshake explicit. `load` carries a
   `loadId` that `ready` echoes. `reset-storage` has a `requestId` and gets a `storage-reset
   {ok, errors?}` ack. `runtime-error` has an optional
-  `kind: 'error' | 'unhandledrejection' | 'module-load'`. `heartbeat` and `ping` have an optional
-  `t`. The schemas use `zod/mini` so they tree-shake into the shell.
+  `kind: 'error' | 'unhandledrejection' | 'module-load'`. `ping {seq, t?}` is answered by
+  `pong {seq}` (T-009; `seq` is required, and the version stays 1 because nothing is deployed
+  yet). `heartbeat {t?}` stays in the schema but is no longer sent. The schemas use `zod/mini`
+  so they tree-shake into the shell.
 - **`SandboxRuntime` interface** changes:
   - `boot({files, manifest})` takes a manifest instead of a `template`, because templates come
     with workspace persistence.
@@ -218,11 +329,24 @@ every 250 ms, so detection after a loop starts falls between about 4.0 s and 5.2
 - **Shell config**: allowed app origins are baked in at build time (`BR_APP_ORIGINS`), and the
   shell only accepts `connect` from `window.parent` at one of those origins. The CDN origin for
   the CSP comes from `BR_CDN_ORIGIN`. Both default to placeholder production domains.
+- **Headers on every path** (T-009): the static `_headers` puts the security headers on `/*`
+  and the local server sends them on 404s too. Besides CSP, `Permissions-Policy`, CORP,
+  `Referrer-Policy` and `nosniff` there is `Origin-Agent-Cluster: ?1` (no `document.domain`,
+  no shared agent cluster with sibling build subdomains). The CSP adds `base-uri 'none'` and
+  `form-action 'none'`: a build handles forms in JS, and a real submission would only
+  navigate the build's own frame away (the usual symptom of a forgotten `preventDefault`) or
+  post the fields to another origin. `Permissions-Policy` also denies `display-capture`,
+  `screen-wake-lock`, `idle-detection`, `midi`, `publickey-credentials-get`,
+  `publickey-credentials-create` and `xr-spatial-tracking`. `bluetooth` is left out because
+  Chromium 141 logs "Unrecognized feature: 'bluetooth'"; an e2e test fails on any
+  unrecognized feature.
 - **Local headers** (`apps/sandbox-shell/src/server.ts`) are the production headers with local
   origins:
   - `frame-ancestors` is the local app origin;
   - the http mock CDN origin is added to `script-src`, `style-src` and `connect-src`;
-  - `Cache-Control: no-store` replaces `immutable`.
+  - `Cache-Control: no-store` replaces `immutable`;
+  - it also serves `/v1/sw-test.js`, a same-origin script for the service-worker policy e2e
+    (not part of the static build).
 - **React is served in production mode** (esm.sh's default). User code is still built with
   `NODE_ENV=development`.
 
@@ -236,7 +360,16 @@ every 250 ms, so detection after a loop starts falls between about 4.0 s and 5.2
   devices without strict site isolation (Safari, Android Chrome on low-RAM devices, some
   enterprise policies) get no protection from the watchdog. This is the R2 residual risk, and
   it is now confirmed rather than theoretical.
-- **The shell is 12 KB gzip, not ~5 KB.** About 27 KB of the 36.6 KB raw is zod's core. Options:
+- **The watchdog is best-effort.** A pong shows that *some* code holding the shell's port
+  answered from a task. The build runs same-origin with the shell, so code that takes over
+  the shell's realm could hand the port to a worker that keeps answering pings while the main
+  thread spins. Answering from `setTimeout(0)` rules out the honest shell answering from a
+  stuck port listener, not a hostile build. What protects the player is site isolation: the
+  app's own thread stays responsive (see above), the UI keeps working and the preview can
+  always be restarted. Timers in a hidden or off-screen cross-origin iframe can be throttled
+  to about one per second, which still stays far below the 5 s limit; a hidden *app* tab
+  pauses the check instead.
+- **The shell is 13 KB gzip, not ~5 KB.** About 27 KB of the 39 KB raw is zod's core. Options:
   hand-written validators in the shell only (keeping zod on the app side), or accept it, since
   the file is immutable and cacheable. Note that per-build subdomains mean each build origin
   fetches it once.
@@ -254,9 +387,23 @@ every 250 ms, so detection after a loop starts falls between about 4.0 s and 5.2
 - Every rebuild is a full `esbuild.build()` (no incremental context yet), and there are no
   sourcemaps yet (runtime errors point into the blob bundle).
 - The client thumbnail (`capture-thumbnail`) and capture mode are schema-only / ignored. Safe-mode
-  restart (timers paused until the user clicks) is not implemented. `mode` is passed through but
-  not acted on.
-- The console rate limit (100/s) reports the dropped count on the next console call after the
-  window, not on a timer.
+  restart (timers paused until the user clicks) is not implemented. `mode` selects the iframe's
+  `sandbox`/`allow` (app side) and the child frame's `allow` (shell side), nothing else yet.
+- The shell's own console rate limit (100/s) reports the dropped count on the next console
+  call after the window, not on a timer. The app-side budget reports on a timer.
+- **Browser differences in the wipe and the headers** (only Chromium is tested):
+  - Cookie Store API: Chromium, Firefox 140+, Safari 18.4+. Without it, the
+    `document.cookie` sweep and Clear-Site-Data still apply.
+  - Storage Buckets: Chromium only (skipped elsewhere). OPFS: all three engines.
+  - `Clear-Site-Data`: Chromium and Firefox honour `"cache"`, `"cookies"` and `"storage"`.
+    Safari supports it only partly (recent versions), so on Safari the script wipe is what
+    counts.
+  - `Partitioned` (CHIPS) cookies: Chromium and Firefox; Safari partitions third-party
+    storage its own way and ignores the attribute.
+  - `Origin-Agent-Cluster` is Chromium-only. Firefox does not implement the `Permissions-Policy`
+    header (it uses the iframe `allow` attribute), and Safari supports a subset; the iframe
+    `allow` list is the cross-browser part.
+  - Firefox and Safari block popups from sandboxed frames without `allow-popups` the same
+    way. Safari's clipboard API needs a user gesture in every mode.
 - Builds can render into `#root`; the shell writes `<div id="root">` into every fresh document
   (Vite-template convention).

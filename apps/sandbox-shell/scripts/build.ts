@@ -1,6 +1,10 @@
 /**
  * Static build of the shell for a static host (Cloudflare Pages layout):
- *   dist/v{N}/index.html, dist/v{N}/shell.js, dist/_headers
+ *   dist/v{N}/index.html, dist/v{N}/shell.js, dist/v{N}/reset, dist/_headers
+ *
+ * `_headers` puts the security headers on `/*` (every path, 404s included) and gives
+ * `/v{N}/reset` its `Clear-Site-Data` + `no-store` headers (see src/headers.ts and the
+ * README of @br/runtime, "Reset isolation").
  *
  * Env (placeholders until the production domains exist, see docs/BOARD.md):
  *   BR_APP_ORIGINS  comma-separated app origins (frame-ancestors + postMessage targets)
@@ -11,7 +15,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gzipSync } from 'node:zlib';
 import { buildShell, SHELL_BASE_PATH } from '../src/build-shell';
-import { renderHeadersFile, shellHeaders } from '../src/headers';
+import { RESET_ENDPOINT, renderHeadersFile, staticHeaderRules } from '../src/headers';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const appOrigins = (process.env['BR_APP_ORIGINS'] ?? 'https://buildroulette.app')
@@ -25,9 +29,11 @@ const outDir = path.join(ROOT, 'dist', SHELL_BASE_PATH);
 mkdirSync(outDir, { recursive: true });
 writeFileSync(path.join(outDir, 'index.html'), built.html);
 writeFileSync(path.join(outDir, 'shell.js'), built.js);
+// The body is irrelevant; the headers from `_headers` do the work.
+writeFileSync(path.join(outDir, RESET_ENDPOINT), 'ok\n');
 writeFileSync(
   path.join(ROOT, 'dist', '_headers'),
-  renderHeadersFile(`${SHELL_BASE_PATH}*`, shellHeaders({ appOrigins, cdnOrigin })),
+  renderHeadersFile(staticHeaderRules({ appOrigins, cdnOrigin }, SHELL_BASE_PATH)),
 );
 
 const raw = Buffer.byteLength(built.js);

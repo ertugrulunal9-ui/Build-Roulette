@@ -2,7 +2,7 @@
  * Dev playground: textareas per file, a cross-site preview, a console panel.
  * Exposes `window.__playground` so the Playwright tests can drive it.
  */
-import type { StorageResetMessage } from '@br/protocol';
+import type { RunMode, StorageResetMessage } from '@br/protocol';
 import { EsmBrowserRuntime } from '../src/runtime';
 import type { PreviewHandle, PreviewStats } from '../src/preview/preview-handle';
 import type { BuildResult, Diagnostic, FileMap, Manifest } from '../src/types';
@@ -47,6 +47,9 @@ export interface PlaygroundApi {
   lastLoadId(): number;
   resetStorage(): Promise<StorageResetMessage>;
   restartPreview(): Promise<void>;
+  /** Run mode for the following loads; a different mode replaces the preview iframe. */
+  setMode(mode: RunMode): void;
+  previewMode(): RunMode;
   previewState(): string;
   previewStats(): PreviewStats;
   events: PlaygroundEvent[];
@@ -68,6 +71,7 @@ const readyAt = new Map<number, number>();
 const readyWaiters = new Map<number, (t: number) => void>();
 let preview: PreviewHandle;
 let lastLoadId = 0;
+let mode: RunMode = 'live';
 let files: FileMap = { ...SAMPLE_FILES };
 let manifest: Manifest = SAMPLE_MANIFEST;
 
@@ -180,7 +184,7 @@ runtime.onBuild((result: BuildResult) => {
   });
   renderDiagnostics(result.diagnostics);
   if (result.ok && preview.state !== 'crashed' && preview.state !== 'disposed') {
-    lastLoadId = preview.load(result);
+    lastLoadId = preview.load(result, mode);
   }
   setStatus(`${result.ok ? 'built' : 'build failed'} in ${result.durationMs.toFixed(0)} ms`);
 });
@@ -206,15 +210,18 @@ async function buildAndLoad(): Promise<BuildAndLoadReport> {
   };
 }
 
+/** Restarts the preview in place: a new iframe and a new handshake (also after a crash). */
 async function restartPreview(): Promise<void> {
-  preview.dispose();
-  preview = createPreviewFrame();
-  await new Promise<void>((resolve) => {
+  document.getElementById('crashed')?.remove();
+  const connected = new Promise<void>((resolve) => {
     const off = preview.on('connected', () => {
       off();
       resolve();
     });
   });
+  preview.restart(mode);
+  setStatus('restarting preview');
+  await connected;
 }
 
 async function boot(): Promise<BootReport> {
@@ -265,6 +272,10 @@ const api: PlaygroundApi = {
   lastLoadId: () => lastLoadId,
   resetStorage: () => preview.resetStorage(),
   restartPreview,
+  setMode(next) {
+    mode = next;
+  },
+  previewMode: () => preview.mode,
   previewState: () => preview.state,
   previewStats: () => preview.stats,
   events,

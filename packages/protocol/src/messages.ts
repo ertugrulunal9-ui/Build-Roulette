@@ -8,6 +8,13 @@
  * - window.postMessage, shell -> app: `hello` only.
  * - window.postMessage, app -> shell: `connect` only (carries the MessagePort + nonce).
  * - MessagePort, both ways: everything else.
+ *
+ * Trust model (docs/03 §3.9, packages/runtime/README.md "Trust model"): the build runs
+ * same-origin with the shell, so it can run code in the shell's realm, use its port and
+ * forge any shell -> app message. Every shell -> app message is therefore UNTRUSTED DISPLAY
+ * DATA. The app validates it, rate-limits it and may show it, but never takes an action that
+ * matters because of it. `ready`, `heartbeat`, `pong` and `storage-reset` are hints only and
+ * must never gate capture (decided server-side by the capture worker) or destroy.
  */
 import * as z from 'zod/mini';
 import { LIMITS } from './limits';
@@ -25,7 +32,11 @@ const boundedString = (max: number) => z.string().check(z.maxLength(max));
 // Handshake
 // ---------------------------------------------------------------------------
 
-/** shell -> app (window.postMessage, targetOrigin = app origin). */
+/**
+ * shell -> app (window.postMessage, targetOrigin = app origin). Untrusted: the app accepts
+ * exactly one `hello` per iframe navigation it started itself (attach, mode switch, reset,
+ * `restart()`); a later one is ignored and counted, never answered with a new port.
+ */
 export const HelloSchema = z.object({
   type: z.literal('hello'),
   protocol: z.int().check(z.positive()),
@@ -38,7 +49,10 @@ export const ConnectSchema = z.object({
   nonce: z.string().check(z.regex(NONCE_RE)),
 });
 
-/** shell -> app, first message on the port: proves the port reached the shell that got `connect`. */
+/**
+ * shell -> app, first message on the port: shows the port reached the window that got
+ * `connect`. Accepted once per handshake (the nonce is single use).
+ */
 export const ConnectedSchema = z.object({
   type: z.literal('connected'),
   nonce: z.string().check(z.regex(NONCE_RE)),
@@ -102,8 +116,14 @@ export const CaptureThumbnailSchema = z.object({
   height: z.int().check(z.positive(), z.lte(4096)),
 });
 
+/**
+ * Liveness probe. The shell answers `pong {seq}` from a main-thread task (`setTimeout(0)`),
+ * not synchronously in the port listener, so a pong shows that the shell's event loop runs
+ * tasks. `seq` is chosen by the app; a pong is only accepted for a `seq` still outstanding.
+ */
 export const PingSchema = z.object({
   type: z.literal('ping'),
+  seq: z.int().check(z.nonnegative()),
   t: z.optional(z.number()),
 });
 
@@ -118,19 +138,40 @@ export const AppToShellSchema = z.discriminatedUnion('type', [
 // shell -> app (port, except `hello`)
 // ---------------------------------------------------------------------------
 
+/**
+ * Hint only: the module of load `loadId` finished evaluating. Untrusted (a build can send it
+ * early, late or never), so it may update UI state but must never gate capture: capture
+ * readiness is decided by the capture worker with a fixed wait and a cap. The app accepts
+ * it only for the latest load it sent, once, within a per-second budget.
+ */
 export const ReadySchema = z.object({
   type: z.literal('ready'),
   /** The `loadId` of the load that finished evaluating. */
   loadId: z.int().check(z.nonnegative()),
 });
 
+/**
+ * Hint only, informational. Not used for liveness any more (anything holding the port can
+ * send it); the watchdog uses `ping`/`pong` round trips. Kept for compatibility.
+ */
 export const HeartbeatSchema = z.object({
   type: z.literal('heartbeat'),
   t: z.optional(z.number()),
 });
 
+/**
+ * Hint only: answer to `ping {seq}`, sent from a main-thread task. Best-effort liveness (a
+ * build that takes over the shell's realm could answer pongs from elsewhere); the app stays
+ * responsive regardless thanks to site isolation.
+ */
+export const PongSchema = z.object({
+  type: z.literal('pong'),
+  seq: z.int().check(z.nonnegative()),
+});
+
 export const ConsoleLevelSchema = z.enum(['log', 'info', 'warn', 'error', 'debug']);
 
+/** Untrusted display data: shown in the console panel, rate-limited and size-capped by the app. */
 export const ConsoleSchema = z.object({
   type: z.literal('console'),
   level: ConsoleLevelSchema,
@@ -139,6 +180,7 @@ export const ConsoleSchema = z.object({
 
 export const RuntimeErrorKindSchema = z.enum(['error', 'unhandledrejection', 'module-load']);
 
+/** Untrusted display data: shown in the error overlay, rate-limited by the app. */
 export const RuntimeErrorSchema = z.object({
   type: z.literal('runtime-error'),
   message: boundedString(LIMITS.errorMessageMaxChars),
@@ -146,7 +188,11 @@ export const RuntimeErrorSchema = z.object({
   kind: z.optional(RuntimeErrorKindSchema),
 });
 
-/** Ack for `reset-storage`. */
+/**
+ * Hint only: ack for `reset-storage`. A build can forge or suppress it, so destroy never
+ * waits for it and nothing that matters depends on `ok`. The real isolation comes from the
+ * app recreating the preview iframe and from per-build origins.
+ */
 export const StorageResetSchema = z.object({
   type: z.literal('storage-reset'),
   requestId,
@@ -158,7 +204,7 @@ export const StorageResetSchema = z.object({
   ),
 });
 
-/** Schema only in M1. */
+/** Schema only in M1. Untrusted display data, like everything else from the shell. */
 export const ThumbnailSchema = z.object({
   type: z.literal('thumbnail'),
   requestId,
@@ -172,6 +218,7 @@ export const ShellToAppSchema = z.discriminatedUnion('type', [
   ConnectedSchema,
   ReadySchema,
   HeartbeatSchema,
+  PongSchema,
   ConsoleSchema,
   RuntimeErrorSchema,
   StorageResetSchema,
@@ -190,6 +237,7 @@ export type PingMessage = z.infer<typeof PingSchema>;
 export type AppToShell = z.infer<typeof AppToShellSchema>;
 export type ReadyMessage = z.infer<typeof ReadySchema>;
 export type HeartbeatMessage = z.infer<typeof HeartbeatSchema>;
+export type PongMessage = z.infer<typeof PongSchema>;
 export type ConsoleLevel = z.infer<typeof ConsoleLevelSchema>;
 export type ConsoleMessage = z.infer<typeof ConsoleSchema>;
 export type RuntimeErrorKind = z.infer<typeof RuntimeErrorKindSchema>;

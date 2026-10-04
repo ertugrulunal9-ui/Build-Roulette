@@ -108,6 +108,40 @@ describe('parseBareSpecifier', () => {
     expect(parseBareSpecifier('pkg/../../etc')).toBeNull();
     expect(parseBareSpecifier('pkg//x')).toBeNull();
   });
+  it('rejects literal dot segments anywhere in the subpath', () => {
+    for (const s of ['pkg/.', 'pkg/..', 'pkg/./x', 'pkg/a/../b', '@scope/ui/..', '@scope/ui/./x'])
+      expect(parseBareSpecifier(s), s).toBeNull();
+  });
+  it('rejects percent-encoded dot segments (any case, alone or mixed with literal dots)', () => {
+    for (const s of [
+      'pkg/%2e',
+      'pkg/%2E',
+      'pkg/%2e%2e',
+      'pkg/%2E%2E',
+      'pkg/%2e%2E',
+      'pkg/%2E%2e/x',
+      'pkg/.%2e',
+      'pkg/%2e.',
+      'pkg/.%2E/etc',
+      'pkg/a/%2e%2e/%2e%2e/b',
+      '@scope/ui/%2e%2e',
+      '@scope/ui/x/.%2E',
+    ])
+      expect(parseBareSpecifier(s), s).toBeNull();
+  });
+  it('rejects encoded separators and backslashes that could form dot segments later', () => {
+    for (const s of ['pkg/a%2f..', 'pkg/a%2F%2e%2e', 'pkg/a%5c..', 'pkg/a\\..', 'pkg/%252e%252e'])
+      expect(parseBareSpecifier(s), s).toBeNull();
+  });
+  it('still accepts names and file names that merely contain dots or percent signs elsewhere', () => {
+    expect(parseBareSpecifier('pkg/.hidden')).toEqual({ name: 'pkg', subpath: '/.hidden' });
+    expect(parseBareSpecifier('pkg/...')).toEqual({ name: 'pkg', subpath: '/...' });
+    expect(parseBareSpecifier('pkg/file.min.js')).toEqual({
+      name: 'pkg',
+      subpath: '/file.min.js',
+    });
+    expect(parseBareSpecifier('pkg/%2e.js')).toEqual({ name: 'pkg', subpath: '/%2e.js' });
+  });
 });
 
 describe('isPinnedVersion', () => {

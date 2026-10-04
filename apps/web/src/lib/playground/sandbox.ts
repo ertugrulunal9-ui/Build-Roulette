@@ -5,28 +5,30 @@
  *
  * Plain TypeScript on purpose: the runtime and preview have their own lifecycles (worker,
  * iframe, watchdog) that should not depend on React renders.
+ *
+ * Console output and runtime errors come from the build, so they are untrusted and can
+ * arrive in floods. The PreviewHandle rate-limits them and keeps a size-capped console; this
+ * controller copies that into the snapshot at most once per animation frame, so a flood costs
+ * at most one React render per frame.
  */
-import type { ConsoleMessage, RuntimeErrorMessage } from '@br/protocol';
-import {
-  EsmBrowserRuntime,
-  type BuildResult,
-  type CrashReason,
-  type Diagnostic,
-  type PreviewHandle,
+import type { RuntimeErrorMessage } from '@br/protocol';
+import type {
+  BuildResult,
+  ConsoleEntry,
+  CrashReason,
+  Diagnostic,
+  PreviewHandle,
+  SandboxRuntime,
 } from '@br/runtime';
 import type { Workspace } from '@br/workspace';
-// Turbopack emits the wasm file as a content-hashed static asset and returns its URL
-// (`turbopack.rules['*.wasm']` in next.config.ts).
-import wasmUrl from 'esbuild-wasm/esbuild.wasm';
 import type { PlaygroundConfig } from './config';
+import { FrameBatcher, type FrameScheduler } from './frame-batcher';
+import { createPlaygroundRuntime } from './runtime-factory';
 
-export const MAX_CONSOLE_ENTRIES = 500;
+export type { ConsoleEntry } from '@br/runtime';
 
-export interface ConsoleEntry {
-  id: number;
-  level: ConsoleMessage['level'];
-  text: string;
-}
+/** Runtime errors kept for the overlay. */
+export const MAX_RUNTIME_ERRORS = 20;
 
 export interface BuildSummary {
   ok: boolean;
@@ -50,9 +52,10 @@ export interface SandboxSnapshot {
   lastBuild: BuildSummary | null;
   preview: PreviewStatus;
   crash: { reason: CrashReason; silentForMs: number } | null;
-  /** Runtime errors since the last load (newest last). */
-  runtimeErrors: RuntimeErrorMessage[];
-  console: ConsoleEntry[];
+  /** Runtime errors since the last load (newest last, at most MAX_RUNTIME_ERRORS). */
+  runtimeErrors: readonly RuntimeErrorMessage[];
+  /** The preview's retained console (rate-limited and size-capped by the PreviewHandle). */
+  console: readonly ConsoleEntry[];
   /** Number of `ready` events so far (one per load that finished). */
   readyCount: number;
 }
@@ -69,13 +72,33 @@ const INITIAL: SandboxSnapshot = {
   readyCount: 0,
 };
 
+/** The part of SandboxRuntime the controller uses. */
+export type PlaygroundRuntime = Pick<
+  SandboxRuntime,
+  | 'boot'
+  | 'writeFile'
+  | 'deleteFile'
+  | 'setManifest'
+  | 'build'
+  | 'onBuild'
+  | 'attachPreview'
+  | 'destroy'
+>;
+
+export interface SandboxControllerDeps {
+  /** Defaults to the real esbuild-wasm runtime. */
+  runtime?: PlaygroundRuntime;
+  /** Defaults to requestAnimationFrame. */
+  frames?: FrameScheduler;
+}
+
 function sameDependencies(a: Record<string, string>, b: Record<string, string>): boolean {
   const ka = Object.keys(a);
   return ka.length === Object.keys(b).length && ka.every((k) => a[k] === b[k]);
 }
 
 export class SandboxController {
-  private readonly runtime: EsmBrowserRuntime;
+  private readonly runtime: PlaygroundRuntime;
   private readonly host: HTMLElement;
   private readonly config: PlaygroundConfig;
   private preview: PreviewHandle | null = null;
@@ -86,22 +109,15 @@ export class SandboxController {
   private readonly listeners = new Set<() => void>();
   private readonly offBuild: () => void;
   private disposed = false;
-  private nextConsoleId = 1;
+  /** Errors received since the last frame flush. */
+  private pendingErrors: RuntimeErrorMessage[] = [];
+  private readonly batcher: FrameBatcher;
 
-  constructor(host: HTMLElement, config: PlaygroundConfig) {
+  constructor(host: HTMLElement, config: PlaygroundConfig, deps: SandboxControllerDeps = {}) {
     this.host = host;
     this.config = config;
-    this.runtime = new EsmBrowserRuntime({
-      wasmUrl,
-      cdnBaseUrl: config.cdnBaseUrl,
-      // The literal `new Worker(new URL(...))` is what lets Turbopack find and bundle the
-      // worker entry, so the worker is created here rather than from a `workerUrl`.
-      createWorker: () =>
-        new Worker(new URL('./bundler.worker.ts', import.meta.url), {
-          type: 'module',
-          name: 'br-bundler',
-        }),
-    });
+    this.runtime = deps.runtime ?? createPlaygroundRuntime(config);
+    this.batcher = new FrameBatcher(this.flushOutput, deps.frames);
     this.offBuild = this.runtime.onBuild(this.onBuild);
   }
 
@@ -183,24 +199,38 @@ export class SandboxController {
     }
   }
 
-  /** Replaces a crashed (or stuck) preview with a fresh iframe and loads the latest good build. */
+  /**
+   * Restarts a crashed (or stuck) preview: a new iframe and a new shell, then the latest good
+   * build is loaded into it.
+   */
   restartPreview(): void {
     if (this.disposed) return;
-    this.createPreview();
+    const preview = this.preview;
+    if (preview && preview.state !== 'disposed') {
+      this.batcher.cancel();
+      this.pendingErrors = [];
+      preview.restart();
+      this.update({ preview: 'connecting', crash: null, runtimeErrors: [] });
+    } else {
+      this.createPreview();
+    }
     if (this.lastOk) this.load(this.lastOk);
   }
 
   dismissErrors(): void {
+    this.pendingErrors = [];
     this.update({ runtimeErrors: [] });
   }
 
   clearConsole(): void {
-    this.update({ console: [] });
+    this.preview?.clearConsole();
+    this.update({ console: this.preview?.consoleEntries() ?? [] });
   }
 
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.batcher.cancel();
     this.offBuild();
     this.detachPreview();
     void this.runtime.destroy();
@@ -234,7 +264,10 @@ export class SandboxController {
     const preview = this.preview;
     if (!preview || preview.state === 'crashed' || preview.state === 'disposed') return;
     preview.load(result);
-    this.update({ preview: 'loading', runtimeErrors: [], console: [] });
+    preview.clearConsole();
+    this.batcher.cancel();
+    this.pendingErrors = [];
+    this.update({ preview: 'loading', runtimeErrors: [], console: preview.consoleEntries() });
   }
 
   private detachPreview(): void {
@@ -246,6 +279,8 @@ export class SandboxController {
 
   private createPreview(): void {
     this.detachPreview();
+    this.batcher.cancel();
+    this.pendingErrors = [];
     const iframe = this.host.ownerDocument.createElement('iframe');
     iframe.title = 'Preview of your build';
     iframe.dataset['testid'] = 'preview-frame';
@@ -254,18 +289,24 @@ export class SandboxController {
     this.host.replaceChildren(iframe);
     const preview = this.runtime.attachPreview(iframe, { shellUrl: this.config.shellUrl });
     this.preview = preview;
-    this.update({ preview: 'connecting', crash: null, runtimeErrors: [] });
+    this.update({ preview: 'connecting', crash: null, runtimeErrors: [], console: [] });
     this.previewOff = [
       preview.on('ready', () => {
         this.update({ preview: 'running', readyCount: this.snapshot.readyCount + 1 });
       }),
-      preview.on('console', (m) => {
-        this.pushConsole(m.level, m.args.join(' '));
+      // Console, errors and drop notices: batched, one snapshot update per frame.
+      preview.on('console', () => {
+        this.batcher.schedule();
       }),
       preview.on('error', (m) => {
-        const errors = [...this.snapshot.runtimeErrors, m].slice(-20);
-        this.update({ runtimeErrors: errors });
-        this.pushConsole('error', `Uncaught ${m.message}`);
+        this.pendingErrors.push(m);
+        if (this.pendingErrors.length > MAX_RUNTIME_ERRORS) {
+          this.pendingErrors = this.pendingErrors.slice(-MAX_RUNTIME_ERRORS);
+        }
+        this.batcher.schedule();
+      }),
+      preview.on('dropped', () => {
+        this.batcher.schedule();
       }),
       preview.on('crash', (c) => {
         this.update({ preview: 'crashed', crash: c });
@@ -273,11 +314,19 @@ export class SandboxController {
     ];
   }
 
-  private pushConsole(level: ConsoleEntry['level'], text: string): void {
-    const entry: ConsoleEntry = { id: this.nextConsoleId++, level, text };
-    const next = [...this.snapshot.console, entry];
+  /** Copies the preview's console and the queued errors into the snapshot (one update). */
+  private readonly flushOutput = (): void => {
+    const preview = this.preview;
+    if (this.disposed || !preview) return;
+    const console = preview.consoleEntries();
+    const errors = this.pendingErrors;
+    this.pendingErrors = [];
+    if (console === this.snapshot.console && errors.length === 0) return;
     this.update({
-      console: next.length > MAX_CONSOLE_ENTRIES ? next.slice(-MAX_CONSOLE_ENTRIES) : next,
+      console,
+      ...(errors.length > 0
+        ? { runtimeErrors: [...this.snapshot.runtimeErrors, ...errors].slice(-MAX_RUNTIME_ERRORS) }
+        : {}),
     });
-  }
+  };
 }

@@ -12,8 +12,16 @@
  *
  * The shell's own realm (this file) survives loads, so the MessagePort from the handshake
  * stays valid and no re-handshake is needed per rebuild. Same-origin frames share one event
- * loop, so an infinite loop in user code also stops the shell's heartbeat interval: the
- * watchdog sees it exactly as if the heartbeat lived in the user's document.
+ * loop, so an infinite loop in user code also stops the shell's main thread: `ping`s are
+ * answered with `pong` from a `setTimeout(0)` task, so a frozen build means no pongs and the
+ * app's watchdog fires.
+ *
+ * `load` and `reset-storage` run one at a time, in arrival order (`SerialQueue`): a load
+ * that arrives during a reset starts only after the wipe finished, so a build never sees a
+ * half-wiped origin and its open IndexedDB connections can't block the wipe.
+ *
+ * The app treats everything this file sends as untrusted display data (the build can run
+ * code in this realm), see packages/runtime/README.md "Trust model".
  */
 import {
   LIMITS,
@@ -25,22 +33,44 @@ import {
   truncate,
   type ConsoleLevel,
   type LoadMessage,
+  type RunMode,
   type ShellToApp,
 } from '@br/protocol';
+import { RESET_ENDPOINT } from './headers';
+import {
+  SerialQueue,
+  clearCookieStore,
+  clearOpfs,
+  clearServiceWorkers,
+  clearStorageBuckets,
+  cookieNames,
+  expireDocumentCookies,
+  fetchClearSiteData,
+  type CookieStoreLike,
+} from './wipe';
 
 /** Injected at build time: origins allowed to embed and drive this shell. */
 declare const __BR_APP_ORIGINS__: readonly string[];
 
 const APP_ORIGINS: readonly string[] = __BR_APP_ORIGINS__;
-const FRAME_ALLOW = 'autoplay; fullscreen; gamepad; clipboard-write';
+/**
+ * `allow` of the per-load child frame, by run mode. It can only narrow what the app granted
+ * this shell (the app's iframe has no `clipboard-write` in reveal/capture either); setting it
+ * here too keeps the child's policy explicit.
+ */
+const FRAME_ALLOW: Readonly<Record<RunMode, string>> = {
+  live: 'autoplay; fullscreen; gamepad; clipboard-write',
+  reveal: 'autoplay; fullscreen; gamepad',
+  capture: 'autoplay; fullscreen; gamepad',
+};
 const CONSOLE_LEVELS: readonly ConsoleLevel[] = ['log', 'info', 'warn', 'error', 'debug'];
 
 let port: MessagePort | null = null;
-let heartbeat: ReturnType<typeof setInterval> | null = null;
 let helloTimer: ReturnType<typeof setInterval> | null = null;
 let frame: HTMLIFrameElement | null = null;
 let currentBlobUrl: string | null = null;
 const consoleWindow = { start: 0, count: 0, dropped: 0 };
+const queue = new SerialQueue();
 
 function post(msg: ShellToApp): void {
   port?.postMessage(msg);
@@ -119,7 +149,7 @@ function runLoad(msg: LoadMessage): void {
   const f = document.createElement('iframe');
   // Fullscreen is delegated through `allow` only: adding the legacy `allowfullscreen` too
   // makes Chromium warn that `allow` takes precedence.
-  f.setAttribute('allow', FRAME_ALLOW);
+  f.setAttribute('allow', FRAME_ALLOW[msg.mode]);
   f.title = 'Build';
   f.style.cssText =
     'position:fixed;inset:0;width:100%;height:100%;border:0;margin:0;padding:0;display:block;background:transparent';
@@ -222,12 +252,24 @@ async function resetStorage(requestId: number | undefined): Promise<void> {
     if (typeof caches === 'undefined') return;
     for (const key of await caches.keys()) await caches.delete(key);
   });
-  await attempt('cookies', () => {
-    for (const part of document.cookie.split(';')) {
-      const name = part.split('=')[0]?.trim();
-      if (name) document.cookie = `${name}=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/`;
-    }
+  await attempt('cookies', async () => {
+    const store = (globalThis as { cookieStore?: CookieStoreLike }).cookieStore;
+    if (store) await clearCookieStore(store);
+    // Also without the Cookie Store API (Firefox < 140, Safari < 18.4), and for anything it
+    // left: expire every visible name for each path prefix and Domain variant, with and
+    // without `Partitioned`.
+    expireDocumentCookies(document, location);
+    const left = cookieNames(document.cookie);
+    if (left.length > 0) throw new Error(`still visible: ${left.join(', ')}`);
   });
+  await attempt('opfs', () => clearOpfs(navigator.storage));
+  await attempt('storageBuckets', () => clearStorageBuckets(navigator));
+  await attempt('serviceWorkers', () => clearServiceWorkers(navigator));
+  // Last: the host's Clear-Site-Data endpoint covers what script cannot reach (HttpOnly
+  // cookies, cookies on other paths or the parent domain, the HTTP cache).
+  await attempt('clearSiteData', () =>
+    fetchClearSiteData(new URL(RESET_ENDPOINT, location.href), 5000),
+  );
   const trimmed = errors
     .slice(0, LIMITS.storageResetMaxErrors)
     .map((e) => truncate(e, LIMITS.errorMessageMaxChars));
@@ -245,14 +287,24 @@ function onPortMessage(event: MessageEvent): void {
   const msg = parsed.value;
   switch (msg.type) {
     case 'load':
-      runLoad(msg);
+      void queue.push(() => {
+        runLoad(msg);
+      });
       return;
-    case 'reset-storage':
-      void resetStorage(msg.requestId);
+    case 'reset-storage': {
+      const requestId = msg.requestId;
+      void queue.push(() => resetStorage(requestId));
       return;
-    case 'ping':
-      post({ type: 'heartbeat', t: Date.now() });
+    }
+    case 'ping': {
+      // Answer from a separate main-thread task, not from this listener: the pong then shows
+      // that the event loop runs timer tasks. Not queued behind a running reset.
+      const seq = msg.seq;
+      setTimeout(() => {
+        post({ type: 'pong', seq });
+      }, 0);
       return;
+    }
     case 'capture-thumbnail':
       // Not implemented in M1 (schema only).
       return;
@@ -272,10 +324,6 @@ function onWindowMessage(event: MessageEvent): void {
   if (helloTimer !== null) clearInterval(helloTimer);
   helloTimer = null;
   post({ type: 'connected', nonce: parsed.value.nonce });
-  post({ type: 'heartbeat', t: Date.now() });
-  heartbeat ??= setInterval(() => {
-    post({ type: 'heartbeat', t: Date.now() });
-  }, 1000);
 }
 
 function sayHello(): void {

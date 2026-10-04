@@ -105,7 +105,28 @@ export interface BareSpecifier {
   subpath: string;
 }
 
-/** Splits `@scope/pkg/sub/path` into name and subpath. Returns null for invalid names. */
+/**
+ * Encoded path separators (`%2f`, `%5c`), an encoded percent sign (`%25`, i.e. double
+ * encoding) or a backslash. A server or URL parser may decode or normalize these into a
+ * separator after we checked the segments, so a subpath containing one is rejected outright.
+ */
+const UNSAFE_SEGMENT_RE = /%2f|%5c|%25|\\/i;
+
+/**
+ * True for a path segment that is, or decodes to, `.` or `..`. URL parsers (WHATWG URL,
+ * most HTTP servers) treat `%2e` (any case) as a dot when they normalize dot segments, so
+ * `%2e%2e`, `.%2E` and `%2e.` are `..` as far as the CDN is concerned.
+ */
+function isDotSegment(seg: string): boolean {
+  const decoded = seg.replace(/%2e/gi, '.');
+  return decoded === '.' || decoded === '..';
+}
+
+/**
+ * Splits `@scope/pkg/sub/path` into name and subpath. Returns null for invalid names and for
+ * subpaths with empty, dot (`.`/`..`, literal or percent-encoded) or otherwise unsafe
+ * segments, so a CDN URL built from the result can never climb out of the package.
+ */
 export function parseBareSpecifier(spec: string): BareSpecifier | null {
   const parts = spec.split('/');
   const nameParts = spec.startsWith('@') ? 2 : 1;
@@ -113,7 +134,7 @@ export function parseBareSpecifier(spec: string): BareSpecifier | null {
   const name = parts.slice(0, nameParts).join('/');
   if (!PACKAGE_NAME_RE.test(name)) return null;
   const rest = parts.slice(nameParts);
-  if (rest.some((s) => s === '' || s === '.' || s === '..')) return null;
+  if (rest.some((s) => s === '' || isDotSegment(s) || UNSAFE_SEGMENT_RE.test(s))) return null;
   return { name, subpath: rest.length > 0 ? `/${rest.join('/')}` : '' };
 }
 

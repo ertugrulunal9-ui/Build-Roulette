@@ -18,7 +18,7 @@ M0 Foundations ─► M1 Sandbox spike ─► M2 Solo loop + capture/destroy ─
 - Next.js app shell, Tailwind for app UI, ESLint, Prettier, strict TS, Vitest
 - Supabase project (local via the Supabase CLI and a hosted staging project), migrations folder, pgTAP harness
 - Anonymous sign-in plus Turnstile
-- CI: lint, typecheck, unit tests, pgTAP, and Vercel preview deploys per PR
+- CI: lint, typecheck, unit tests, pgTAP, and Cloudflare preview deployments per PR
 - Register the app domain and the **separate** usercontent domain, wildcard DNS and TLS on Cloudflare
 
 **Exit criteria:** a PR deploys a preview. `supabase db reset` runs migrations and tests

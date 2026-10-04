@@ -15,7 +15,7 @@ These decide most of the trade-offs below.
    browser, so the CPU cost grows with players' devices instead of our servers. The only
    server-side execution of user code is the screenshot capture, which runs on an isolated
    managed browser.
-5. **No servers we run ourselves in v1.** Vercel, Supabase, Cloudflare and nothing else. No
+5. **No servers we run ourselves in v1.** Supabase and Cloudflare, nothing else. No
    game server process, no WebSocket fleet, no Kubernetes. Timers are enforced from data,
    not by in-memory loops.
 6. **Zero-setup onboarding.** Open a link, type a name, play. Auth is anonymous by default
@@ -37,8 +37,8 @@ flowchart LR
     UI <-->|"postMessage<br/>(MessageChannel)"| IF
   end
 
-  subgraph Vercel
-    NX["Next.js<br/>SSR results pages, OG images,<br/>landing, thin route handlers"]
+  subgraph CFApp["Cloudflare Workers (app)"]
+    NX["Next.js via OpenNext<br/>SSR results pages, OG images,<br/>landing, thin route handlers"]
   end
 
   subgraph Supabase
@@ -73,7 +73,11 @@ flowchart LR
 
 ## 1.3 Components
 
-### Web app: Next.js on Vercel
+### Web app: Next.js on Cloudflare Workers
+Deployed with the OpenNext Cloudflare adapter (`@opennextjs/cloudflare`), so the app, the
+sandbox shell, the package-CDN cache and screenshot rendering all live in one Cloudflare
+account. M2 starts with a spike that checks Next 16 compatibility. If it fails, the fallback
+is a plain Node `next start` on Fly.io (option B).
 | Route | Rendering | Purpose |
 |---|---|---|
 | `/` | static + client | Landing page, "Create room", "Join with code" |
@@ -118,13 +122,15 @@ moderation actions.
   - `sweep_ttl()` every 10 min destroys anything past its hard TTL and orphaned objects.
 
 ### Cloudflare
-- **Sandbox origin:** a registrable domain separate from the app (placeholder:
-  `buildroulette-usercontent.net`), with wildcard DNS and TLS. Every subdomain serves the
-  same static, versioned runtime shell. Each build gets its own subdomain
-  `{build_id}.buildroulette-usercontent.net` so `localStorage` and IndexedDB are isolated
-  per build. Before launch, apply to add the domain to the Public Suffix List (as
-  `github.io` and `csb.app` did) so each subdomain also counts as a separate *site* for
-  cookies.
+- **Sandbox origin**, in two stages:
+  - **Stage 1 (launch):** the shell is hosted on Cloudflare Pages at a free `*.pages.dev`
+    address. `pages.dev` is already on the Public Suffix List, so the sandbox is a
+    different *site* from the app with no second domain to buy. All builds share this one
+    origin, so cross-build storage isolation relies on the shell's full storage wipe on
+    every load and reset (T-009).
+  - **Stage 2 (growth):** our own usercontent domain with wildcard DNS and TLS, one
+    subdomain per build (`{build_id}.<usercontent-domain>`), and a Public Suffix List entry
+    so every build is its own site (security finding F1).
 - **Package CDN:** `@br/pkg-cdn` (`apps/pkg-cdn`, built in T-006) is our own service with
   esm.sh-compatible URLs, backed directly by the npm registry. It:
   - verifies tarball integrity (sha512) and extracts tarballs safely;
@@ -133,8 +139,8 @@ moderation actions.
   - writes immutable outputs to a disk cache.
 
   It is a Node service (native esbuild + filesystem), so it can't run as a Cloudflare
-  Worker. It runs as a small origin (Fly.io machine or Cloudflare Containers; decision
-  pending) **behind the Cloudflare cache**. Exact-version URLs are immutable, so the edge
+  Worker. It runs in **Cloudflare Containers** (decided with option A) **behind the
+  Cloudflare cache**. Exact-version URLs are immutable, so the edge
   serves almost every request and the origin only bundles cold packages. This replaces the
   earlier "proxy esm.sh, then self-host esm.sh" plan.
 - **Browser Rendering:** headless Chromium that is called from a Worker. It loads the
@@ -156,7 +162,7 @@ This is the most important boundary in the system. Anything in the left column i
 untrusted. The client can lie, so the server never trusts client-reported times,
 results or votes.
 
-| Concern | Client (app origin) | Server (Supabase / Vercel / CF) | Sandbox (usercontent origin) |
+| Concern | Client (app origin) | Server (Supabase / Cloudflare) | Sandbox (usercontent origin) |
 |---|---|---|---|
 | **Identity** | Holds the Supabase session JWT | Issues anonymous/OAuth sessions, enforces RLS | No identity. It never sees the JWT or any cookie for the app. |
 | **Game state** | Renders state, predicts countdowns from server timestamps, sends intents via RPC | **Authoritative.** Phase transitions, guards, deadlines, versioning, event log | — |
@@ -239,6 +245,7 @@ sequenceDiagram
 | Realtime | Broadcast from DB triggers + Presence | **Postgres Changes**: RLS is evaluated per subscriber per change and doesn't scale as well. **Self-hosted WebSockets**: we'd have to operate them. |
 | Timers | Server timestamps + lazy client nudges + pg_cron backstop | **Server `setTimeout`**: we have no persistent server, and it gets lost on deploy. |
 | Canonical screenshot | Server-side headless render of the frozen bundle | **Client-only capture**: lower fidelity (DOM-to-canvas misses WebGL, fonts and filters) and can be forged. Clients could upload a fake screenshot as their permanent result. We keep the client thumbnail as a fallback. |
+| App hosting | Cloudflare Workers via OpenNext (option A, user decision 2026-10-04) | **Vercel**: one more vendor and account, and the user prefers not to use it. **Fly.io (Node)**: the fallback if OpenNext can't run Next 16. |
 | Auth | Supabase anonymous, linkable later | **Required sign-up**: kills the "open link, play" moment. |
 
 ## 1.7 Cost model (rough estimates; validate in M5)
@@ -255,7 +262,7 @@ Assume a battle has 6 players and a 10-minute build.
 | Realtime | ~6 connections × ~15 min plus a few hundred messages | Activity pulses are throttled to ≤1 per 2 s per player |
 | Postgres | A few hundred small writes | Negligible |
 
-Fixed baseline: Supabase Pro, Vercel Pro, Cloudflare Workers Paid, plus a domain. The main
+Fixed baseline: Supabase (free tier to start, Pro at launch), Cloudflare Workers Paid (needed for Containers and Browser Rendering), plus one domain for the app. The main
 things that drive costs up are Realtime concurrent connections and messages (plan limits),
 reveal egress, and Browser Rendering minutes. We watch all three from day one.
 

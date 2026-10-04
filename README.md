@@ -32,7 +32,7 @@ Design phase. Nothing is implemented yet. Start with the design docs:
 
 ## Planned stack (summary)
 
-- **App:** Next.js (App Router), React, TypeScript, on Vercel
+- **App:** Next.js (App Router), React, TypeScript, on Cloudflare Workers (via the OpenNext adapter)
 - **Backend:** Supabase (Postgres + RPC, Realtime Broadcast/Presence, Storage, Edge Functions, pg_cron, anonymous auth)
 - **Sandbox:** a custom in-browser runtime: esbuild-wasm in a Web Worker, npm packages served as ES modules from an esm.sh-compatible CDN, preview in a cross-site sandboxed iframe. It sits behind an interface so WebContainers can be added later for full-stack modes.
 - **Editor:** CodeMirror 6

@@ -6,7 +6,7 @@ This project is run by a **hub** that coordinates **worker** agents.
 
 | Role | Owns | Does not |
 |---|---|---|
-| **User** | Product decisions, accounts (Supabase/Vercel/Cloudflare/domains), secrets, final say | — |
+| **User** | Product decisions, accounts (Supabase/Cloudflare/domain), secrets, final say | — |
 | **Hub** (main session) | The plan, design docs, the [board](BOARD.md), task briefs, reviews, merges into the working branch, pushes | Writes large features itself |
 | **Workers** (sub-agents) | One task each, in an isolated git worktree | Touch files outside their task's scope, push, edit the board or design docs |
 
@@ -59,4 +59,7 @@ PLAN → BRIEF → DISPATCH → REVIEW → MERGE / FIX → NEXT WAVE
   (`/opt/pw-browsers`).
 - **Not reachable:** esm.sh and other external CDNs, and github.com (except git push
   through the proxy). Tests must not depend on them, so use local mock servers.
-- The Docker daemon may not be running. Don't depend on `supabase start`.
+- Docker works once the daemon is started (`dockerd &`). Docker Hub pulls work, but `public.ecr.aws` is blocked. **The local Supabase stack runs** with
+  `SUPABASE_INTERNAL_IMAGE_REGISTRY=docker.io npx -y supabase@2.119.0 start -x studio,imgproxy,vector,logflare,edge-runtime,supavisor,mailpit`.
+  Verified: migrations apply on Supabase Postgres 17, `supabase test db` passes 194/194, and anonymous sign-up returns 200.
+  The containers are named after `project_id`, so only one worktree may run the stack at a time.

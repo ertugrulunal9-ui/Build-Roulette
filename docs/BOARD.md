@@ -17,14 +17,16 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 | T-010 | Package CDN hardening (F5): global download/extract limits, streaming extraction, disk quota/LRU | `apps/pkg-cdn/` | done | Merged |
 | T-003 | Sandbox prototype: esbuild-wasm bundler worker, runtime shell, postMessage protocol, mock CDN, Playwright test | `packages/runtime/`, `packages/protocol/`, `apps/sandbox-shell/` | done | Merged in 3172db8 |
 
-## Blocked on the user
+## Blocked on the user (only needed for deployment; nothing blocks local work)
 
 | Item | Needed for |
 |---|---|
-| Register the usercontent domain and submit it to the Public Suffix List (security finding F1: per-build subdomains are otherwise same-site) | Cross-build isolation in production (before launch; PSL inclusion takes weeks) |
-| Hosting choice for `@br/pkg-cdn` origin (Fly.io vs Cloudflare Containers) | Production package CDN (before M5) |
-| Supabase project (staging), Vercel project, Cloudflare account | Deploy previews, hosted environments (M0 end / M2) |
-| App domain + separate usercontent domain | Sandbox origin isolation in production (M1 end) |
+| Cloudflare account (free plan to start; Workers Paid later for Containers + Browser Rendering) | Deploying the app, sandbox shell, package CDN and screenshots |
+| Supabase project (free plan to start) | Hosted database, auth, storage and realtime |
+| One domain for the app (optional at first; the app can run on a free Cloudflare address) | Public launch |
+| Later: second (usercontent) domain + Public Suffix List entry (F1) | Per-build isolation as the game grows |
+
+**User decisions (2026-10-04):** option A, so everything is hosted on Cloudflare and Vercel is dropped. The sandbox starts on `*.pages.dev` (already on the PSL), so there is no second domain at launch. Package CDN runs on Cloudflare Containers. Continue M2 locally.
 
 ## Done
 

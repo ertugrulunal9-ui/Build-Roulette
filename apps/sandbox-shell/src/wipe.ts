@@ -90,6 +90,15 @@ interface CookieListItemLike {
 }
 export interface CookieStoreLike {
   getAll(): Promise<CookieListItemLike[]>;
+  set(options: {
+    name: string;
+    value: string;
+    expires?: number;
+    domain?: string;
+    path?: string;
+    sameSite?: 'strict' | 'lax' | 'none';
+    partitioned?: boolean;
+  }): Promise<void>;
   delete(options: {
     name: string;
     domain?: string;
@@ -106,16 +115,32 @@ interface DirectoryLike {
   removeEntry(name: string, options?: { recursive?: boolean }): Promise<void>;
 }
 
-/** Deletes every cookie the Cookie Store API can see (it sees exactly what document.cookie sees). */
-export async function clearCookieStore(store: CookieStoreLike): Promise<void> {
+/**
+ * Deletes every cookie the Cookie Store API can see (it sees what `document.cookie` sees).
+ * `delete()` writes its expired cookie as `SameSite=Strict`, which Chromium refuses in a
+ * cross-site iframe (the shell always is one), so each cookie is first overwritten with an
+ * expired `SameSite=None` copy, and `delete()` is only the fallback. Returns the names it
+ * could not remove; the caller sweeps with `document.cookie` afterwards anyway.
+ */
+export async function clearCookieStore(store: CookieStoreLike): Promise<string[]> {
+  const failed: string[] = [];
   for (const c of await store.getAll()) {
-    await store.delete({
-      name: c.name,
+    const where = {
       ...(c.domain ? { domain: c.domain } : {}),
       ...(c.path ? { path: c.path } : {}),
       ...(c.partitioned ? { partitioned: true } : {}),
-    });
+    };
+    try {
+      await store.set({ name: c.name, value: '', expires: 0, sameSite: 'none', ...where });
+    } catch {
+      try {
+        await store.delete({ name: c.name, ...where });
+      } catch {
+        failed.push(c.name);
+      }
+    }
   }
+  return failed;
 }
 
 /** Expires every visible cookie name for every path prefix and domain variant. */

@@ -43,6 +43,7 @@ import {
   clearOpfs,
   clearServiceWorkers,
   clearStorageBuckets,
+  cookieNames,
   expireDocumentCookies,
   fetchClearSiteData,
   type CookieStoreLike,
@@ -251,15 +252,15 @@ async function resetStorage(requestId: number | undefined): Promise<void> {
     if (typeof caches === 'undefined') return;
     for (const key of await caches.keys()) await caches.delete(key);
   });
-  await attempt('cookieStore', async () => {
+  await attempt('cookies', async () => {
     const store = (globalThis as { cookieStore?: CookieStoreLike }).cookieStore;
     if (store) await clearCookieStore(store);
-  });
-  // Also without the Cookie Store API (Firefox < 140, Safari < 18.4), and for anything it
-  // left: expire every visible name for each path prefix and Domain variant, with and
-  // without `Partitioned`.
-  await attempt('cookies', () => {
+    // Also without the Cookie Store API (Firefox < 140, Safari < 18.4), and for anything it
+    // left: expire every visible name for each path prefix and Domain variant, with and
+    // without `Partitioned`.
     expireDocumentCookies(document, location);
+    const left = cookieNames(document.cookie);
+    if (left.length > 0) throw new Error(`still visible: ${left.join(', ')}`);
   });
   await attempt('opfs', () => clearOpfs(navigator.storage));
   await attempt('storageBuckets', () => clearStorageBuckets(navigator));

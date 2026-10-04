@@ -84,23 +84,46 @@ describe('cookie wipe helpers', () => {
     expect(cookieNames('')).toEqual([]);
   });
 
-  it('deletes every cookie the Cookie Store API reports, keeping path/domain/partitioned', async () => {
-    const deleted: unknown[] = [];
+  it('expires every cookie the Cookie Store API reports with SameSite=None, delete() as fallback', async () => {
+    const calls: unknown[] = [];
     const store: CookieStoreLike = {
       getAll: () =>
         Promise.resolve([
           { name: 'a', path: '/', domain: null, partitioned: false },
           { name: 'b', path: '/v1', domain: 'usercontent.example', partitioned: true },
+          { name: 'c', path: '/' },
+          { name: 'd', path: '/' },
         ]),
+      set: (o) => {
+        calls.push(['set', o]);
+        return o.name === 'c' || o.name === 'd'
+          ? Promise.reject(new Error('refused'))
+          : Promise.resolve();
+      },
       delete: (o) => {
-        deleted.push(o);
-        return Promise.resolve();
+        calls.push(['delete', o]);
+        return o.name === 'd' ? Promise.reject(new Error('refused')) : Promise.resolve();
       },
     };
-    await clearCookieStore(store);
-    expect(deleted).toEqual([
-      { name: 'a', path: '/' },
-      { name: 'b', path: '/v1', domain: 'usercontent.example', partitioned: true },
+    expect(await clearCookieStore(store)).toEqual(['d']);
+    expect(calls).toEqual([
+      ['set', { name: 'a', value: '', expires: 0, sameSite: 'none', path: '/' }],
+      [
+        'set',
+        {
+          name: 'b',
+          value: '',
+          expires: 0,
+          sameSite: 'none',
+          domain: 'usercontent.example',
+          path: '/v1',
+          partitioned: true,
+        },
+      ],
+      ['set', { name: 'c', value: '', expires: 0, sameSite: 'none', path: '/' }],
+      ['delete', { name: 'c', path: '/' }],
+      ['set', { name: 'd', value: '', expires: 0, sameSite: 'none', path: '/' }],
+      ['delete', { name: 'd', path: '/' }],
     ]);
   });
 });

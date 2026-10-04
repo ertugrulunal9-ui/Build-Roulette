@@ -231,7 +231,10 @@ function defaultSettingsFromMigrations(files: readonly { name: string; sql: stri
 describe('schema drift: durations vs SQL constants', () => {
   it('BUILD_TIME_LIMITS_MINUTES matches private.build_time_limits_seconds()', () => {
     const seconds = timeLimitsSecondsFromMigrations(readMigrations());
-    expect(seconds, 'private.build_time_limits_seconds() not found or not a flat array').not.toBeNull();
+    expect(
+      seconds,
+      'private.build_time_limits_seconds() not found or not a flat array',
+    ).not.toBeNull();
     expect(seconds).toEqual(BUILD_TIME_LIMITS_MINUTES.map((minutes) => minutes * 60));
   });
 

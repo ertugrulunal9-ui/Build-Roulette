@@ -1,9 +1,23 @@
-import { describe, expect, it, vi } from 'vitest';
+import { existsSync, mkdtempSync, rmSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CdnError } from '../src/errors';
+import { Limiter } from '../src/limiter';
 import { Denylist } from '../src/policy';
 import { pickVersion, RegistryClient, sanitizePackument } from '../src/registry';
 import { locationOf, packageLocationOf, parseDepSpec, resolveTree } from '../src/tree';
 import { createFakeRegistry, FAKE_REGISTRY, type FakePackage } from './helpers/fake-registry';
+
+const dirs: string[] = [];
+function tempDir(): string {
+  const d = mkdtempSync(path.join(tmpdir(), 'pkg-cdn-reg-'));
+  dirs.push(d);
+  return d;
+}
+afterEach(() => {
+  for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+});
 
 function client(packages: Record<string, FakePackage>, ttl = 60_000) {
   const reg = createFakeRegistry(packages);
@@ -91,18 +105,217 @@ describe('RegistryClient', () => {
 
   it('only downloads tarballs from the registry origin', async () => {
     const { registry } = client({});
-    await expect(registry.fetchTarball('https://evil.example/x.tgz', 1000)).rejects.toThrow(
-      /not on the registry origin/,
-    );
+    await expect(
+      registry.downloadTarball('https://evil.example/x.tgz', path.join(tempDir(), 'x.tgz'), {
+        maxBytes: 1000,
+        algorithm: 'sha512',
+      }),
+    ).rejects.toThrow(/not on the registry origin/);
   });
 
-  it('enforces the tarball size limit', async () => {
+  it('streams tarballs to disk while hashing, and enforces the size limit', async () => {
     const { registry } = client({
       a: { versions: { '1.0.0': { files: { 'big.txt': 'x'.repeat(50_000) } } } },
     });
     const pack = await registry.getPackument('a');
-    const url = pack.versions['1.0.0']?.dist.tarball ?? '';
-    await expect(registry.fetchTarball(url, 10)).rejects.toMatchObject({ status: 413 });
+    const dist = pack.versions['1.0.0']?.dist;
+    const url = dist?.tarball ?? '';
+    const file = path.join(tempDir(), 'a.tgz');
+    const ok = await registry.downloadTarball(url, file, { maxBytes: 1e6, algorithm: 'sha512' });
+    expect(`sha512-${ok.digest.toString('base64')}`).toBe(dist?.integrity);
+    expect(statSync(file).size).toBe(ok.bytes);
+    const small = path.join(tempDir(), 'small.tgz');
+    await expect(
+      registry.downloadTarball(url, small, { maxBytes: 10, algorithm: 'sha512' }),
+    ).rejects.toMatchObject({ status: 413 });
+    expect(existsSync(small)).toBe(false); // partial download removed
+  });
+
+  it('asks for the abbreviated packument', async () => {
+    const accepts: string[] = [];
+    const reg = createFakeRegistry({ a: versions('1.0.0') });
+    const registry = new RegistryClient({
+      registryUrl: FAKE_REGISTRY,
+      packumentTtlMs: 60_000,
+      fetchTimeoutMs: 5000,
+      maxPackumentBytes: 1024 * 1024,
+      fetch: (url, init) => {
+        accepts.push(new Headers(init?.headers).get('accept') ?? '');
+        return reg.fetch(url, init);
+      },
+    });
+    await registry.getPackument('a');
+    expect(accepts[0]).toMatch(/^application\/vnd\.npm\.install-v1\+json/);
+  });
+
+  it('enforces the packument size limit while reading, without a Content-Length', async () => {
+    let pulled = 0;
+    const endless = () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          pull(controller) {
+            pulled++;
+            controller.enqueue(new Uint8Array(64 * 1024).fill(0x20));
+          },
+        }),
+      );
+    const registry = new RegistryClient({
+      registryUrl: FAKE_REGISTRY,
+      packumentTtlMs: 60_000,
+      fetchTimeoutMs: 5000,
+      maxPackumentBytes: 256 * 1024,
+      fetch: () => Promise.resolve(endless()),
+    });
+    await expect(registry.getPackument('a')).rejects.toMatchObject({
+      status: 413,
+      message: /packument of a is larger than/,
+    });
+    // Cut off right after the limit (plus the stream's read-ahead), not after buffering it all.
+    expect(pulled).toBeLessThan(10);
+    // A lying or present Content-Length is refused before reading.
+    const declared = new RegistryClient({
+      registryUrl: FAKE_REGISTRY,
+      packumentTtlMs: 60_000,
+      fetchTimeoutMs: 5000,
+      maxPackumentBytes: 10,
+      fetch: () =>
+        Promise.resolve(new Response('{}'.padEnd(100), { headers: { 'content-length': '100' } })),
+    });
+    await expect(declared.getPackument('a')).rejects.toMatchObject({ status: 413 });
+  });
+
+  it('coalesces concurrent packument requests and never caches a failure', async () => {
+    const reg = createFakeRegistry({ a: versions('1.0.0') });
+    let calls = 0;
+    let fail = true;
+    const registry = new RegistryClient({
+      registryUrl: FAKE_REGISTRY,
+      packumentTtlMs: 60_000,
+      fetchTimeoutMs: 5000,
+      maxPackumentBytes: 1024 * 1024,
+      fetch: async (url, init) => {
+        calls++;
+        await new Promise((r) => setTimeout(r, 20));
+        if (fail) return new Response('boom', { status: 500 });
+        return reg.fetch(url, init);
+      },
+    });
+    const first = await Promise.allSettled([
+      registry.getPackument('a'),
+      registry.getPackument('a'),
+      registry.getPackument('a'),
+    ]);
+    expect(calls).toBe(1);
+    expect(first.every((r) => r.status === 'rejected')).toBe(true);
+    fail = false;
+    const [x, y] = await Promise.all([registry.getPackument('a'), registry.getPackument('a')]);
+    expect(calls).toBe(2);
+    expect(x).toBe(y);
+    await registry.getPackument('a'); // cached now
+    expect(calls).toBe(2);
+  });
+
+  it('cancels a shared packument request only when every waiter is gone', async () => {
+    const signals: AbortSignal[] = [];
+    const registry = new RegistryClient({
+      registryUrl: FAKE_REGISTRY,
+      packumentTtlMs: 60_000,
+      fetchTimeoutMs: 60_000,
+      maxPackumentBytes: 1024 * 1024,
+      fetch: (_url, init) => {
+        const signal = init?.signal ?? new AbortController().signal;
+        signals.push(signal);
+        return new Promise((_resolve, reject) => {
+          signal.addEventListener('abort', () => {
+            reject(signal.reason as Error);
+          });
+        });
+      },
+    });
+    const c1 = new AbortController();
+    const c2 = new AbortController();
+    const p1 = registry.getPackument('a', c1.signal);
+    const p2 = registry.getPackument('a', c2.signal);
+    await new Promise((r) => setTimeout(r, 5));
+    expect(signals).toHaveLength(1);
+    c1.abort(new Error('client 1 left'));
+    await expect(p1).rejects.toThrow('client 1 left');
+    expect(signals[0]?.aborted).toBe(false); // client 2 still wants it
+    c2.abort(new Error('client 2 left'));
+    await expect(p2).rejects.toThrow('client 2 left');
+    expect(signals[0]?.aborted).toBe(true);
+    expect(registry.limiter.stats()).toMatchObject({ active: 0, queued: 0 });
+  });
+
+  it('applies one global limit to all registry requests and sheds load past the queue', async () => {
+    let active = 0;
+    let peak = 0;
+    const reg = createFakeRegistry(
+      Object.fromEntries(Array.from({ length: 6 }, (_, i) => [`p${String(i)}`, versions('1.0.0')])),
+    );
+    const registry = new RegistryClient({
+      registryUrl: FAKE_REGISTRY,
+      packumentTtlMs: 60_000,
+      fetchTimeoutMs: 5000,
+      maxPackumentBytes: 1024 * 1024,
+      limiter: new Limiter('registry', 2, 3, 7),
+      fetch: async (url, init) => {
+        active++;
+        peak = Math.max(peak, active);
+        await new Promise((r) => setTimeout(r, 20));
+        active--;
+        return reg.fetch(url, init);
+      },
+    });
+    const results = await Promise.allSettled(
+      Array.from({ length: 6 }, (_, i) => registry.getPackument(`p${String(i)}`)),
+    );
+    expect(peak).toBe(2);
+    // 2 running + 3 queued; the 6th is refused at once with a Retry-After hint.
+    const rejected = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]?.reason).toMatchObject({
+      status: 503,
+      code: 'overloaded',
+      retryAfterSeconds: 7,
+    });
+    expect(registry.limiter.stats()).toMatchObject({ shed: 1, completed: 5, active: 0 });
+  });
+
+  it('keeps the packument cache within its byte budget (LRU)', async () => {
+    const reg = createFakeRegistry({
+      a: versions('1.0.0'),
+      b: versions('1.0.0'),
+      c: versions('1.0.0'),
+    });
+    const probe = new RegistryClient({
+      registryUrl: FAKE_REGISTRY,
+      packumentTtlMs: 60_000,
+      fetchTimeoutMs: 5000,
+      maxPackumentBytes: 1024 * 1024,
+      fetch: reg.fetch,
+    });
+    await probe.getPackument('a');
+    const one = probe.cacheStats().bytes; // all three have the same size
+    const budget = Math.floor(one * 2.5);
+    const registry = new RegistryClient({
+      registryUrl: FAKE_REGISTRY,
+      packumentTtlMs: 60_000,
+      fetchTimeoutMs: 5000,
+      maxPackumentBytes: 1024 * 1024,
+      maxCachedPackumentBytes: budget,
+      fetch: reg.fetch,
+    });
+    await registry.getPackument('a');
+    await registry.getPackument('b');
+    await registry.getPackument('a'); // a is now the most recently used
+    await registry.getPackument('c');
+    expect(registry.cacheStats()).toMatchObject({ entries: 2, bytes: one * 2 });
+    reg.requests.length = 0;
+    await registry.getPackument('a');
+    expect(reg.requests).toEqual([]); // still cached
+    await registry.getPackument('b');
+    expect(reg.requests).toEqual(['packument b']); // evicted
   });
 });
 
@@ -199,6 +412,32 @@ describe('resolveTree', () => {
       'node_modules/root': 'root@1.0.0',
       'node_modules/my-alias': 'real@1.0.0',
     });
+  });
+
+  it('does not skip an optional dependency because of a transient failure', async () => {
+    const { registry } = client({
+      root: { versions: { '1.0.0': { optionalDependencies: { opt: '^1.0.0' } } } },
+      opt: versions('1.0.0'),
+    });
+    const meta = (await registry.getPackument('root')).versions['1.0.0'];
+    if (!meta) throw new Error('bad test');
+    const busy = (name: string) =>
+      name === 'opt'
+        ? Promise.reject(new CdnError(503, 'overloaded', 'busy'))
+        : registry.getPackument(name);
+    // Skipping it would bake an incomplete tree into the disk cache for good.
+    await expect(
+      resolveTree(meta, busy, { maxDependencies: 50, denylist: new Denylist() }),
+    ).rejects.toMatchObject({ status: 503 });
+    const aborted = new AbortController();
+    aborted.abort(new CdnError(499, 'cancelled', 'gone'));
+    await expect(
+      resolveTree(meta, (n) => registry.getPackument(n), {
+        maxDependencies: 50,
+        denylist: new Denylist(),
+        signal: aborted.signal,
+      }),
+    ).rejects.toMatchObject({ status: 499 });
   });
 
   it('handles cycles', async () => {

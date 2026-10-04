@@ -1,13 +1,19 @@
 /**
  * The package CDN core, independent of HTTP: version resolution, raw files and bundles.
+ *
+ * Every entry point takes the request's AbortSignal. Work is shared between concurrent
+ * requests (bundles, trees, packages, packuments) and bounded globally (registry requests,
+ * extractions, builds), see ./limiter.ts; the disk cache has a quota, see ./disk-cache.ts.
  */
 import { existsSync } from 'node:fs';
-import { mkdir, realpath, stat, writeFile } from 'node:fs/promises';
+import { mkdir, open, realpath, writeFile, type FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import { bundlePackage, PROCESS_SHIM, type BuildRequest } from './bundler';
 import { BundleCache, cacheKey, cacheKeyString, type BundleMeta } from './cache';
 import type { CdnConfig } from './config';
+import { CacheIndex } from './disk-cache';
 import { CdnError } from './errors';
+import { Limiter, SingleFlight } from './limiter';
 import { Denylist } from './policy';
 import { pickVersion, RegistryClient, type FetchLike, type PackumentVersion } from './registry';
 import { PackageStore } from './store';
@@ -65,27 +71,16 @@ export interface BundleResponse {
   meta: BundleMeta;
 }
 
-class Semaphore {
-  private active = 0;
-  private readonly waiters: (() => void)[] = [];
-  constructor(private readonly max: number) {}
-  async run<T>(fn: () => Promise<T>): Promise<T> {
-    if (this.active >= this.max) {
-      await new Promise<void>((resolve) => this.waiters.push(resolve));
-    }
-    this.active++;
-    try {
-      return await fn();
-    } finally {
-      this.active--;
-      this.waiters.shift()?.();
-    }
-  }
+/** An open raw file. The caller closes it. */
+export interface RawFile {
+  handle: FileHandle;
+  size: number;
 }
 
 export interface PackageCdnOptions {
   fetch?: FetchLike;
   denylist?: Denylist;
+  log?: (line: string) => void;
 }
 
 export class PackageCdn {
@@ -95,18 +90,33 @@ export class PackageCdn {
   readonly store: PackageStore;
   readonly trees: TreeManager;
   readonly bundles: BundleCache;
+  readonly index: CacheIndex;
   readonly shimDir: string;
-  private readonly inflight = new Map<string, Promise<BundleResponse>>();
-  private readonly builds: Semaphore;
+  readonly limiters: { fetches: Limiter; extractions: Limiter; builds: Limiter };
+  private readonly flights = new SingleFlight<BundleResponse>();
   readonly stats = { bundlesBuilt: 0, bundleHits: 0, bundleErrors: 0 };
 
   constructor(config: CdnConfig, opts: PackageCdnOptions = {}) {
     this.config = config;
+    const limiter = (name: string, l: CdnConfig['fetches']) =>
+      new Limiter(name, l.concurrent, l.queue, config.retryAfterSeconds);
+    this.limiters = {
+      fetches: limiter('registry', config.fetches),
+      extractions: limiter('extraction', config.extractions),
+      builds: limiter('build', config.builds),
+    };
+    this.index = new CacheIndex({
+      root: config.cacheDir,
+      quotaBytes: config.cacheQuotaBytes,
+      ...(opts.log ? { log: opts.log } : {}),
+    });
     this.registry = new RegistryClient({
       registryUrl: config.registryUrl,
       packumentTtlMs: config.packumentTtlMs,
       fetchTimeoutMs: config.limits.fetchTimeoutMs,
       maxPackumentBytes: config.limits.maxPackumentBytes,
+      maxCachedPackumentBytes: config.packumentCacheBytes,
+      limiter: this.limiters.fetches,
       ...(opts.fetch ? { fetch: opts.fetch } : {}),
     });
     this.denylist =
@@ -118,6 +128,8 @@ export class PackageCdn {
       limits: config.limits,
       denylist: this.denylist,
       allowSha1Fallback: config.allowSha1Fallback,
+      extractions: this.limiters.extractions,
+      index: this.index,
     });
     this.trees = new TreeManager({
       cacheDir: config.cacheDir,
@@ -125,24 +137,30 @@ export class PackageCdn {
       store: this.store,
       limits: config.limits,
       denylist: this.denylist,
+      index: this.index,
     });
-    this.bundles = new BundleCache(config.cacheDir);
+    this.bundles = new BundleCache(config.cacheDir, this.index);
     this.shimDir = path.join(config.cacheDir, 'shims');
-    this.builds = new Semaphore(config.maxConcurrentBuilds);
   }
 
   async init(): Promise<void> {
     await mkdir(this.shimDir, { recursive: true });
     await writeFile(path.join(this.shimDir, 'process.js'), PROCESS_SHIM);
+    await this.index.init();
+  }
+
+  /** Persists the cache index (call on shutdown). */
+  async close(): Promise<void> {
+    await this.index.close();
   }
 
   /** Resolves the version part of a URL to an exact, existing, allowed version. */
-  async resolve(ref: PackageRef): Promise<ResolvedVersion> {
+  async resolve(ref: PackageRef, signal?: AbortSignal): Promise<ResolvedVersion> {
     const deniedAll = this.denylist.deniesAllVersions(ref.name);
     if (deniedAll !== null) {
       throw new CdnError(403, 'denied', `${ref.name} is denied by policy: ${deniedAll}`);
     }
-    const pack = await this.registry.getPackument(ref.name);
+    const pack = await this.registry.getPackument(ref.name, signal);
     let version: string | null;
     switch (ref.version.kind) {
       case 'exact':
@@ -173,10 +191,11 @@ export class PackageCdn {
     name: string,
     range: string,
     pins: Record<string, string>,
+    signal?: AbortSignal,
   ): Promise<string> {
     const pinned = pins[name];
     if (pinned !== undefined) return pinned;
-    const pack = await this.registry.getPackument(name);
+    const pack = await this.registry.getPackument(name, signal);
     const version = pickVersion(pack, range);
     if (version === null) {
       throw new CdnError(
@@ -188,21 +207,33 @@ export class PackageCdn {
     return version;
   }
 
-  /** A raw file from the package (CSS, fonts, images...). Returns its absolute path. */
-  async rawFile(meta: PackumentVersion, subpath: string): Promise<string> {
-    const dir = await realpath(await this.store.ensure(meta));
-    const notFound = new CdnError(
-      404,
-      'not-found',
-      `${meta.name}@${meta.version}${subpath} does not exist`,
-    );
-    const candidate = path.join(dir, ...subpath.split('/').filter(Boolean));
-    if (!existsSync(candidate)) throw notFound;
-    const real = await realpath(candidate);
-    if (!real.startsWith(dir + path.sep)) throw notFound;
-    const st = await stat(real);
-    if (!st.isFile()) throw notFound;
-    return real;
+  /**
+   * A raw file from the package (CSS, fonts, images...), opened. The store entry is leased
+   * until the file is open; an open file stays readable even if the entry is evicted later.
+   */
+  async rawFile(meta: PackumentVersion, subpath: string, signal?: AbortSignal): Promise<RawFile> {
+    const release = this.index.lease(this.store.keyFor(meta.name, meta.version));
+    try {
+      const dir = await realpath(await this.store.ensure(meta, undefined, signal));
+      const notFound = new CdnError(
+        404,
+        'not-found',
+        `${meta.name}@${meta.version}${subpath} does not exist`,
+      );
+      const candidate = path.join(dir, ...subpath.split('/').filter(Boolean));
+      if (!existsSync(candidate)) throw notFound;
+      const real = await realpath(candidate);
+      if (!real.startsWith(dir + path.sep)) throw notFound;
+      const handle = await open(real, 'r');
+      const st = await handle.stat();
+      if (!st.isFile()) {
+        await handle.close();
+        throw notFound;
+      }
+      return { handle, size: st.size };
+    } finally {
+      release();
+    }
   }
 
   /** Throws CdnError(403) when any `name@version` in a bundle's tree is denied. */
@@ -217,21 +248,20 @@ export class PackageCdn {
     }
   }
 
-  /** Bundles (or returns the cached bundle of) a package entry. */
-  bundle(req: BuildRequest, meta: PackumentVersion): Promise<BundleResponse> {
+  /**
+   * Bundles (or returns the cached bundle of) a package entry. Concurrent requests for the
+   * same bundle share one build; it is cancelled only when all of them have gone away.
+   */
+  bundle(req: BuildRequest, meta: PackumentVersion, signal?: AbortSignal): Promise<BundleResponse> {
     const key = cacheKey(req);
-    let job = this.inflight.get(key);
-    if (!job) {
-      job = this.bundleUncached(key, req, meta).finally(() => this.inflight.delete(key));
-      this.inflight.set(key, job);
-    }
-    return job;
+    return this.flights.run(key, (s) => this.bundleUncached(key, req, meta, s), signal);
   }
 
   private async bundleUncached(
     key: string,
     req: BuildRequest,
     meta: PackumentVersion,
+    signal: AbortSignal,
   ): Promise<BundleResponse> {
     const cached = await this.bundles.get(key);
     if (cached) {
@@ -241,18 +271,24 @@ export class PackageCdn {
       return { code: cached.code, cache: 'hit', meta: cached.meta };
     }
     const started = performance.now();
+    // The tree must not be evicted while esbuild reads it.
+    const release = this.index.lease(this.trees.keyFor(meta.name, meta.version));
     try {
-      const tree = await this.trees.ensure(meta);
+      const tree = await this.trees.ensure(meta, signal);
       const packages = tree.tree.nodes.map((n) => `${n.realName}@${n.version}`).sort();
       this.assertAllowed(packages, req);
-      const out = await this.builds.run(() =>
-        bundlePackage(req, {
-          tree,
-          shimDir: this.shimDir,
-          resolvePeerVersion: (name, range) => this.resolvePeerVersion(name, range, req.deps),
-          maxOutputBytes: this.config.limits.maxOutputBytes,
-          timeoutMs: this.config.limits.bundleTimeoutMs,
-        }),
+      const out = await this.limiters.builds.run(
+        () =>
+          bundlePackage(req, {
+            tree,
+            shimDir: this.shimDir,
+            resolvePeerVersion: (name, range) =>
+              this.resolvePeerVersion(name, range, req.deps, signal),
+            maxOutputBytes: this.config.limits.maxOutputBytes,
+            timeoutMs: this.config.limits.bundleTimeoutMs,
+            signal,
+          }),
+        signal,
       );
       const bundleMeta: BundleMeta = {
         key: cacheKeyString(req),
@@ -271,6 +307,31 @@ export class PackageCdn {
     } catch (e) {
       this.stats.bundleErrors++;
       throw e;
+    } finally {
+      release();
     }
+  }
+
+  /** Queue depths, in-flight work, cache usage and evictions (no secrets, no paths). */
+  metrics() {
+    return {
+      queues: {
+        registry: this.limiters.fetches.stats(),
+        extraction: this.limiters.extractions.stats(),
+        build: this.limiters.builds.stats(),
+      },
+      inflight: {
+        bundles: this.flights.size,
+        trees: this.trees.inflight,
+        packages: this.store.inflight,
+        packuments: this.registry.cacheStats().inflight,
+      },
+      cache: this.index.stats(),
+      packuments: this.registry.cacheStats(),
+      registry: this.registry.stats,
+      store: this.store.stats,
+      trees: this.trees.stats,
+      bundles: { ...this.stats, ...this.flights.stats() },
+    };
   }
 }

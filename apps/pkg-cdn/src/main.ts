@@ -13,7 +13,12 @@ const server = await startCdnServer(config, {
 });
 console.log(`@br/pkg-cdn listening on ${server.url}`);
 console.log(`  registry ${config.registryUrl}`);
-console.log(`  cache    ${config.cacheDir}`);
+console.log(
+  `  cache    ${config.cacheDir} (${(server.cdn.index.bytes / 1048576).toFixed(0)} MB of ${config.cacheQuotaBytes > 0 ? `${(config.cacheQuotaBytes / 1048576).toFixed(0)} MB` : 'unlimited'})`,
+);
+console.log(
+  `  limits   ${config.fetches.concurrent.toString()} fetches, ${config.extractions.concurrent.toString()} extractions, ${config.builds.concurrent.toString()} builds; request timeout ${config.requestTimeoutMs.toString()} ms`,
+);
 console.log(
   `  denylist ${config.denylistFile ?? 'none'} (${server.cdn.denylist.size.toString()} packages)`,
 );

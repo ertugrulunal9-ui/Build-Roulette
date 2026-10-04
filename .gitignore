@@ -38,5 +38,9 @@ supabase/.temp/
 # Vercel
 .vercel/
 
+# Cloudflare: OpenNext build output and Wrangler local state
+.open-next/
+.wrangler/
+
 # Agent worktrees
 .claude/worktrees/

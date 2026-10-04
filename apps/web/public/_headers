@@ -1,0 +1,6 @@
+# Cloudflare Workers static assets: response headers (https://developers.cloudflare.com/workers/static-assets/headers/).
+# Only the Cloudflare build reads this file; `next start` sets these headers itself.
+
+# Content-hashed build output: cache forever (what `next start` sends too).
+/_next/static/*
+  Cache-Control: public, max-age=31536000, immutable

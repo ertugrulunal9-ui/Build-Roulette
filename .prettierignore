@@ -12,6 +12,8 @@ build/
 coverage/
 playwright-report/
 test-results/
+.open-next/
+.wrangler/
 
 # Agent worktrees (each is a full checkout with its own node_modules)
 .claude/worktrees/

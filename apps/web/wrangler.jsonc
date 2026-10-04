@@ -1,0 +1,24 @@
+{
+  // Cloudflare Workers config for the OpenNext build (see DEPLOY.md).
+  // No `account_id` on purpose: `wrangler login` (or CLOUDFLARE_ACCOUNT_ID) supplies it at
+  // deploy time, and the local preview (`pnpm --filter @br/web cf:preview`) needs no account.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "build-roulette-web",
+  "main": ".open-next/worker.js",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "assets": {
+    // Prerendered pages, /_next/static/** (JS, CSS, the bundler worker chunk, esbuild.wasm)
+    // and public/ files. Cloudflare serves these without running the worker.
+    "directory": ".open-next/assets",
+    "binding": "ASSETS",
+  },
+  "services": [
+    {
+      // Self-reference that OpenNext uses for cache revalidation. Must match "name".
+      "binding": "WORKER_SELF_REFERENCE",
+      "service": "build-roulette-web",
+    },
+  ],
+  "observability": { "enabled": true },
+}

@@ -11,7 +11,10 @@
     "lint": "eslint . --max-warnings=0",
     "typecheck": "NEXT_TELEMETRY_DISABLED=1 next typegen && tsc --noEmit",
     "test": "vitest run",
-    "test:e2e": "pnpm run build && playwright test"
+    "test:e2e": "pnpm run build && playwright test",
+    "cf:build": "NEXT_TELEMETRY_DISABLED=1 WRANGLER_SEND_METRICS=false opennextjs-cloudflare build",
+    "cf:preview": "NEXT_TELEMETRY_DISABLED=1 WRANGLER_SEND_METRICS=false opennextjs-cloudflare preview",
+    "test:e2e:cf": "pnpm run cf:build && E2E_APP_SERVER=workers playwright test"
   },
   "dependencies": {
     "@br/game": "workspace:*",
@@ -34,6 +37,7 @@
   "devDependencies": {
     "@br/config": "workspace:*",
     "@br/sandbox-shell": "workspace:*",
+    "@opennextjs/cloudflare": "1.20.8",
     "@playwright/test": "1.56.1",
     "@tailwindcss/postcss": "4.3.3",
     "@types/node": "22.20.5",
@@ -45,6 +49,7 @@
     "tsx": "4.23.15",
     "typescript": "6.0.3",
     "vite": "8.3.2",
-    "vitest": "5.0.3"
+    "vitest": "5.0.3",
+    "wrangler": "4.147.0"
   }
 }

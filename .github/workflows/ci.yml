@@ -100,6 +100,49 @@ jobs:
         if: always()
         run: npx -y "$SUPABASE_CLI" stop --no-backup
 
+  capture:
+    name: Capture worker integration (local Supabase stack + Playwright Chromium)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      SUPABASE_CLI: supabase@2.119.0
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Same Chromium build as the e2e job (playwright-core 1.56.1 → chromium-1194), plus
+      # its system libraries. The renderer uses channel 'chromium' (full Chromium).
+      - name: Install Playwright Chromium
+        run: pnpm --filter @br/capture-worker exec playwright-core install --with-deps chromium
+
+      # Same services as the db job: Postgres (pg_cron), Auth, PostgREST, Storage, Kong.
+      - name: Start the local Supabase stack
+        run: >-
+          npx -y "$SUPABASE_CLI" start
+          -x studio,imgproxy,vector,logflare,edge-runtime,supavisor,mailpit,realtime,postgres-meta
+
+      # Renderer tests (real shell capture page, no Supabase) and the full capture/destroy
+      # loop against the stack: solo battles through the HTTP APIs, real React bundles,
+      # WebP screenshots, fallback, final-attempt failure, destroy. Needs psql (runner image).
+      - name: Run the capture worker integration tests
+        run: pnpm --filter @br/capture-worker test:integration
+
+      - name: Stop the stack
+        if: always()
+        run: npx -y "$SUPABASE_CLI" stop --no-backup
+
   e2e:
     name: E2E (runtime + web playground, Playwright Chromium)
     runs-on: ubuntu-latest

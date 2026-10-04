@@ -258,7 +258,7 @@ export class PreviewHandle {
   private nextRequestId = 1;
   private readonly storageRequests = new Map<number, StorageRequest>();
   private nextPingSeq = 1;
-  private lastPingAt = 0;
+  private pingTimer: ReturnType<typeof setInterval> | null = null;
   private readonly outstandingPings = new Map<number, number>();
   private readonly rates: Record<BudgetedType, RateWindow>;
   private readonly consoleLog: ConsoleLog;
@@ -485,6 +485,8 @@ export class PreviewHandle {
     }
     this.port = null;
     this.outstandingPings.clear();
+    if (this.pingTimer !== null) clearInterval(this.pingTimer);
+    this.pingTimer = null;
   }
 
   private readonly onWindowMessage = (event: MessageEvent): void => {
@@ -639,10 +641,14 @@ export class PreviewHandle {
       this.pendingLoad = null;
     }
     this.sendPing();
+    // Its own timer (not the 250 ms watchdog tick), so pings are exactly one interval apart
+    // and the last pong before a freeze is at most one interval old.
+    this.pingTimer = setInterval(this.sendPing, this.pingIntervalMs);
     this.emit('connected', { handshakes: this._stats.handshakes });
   }
 
-  private sendPing(): void {
+  private readonly sendPing = (): void => {
+    if (this._state !== 'connected') return;
     const now = this.now();
     const seq = this.nextPingSeq++;
     this.outstandingPings.set(seq, now);
@@ -650,10 +656,9 @@ export class PreviewHandle {
       const oldest = this.outstandingPings.keys().next().value;
       if (oldest !== undefined) this.outstandingPings.delete(oldest);
     }
-    this.lastPingAt = now;
     this._stats.pingsSent++;
     this.send({ type: 'ping', seq, t: Date.now() });
-  }
+  };
 
   private drop(type: BudgetedType): void {
     this._stats.droppedMessages[type]++;
@@ -699,11 +704,7 @@ export class PreviewHandle {
     }
     if (this._state !== 'connected') return;
     const silent = now - this._stats.lastPongAt;
-    if (silent > this.heartbeatTimeoutMs) {
-      this.crash('heartbeat-timeout', silent);
-      return;
-    }
-    if (now - this.lastPingAt >= this.pingIntervalMs) this.sendPing();
+    if (silent > this.heartbeatTimeoutMs) this.crash('heartbeat-timeout', silent);
   };
 
   private crash(reason: CrashReason, silentForMs: number): void {

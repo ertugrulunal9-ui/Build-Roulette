@@ -258,6 +258,27 @@ describe('watchdog: ping round trips', () => {
     expect(container.children[0]).toBeInstanceOf(FakeComment);
   });
 
+  it('pings are exactly one interval apart, so detection is 4.0 to 5.25 s after a freeze', () => {
+    for (const freezeAt of [0, 999, 1001, 1500, 1999]) {
+      const { handle, connect } = setup();
+      // The handshake completes between two watchdog ticks, as it does in a browser.
+      vi.advanceTimersByTime(130);
+      const shell = connect();
+      const start = Date.now();
+      vi.advanceTimersByTime(2000 + freezeAt);
+      shell.autoPong = false;
+      const frozeAt = Date.now();
+      let crashedAt = 0;
+      handle.on('crash', () => (crashedAt = Date.now()));
+      vi.advanceTimersByTime(6000);
+      const times = shell.received('ping').map((m) => (m['t'] as number) - start);
+      expect(times.slice(0, 3)).toEqual([0, 1000, 2000]);
+      expect(crashedAt - frozeAt, `freeze at +${String(freezeAt)}`).toBeGreaterThanOrEqual(4000);
+      expect(crashedAt - frozeAt, `freeze at +${String(freezeAt)}`).toBeLessThanOrEqual(5250);
+      handle.dispose();
+    }
+  });
+
   it('heartbeats do not count as liveness', () => {
     const { handle, connect } = setup();
     const shell = connect();

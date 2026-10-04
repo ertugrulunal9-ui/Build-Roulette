@@ -11,13 +11,25 @@ export interface ShellHeaderOptions {
   /** Extra script hosts (e.g. the Tailwind browser runtime host for the tailwind template). */
   extraScriptSrc?: readonly string[];
   /**
-   * Extra `connect-src` sources. Production allows `https: wss:` only; local dev adds the
-   * http mock CDN origin because localhost is plain http.
+   * Extra `connect-src` sources. Production allows `'self' https: wss:` only; local dev adds
+   * the http mock CDN origin because localhost is plain http.
    */
   extraConnectSrc?: readonly string[];
   /** Cache-Control for the shell files. Immutable in production (versioned paths). */
   cacheControl?: string;
 }
+
+/**
+ * `form-action 'none'`: a build handles forms in JavaScript (`onSubmit` + `preventDefault`).
+ * A real form submission would either navigate the build's own frame (to the shell URL or
+ * `about:blank`, wiping the running app, which is what a forgotten `preventDefault` does) or
+ * send the form fields to another origin by navigating the frame there. Neither is something
+ * a build needs, so submissions are blocked: the form stays on screen and Chromium logs a CSP
+ * violation instead. `allow-forms` stays in the iframe `sandbox`, so the `submit` event,
+ * `requestSubmit()` and constraint validation keep working, and `method="dialog"` forms (no
+ * navigation) are not affected.
+ */
+export const FORM_ACTION = "'none'";
 
 /**
  * CSP for the shell document. The user's document is created by the shell as a same-origin
@@ -31,6 +43,11 @@ export interface ShellHeaderOptions {
  * - `'unsafe-eval'`: packages such as pixi.js v8 compile code with `new Function` at runtime.
  * Neither widens what a build can do: the build is arbitrary JS already and `blob:` is
  * allowed for its module.
+ *
+ * `connect-src` includes `'self'` for the shell's own `/v{N}/reset` endpoint
+ * (`Clear-Site-Data`, see `RESET_HEADERS`). In production `https:` covers it already, but
+ * local dev is plain http. `base-uri 'none'` stops a `<base>` element from re-pointing
+ * relative URLs. `form-action` is explained at `FORM_ACTION`.
  */
 export function shellCsp(opts: ShellHeaderOptions): string {
   const scriptSrc = [
@@ -43,7 +60,7 @@ export function shellCsp(opts: ShellHeaderOptions): string {
   ];
   const styleSrc = ["'self'", "'unsafe-inline'", 'blob:', 'https:'];
   if (!opts.cdnOrigin.startsWith('https:')) styleSrc.push(opts.cdnOrigin);
-  const connectSrc = ['https:', 'wss:', ...(opts.extraConnectSrc ?? [])];
+  const connectSrc = ["'self'", 'https:', 'wss:', ...(opts.extraConnectSrc ?? [])];
   return [
     "default-src 'none'",
     `script-src ${dedupe(scriptSrc).join(' ')}`,
@@ -54,27 +71,109 @@ export function shellCsp(opts: ShellHeaderOptions): string {
     `connect-src ${dedupe(connectSrc).join(' ')}`,
     'worker-src blob:',
     `frame-ancestors ${opts.appOrigins.join(' ')}`,
+    "base-uri 'none'",
+    `form-action ${FORM_ACTION}`,
   ].join('; ');
 }
 
-export const PERMISSIONS_POLICY =
-  'camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), hid=()';
+/**
+ * Powerful features no build may use. Only feature names Chromium recognises are listed: an
+ * unknown name makes Chromium log "Unrecognized feature" on every load (an e2e test checks
+ * that there is none). Features a build may use (autoplay, fullscreen, gamepad, and
+ * clipboard-write in live mode) are delegated per frame through the iframe `allow` attribute.
+ *
+ * `bluetooth` is deliberately absent: Chromium 141 logs "Unrecognized feature: 'bluetooth'"
+ * (it is not a shipped policy-controlled feature there). Chromium does not offer Web
+ * Bluetooth to cross-origin iframes, and it always needs a user gesture and a device chooser.
+ */
+export const PERMISSIONS_POLICY_FEATURES = [
+  'camera',
+  'microphone',
+  'geolocation',
+  'payment',
+  'usb',
+  'serial',
+  'hid',
+  'display-capture',
+  'screen-wake-lock',
+  'idle-detection',
+  'midi',
+  'publickey-credentials-get',
+  'publickey-credentials-create',
+  'xr-spatial-tracking',
+] as const;
 
-export function shellHeaders(opts: ShellHeaderOptions): Record<string, string> {
+export const PERMISSIONS_POLICY = PERMISSIONS_POLICY_FEATURES.map((f) => `${f}=()`).join(', ');
+
+/** File name of the storage-wipe endpoint, under the shell's versioned base path. */
+export const RESET_ENDPOINT = 'reset';
+
+/**
+ * Headers of `/v{N}/reset`, which the shell fetches during `reset-storage`.
+ * `Clear-Site-Data` makes the browser drop the origin's HTTP cache, its cookies (all paths,
+ * HttpOnly ones too; the browser clears them for the whole registrable domain) and its DOM
+ * storage (localStorage, IndexedDB, CacheStorage, service workers, OPFS). That includes data
+ * the shell's JS cannot enumerate.
+ */
+export const RESET_HEADERS: Readonly<Record<string, string>> = {
+  'Clear-Site-Data': '"cache", "cookies", "storage"',
+  'Cache-Control': 'no-store',
+};
+
+/** Headers for every response of the sandbox host (any path, 404s included). */
+export function securityHeaders(opts: ShellHeaderOptions): Record<string, string> {
   return {
     'Content-Security-Policy': shellCsp(opts),
     'Permissions-Policy': PERMISSIONS_POLICY,
     'Cross-Origin-Resource-Policy': 'same-site',
     'Referrer-Policy': 'no-referrer',
     'X-Content-Type-Options': 'nosniff',
+    // Origin-keyed agent cluster: `document.domain` is disabled and the origin does not share
+    // an agent cluster with sibling build subdomains, even before the usercontent apex is on
+    // the Public Suffix List.
+    'Origin-Agent-Cluster': '?1',
+  };
+}
+
+/** Headers for the shell files themselves: the security headers plus caching. */
+export function shellHeaders(opts: ShellHeaderOptions): Record<string, string> {
+  return {
+    ...securityHeaders(opts),
     'Cache-Control': opts.cacheControl ?? 'public, max-age=31536000, immutable',
   };
 }
 
+export interface HeaderRule {
+  /** Cloudflare Pages / Netlify path pattern, e.g. `/*` or `/v1/shell.js`. */
+  pattern: string;
+  headers: Readonly<Record<string, string>>;
+}
+
+/**
+ * The static host's header rules. Cloudflare Pages applies every rule whose pattern matches
+ * and joins repeated header names with a comma, so only rules that cannot overlap set
+ * `Cache-Control`: `/*` carries the security headers (every path, 404s included), each shell
+ * file gets its own caching rule, and `/v{N}/reset` gets `Clear-Site-Data` + `no-store`.
+ */
+export function staticHeaderRules(opts: ShellHeaderOptions, basePath: string): HeaderRule[] {
+  const immutable = {
+    'Cache-Control': opts.cacheControl ?? 'public, max-age=31536000, immutable',
+  };
+  return [
+    { pattern: '/*', headers: securityHeaders(opts) },
+    { pattern: basePath, headers: immutable },
+    { pattern: `${basePath}index.html`, headers: immutable },
+    { pattern: `${basePath}shell.js`, headers: immutable },
+    { pattern: `${basePath}${RESET_ENDPOINT}`, headers: RESET_HEADERS },
+  ];
+}
+
 /** Renders a Cloudflare Pages / Netlify style `_headers` file. */
-export function renderHeadersFile(pathPattern: string, headers: Record<string, string>): string {
-  const lines = [pathPattern, ...Object.entries(headers).map(([k, v]) => `  ${k}: ${v}`)];
-  return `${lines.join('\n')}\n`;
+export function renderHeadersFile(rules: readonly HeaderRule[]): string {
+  const blocks = rules.map(({ pattern, headers }) =>
+    [pattern, ...Object.entries(headers).map(([k, v]) => `  ${k}: ${v}`)].join('\n'),
+  );
+  return `${blocks.join('\n\n')}\n`;
 }
 
 function dedupe(xs: readonly string[]): string[] {

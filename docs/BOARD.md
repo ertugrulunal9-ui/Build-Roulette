@@ -2,7 +2,7 @@
 
 Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 
-## Current milestone: M1 Sandbox (M0 code complete; M0 accounts/domains blocked on user)
+## Current milestone: M1 Sandbox, complete. Next: M2 Solo loop + capture/destroy (awaiting user go-ahead)
 
 | ID | Task | Scope | Status | Notes |
 |---|---|---|---|---|
@@ -13,7 +13,7 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 | T-006 | `@br/pkg-cdn`: esm.sh-compatible package CDN that resolves from the npm registry, plus an R1 compatibility suite and an e2e CI job | `apps/pkg-cdn/`, `.github/workflows/ci.yml` | done | Merged |
 | T-007 | Runtime/shell fixes (5 bugs from T-005), `'unsafe-eval'` in shell CSP, `deps=` peer pinning, web e2e in CI, playground template picker fix | `packages/runtime/`, `apps/sandbox-shell/`, `apps/web/`, `ci.yml` | done | Merged |
 | T-008 | Independent security review of sandbox, bridge, playground and package CDN (read-only; M1 exit criterion) | none (report only) | done (partial) | Code review only; PoCs didn't run. Verification moves into T-009. |
-| T-009 | Sandbox hardening from T-008 (F2–F4, F6–F9, I1–I3), verified with unit tests (fake ports/windows) and policy-conformance e2e checks | `packages/runtime/`, `apps/sandbox-shell/`, `apps/web/` | in-progress | Wave 5, attempt 3 (re-scoped) |
+| T-009 | Sandbox hardening from T-008 (F2–F4, F6–F9, I1–I3), verified with unit tests (fake ports/windows) and policy-conformance e2e checks | `packages/runtime/`, `apps/sandbox-shell/`, `apps/web/` | done | Merged (attempt 3) |
 | T-010 | Package CDN hardening (F5): global download/extract limits, streaming extraction, disk quota/LRU | `apps/pkg-cdn/` | done | Merged |
 | T-003 | Sandbox prototype: esbuild-wasm bundler worker, runtime shell, postMessage protocol, mock CDN, Playwright test | `packages/runtime/`, `packages/protocol/`, `apps/sandbox-shell/` | done | Merged in 3172db8 |
 
@@ -36,6 +36,7 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 - T-006 Package CDN + R1 compatibility suite
 - T-007 Runtime/shell fixes + polish
 - T-008 Security review (code-level)
+- T-009 Sandbox hardening
 - T-010 Package CDN availability hardening
 
 ## Review log
@@ -201,3 +202,17 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
   - The `reset-storage` cookie wipe only covers `path=/`.
   - Console updates are unbatched and uncapped.
 - Hub decision: same goals, re-scoped verification. Fixes are proven with unit tests (fake ports/windows/sources) and plain policy-conformance e2e checks (headers, iframe attributes, storage wiped, `window.open` blocked in reveal mode) instead of exploit-style fixtures.
+
+### T-009: accepted (wave 5, attempt 3)
+- Hub test-merged onto main and re-ran on a fresh clone:
+  - install, format, lint, typecheck, build: green;
+  - unit tests: runtime 96 (was 64), shell 19 (was 5), web 6 (new), others unchanged;
+  - runtime e2e 23/23, web e2e 11/11.
+- Hub read the handshake guard (`awaitingHello`, `ignoredHellos`) and the per-mode attribute tables.
+- Each change has a test that the worker showed failing on the old code, by mutation or by reverting the file.
+- Decisions:
+  - `allow-modals` is dropped in reveal/capture, so other people's alerts can't block the viewer or stall capture;
+  - `form-action 'none'`;
+  - `bluetooth` is left out of Permissions-Policy (Chromium doesn't recognise it);
+  - the protocol stays at v1 because nothing is deployed yet. **Bump to v2 before the first deploy.**
+- Docs: mitigation table added to docs/03 §3.9.

@@ -272,3 +272,24 @@ depend on them. In particular:
 | Headers on other paths | 404s or other paths on the sandbox host have no CSP | Apply the headers to every path. Add `base-uri 'none'`, `form-action` and a fuller Permissions-Policy. |
 | Package CDN availability | Big packuments or tarballs, parallel downloads, a disk cache that never evicts | Global limits on downloads and extraction, streaming extraction, a disk quota/LRU, edge rate limits |
 
+### Mitigation status (T-009, T-010)
+
+| Finding | Status | Verified by |
+|---|---|---|
+| F1: builds are same-site | **Open**. Needs the Public Suffix List entry (user action). Meanwhile `Origin-Agent-Cluster: ?1` is sent. Until the PSL entry exists, `Clear-Site-Data: "cookies"` clears cookies for the whole usercontent domain. | — |
+| F2: re-handshake through the shell realm | Mitigated. One `hello` is accepted per navigation the app starts (attach, mode switch, reset, `restart()`); later ones are ignored and counted. | Unit tests with fake windows |
+| F3: shell-realm persistence | Mitigated. `resetStorage()`, a mode switch and `restart()` all replace the whole preview iframe. | Unit + e2e (old element is gone) |
+| F4: flood through the bridge | Mitigated. Per-type budgets in `PreviewHandle` (console 100/s, errors 20/s, ready 10/s and only for the current load); retained console capped at 200K chars / 500 entries; web UI batched per animation frame. | Unit tests: 10,000 messages → 1 render |
+| F5: package CDN availability | Mitigated (T-010). Global limiters with load shedding, cancellation, streaming extraction, disk quota + LRU. | 118 unit tests incl. gzip bombs |
+| F6/F7: incomplete storage wipe | Mitigated. Cookies on every path, domain, `Partitioned` and Cookie Store variant; OPFS, Storage Buckets, service workers; `/v1/reset` with `Clear-Site-Data`; reset and load serialized. | e2e: every store empty after reset |
+| F8: watchdog spoofing | Partly mitigated. `ping {seq}` / `pong {seq}` answered from a main-thread `setTimeout(0)`; heartbeats no longer count as liveness. Code in the shell realm could still answer from a worker (best-effort, documented). | Fake-timer unit tests + watchdog e2e |
+| F9: popups outlive the build | Mitigated. `reveal`/`capture` have no `allow-popups`, `allow-modals` or `clipboard-write`. Flags are set before navigation, and a mode switch means a new iframe. | e2e: `window.open` → null, clipboard rejected |
+| I1/I2: headers on other paths | Mitigated. Headers on `/*` including 404s. Adds `Origin-Agent-Cluster`, `base-uri 'none'`, `form-action 'none'` and the extended Permissions-Policy (`bluetooth` left out because Chromium 141 doesn't recognise it). | Unit + e2e, no "Unrecognized feature" warning |
+| I3: encoded dot segments | Fixed. `parseBareSpecifier` rejects `%2e`, `%2f`, `%5c`, `%25` and `\`. | Unit tests |
+| Service worker registration | Verified blocked: blob URLs are rejected, and the CSP blocks same-origin scripts. | e2e |
+| CSP inheritance into the build frame | Verified: a foreign `<script src>` is blocked in the build frame. | e2e |
+
+**Current CSP** (supersedes the §3.5 snippet): `default-src 'none'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: <cdn>; style-src 'self' 'unsafe-inline' blob: https:; img-src * data: blob:; font-src * data:; media-src * data: blob:; connect-src 'self' https: wss:; worker-src blob:; base-uri 'none'; form-action 'none'; frame-ancestors <app>`.
+
+**Browser caveat:** only Chromium has been tested. Firefox ignores the `Permissions-Policy` header (the iframe `allow` list still works). Storage Buckets and `Origin-Agent-Cluster` are Chromium-only. Safari supports `Clear-Site-Data` only partly.
+

@@ -132,10 +132,9 @@ const ran = (window as unknown as { __cspProbeRan?: boolean }).__cspProbeRan ===
   expect(ran).toBe(false);
 });
 
+// Clipboard first: an opened popup would take focus, and an unfocused document gets a
+// different rejection ("Document is not focused") that hides the policy check.
 const POPUP_AND_CLIPBOARD = `
-const popup = window.open('about:blank', '_blank');
-const popupResult = popup === null ? 'null' : 'window';
-popup?.close();
 let clipboard: string;
 try {
   await navigator.clipboard.writeText('from the build');
@@ -143,6 +142,9 @@ try {
 } catch (e) {
   clipboard = e instanceof Error ? e.name + ': ' + e.message : String(e);
 }
+const popup = window.open('about:blank', '_blank');
+const popupResult = popup === null ? 'null' : 'window';
+popup?.close();
 `;
 const POPUP_BODY = `<pre data-testid="caps">{JSON.stringify({ popupResult, clipboard })}</pre>`;
 
@@ -166,6 +168,9 @@ test('reveal mode: new iframe without popups, modals or clipboard-write; window.
   };
   console.log(`[policy] live mode: ${JSON.stringify(live)}`);
   expect(live.popupResult).toBe('window');
+  // Live mode delegates clipboard-write; headless Chromium still refuses the write itself
+  // (no user activation), but not because of the permissions policy.
+  expect(live.clipboard).not.toMatch(/permissions policy/i);
 
   // Switch to reveal: the same app can no longer open popups or write the clipboard ...
   await markPreviewElement(page);

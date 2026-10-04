@@ -1,11 +1,18 @@
 import { defineCloudflareConfig } from '@opennextjs/cloudflare';
+import staticAssetsIncrementalCache from '@opennextjs/cloudflare/overrides/incremental-cache/static-assets-incremental-cache';
 
 /**
  * OpenNext adapter config for Cloudflare Workers (`pnpm --filter @br/web cf:build`).
  *
- * No incremental cache yet: every route today is either static (prerendered at build time
- * and served from Workers static assets) or rendered per request. When `/battles/[id]` gets
- * ISR, add the R2 incremental cache here and the matching bucket in wrangler.jsonc
- * (see DEPLOY.md, "Caching").
+ * Today every route is either prerendered at build time (`/`, `/playground`) or rendered on
+ * each request (`/r/[code]`, `/battles/[id]`). The static-assets cache serves the prerendered
+ * HTML from Workers static assets instead of rendering it again on every request. It is
+ * read-only, so it cannot hold ISR pages: when `/battles/[id]` gets `revalidate`, switch to
+ * the R2 incremental cache plus a revalidation queue (see DEPLOY.md, "Caching").
  */
-export default defineCloudflareConfig({});
+export default defineCloudflareConfig({
+  incrementalCache: staticAssetsIncrementalCache,
+  // Answer prerendered pages from the cache before loading the Next server (~7 ms instead of
+  // ~50 ms locally). Must be turned off if we ever use Partial Prerendering.
+  enableCacheInterception: true,
+});

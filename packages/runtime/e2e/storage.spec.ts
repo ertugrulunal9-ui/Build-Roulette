@@ -171,10 +171,13 @@ test('d. reset-storage wipes localStorage, IndexedDB, CacheStorage, OPFS and coo
       () => (document.getElementById('preview') as HTMLIFrameElement & { __old?: boolean }).__old,
     ),
   ).toBeUndefined();
-  // All cookies are gone, including the one on a path the shell's document never sees.
-  expect(await sandboxCookies()).toEqual([]);
 
-  // A fresh load finds every storage area empty.
+  // A fresh load finds every storage area it can see empty.
   await run();
   await expect(frame.getByTestId('found')).toHaveText(EMPTY);
+  // And the browser holds no cookie for the sandbox host, including the one on a path the
+  // shell's document never sees (only Clear-Site-Data from /v1/reset reaches that one).
+  // The fresh load above may have written new ones, so check after a second reset.
+  await reset();
+  expect(await sandboxCookies()).toEqual([]);
 });

@@ -167,9 +167,17 @@ test('reveal mode: new iframe without popups, modals or clipboard-write; window.
   console.log(`[policy] live mode: ${JSON.stringify(live)}`);
   expect(live.popupResult).toBe('window');
 
-  // Switch to reveal: the iframe element is replaced and has the reveal attributes.
+  // Switch to reveal: the same app can no longer open popups or write the clipboard ...
   await markPreviewElement(page);
   await runApp(page, reactApp(POPUP_BODY, POPUP_AND_CLIPBOARD), 'reveal');
+  const reveal = JSON.parse((await buildFrame(page).getByTestId('caps').textContent()) ?? '{}') as {
+    popupResult: string;
+    clipboard: string;
+  };
+  console.log(`[policy] reveal mode: ${JSON.stringify(reveal)}`);
+  expect(reveal.popupResult).toBe('null');
+  expect(reveal.clipboard).toMatch(/^NotAllowedError: .*permissions policy/i);
+  // ... because the iframe element was replaced by one with the reveal attributes.
   expect(await previewElementIsNew(page)).toBe(true);
   expect(await page.evaluate(() => window.__playground.previewMode())).toBe('reveal');
   expect(await preview.getAttribute('sandbox')).toBe(
@@ -180,13 +188,6 @@ test('reveal mode: new iframe without popups, modals or clipboard-write; window.
   expect(await page.frameLocator('#preview').locator('iframe').getAttribute('allow')).toBe(
     'autoplay; fullscreen; gamepad',
   );
-  const reveal = JSON.parse((await buildFrame(page).getByTestId('caps').textContent()) ?? '{}') as {
-    popupResult: string;
-    clipboard: string;
-  };
-  console.log(`[policy] reveal mode: ${JSON.stringify(reveal)}`);
-  expect(reveal.popupResult).toBe('null');
-  expect(reveal.clipboard).toMatch(/^NotAllowedError: .*permissions policy/i);
 
   // A rebuild in the same mode keeps the iframe; going back to live replaces it again.
   await markPreviewElement(page);

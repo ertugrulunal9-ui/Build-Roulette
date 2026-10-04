@@ -6,8 +6,7 @@ import {
   type PreviewOptions,
 } from '../src/preview/preview-handle';
 import { ConsoleLog, DEFAULT_PREVIEW_BUDGETS, RateWindow } from '../src/preview/budget';
-import type {
-  FakeIframe} from './fake-dom';
+import type { FakeIframe } from './fake-dom';
 import {
   FakeComment,
   FakeMessageChannel,

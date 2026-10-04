@@ -16,8 +16,7 @@ max_rows = 1000
 [db]
 port = 54322
 shadow_port = 54320
-# Hosted projects are created on Postgres 17. The offline harness
-# (scripts/test.sh) runs on Postgres 16; the schema uses nothing version-specific.
+# Hosted projects are created on Postgres 17, like the local stack the tests run on.
 major_version = 17
 
 [db.seed]

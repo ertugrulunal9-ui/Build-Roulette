@@ -115,6 +115,12 @@ export async function startDevServers(opts: DevServerOptions = {}): Promise<DevS
     '/playground.js': { type: 'text/javascript; charset=utf-8', body: playgroundJs },
     '/bundler.worker.js': { type: 'text/javascript; charset=utf-8', body: workerJs },
     '/esbuild.wasm': { type: 'application/wasm', body: wasm },
+    // Policy e2e: a classic script on the app origin, which is NOT in the shell's
+    // script-src. A build that adds <script src> for it must not run it.
+    '/csp-probe.js': {
+      type: 'text/javascript; charset=utf-8',
+      body: 'window.__cspProbeRan = true;\n',
+    },
   };
   handler = (req, res) => {
     const url = new URL(req.url ?? '/', appOrigin);

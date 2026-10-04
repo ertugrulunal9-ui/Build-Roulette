@@ -25,7 +25,7 @@ PLAN → BRIEF → DISPATCH → REVIEW → MERGE / FIX → NEXT WAVE
    - Verification commands
    - What's out of scope
    - Report format
-3. **Dispatch:** at most 3 workers run in parallel, and they never share a path. Workers
+3. **Dispatch:** **one worker at a time** (user decision 2026-10-04, after hitting the session usage limit twice). Earlier waves ran up to 3 in parallel; parallel workers must never share a path. Workers
    run in the background in their own git worktree and commit on their own local branch.
 4. **Review:** the hub never relies on the worker's report alone. For each task it:
    - reads the full diff;

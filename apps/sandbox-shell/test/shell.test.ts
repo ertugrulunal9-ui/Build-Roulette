@@ -16,6 +16,16 @@ describe('buildShell', () => {
     expect(gzipSync(built.js).byteLength).toBeLessThan(16 * 1024);
   });
 
+  it('builds the capture page script without app origins or secrets', async () => {
+    const built = await buildShell({ appOrigins: ['https://buildroulette.app'] });
+    expect(built.captureJs).toContain('[br-capture]');
+    expect(built.captureJs).not.toContain('https://buildroulette.app');
+    // No HMAC code in the public script: verification happens in the gate only.
+    expect(built.captureJs).not.toContain('HMAC');
+    expect(built.captureJs).not.toContain('br-capture-v1');
+    expect(gzipSync(built.captureJs).byteLength).toBeLessThan(16 * 1024);
+  });
+
   it('rejects malformed origins', async () => {
     await expect(buildShell({ appOrigins: ['https://buildroulette.app/path'] })).rejects.toThrow(
       'invalid app origin',

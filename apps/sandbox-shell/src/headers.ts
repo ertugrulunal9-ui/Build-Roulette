@@ -50,6 +50,38 @@ export const FORM_ACTION = "'none'";
  * relative URLs. `form-action` is explained at `FORM_ACTION`.
  */
 export function shellCsp(opts: ShellHeaderOptions): string {
+  return cspDirectives(opts, `frame-ancestors ${opts.appOrigins.join(' ')}`).join('; ');
+}
+
+/**
+ * Sandbox flags of the capture page (`/v{N}/capture`), applied with the CSP `sandbox`
+ * directive because the page is top-level (there is no app iframe to carry a `sandbox`
+ * attribute). Same flags as the `reveal`/`capture` preview iframe in @br/runtime
+ * (`PREVIEW_SANDBOX_BY_MODE.capture`; the capture worker's tests check they match): no
+ * popups, no modals (an `alert()` would stall the renderer), no top-level navigation of
+ * other contexts, no downloads. The build's child frame inherits them.
+ */
+export const CAPTURE_SANDBOX_FLAGS = [
+  'allow-scripts',
+  'allow-same-origin',
+  'allow-forms',
+  'allow-pointer-lock',
+] as const;
+
+/**
+ * CSP of the capture page: the shell's policy (same sources, so a build behaves the same as
+ * in the preview), except that the page is loaded top-level by the renderer, so
+ * `frame-ancestors 'none'` (nobody may frame it) and the `sandbox` directive replaces the
+ * app iframe's `sandbox` attribute.
+ */
+export function captureCsp(opts: ShellHeaderOptions): string {
+  return [
+    ...cspDirectives(opts, "frame-ancestors 'none'"),
+    `sandbox ${CAPTURE_SANDBOX_FLAGS.join(' ')}`,
+  ].join('; ');
+}
+
+function cspDirectives(opts: ShellHeaderOptions, frameAncestors: string): string[] {
   const scriptSrc = [
     "'self'",
     "'unsafe-inline'",
@@ -70,10 +102,10 @@ export function shellCsp(opts: ShellHeaderOptions): string {
     'media-src * data: blob:',
     `connect-src ${dedupe(connectSrc).join(' ')}`,
     'worker-src blob:',
-    `frame-ancestors ${opts.appOrigins.join(' ')}`,
+    frameAncestors,
     "base-uri 'none'",
     `form-action ${FORM_ACTION}`,
-  ].join('; ');
+  ];
 }
 
 /**
@@ -143,6 +175,20 @@ export function shellHeaders(opts: ShellHeaderOptions): Record<string, string> {
   };
 }
 
+/**
+ * Headers of the capture page response (`/v{N}/capture`, served only by the capture gate
+ * after the signature check): the security headers with `captureCsp`, never cached (every
+ * URL is single-use and short-lived), and not indexed.
+ */
+export function captureHeaders(opts: ShellHeaderOptions): Record<string, string> {
+  return {
+    ...securityHeaders(opts),
+    'Content-Security-Policy': captureCsp(opts),
+    'Cache-Control': 'no-store',
+    'X-Robots-Tag': 'noindex, nofollow',
+  };
+}
+
 export interface HeaderRule {
   /** Cloudflare Pages / Netlify path pattern, e.g. `/*` or `/v1/shell.js`. */
   pattern: string;
@@ -154,6 +200,8 @@ export interface HeaderRule {
  * and joins repeated header names with a comma, so only rules that cannot overlap set
  * `Cache-Control`: `/*` carries the security headers (every path, 404s included), each shell
  * file gets its own caching rule, and `/v{N}/reset` gets `Clear-Site-Data` + `no-store`.
+ * `/v{N}/capture` is not a static file: the capture gate (`_worker.js`, see
+ * `pages-worker.ts`) answers it with `captureHeaders`.
  */
 export function staticHeaderRules(opts: ShellHeaderOptions, basePath: string): HeaderRule[] {
   const immutable = {
@@ -164,6 +212,7 @@ export function staticHeaderRules(opts: ShellHeaderOptions, basePath: string): H
     { pattern: basePath, headers: immutable },
     { pattern: `${basePath}index.html`, headers: immutable },
     { pattern: `${basePath}shell.js`, headers: immutable },
+    { pattern: `${basePath}capture.js`, headers: immutable },
     { pattern: `${basePath}${RESET_ENDPOINT}`, headers: RESET_HEADERS },
   ];
 }

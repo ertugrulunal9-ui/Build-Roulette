@@ -36,18 +36,9 @@ import {
   type RunMode,
   type ShellToApp,
 } from '@br/protocol';
+import { createChildFrame, injectBuild, installBuildApi, openBuildDocument } from './build-frame';
 import { RESET_ENDPOINT } from './headers';
-import {
-  SerialQueue,
-  clearCookieStore,
-  clearOpfs,
-  clearServiceWorkers,
-  clearStorageBuckets,
-  cookieNames,
-  expireDocumentCookies,
-  fetchClearSiteData,
-  type CookieStoreLike,
-} from './wipe';
+import { SerialQueue, wipeOriginStorage } from './wipe';
 
 /** Injected at build time: origins allowed to embed and drive this shell. */
 declare const __BR_APP_ORIGINS__: readonly string[];
@@ -144,132 +135,46 @@ function teardownFrame(): void {
   }
 }
 
+const FRAME_CSS =
+  'position:fixed;inset:0;width:100%;height:100%;border:0;margin:0;padding:0;display:block;background:transparent';
+
 function runLoad(msg: LoadMessage): void {
   teardownFrame();
-  const f = document.createElement('iframe');
-  // Fullscreen is delegated through `allow` only: adding the legacy `allowfullscreen` too
-  // makes Chromium warn that `allow` takes precedence.
-  f.setAttribute('allow', FRAME_ALLOW[msg.mode]);
-  f.title = 'Build';
-  f.style.cssText =
-    'position:fixed;inset:0;width:100%;height:100%;border:0;margin:0;padding:0;display:block;background:transparent';
-  ((document.body as HTMLElement | null) ?? document.documentElement).appendChild(f);
+  const f = createChildFrame(document, FRAME_ALLOW[msg.mode], FRAME_CSS);
   frame = f;
-  const w = f.contentWindow as (Window & typeof globalThis) | null;
-  const d = f.contentDocument;
-  if (!w || !d) {
+  const opened = openBuildDocument(f, (w) => {
+    instrument(w);
+    // `ready()` is a hint for the capture renderer (capture.ts). In the previews it does
+    // nothing, so templates can call it unconditionally.
+    installBuildApi(w, () => undefined);
+  });
+  if (!opened) {
     reportError(undefined, 'module-load', 'Sandbox could not create the build document');
     post({ type: 'ready', loadId: msg.loadId });
     return;
   }
-
-  d.open();
-  instrument(w);
-  // document.write is deprecated for parser-inserted content in normal pages, but writing
-  // into a document we just opened is the one reliable way to get a standards-mode
-  // document (an about:blank initial document is in quirks mode).
-  // eslint-disable-next-line @typescript-eslint/no-deprecated
-  d.write(
-    '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head><body><div id="root"></div></body></html>',
-  );
-  d.close();
-
-  const importMap = d.createElement('script');
-  importMap.type = 'importmap';
-  importMap.textContent = JSON.stringify(msg.importMap);
-  d.head.appendChild(importMap);
-
-  if (msg.css) {
-    const style = d.createElement('style');
-    style.textContent = msg.css;
-    d.head.appendChild(style);
-  }
-
-  const url = URL.createObjectURL(new Blob([msg.js], { type: 'text/javascript' }));
-  currentBlobUrl = url;
-  const script = d.createElement('script');
-  script.type = 'module';
-  script.src = url;
-  script.addEventListener('load', () => {
-    if (frame === f) post({ type: 'ready', loadId: msg.loadId });
+  currentBlobUrl = injectBuild(opened.document, msg, {
+    onLoad: () => {
+      if (frame === f) post({ type: 'ready', loadId: msg.loadId });
+    },
+    onError: () => {
+      if (frame !== f) return;
+      reportError(
+        undefined,
+        'module-load',
+        'The build or one of its packages failed to load (network or CDN error; see the browser console).',
+      );
+      post({ type: 'ready', loadId: msg.loadId });
+    },
   });
-  script.addEventListener('error', () => {
-    if (frame !== f) return;
-    reportError(
-      undefined,
-      'module-load',
-      'The build or one of its packages failed to load (network or CDN error; see the browser console).',
-    );
-    post({ type: 'ready', loadId: msg.loadId });
-  });
-  d.head.appendChild(script);
   // Keyboard games: a click on the outer frame should land in the build.
-  w.focus();
-}
-
-function deleteDatabase(name: string): Promise<string | null> {
-  return new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      resolve(`IndexedDB "${name}" deletion timed out`);
-    }, 3000);
-    const req = indexedDB.deleteDatabase(name);
-    req.onsuccess = () => {
-      clearTimeout(timer);
-      resolve(null);
-    };
-    req.onerror = () => {
-      clearTimeout(timer);
-      resolve(`IndexedDB "${name}": ${req.error?.message ?? 'error'}`);
-    };
-  });
+  opened.window.focus();
 }
 
 async function resetStorage(requestId: number | undefined): Promise<void> {
   // Close the running build first: its open IndexedDB connections would block deletion.
   teardownFrame();
-  const errors: string[] = [];
-  const attempt = async (what: string, fn: () => unknown) => {
-    try {
-      await fn();
-    } catch (e) {
-      errors.push(`${what}: ${e instanceof Error ? e.message : String(e)}`);
-    }
-  };
-  await attempt('localStorage', () => {
-    localStorage.clear();
-  });
-  await attempt('sessionStorage', () => {
-    sessionStorage.clear();
-  });
-  await attempt('indexedDB', async () => {
-    const dbs = await indexedDB.databases();
-    const results = await Promise.all(
-      dbs.map((db) => (db.name ? deleteDatabase(db.name) : Promise.resolve(null))),
-    );
-    for (const r of results) if (r) errors.push(r);
-  });
-  await attempt('caches', async () => {
-    if (typeof caches === 'undefined') return;
-    for (const key of await caches.keys()) await caches.delete(key);
-  });
-  await attempt('cookies', async () => {
-    const store = (globalThis as { cookieStore?: CookieStoreLike }).cookieStore;
-    if (store) await clearCookieStore(store);
-    // Also without the Cookie Store API (Firefox < 140, Safari < 18.4), and for anything it
-    // left: expire every visible name for each path prefix and Domain variant, with and
-    // without `Partitioned`.
-    expireDocumentCookies(document, location);
-    const left = cookieNames(document.cookie);
-    if (left.length > 0) throw new Error(`still visible: ${left.join(', ')}`);
-  });
-  await attempt('opfs', () => clearOpfs(navigator.storage));
-  await attempt('storageBuckets', () => clearStorageBuckets(navigator));
-  await attempt('serviceWorkers', () => clearServiceWorkers(navigator));
-  // Last: the host's Clear-Site-Data endpoint covers what script cannot reach (HttpOnly
-  // cookies, cookies on other paths or the parent domain, the HTTP cache).
-  await attempt('clearSiteData', () =>
-    fetchClearSiteData(new URL(RESET_ENDPOINT, location.href), 5000),
-  );
+  const errors = await wipeOriginStorage(new URL(RESET_ENDPOINT, location.href));
   const trimmed = errors
     .slice(0, LIMITS.storageResetMaxErrors)
     .map((e) => truncate(e, LIMITS.errorMessageMaxChars));

@@ -1,7 +1,8 @@
 # supabase/
 
-Database schema, row-level security and database tests for Build Roulette.
-The design lives in [docs/05-database.md](../docs/05-database.md); this folder implements it.
+Database schema, RPCs, storage policies and database tests for Build Roulette.
+The design lives in [docs/04-state-machine.md](../docs/04-state-machine.md) and
+[docs/05-database.md](../docs/05-database.md); this folder implements it.
 
 ## Layout
 
@@ -9,114 +10,133 @@ The design lives in [docs/05-database.md](../docs/05-database.md); this folder i
 supabase/
 ├── config.toml                  Supabase CLI v2 config (local stack; anonymous sign-ins on)
 ├── migrations/
-│   └── 20261003120000_initial_schema.sql   enums, tables, indexes, RLS, grants, vote categories
+│   ├── 20261003120000_initial_schema.sql              enums, tables, indexes, RLS, grants, vote categories
+│   ├── 20261004120000_private_schema_and_constants.sql  function default privileges, `private` schema,
+│   │                                                    time limits, default durations, tag rule
+│   ├── 20261004120100_prompt_deck.sql                 60 BUILD / 40 RULE / 30 STYLE cards, tag vocabulary
+│   ├── 20261004120200_storage.sql                     buckets + storage.objects policies
+│   ├── 20261004120300_solo_battle.sql                 state machine + client RPCs
+│   ├── 20261004120400_jobs.sql                        capture/destroy job queue (service role)
+│   └── 20261004120500_sweeps_and_cron.sql             sweep_deadlines, sweep_ttl, pg_cron schedule
 ├── tests/                       pgTAP tests (*.test.sql), one transaction each, rolled back
-│   ├── 00_schema.test.sql       tables/enums exist, RLS on every table, policies, privileges
+│   ├── 00_schema.test.sql       tables/enums exist, RLS on every table, policies, table privileges
 │   ├── 01_constraints.test.sql  room codes, time limits, one build per player, vote PK, cascades
-│   └── 02_rls.test.sql          who can see what, with fixture users; no client writes
+│   ├── 02_rls.test.sql          who can see what, with fixture users; no client writes
+│   ├── 03_deck.test.sql         deck counts and tags, the draw (tag rules, recency, weights)
+│   ├── 04_functions.test.sql    SECURITY DEFINER + search_path, EXECUTE grants per role
+│   ├── 05_solo_lifecycle.test.sql  spin → build → ship → results → destroy, auto-ship, DNF, awards
+│   ├── 06_guards.test.sql       every RPC guard
+│   ├── 07_jobs.test.sql         claim / fail / backoff / lease, complete_capture, complete_destroy
+│   ├── 08_storage.test.sql      storage.objects policies as the API roles
+│   └── 09_sweeps.test.sql       sweep_deadlines, sweep_ttl, pg_cron jobs
 └── scripts/
-    ├── test.sh                  offline test harness (plain Postgres 16, no Docker)
-    └── shim/                    Supabase emulation for test.sh only (never a migration)
-        ├── 01_roles.sql
-        └── 02_auth.sql
+    └── e2e-solo.mjs             the solo loop through the real HTTP APIs (Auth, PostgREST, Storage, pg_cron)
 ```
 
-There is no `seed.sql` yet. `config.toml` already points at `./seed.sql` for local-only
-data such as a dev prompt deck; `test.sh` applies it when it exists. Reference data
-that production needs (the four vote categories) is inserted by the migration,
-because `seed.sql` never runs on `supabase db push`.
+There is no `seed.sql`. Reference data that production needs (vote categories, the
+prompt deck) is inserted by migrations, because `seed.sql` never runs on `supabase db push`.
 
 ## Running the tests
 
+Everything runs against the real local Supabase stack (Docker). The plain-Postgres harness
+(`scripts/test.sh` + a Supabase shim) was retired in T-011: storage policies, `storage.*`
+triggers and pg_cron cannot be emulated faithfully, and tests against an emulation would
+prove the emulation.
+
 ```bash
-bash supabase/scripts/test.sh
+# once per session (in the cloud container: start dockerd first, and pull from Docker Hub)
+SUPABASE_INTERNAL_IMAGE_REGISTRY=docker.io npx -y supabase@2.119.0 start \
+  -x studio,imgproxy,vector,logflare,edge-runtime,supavisor,mailpit,realtime,postgres-meta
+
+npx -y supabase@2.119.0 db reset      # re-apply all migrations to a fresh database
+npx -y supabase@2.119.0 test db       # pgTAP: supabase/tests/*.test.sql
+node supabase/scripts/e2e-solo.mjs    # API end-to-end check (needs psql on PATH)
+
+npx -y supabase@2.119.0 stop --no-backup
 ```
 
-What it does:
+`SUPABASE_INTERNAL_IMAGE_REGISTRY=docker.io` is only needed where `public.ecr.aws` is blocked
+(the cloud dev container). Drop `realtime` from `-x` when working on Realtime (M3), and
+drop `studio,postgres-meta` to get the dashboard. The containers are named after
+`project_id`, so only one checkout can run the stack at a time.
 
-1. Installs `postgresql-16-pgtap` and `pg_prove` (`libtap-parser-sourcehandler-pgtap-perl`)
-   with apt if they are missing. pgTAP is required. Without pg_prove it falls back to plain psql.
-2. `initdb`s a throwaway cluster in `/tmp/build-roulette-pgtest.XXXXXX` and starts it on a
-   unix socket only (no TCP port is opened). As root, the server runs as the `postgres`
-   system user, because Postgres refuses to run as root.
-3. Applies `scripts/shim/*.sql`, then `migrations/*.sql` in filename order (each file in
-   one transaction), then `seed.sql` if present.
-4. Runs `tests/*.test.sql` with `pg_prove`.
-5. Always stops the server and deletes the temp dir (trap on EXIT/INT/TERM).
+`e2e-solo.mjs` commits data (anonymous users, battles, small files) and moves deadlines with
+psql. Run it on a stack you can reset. It reads `API_URL`, `ANON_KEY`, `SERVICE_ROLE_KEY` and
+`DB_URL` from the environment or from `supabase status -o env`; `VERBOSE=1` prints the
+response behind each check.
 
-The exit code is 0 only if every test passes.
+CI (`.github/workflows/ci.yml`, job `db`) runs the same three steps on a fresh stack.
 
-Options (environment variables): `VERBOSE=1` prints every TAP line, `NO_PG_PROVE=1`
-forces the psql runner, `KEEP_TMP=1` keeps the temp dir for debugging, `PG_BIN`
-picks the Postgres binaries (default `/usr/lib/postgresql/16/bin`), `PGTEST_TMPDIR`
-sets the temp parent, and `PG_PORT` sets the socket port (default 54329).
-
-### Writing tests
+### Writing pgTAP tests
 
 - Each file is `begin; create extension if not exists pgtap with schema extensions;
   select plan(n); ... select * from finish(); rollback;`.
-- Insert fixtures as the superuser (RLS doesn't apply), then impersonate a user:
+- Tests run through psql, so `\set` and `\gset` work (e.g. keep a battle id returned by an RPC).
+- Insert fixtures as the superuser (RLS doesn't apply), then impersonate:
   ```sql
   set local role authenticated;
-  set local request.jwt.claims = '{"sub":"<uuid>","role":"authenticated"}';
+  select set_config('request.jwt.claims', '{"sub":"<uuid>","role":"authenticated"}', true);
+  -- service role: set local role service_role; claims '{"role":"service_role"}'
   ```
-  Use `reset role;` to go back to the superuser for more fixture changes.
-- Prefer catalog-driven checks (see `00_schema.test.sql`) so new tables are covered
-  automatically. Any new public table must have RLS enabled and no client write
-  privileges, or the suite fails.
-
-## The shim (`scripts/shim/`)
-
-A vanilla Postgres cluster has none of the objects Supabase provides. The shim adds
-the smallest set our schema and tests rely on:
-
-| Emulated | Notes |
-|---|---|
-| Roles `anon`, `authenticated`, `service_role`, `authenticator` | NOLOGIN API roles. `service_role` has BYPASSRLS. `authenticator` is a member of all three. |
-| Schemas `extensions`, `auth` | `pgcrypto` and `pgtap` are installed into `extensions`, as on Supabase |
-| `auth.users` | Only `id`, `email`, `is_anonymous`, `raw_user_meta_data`, `created_at` |
-| `auth.uid()`, `auth.role()`, `auth.jwt()` | Same bodies as Supabase. They read `request.jwt.claims` (and the legacy `request.jwt.claim.sub/role`). |
-| Supabase default privileges | `postgres`-created objects in `public` are auto-granted to anon/authenticated/service_role, which is the default the migration must revoke |
-| `search_path` | `"$user", public, extensions` |
-
-Limits: this is not Supabase. There is no PostgREST, GoTrue, Realtime, Storage
-(`storage.objects`), `pg_cron`, `pg_net`, `supabase_realtime` publication,
-`supabase_admin` / `supabase_auth_admin` ownership, or event triggers. In the
-harness `postgres` is a true superuser, while on Supabase it is a non-superuser owner.
-Tests that need those features (storage policies, realtime authorization, cron)
-need the real stack or more shim, added deliberately.
-
-The shim lives under `scripts/` rather than `tests/` on purpose: `supabase test db` runs
-`pg_prove --ext .pg --ext .sql -r` over `supabase/tests`, so any `.sql` file there,
-in any subfolder, is executed as a test.
-
-## Mapping to the real Supabase CLI
-
-| Here | With the CLI and Docker |
-|---|---|
-| `bash supabase/scripts/test.sh` | `supabase start`, then `supabase db reset` (migrations + seed), then `supabase test db` |
-| shim | Not needed: Supabase provides the roles, `auth`, `extensions` and default privileges |
-| `tests/*.test.sql` | Run as-is by `supabase test db`. The CLI enables pgTAP itself, so the per-file `create extension if not exists` is a no-op. |
-| migrations | Applied as-is by `supabase db reset` locally, and by `supabase db push` to hosted projects |
-
-The CLI (v2.119.0 from npm) applied this migration with
-`supabase migration up --db-url <url>?sslmode=disable` against a shim-prepared
-cluster, and it accepts `config.toml`. `supabase test db` and `supabase start`
-need Docker, which isn't available in the cloud dev container.
+  Use `reset role;` to go back to the superuser.
+- **Time:** inside a transaction `now()` is constant. Simulate time by moving
+  `phase_ends_at`, `building_started_at`, `building_ends_at` etc. into the past.
+- A function that inserts a row can't have that row read back in the *same* statement
+  (statement snapshot); call it with `\gset` first.
+- `storage.objects` blocks direct DELETEs with a trigger; set
+  `storage.allow_delete_query = 'true'` (locally) to test what RLS alone allows.
+- Prefer catalog-driven checks (00, 04) so new tables and functions are covered
+  automatically.
 
 ## Security model (summary)
 
-- RLS is enabled on every `public` table. Policies are SELECT-only and granted `to authenticated`.
+- RLS is enabled on every `public` table. Table policies are SELECT-only and granted `to authenticated`.
 - `anon` and `authenticated` have no INSERT/UPDATE/DELETE/TRUNCATE privilege on any table.
-  All writes go through `SECURITY DEFINER` RPCs (later migrations).
-- `anon` (a request with no session) can read nothing. Anonymous sign-ins still get the
-  `authenticated` role. Public results pages are expected to go through an RPC
-  (`get_battle_snapshot`) or server-side code.
-- Default privileges are changed so that tables created by later migrations are *not*
-  auto-exposed to `anon`/`authenticated`. Grant `select` explicitly together with the policy.
-- Visibility helpers (`security definer`, `stable`, `search_path = ''`):
-  - `is_room_member(room)`: the caller has a `room_members` row with `kicked_at is null`
-    (having left doesn't remove visibility).
-  - `is_battle_member(battle)`: the caller is on the roster, or is a non-kicked member of
-    the battle's room.
-  - `can_view_battle(battle)`: `is_battle_member`, or the battle is in `results` or `destroyed`.
+  All writes go through `SECURITY DEFINER` RPCs.
+- `anon` (a request with no session) can read nothing and execute nothing. Anonymous
+  sign-ins still get the `authenticated` role.
+- Default privileges: tables, sequences and functions created by later migrations are *not*
+  auto-exposed to `anon`/`authenticated` (functions not to `PUBLIC` either). Grant
+  explicitly.
+- Every function is `SECURITY DEFINER` with `search_path = ''` and schema-qualified
+  references. Internal helpers live in schema `private`, on which no API role has USAGE
+  and which the Data API does not expose.
+- `authenticated` can execute exactly: `server_now`, `start_solo_battle`,
+  `advance_battle`, `ship_build`, `get_battle_snapshot`, and the RLS helpers
+  `is_room_member`, `is_battle_member`, `can_view_battle`, `can_write_build_object`.
+  Worker and sweep functions are `service_role` only.
+
+## RPCs (M2)
+
+Errors use a stable snake_case `message` (supabase-js `error.message`) and a human `details`.
+
+| RPC | Caller | Returns |
+|---|---|---|
+| `server_now()` | authenticated | `timestamptz` (clock_timestamp) |
+| `start_solo_battle(p_display_name text, p_time_limit_seconds int default null)` | authenticated | battle `uuid` |
+| `advance_battle(p_battle_id uuid, p_expected_version int)` | battle member, service role | `{changed, version, phase, phase_ends_at}` |
+| `ship_build(p_battle_id uuid, p_name text, p_stats jsonb default '{}')` | roster player | `{build: {id, status, name, shipped_at, completion_ms, stats}, battle: {version, phase, phase_ends_at}}` |
+| `get_battle_snapshot(p_battle_id uuid)` | member, or anyone signed in once RESULTS/DESTROYED | `{server_now, me, battle, challenge, players, builds, awards}` |
+| `claim_job(p_kind job_kind)` | service role | `jobs` row, or all-null when there is nothing to do |
+| `complete_capture(p_build_id uuid, p_status capture_status, p_path text)` | service role | void |
+| `fail_job(p_job_id bigint, p_error text)` | service role | `jobs` row |
+| `complete_destroy(p_battle_id uuid)` | service role | void |
+| `sweep_deadlines()`, `sweep_ttl()` | pg_cron, service role | `int` |
+
+## Prompt deck tags
+
+Tags only exclude impossible combinations. `needs:<cap>` means the card can't be done without
+`<cap>`, `no:<cap>` means it forbids it; a draw is valid when no card forbids what another
+needs (`private.tags_compatible`, checked pairwise). Capabilities: `text`, `keyboard`,
+`pointer`, `audio`, `color`, `animation`, `scroll`, `buttons`. A check constraint rejects
+any other tag, and `03_deck.test.sql` checks that every BUILD card keeps at least 30
+compatible RULE cards and every compatible BUILD + RULE pair at least 15 STYLE cards.
+
+## pg_cron
+
+`20261004120500_sweeps_and_cron.sql` creates `pg_cron` (in `pg_catalog`, as Supabase does)
+when the extension is available and schedules `br-sweep-deadlines` (every 5 s),
+`br-sweep-ttl` (every 10 min) and `br-cron-history-cleanup` (daily, keeps 2 days of
+`cron.job_run_details`). Without `pg_cron` the block is skipped with a NOTICE. Hosted
+Supabase ships pg_cron; this has only been verified on the local stack so far, so check the
+schedule (`select * from cron.job`) after the first `supabase db push`.

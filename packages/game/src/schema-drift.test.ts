@@ -1,11 +1,14 @@
 /**
- * Drift test: `BATTLE_PHASES` must match the Postgres enum `public.battle_phase` as
- * defined by the SQL migrations (supabase/migrations/*.sql), value for value, in order.
+ * Drift tests between `@br/game` and the SQL migrations (supabase/migrations/*.sql):
  *
- * The migrations are replayed in filename order (the order the Supabase CLI and
- * supabase/scripts/test.sh apply them): `create type ... as enum (...)` sets the list,
- * `alter type ... add value [if not exists] 'x' [before|after 'y']` and
- * `alter type ... rename value 'a' to 'b'` modify it.
+ * - `BATTLE_PHASES` must match the Postgres enum `public.battle_phase`, value for value, in
+ *   order. The migrations are replayed in filename order (the order the Supabase CLI applies
+ *   them): `create type ... as enum (...)` sets the list,
+ *   `alter type ... add value [if not exists] 'x' [before|after 'y']` and
+ *   `alter type ... rename value 'a' to 'b'` modify it.
+ * - `BUILD_TIME_LIMITS_MINUTES` must match `private.build_time_limits_seconds()` and
+ *   `DEFAULT_PHASE_DURATIONS` the `<phase>_s` keys of `private.default_battle_settings()`,
+ *   taking the last definition of each function across the migrations.
  *
  * Vote categories are not checked here: `@br/game` does not expose them (yet).
  */
@@ -14,7 +17,8 @@ import { join, resolve } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { BATTLE_PHASES } from './phases';
+import { BUILD_TIME_LIMITS_MINUTES, DEFAULT_PHASE_DURATIONS } from './durations';
+import { BATTLE_PHASES, isBattlePhase } from './phases';
 
 const MIGRATIONS_DIR = resolve(import.meta.dirname, '../../../supabase/migrations');
 const ENUM_NAME = 'battle_phase';
@@ -178,6 +182,95 @@ describe('schema drift: BATTLE_PHASES vs SQL enum public.battle_phase', () => {
       );
     }
     expect(values).toEqual([...BATTLE_PHASES]);
+  });
+});
+
+/**
+ * Body of the last `create [or replace] function private.<name>()` (no arguments) across the
+ * migrations, or null. The body is the dollar-quoted string after `as`.
+ */
+function lastPrivateFunctionBody(
+  files: readonly { name: string; sql: string }[],
+  functionName: string,
+): string | null {
+  const pattern = new RegExp(
+    String.raw`\bcreate\s+(?:or\s+replace\s+)?function\s+"?private"?\s*\.\s*"?${functionName}"?\s*\(\s*\)` +
+      String.raw`[\s\S]*?\bas\s+(\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$)([\s\S]*?)\1`,
+    'gi',
+  );
+  let body: string | null = null;
+  for (const { sql } of files) {
+    for (const match of stripSqlComments(sql).matchAll(pattern)) body = match[2] ?? null;
+  }
+  return body;
+}
+
+/** `private.build_time_limits_seconds()`: the integers of its `array[...]` literal. */
+function timeLimitsSecondsFromMigrations(files: readonly { name: string; sql: string }[]) {
+  const body = lastPrivateFunctionBody(files, 'build_time_limits_seconds');
+  const list = body === null ? undefined : /\barray\s*\[([\d\s,]*)\]/i.exec(body)?.[1];
+  if (list === undefined) return null;
+  return list
+    .split(',')
+    .map((v) => v.trim())
+    .filter((v) => v !== '')
+    .map(Number);
+}
+
+/** `private.default_battle_settings()`: every `'<key>_s', <integer>` pair. */
+function defaultSettingsFromMigrations(files: readonly { name: string; sql: string }[]) {
+  const body = lastPrivateFunctionBody(files, 'default_battle_settings');
+  if (body === null) return null;
+  const settings: Record<string, number> = {};
+  for (const match of body.matchAll(/'([a-z_]+)_s'\s*,\s*(\d+)/g)) {
+    settings[match[1] ?? ''] = Number(match[2]);
+  }
+  return settings;
+}
+
+describe('schema drift: durations vs SQL constants', () => {
+  it('BUILD_TIME_LIMITS_MINUTES matches private.build_time_limits_seconds()', () => {
+    const seconds = timeLimitsSecondsFromMigrations(readMigrations());
+    expect(
+      seconds,
+      'private.build_time_limits_seconds() not found or not a flat array',
+    ).not.toBeNull();
+    expect(seconds).toEqual(BUILD_TIME_LIMITS_MINUTES.map((minutes) => minutes * 60));
+  });
+
+  it('DEFAULT_PHASE_DURATIONS matches private.default_battle_settings()', () => {
+    const settings = defaultSettingsFromMigrations(readMigrations());
+    expect(settings, 'private.default_battle_settings() not found').not.toBeNull();
+    // Every phase duration in SQL is known to @br/game, and every one @br/game has is in SQL.
+    const sqlPhases = Object.fromEntries(
+      Object.entries(settings ?? {}).filter(([key]) => isBattlePhase(key)),
+    );
+    expect(sqlPhases).toEqual({ ...DEFAULT_PHASE_DURATIONS });
+  });
+
+  it('parses the last definition and ignores comments', () => {
+    const files = [
+      {
+        name: '1.sql',
+        sql: `create function private.build_time_limits_seconds() returns int[] language sql
+              as $$ select array[1, 2] $$;
+              create function private.default_battle_settings() returns jsonb language sql
+              as $$ select jsonb_build_object('spinning_s', 1) $$;`,
+      },
+      {
+        name: '2.sql',
+        sql: `-- create function private.build_time_limits_seconds() as $$ select array[9] $$;
+              create or replace function "private".build_time_limits_seconds()
+              returns int[] language sql immutable as $fn$
+                select array[180, 300] -- comment
+              $fn$;
+              create or replace function private.default_battle_settings() returns jsonb
+              language sql as $$ select jsonb_build_object('spinning_s', 6, 'other_s', 1) $$;`,
+      },
+    ];
+    expect(timeLimitsSecondsFromMigrations(files)).toEqual([180, 300]);
+    expect(defaultSettingsFromMigrations(files)).toEqual({ spinning: 6, other: 1 });
+    expect(timeLimitsSecondsFromMigrations([{ name: '1.sql', sql: 'select 1;' }])).toBeNull();
   });
 });
 

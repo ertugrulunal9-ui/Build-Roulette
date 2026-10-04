@@ -78,6 +78,17 @@ Deployed with the OpenNext Cloudflare adapter (`@opennextjs/cloudflare`), so the
 sandbox shell, the package-CDN cache and screenshot rendering all live in one Cloudflare
 account. M2 starts with a spike that checks Next 16 compatibility. If it fails, the fallback
 is a plain Node `next start` on Fly.io (option B).
+
+**Spike result (T-012): GO with caveats.** Next 16.3.8 runs under `@opennextjs/cloudflare`
+1.20.8, and the full web e2e suite passes against the local Workers preview. The Worker bundle
+is 829 KiB gzip; the limit is 10 MB on Workers Paid. `esbuild.wasm` (13.3 MiB) is served as a
+static asset, which allows up to 25 MiB per file. Rules that follow from the spike:
+- use **Workers Paid**, because the free plan's 10 ms CPU and 3 MB size limits are too tight;
+- avoid `proxy.ts` (middleware) unless it's really needed, since it adds about 1.2 MB gzip;
+- results pages (`/battles/[id]`) use the **R2 incremental cache** for ISR. Static pages use
+  the static-assets cache;
+- set `metadataBase` for OG images. `next/og` works.
+- Deploy with `cf:deploy`, never with plain `wrangler deploy`. See `apps/web/DEPLOY.md`.
 | Route | Rendering | Purpose |
 |---|---|---|
 | `/` | static + client | Landing page, "Create room", "Join with code" |

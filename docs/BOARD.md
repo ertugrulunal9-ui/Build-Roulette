@@ -7,7 +7,7 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 | ID | Task | Scope | Status | Notes |
 |---|---|---|---|---|
 | T-011 | DB layer for the solo loop: RPCs (start, advance, ship, snapshot), storage buckets + policies, jobs, deadline sweep, card deck seed; tests on the real local Supabase stack | `supabase/`, `.github/workflows/ci.yml` (db job only) | in-progress | M2 wave 1 |
-| T-012 | Spike: Next.js 16 on Cloudflare Workers via OpenNext (local preview, no account) | `apps/web/` (deploy config only) | in-progress | M2 wave 1 |
+| T-012 | Spike: Next.js 16 on Cloudflare Workers via OpenNext (local preview, no account) | `apps/web/` (deploy config only) | done | Merged: GO with caveats |
 | T-013 | Capture mode in the shell + local capture/destroy workers (Playwright stands in for Browser Rendering) | `apps/sandbox-shell/`, `apps/capture-worker/` | todo | M2 wave 2, after T-011 |
 | T-014 | Solo game UI: spin → build → ship → results → destroy, plus the `/battles/[id]` results page | `apps/web/` | todo | M2 wave 2, after T-011/T-012 |
 | T-001 | Monorepo skeleton: pnpm + Turborepo, Next.js app, lint/format/strict TS, Vitest, CI | root config, `apps/web/`, `packages/game/`, `.github/` | done | Merged in b29110a |
@@ -25,7 +25,7 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 
 | Item | Needed for |
 |---|---|
-| Cloudflare account (free plan to start; Workers Paid later for Containers + Browser Rendering) | Deploying the app, sandbox shell, package CDN and screenshots |
+| Cloudflare account (**Workers Paid, ~$5/month, at deploy time**: free-plan CPU and size limits are too tight for SSR per T-012) | Deploying the app, sandbox shell, package CDN and screenshots |
 | Supabase project (free plan to start) | Hosted database, auth, storage and realtime |
 | One domain for the app (optional at first; the app can run on a free Cloudflare address) | Public launch |
 | Later: second (usercontent) domain + Public Suffix List entry (F1) | Per-build isolation as the game grows |
@@ -44,6 +44,7 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 - T-008 Security review (code-level)
 - T-009 Sandbox hardening
 - T-010 Package CDN availability hardening
+- T-012 OpenNext / Cloudflare Workers spike
 
 ## Review log
 
@@ -222,3 +223,14 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
   - `bluetooth` is left out of Permissions-Policy (Chromium doesn't recognise it);
   - the protocol stays at v1 because nothing is deployed yet. **Bump to v2 before the first deploy.**
 - Docs: mitigation table added to docs/03 §3.9.
+
+### T-012: accepted (M2 wave 1), GO with caveats
+- Hub test-merged and re-ran:
+  - format, lint, typecheck, test, build: green;
+  - **web e2e against the Workers preview: 11/11**;
+  - `wrangler deploy --dry-run`: 4047 KiB raw / **829 KiB gzip**.
+- Out-of-scope edits accepted, all minimal:
+  - root `.gitignore`/`.prettierignore` gain `.open-next/`, `.wrangler/`, `.dev.vars*`;
+  - `workerd` goes into `ignoredBuiltDependencies`, the same pattern as esbuild.
+- Rules recorded in docs/01: Workers Paid; no `proxy.ts` unless needed; R2 incremental cache for `/battles/[id]` ISR; `metadataBase` for OG; deploy via `cf:deploy`.
+- Follow-up (T-014): `/battles/[id]` ISR on the R2 cache, plus `metadataBase`.

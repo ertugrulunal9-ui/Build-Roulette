@@ -17,9 +17,13 @@
 -- ─── Default privileges for functions ─────────────────────────────────────
 -- The initial migration revoked the Supabase default grants for tables and
 -- sequences. Functions were still auto-granted to anon and authenticated
--- (and, by the built-in default, to PUBLIC). Close that too, so a function
--- that a later migration forgets to lock down is not callable by clients.
+-- (Supabase's per-schema default) and to PUBLIC (the built-in global
+-- default). Close both, so a function that a later migration forgets to lock
+-- down is not callable by clients. A per-schema entry cannot take away a
+-- global default, hence the second, schema-less statement. It applies to
+-- functions the migration role creates in any schema.
 alter default privileges in schema public revoke execute on functions from public, anon, authenticated;
+alter default privileges revoke execute on functions from public;
 
 -- ─── private schema ───────────────────────────────────────────────────────
 create schema if not exists private;

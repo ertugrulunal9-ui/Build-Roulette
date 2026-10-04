@@ -28,6 +28,7 @@ import * as esbuild from 'esbuild';
 import { init as initCjsLexer, parse as parseCjs } from 'cjs-module-lexer';
 import { init as initEsmLexer, parse as parseEsm } from 'es-module-lexer';
 import { CdnError, errorMessage } from './errors';
+import { abortReason, throwIfAborted } from './limiter';
 import { isNodeBuiltin, packageNameOf, splitSpecifier } from './names';
 import type { InstalledTree, TreeNode } from './tree';
 import { packageLocationOf } from './tree';
@@ -65,6 +66,8 @@ export interface BundleContext {
   resolvePeerVersion(name: string, range: string): Promise<string>;
   maxOutputBytes: number;
   timeoutMs: number;
+  /** Cancels the build (every request that wanted it went away). */
+  signal?: AbortSignal | undefined;
 }
 
 const ENTRY_NS = 'pkg-cdn-entry';
@@ -365,7 +368,8 @@ export async function bundlePackage(req: BuildRequest, ctx: BundleContext): Prom
     ctx: esbuild.BuildContext | null;
     timer: ReturnType<typeof setTimeout> | null;
     timedOut: boolean;
-  } = { ctx: null, timer: null, timedOut: false };
+    onAbort: (() => void) | null;
+  } = { ctx: null, timer: null, timedOut: false, onAbort: null };
   try {
     const ctxBuild = await esbuild.context({
       entryPoints: [spec],
@@ -405,6 +409,7 @@ export async function bundlePackage(req: BuildRequest, ctx: BundleContext): Prom
       plugins: [plugin],
     });
     run.ctx = ctxBuild;
+    throwIfAborted(ctx.signal);
     const building = ctxBuild.rebuild();
     const timeout = new Promise<never>((_, reject) => {
       run.timer = setTimeout(() => {
@@ -414,6 +419,11 @@ export async function bundlePackage(req: BuildRequest, ctx: BundleContext): Prom
           new CdnError(504, 'timeout', `bundling took longer than ${ctx.timeoutMs.toString()} ms`),
         );
       }, ctx.timeoutMs);
+      run.onAbort = () => {
+        void ctxBuild.cancel();
+        reject(abortReason(ctx.signal));
+      };
+      ctx.signal?.addEventListener('abort', run.onAbort, { once: true });
     });
     const result = await Promise.race([building, timeout]);
     for (const w of result.warnings) warnings.push(w.text);
@@ -446,6 +456,7 @@ export async function bundlePackage(req: BuildRequest, ctx: BundleContext): Prom
     };
   } catch (e) {
     if (e instanceof CdnError) throw e;
+    if (ctx.signal?.aborted) throw abortReason(ctx.signal);
     if (run.timedOut)
       throw new CdnError(
         504,
@@ -469,6 +480,7 @@ export async function bundlePackage(req: BuildRequest, ctx: BundleContext): Prom
     throw new CdnError(500, 'build-failed', `failed to bundle ${spec}: ${errorMessage(e)}`);
   } finally {
     if (run.timer !== null) clearTimeout(run.timer);
+    if (run.onAbort) ctx.signal?.removeEventListener('abort', run.onAbort);
     if (run.ctx) await run.ctx.dispose();
   }
 }

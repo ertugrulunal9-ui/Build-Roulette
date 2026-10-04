@@ -42,15 +42,22 @@ export interface Limits {
   maxPackumentBytes: number;
 }
 
+/**
+ * Defaults sized from the R1 compat suite's real dependency trees (279 packages, measured
+ * 2026-10-03; see the README): largest tarball react-icons 21.7 MB, largest unpacked phaser
+ * 107 MB, most files react-aria 7243, largest abbreviated packument react-aria 3.6 MB.
+ * Tarballs are streamed to disk and extracted as a stream, so these bound disk and time, not
+ * memory; the packument limit bounds memory (a packument is parsed as one JSON document).
+ */
 export const DEFAULT_LIMITS: Limits = {
-  maxTarballBytes: 40 * 1024 * 1024,
-  maxUnpackedBytes: 250 * 1024 * 1024,
+  maxTarballBytes: 32 * 1024 * 1024,
+  maxUnpackedBytes: 160 * 1024 * 1024,
   maxFilesPerPackage: 30_000,
   maxDependencies: 250,
   maxOutputBytes: 12 * 1024 * 1024,
   bundleTimeoutMs: 60_000,
   fetchTimeoutMs: 60_000,
-  maxPackumentBytes: 64 * 1024 * 1024,
+  maxPackumentBytes: 16 * 1024 * 1024,
 };
 
 export class Denylist {

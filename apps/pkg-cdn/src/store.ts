@@ -3,12 +3,18 @@
  * exact version, shared by every dependency tree. A package directory only appears once its
  * tarball was downloaded, verified and fully extracted (atomic rename), so its existence
  * means "complete".
+ *
+ * A tarball is streamed to `<cacheDir>/tmp/` while it is hashed (registry limiter), verified,
+ * then extracted from that file as a stream (extraction limiter): memory use per package is
+ * a few buffers, whatever its size.
  */
-import { existsSync } from 'node:fs';
-import { mkdir } from 'node:fs/promises';
+import { createReadStream, existsSync } from 'node:fs';
+import { mkdir, rm } from 'node:fs/promises';
 import path from 'node:path';
+import { storeKey, type CacheIndex } from './disk-cache';
 import { CdnError } from './errors';
-import { verifyIntegrity } from './integrity';
+import { checkDigest, integrityAlgorithm } from './integrity';
+import { SingleFlight, type Limiter } from './limiter';
 import { encodeNameForPath } from './names';
 import type { Denylist, Limits } from './policy';
 import type { PackumentVersion, RegistryClient } from './registry';
@@ -20,17 +26,22 @@ export interface PackageStoreOptions {
   limits: Limits;
   denylist: Denylist;
   allowSha1Fallback: boolean;
+  /** Global limit on concurrent extractions. */
+  extractions: Limiter;
+  index: CacheIndex;
 }
 
 export class PackageStore {
   readonly root: string;
+  private readonly tmpDir: string;
   private readonly opts: PackageStoreOptions;
-  private readonly inflight = new Map<string, Promise<string>>();
-  readonly stats = { extracted: 0 };
+  private readonly flights = new SingleFlight<string>();
+  readonly stats = { extracted: 0, extractedBytes: 0 };
 
   constructor(opts: PackageStoreOptions) {
     this.opts = opts;
     this.root = path.resolve(opts.cacheDir, 'store');
+    this.tmpDir = path.resolve(opts.cacheDir, 'tmp');
   }
 
   /** Directory of an exact package version in the store (it may not exist yet). */
@@ -38,21 +49,36 @@ export class PackageStore {
     return path.join(this.root, encodeNameForPath(name), version);
   }
 
-  /** Downloads, verifies and extracts the package if needed. Returns its directory. */
-  ensure(meta: PackumentVersion, via?: string): Promise<string> {
-    this.opts.denylist.assertAllowed(meta.name, meta.version, via);
-    const dir = this.dirFor(meta.name, meta.version);
-    if (existsSync(dir)) return Promise.resolve(dir);
-    const key = `${meta.name}@${meta.version}`;
-    let job = this.inflight.get(key);
-    if (!job) {
-      job = this.download(meta, dir).finally(() => this.inflight.delete(key));
-      this.inflight.set(key, job);
-    }
-    return job;
+  keyFor(name: string, version: string): string {
+    return storeKey(name, version);
   }
 
-  private async download(meta: PackumentVersion, dir: string): Promise<string> {
+  get inflight(): number {
+    return this.flights.size;
+  }
+
+  /**
+   * Downloads, verifies and extracts the package if needed. Returns its directory. The caller
+   * must hold a lease on `keyFor(meta.name, meta.version)` while it uses the directory.
+   */
+  async ensure(meta: PackumentVersion, via?: string, signal?: AbortSignal): Promise<string> {
+    this.opts.denylist.assertAllowed(meta.name, meta.version, via);
+    const key = this.keyFor(meta.name, meta.version);
+    const dir = this.dirFor(meta.name, meta.version);
+    await this.opts.index.settled(key);
+    if (existsSync(dir)) {
+      this.opts.index.touch(key);
+      return dir;
+    }
+    return this.flights.run(key, (s) => this.download(meta, dir, key, s), signal);
+  }
+
+  private async download(
+    meta: PackumentVersion,
+    dir: string,
+    key: string,
+    signal: AbortSignal,
+  ): Promise<string> {
     const { limits } = this.opts;
     const label = `${meta.name}@${meta.version}`;
     if (meta.dist.unpackedSize !== undefined && meta.dist.unpackedSize > limits.maxUnpackedBytes) {
@@ -69,14 +95,38 @@ export class PackageStore {
         `${label} has ${meta.dist.fileCount.toString()} files; the limit is ${limits.maxFilesPerPackage.toString()}`,
       );
     }
-    const tgz = await this.opts.registry.fetchTarball(meta.dist.tarball, limits.maxTarballBytes);
-    verifyIntegrity(tgz, meta.dist, { allowSha1Fallback: this.opts.allowSha1Fallback });
-    await mkdir(path.dirname(dir), { recursive: true });
-    await extractTarball(tgz, dir, {
-      maxUnpackedBytes: limits.maxUnpackedBytes,
-      maxFiles: limits.maxFilesPerPackage,
+    const algorithm = integrityAlgorithm(meta.dist, {
+      allowSha1Fallback: this.opts.allowSha1Fallback,
     });
-    this.stats.extracted++;
+    await mkdir(this.tmpDir, { recursive: true });
+    const tgz = path.join(
+      this.tmpDir,
+      `${process.pid.toString()}-${Math.random().toString(36).slice(2)}.tgz`,
+    );
+    try {
+      const { digest } = await this.opts.registry.downloadTarball(meta.dist.tarball, tgz, {
+        maxBytes: limits.maxTarballBytes,
+        algorithm,
+        signal,
+      });
+      checkDigest(algorithm, digest, meta.dist);
+      await mkdir(path.dirname(dir), { recursive: true });
+      const result = await this.opts.extractions.run(
+        () =>
+          extractTarball(
+            createReadStream(tgz),
+            dir,
+            { maxUnpackedBytes: limits.maxUnpackedBytes, maxFiles: limits.maxFilesPerPackage },
+            signal,
+          ),
+        signal,
+      );
+      this.stats.extracted++;
+      this.stats.extractedBytes += result.bytes;
+      this.opts.index.record(key, result.diskBytes);
+    } finally {
+      await rm(tgz, { force: true });
+    }
     return dir;
   }
 }

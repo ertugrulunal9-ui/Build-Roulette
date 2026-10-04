@@ -24,10 +24,12 @@
  * Package files are hard links into the store (no symlinks anywhere in the cache).
  */
 import { existsSync } from 'node:fs';
-import { copyFile, link, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { copyFile, link, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import semver from 'semver';
+import { treeKey, type CacheIndex } from './disk-cache';
 import { CdnError, errorMessage } from './errors';
+import { SingleFlight, throwIfAborted } from './limiter';
 import { encodeNameForPath, validatePackageName } from './names';
 import type { Denylist, Limits } from './policy';
 import {
@@ -37,7 +39,7 @@ import {
   type RegistryClient,
 } from './registry';
 import type { PackageStore } from './store';
-import { renameIntoPlace } from './tar';
+import { diskSize, renameIntoPlace } from './tar';
 
 export const TREE_FORMAT = 'v1';
 
@@ -58,7 +60,7 @@ export interface ResolvedTree {
   nodes: TreeNode[];
 }
 
-export type GetPackument = (name: string) => Promise<Packument>;
+export type GetPackument = (name: string, signal?: AbortSignal) => Promise<Packument>;
 
 /** `['a', '@s/b']` -> `node_modules/a/node_modules/@s/b` */
 export function locationOf(nodePath: readonly string[]): string {
@@ -132,6 +134,17 @@ function collectDeps(meta: PackumentVersion): Dep[] {
 export interface ResolveTreeOptions {
   maxDependencies: number;
   denylist: Denylist;
+  signal?: AbortSignal | undefined;
+}
+
+/**
+ * A failure that says nothing about the dependency itself (overload, timeout, cancellation,
+ * registry or network trouble). An optional dependency is only skipped for a definite answer
+ * (404, invalid, unsupported), never for these, or a transient error would be baked into a
+ * cached tree.
+ */
+function isTransient(e: unknown): boolean {
+  return !(e instanceof CdnError) || e.status >= 500 || e.status === 499;
 }
 
 export interface ResolvedTreeWithMeta {
@@ -161,7 +174,9 @@ export async function resolveTree(
     return undefined;
   };
 
+  const { signal } = opts;
   while (queue.length > 0) {
+    throwIfAborted(signal);
     const node = queue.shift();
     if (!node) break;
     const meta = metas.get(locationOf(node.path));
@@ -172,9 +187,10 @@ export async function resolveTree(
     // Warm the packument cache for this level in parallel; errors surface below.
     await Promise.all(
       parsed.map(({ spec }) =>
-        spec.ok ? getPackument(spec.realName).catch(() => null) : Promise.resolve(null),
+        spec.ok ? getPackument(spec.realName, signal).catch(() => null) : Promise.resolve(null),
       ),
     );
+    throwIfAborted(signal);
     for (const { dep, spec } of parsed) {
       if (!spec.ok) {
         if (dep.optional) continue;
@@ -194,9 +210,9 @@ export async function resolveTree(
       }
       let pack: Packument;
       try {
-        pack = await getPackument(spec.realName);
+        pack = await getPackument(spec.realName, signal);
       } catch (e) {
-        if (dep.optional) continue;
+        if (dep.optional && !isTransient(e)) continue;
         if (e instanceof CdnError && e.status === 404) {
           throw new CdnError(404, 'unknown-package', `${e.message} (dependency of ${via})`);
         }
@@ -257,37 +273,66 @@ function makeNode(nodePath: string[], installName: string, meta: PackumentVersio
   };
 }
 
-/** Hard-links (or copies) a store directory into the tree. Only files and directories. */
-async function linkDir(src: string, dst: string): Promise<void> {
+/**
+ * Hard-links (or copies) a store directory into the tree. Only files and directories.
+ * Returns the estimated disk usage it added (directories, and files that had to be copied).
+ */
+async function linkDir(src: string, dst: string): Promise<number> {
+  let bytes = diskSize(0);
   await mkdir(dst, { recursive: true });
   for (const entry of await readdir(src, { withFileTypes: true })) {
     const s = path.join(src, entry.name);
     const d = path.join(dst, entry.name);
     if (entry.isDirectory()) {
-      await linkDir(s, d);
+      bytes += await linkDir(s, d);
     } else if (entry.isFile()) {
       try {
         await link(s, d);
       } catch (e) {
         const code = (e as { code?: string }).code;
         if (code === 'EEXIST') continue;
-        if (code === 'EXDEV' || code === 'EPERM' || code === 'EMLINK') await copyFile(s, d);
-        else throw e;
+        if (code === 'EXDEV' || code === 'EPERM' || code === 'EMLINK') {
+          await copyFile(s, d);
+          bytes += diskSize((await stat(d)).size);
+        } else throw e;
       }
     }
   }
+  return bytes;
 }
 
-async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (t: T) => Promise<R>) {
+/**
+ * Runs `fn` over `items` with at most `limit` at a time. On the first failure no new item
+ * starts and the others are cancelled through the signal they get.
+ */
+async function mapLimit<T, R>(
+  items: readonly T[],
+  limit: number,
+  signal: AbortSignal | undefined,
+  fn: (t: T, signal: AbortSignal) => Promise<R>,
+): Promise<R[]> {
+  const local = new AbortController();
+  const combined = signal ? AbortSignal.any([signal, local.signal]) : local.signal;
   const out: R[] = new Array<R>(items.length);
   let next = 0;
   const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (next < items.length) {
+    while (next < items.length && !combined.aborted) {
       const i = next++;
-      out[i] = await fn(items[i] as T);
+      try {
+        out[i] = await fn(items[i] as T, combined);
+      } catch (e) {
+        local.abort(e);
+        throw e;
+      }
     }
   });
-  await Promise.all(workers);
+  try {
+    await Promise.all(workers);
+  } finally {
+    // Wait for the cancelled siblings so nothing outlives the call.
+    await Promise.allSettled(workers);
+  }
+  throwIfAborted(signal);
   return out;
 }
 
@@ -304,9 +349,10 @@ export interface TreeManagerOptions {
   store: PackageStore;
   limits: Limits;
   denylist: Denylist;
+  index: CacheIndex;
 }
 
-function index(dir: string, tree: ResolvedTree): InstalledTree {
+function indexTree(dir: string, tree: ResolvedTree): InstalledTree {
   const nodeByLocation = new Map<string, TreeNode>();
   for (const n of tree.nodes) nodeByLocation.set(locationOf(n.path), n);
   return { dir, tree, nodeByLocation, rootLocation: locationOf([tree.root.name]) };
@@ -315,8 +361,7 @@ function index(dir: string, tree: ResolvedTree): InstalledTree {
 export class TreeManager {
   readonly root: string;
   private readonly opts: TreeManagerOptions;
-  private readonly inflight = new Map<string, Promise<InstalledTree>>();
-  private readonly loaded = new Map<string, InstalledTree>();
+  private readonly flights = new SingleFlight<InstalledTree>();
   readonly stats = { installed: 0 };
 
   constructor(opts: TreeManagerOptions) {
@@ -328,62 +373,84 @@ export class TreeManager {
     return path.join(this.root, `${encodeNameForPath(name)}@${version}`);
   }
 
-  ensure(meta: PackumentVersion): Promise<InstalledTree> {
-    const key = `${meta.name}@${meta.version}`;
-    const cached = this.loaded.get(key);
-    if (cached) return Promise.resolve(cached);
-    let job = this.inflight.get(key);
-    if (!job) {
-      job = this.load(meta)
-        .then((t) => {
-          this.loaded.set(key, t);
-          return t;
-        })
-        .finally(() => this.inflight.delete(key));
-      this.inflight.set(key, job);
-    }
-    return job;
+  /** Cache key of the tree (lease it while the tree is in use). */
+  keyFor(name: string, version: string): string {
+    return treeKey(TREE_FORMAT, name, version);
   }
 
-  private async load(meta: PackumentVersion): Promise<InstalledTree> {
+  get inflight(): number {
+    return this.flights.size;
+  }
+
+  /**
+   * Resolves, downloads and lays out the tree if needed. The caller must hold a lease on
+   * `keyFor(meta.name, meta.version)` while it uses the tree.
+   */
+  async ensure(meta: PackumentVersion, signal?: AbortSignal): Promise<InstalledTree> {
+    const key = this.keyFor(meta.name, meta.version);
     const dir = this.dirFor(meta.name, meta.version);
+    await this.opts.index.settled(key);
     const treeFile = path.join(dir, 'tree.json');
     if (existsSync(treeFile)) {
-      return index(dir, JSON.parse(await readFile(treeFile, 'utf8')) as ResolvedTree);
+      this.opts.index.touch(key);
+      return indexTree(dir, JSON.parse(await readFile(treeFile, 'utf8')) as ResolvedTree);
     }
-    const { tree, metas } = await resolveTree(meta, (n) => this.opts.registry.getPackument(n), {
-      maxDependencies: this.opts.limits.maxDependencies,
-      denylist: this.opts.denylist,
-    });
+    return this.flights.run(key, (s) => this.install(meta, dir, key, s), signal);
+  }
+
+  private async install(
+    meta: PackumentVersion,
+    dir: string,
+    key: string,
+    signal: AbortSignal,
+  ): Promise<InstalledTree> {
+    const { tree, metas } = await resolveTree(
+      meta,
+      (n, s) => this.opts.registry.getPackument(n, s),
+      { maxDependencies: this.opts.limits.maxDependencies, denylist: this.opts.denylist, signal },
+    );
     // Download + extract every package (shared store), then link them into a temp tree.
     const nodes = [...tree.nodes].sort((a, b) => a.path.length - b.path.length);
-    const storeDirs = await mapLimit(nodes, 8, (n) => {
-      const m = metas.get(locationOf(n.path));
-      if (!m) throw new Error(`missing metadata for ${n.realName}`);
-      const parent = n.path.length > 1 ? n.path[n.path.length - 2] : meta.name;
-      return this.opts.store.ensure(m, n === nodes[0] ? undefined : parent);
-    });
-    await mkdir(this.root, { recursive: true });
-    const tmp = `${dir}.tmp-${process.pid.toString()}-${Math.random().toString(36).slice(2)}`;
+    const depKeys = [...new Set(nodes.map((n) => this.opts.store.keyFor(n.realName, n.version)))];
+    // The store entries must survive until the tree's links exist.
+    const release = this.opts.index.leaseAll(depKeys);
     try {
-      for (const [i, n] of nodes.entries()) {
-        const target = path.join(tmp, locationOf(n.path));
-        // A parent's tarball may bundle this dependency already (bundleDependencies): keep it.
-        const storeDir = storeDirs[i];
-        if (storeDir === undefined || existsSync(target)) continue;
-        await linkDir(storeDir, target);
+      const storeDirs = await mapLimit(nodes, 8, signal, (n, s) => {
+        const m = metas.get(locationOf(n.path));
+        if (!m) throw new Error(`missing metadata for ${n.realName}`);
+        const parent = n.path.length > 1 ? n.path[n.path.length - 2] : meta.name;
+        return this.opts.store.ensure(m, n === nodes[0] ? undefined : parent, s);
+      });
+      await mkdir(this.root, { recursive: true });
+      const tmp = `${dir}.tmp-${process.pid.toString()}-${Math.random().toString(36).slice(2)}`;
+      let bytes = diskSize(0);
+      try {
+        for (const [i, n] of nodes.entries()) {
+          throwIfAborted(signal);
+          const target = path.join(tmp, locationOf(n.path));
+          // A parent's tarball may bundle this dependency already (bundleDependencies): keep it.
+          const storeDir = storeDirs[i];
+          if (storeDir === undefined || existsSync(target)) continue;
+          bytes += await linkDir(storeDir, target);
+        }
+        const json = JSON.stringify(tree, null, 1);
+        await writeFile(path.join(tmp, 'tree.json'), json);
+        bytes += diskSize(Buffer.byteLength(json));
+      } catch (e) {
+        await rm(tmp, { recursive: true, force: true });
+        if (signal.aborted) throw e;
+        throw new CdnError(
+          500,
+          'build-failed',
+          `could not lay out dependency tree: ${errorMessage(e)}`,
+        );
       }
-      await writeFile(path.join(tmp, 'tree.json'), JSON.stringify(tree, null, 1));
-    } catch (e) {
-      await rm(tmp, { recursive: true, force: true });
-      throw new CdnError(
-        500,
-        'build-failed',
-        `could not lay out dependency tree: ${errorMessage(e)}`,
-      );
+      await renameIntoPlace(tmp, dir);
+      this.opts.index.record(key, bytes, depKeys);
+    } finally {
+      release();
     }
-    await renameIntoPlace(tmp, dir);
     this.stats.installed++;
-    return index(dir, tree);
+    return indexTree(dir, tree);
   }
 }

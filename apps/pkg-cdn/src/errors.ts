@@ -17,17 +17,22 @@ export type CdnErrorCode =
   | 'unsupported'
   | 'build-failed'
   | 'timeout'
-  | 'registry-error';
+  | 'registry-error'
+  | 'overloaded'
+  | 'cancelled';
 
 export class CdnError extends Error {
   readonly status: number;
   readonly code: CdnErrorCode;
+  /** Sent as `Retry-After` (seconds), for 503 load shedding. */
+  readonly retryAfterSeconds: number | undefined;
 
-  constructor(status: number, code: CdnErrorCode, message: string) {
+  constructor(status: number, code: CdnErrorCode, message: string, retryAfterSeconds?: number) {
     super(message);
     this.name = 'CdnError';
     this.status = status;
     this.code = code;
+    this.retryAfterSeconds = retryAfterSeconds;
   }
 }
 

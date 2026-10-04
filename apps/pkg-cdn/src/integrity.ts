@@ -20,7 +20,7 @@ export interface IntegrityOptions {
 }
 
 export interface IntegrityResult {
-  algorithm: Algorithm | 'sha1';
+  algorithm: DigestAlgorithm;
 }
 
 /** Parses an SRI string into `{algorithm -> base64 digests}`; unknown algorithms are ignored. */
@@ -45,6 +45,54 @@ function sameBytes(a: Buffer, b: Buffer): boolean {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
+export type DigestAlgorithm = Algorithm | 'sha1';
+
+const LABEL = 'tarball integrity check failed';
+
+/**
+ * The digest to compute for a tarball: the strongest algorithm listed in `dist.integrity`, or
+ * SHA-1 when allowed and there is no usable SRI string. Throws CdnError(502, 'integrity')
+ * when there is nothing to check against, so this runs before anything is downloaded.
+ */
+export function integrityAlgorithm(
+  dist: DistIntegrity,
+  opts: IntegrityOptions = {},
+): DigestAlgorithm {
+  if (dist.integrity) {
+    const parsed = parseSri(dist.integrity);
+    const alg = SUPPORTED.find((a) => parsed.has(a));
+    if (alg) return alg;
+  }
+  if (opts.allowSha1Fallback && dist.shasum && /^[0-9a-f]{40}$/i.test(dist.shasum)) return 'sha1';
+  throw new CdnError(
+    502,
+    'integrity',
+    `${LABEL}: the registry did not provide a supported integrity hash (sha512/sha384/sha256)`,
+  );
+}
+
+/**
+ * Throws CdnError(502, 'integrity') unless `actual` (a digest computed with `alg`, e.g. while
+ * streaming the download) matches `dist` (any digest of that algorithm may match, as in SRI).
+ */
+export function checkDigest(
+  alg: DigestAlgorithm,
+  actual: Buffer,
+  dist: DistIntegrity,
+): IntegrityResult {
+  if (alg === 'sha1') {
+    if (!sameBytes(Buffer.from(dist.shasum ?? '', 'hex'), actual)) {
+      throw new CdnError(502, 'integrity', `${LABEL}: sha1 shasum does not match`);
+    }
+    return { algorithm: 'sha1' };
+  }
+  const expected = parseSri(dist.integrity ?? '').get(alg) ?? [];
+  if (!expected.some((d) => sameBytes(Buffer.from(d, 'base64'), actual))) {
+    throw new CdnError(502, 'integrity', `${LABEL}: ${alg} digest does not match`);
+  }
+  return { algorithm: alg };
+}
+
 /**
  * Throws CdnError(502, 'integrity') unless `data` matches the strongest algorithm listed in
  * `dist.integrity` (any digest of that algorithm may match, as in SRI).
@@ -54,27 +102,6 @@ export function verifyIntegrity(
   dist: DistIntegrity,
   opts: IntegrityOptions = {},
 ): IntegrityResult {
-  const label = 'tarball integrity check failed';
-  if (dist.integrity) {
-    const parsed = parseSri(dist.integrity);
-    const alg = SUPPORTED.find((a) => parsed.has(a));
-    if (alg) {
-      const actual = createHash(alg).update(data).digest();
-      const ok = (parsed.get(alg) ?? []).some((d) => sameBytes(Buffer.from(d, 'base64'), actual));
-      if (!ok) throw new CdnError(502, 'integrity', `${label}: ${alg} digest does not match`);
-      return { algorithm: alg };
-    }
-  }
-  if (opts.allowSha1Fallback && dist.shasum && /^[0-9a-f]{40}$/i.test(dist.shasum)) {
-    const actual = createHash('sha1').update(data).digest();
-    if (!sameBytes(Buffer.from(dist.shasum, 'hex'), actual)) {
-      throw new CdnError(502, 'integrity', `${label}: sha1 shasum does not match`);
-    }
-    return { algorithm: 'sha1' };
-  }
-  throw new CdnError(
-    502,
-    'integrity',
-    `${label}: the registry did not provide a supported integrity hash (sha512/sha384/sha256)`,
-  );
+  const alg = integrityAlgorithm(dist, opts);
+  return checkDigest(alg, createHash(alg).update(data).digest(), dist);
 }

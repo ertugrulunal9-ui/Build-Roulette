@@ -324,3 +324,53 @@ underlying objects behind.
 | Rooms and members | 7 days after close |
 | Battle events, jobs | 30 / 7 days |
 | Anonymous profiles with no battles | 30 days |
+
+## 5.7 Implementation notes (T-011, M2 solo loop)
+
+These are where the implementation differs from or adds to the drafts above. The
+migrations in `supabase/migrations/` are the source of truth.
+
+- **Schemas:** internal helpers live in a `private` schema that no API role can use. The
+  first M2 migration also revokes the global default EXECUTE-to-PUBLIC on new functions.
+- **Deck:** 60 BUILD, 40 RULE and 30 STYLE cards with hints and weights. Tags
+  `needs:<cap>` / `no:<cap>` prevent impossible combinations. Challenges snapshot texts and
+  hints.
+- **Solo RPCs:** `start_solo_battle`, `advance_battle`, `ship_build`,
+  `get_battle_snapshot`, `server_now`.
+  - Each player can have only one running solo battle.
+  - If no time limit is given, the server picks 5, 10 or 15 minutes.
+  - Versions start at 1.
+  - `advance_battle` applies every transition that is due in one call. For example, the
+    last ship goes BUILDING → SHIPPING (no grace) → RESULTS.
+  - Multiplayer branches raise `not_implemented` (SQLSTATE 0A000) until M3.
+- **Error contract:** `message` is a stable snake_case code, `details` is human text.
+  SQLSTATEs: 42501 auth/roster, P0002 not found (also used for battles you can't see),
+  22023 bad input, P0001 guard failures, 0A000 not implemented.
+- **Auto-awards (solo):**
+  - `clutch_ship`: shipped by hand in the last 10 s or during the grace;
+  - `speedrun`: shipped by hand using ≤ 50% of the time limit;
+  - `fastest_ship`: only when at least 2 builds were shipped by hand.
+
+  Auto-shipped builds get no awards.
+- **Auto-ship:** needs both `autosave/bundle.js` and `autosave/source.json`; otherwise the
+  build is a DNF. DNF builds get no capture job.
+- **Storage:**
+  - `ephemeral-builds`: 5 MB, json/js/css/webp. Only the 6 known file names under
+    `{battle}/{uid}/` may be written, and only while the build is a draft, the phase allows
+    it and the deadline + grace hasn't passed. Owners can read their own folder. No client
+    deletes.
+  - `screenshots`: public, webp/png, written only by the service role.
+  - Deleting `storage.objects` rows from SQL is blocked by a trigger; workers must use the
+    Storage API.
+- **Jobs:** `claim_job` takes a 2-minute lease. Failures get up to 5 attempts with
+  10/20/40/80 s backoff. There is no pg_net push yet; workers poll.
+- **Sweeps (pg_cron):**
+  - `sweep_deadlines` every 5 s, one subtransaction per battle with `skip locked`;
+  - `sweep_ttl` every 10 min: past 24 h, a battle in RESULTS goes to DESTROYED, other
+    phases go to ABANDONED, and failed destroy jobs are re-queued.
+- **Tests:** the canonical DB tests run on the real local Supabase stack
+  (`supabase test db`: 462 pgTAP tests, plus `supabase/scripts/e2e-solo.mjs`: 44 API checks).
+  The plain-Postgres harness and shim were retired in T-011.
+- **Not yet:** retention pruning (jobs after 7 days, events after 30), and a concurrency
+  test for `SKIP LOCKED`.
+

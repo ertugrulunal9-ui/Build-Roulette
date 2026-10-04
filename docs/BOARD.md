@@ -6,9 +6,9 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 
 | ID | Task | Scope | Status | Notes |
 |---|---|---|---|---|
-| T-011 | DB layer for the solo loop: RPCs (start, advance, ship, snapshot), storage buckets + policies, jobs, deadline sweep, card deck seed; tests on the real local Supabase stack | `supabase/`, `.github/workflows/ci.yml` (db job only) | in-progress | M2 wave 1 |
+| T-011 | DB layer for the solo loop: RPCs (start, advance, ship, snapshot), storage buckets + policies, jobs, deadline sweep, card deck seed; tests on the real local Supabase stack | `supabase/`, `.github/workflows/ci.yml` (db job only) | done | Merged |
 | T-012 | Spike: Next.js 16 on Cloudflare Workers via OpenNext (local preview, no account) | `apps/web/` (deploy config only) | done | Merged: GO with caveats |
-| T-013 | Capture mode in the shell + local capture/destroy workers (Playwright stands in for Browser Rendering) | `apps/sandbox-shell/`, `apps/capture-worker/` | todo | M2 wave 2, after T-011 |
+| T-013 | Capture mode in the shell + local capture/destroy workers (Playwright stands in for Browser Rendering) | `apps/sandbox-shell/`, `apps/capture-worker/` | in-progress | M2 wave 2 (one worker at a time) |
 | T-014 | Solo game UI: spin → build → ship → results → destroy, plus the `/battles/[id]` results page | `apps/web/` | todo | M2 wave 2, after T-011/T-012 |
 | T-001 | Monorepo skeleton: pnpm + Turborepo, Next.js app, lint/format/strict TS, Vitest, CI | root config, `apps/web/`, `packages/game/`, `.github/` | done | Merged in b29110a |
 | T-002 | Supabase scaffold: initial schema migration, Supabase-compatible local Postgres test harness, pgTAP | `supabase/` | done | Merged |
@@ -44,6 +44,7 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 - T-008 Security review (code-level)
 - T-009 Sandbox hardening
 - T-010 Package CDN availability hardening
+- T-011 Solo-loop DB layer
 - T-012 OpenNext / Cloudflare Workers spike
 
 ## Review log
@@ -234,3 +235,14 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
   - `workerd` goes into `ignoredBuiltDependencies`, the same pattern as esbuild.
 - Rules recorded in docs/01: Workers Paid; no `proxy.ts` unless needed; R2 incremental cache for `/battles/[id]` ISR; `metadataBase` for OG; deploy via `cf:deploy`.
 - Follow-up (T-014): `/battles/[id]` ISR on the R2 cache, plus `metadataBase`.
+
+### T-011: accepted (M2 wave 1)
+- The worker was interrupted once by the usage limit and resumed with its context intact.
+- Hub test-merged and re-ran on a fresh clone with the real local Supabase stack:
+  - `supabase test db`: **462/462**;
+  - `e2e-solo.mjs`: **44/44**, including pg_cron advancing a battle on its own;
+  - repo format, lint, typecheck, test (game 93), build: green.
+- Hub read the storage policies: owner-only writes through `can_write_build_object` (draft + phase + deadline), owner-only reads, no client deletes, no screenshot writes.
+- The plain-Postgres harness is retired, and CI's `db` job now runs `supabase start` + `test db` + `e2e-solo.mjs`. Check the first GitHub run.
+- Accepted product call: a new solo auto-award, `speedrun` (shipped using ≤ 50% of the time).
+- Implementation notes recorded in docs/05 §5.7.

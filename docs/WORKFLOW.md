@@ -63,3 +63,4 @@ PLAN → BRIEF → DISPATCH → REVIEW → MERGE / FIX → NEXT WAVE
   `SUPABASE_INTERNAL_IMAGE_REGISTRY=docker.io npx -y supabase@2.119.0 start -x studio,imgproxy,vector,logflare,edge-runtime,supavisor,mailpit`.
   Verified: migrations apply on Supabase Postgres 17, `supabase test db` passes 194/194, and anonymous sign-up returns 200.
   The containers are named after `project_id`, so only one worktree may run the stack at a time.
+  Since T-011, DB tests run only on this stack (`supabase db reset && supabase test db`, plus `node supabase/scripts/e2e-solo.mjs`); the old `scripts/test.sh` harness was retired.

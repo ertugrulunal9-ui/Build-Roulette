@@ -373,4 +373,13 @@ migrations in `supabase/migrations/` are the source of truth.
   The plain-Postgres harness and shim were retired in T-011.
 - **Not yet:** retention pruning (jobs after 7 days, events after 30), and a concurrency
   test for `SKIP LOCKED`.
+- **T-014 additions:**
+  - `autosave/bundle.css` is an allowed autosave file and is used when capturing
+    auto-shipped builds. It's optional, so auto-ship still needs only the autosave
+    `bundle.js` + `source.json`.
+  - `get_public_battle(p_battle_id)` is read-only and callable by **`anon`**. It returns
+    only permanent data (challenge, display names, build names, times, statuses, ranks,
+    awards, display stats, final screenshot path) and only for battles in
+    `results`/`destroyed`; anything else is `battle_not_found`. It powers `/battles/[id]`
+    without a service key in the web app.
 

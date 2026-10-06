@@ -2,14 +2,15 @@
 
 Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 
-## Current milestone: M2 Solo loop + capture/destroy (local; M1 complete)
+## Current milestone: M2 Solo loop, complete (local). One flaky test fix (T-015) pending.
 
 | ID | Task | Scope | Status | Notes |
 |---|---|---|---|---|
 | T-011 | DB layer for the solo loop: RPCs (start, advance, ship, snapshot), storage buckets + policies, jobs, deadline sweep, card deck seed; tests on the real local Supabase stack | `supabase/`, `.github/workflows/ci.yml` (db job only) | done | Merged |
 | T-012 | Spike: Next.js 16 on Cloudflare Workers via OpenNext (local preview, no account) | `apps/web/` (deploy config only) | done | Merged: GO with caveats |
 | T-013 | Capture mode in the shell + local capture/destroy workers (Playwright stands in for Browser Rendering) | `apps/sandbox-shell/`, `apps/capture-worker/` | done | Merged |
-| T-014 | Solo game UI: spin → build → ship → results → destroy, plus the `/battles/[id]` results page | `apps/web/` (+ small `supabase/` and `apps/capture-worker/` changes for the autosave CSS) | in-progress | M2, last task |
+| T-014 | Solo game UI: spin → build → ship → results → destroy, plus the `/battles/[id]` results page | `apps/web/` (+ small `supabase/` and `apps/capture-worker/` changes for the autosave CSS) | done | Merged |
+| T-015 | Fix flaky playground e2e (`playground.spec.ts:206`): a click right after "Reset to template" is lost, likely a double rebuild replacing the frame (≈1/6 runs) | `apps/web/`, `packages/runtime/` | todo | Next (one worker) |
 | T-001 | Monorepo skeleton: pnpm + Turborepo, Next.js app, lint/format/strict TS, Vitest, CI | root config, `apps/web/`, `packages/game/`, `.github/` | done | Merged in b29110a |
 | T-002 | Supabase scaffold: initial schema migration, Supabase-compatible local Postgres test harness, pgTAP | `supabase/` | done | Merged |
 | T-004 | Run DB tests in CI + add a `@br/game` ↔ SQL enum drift test | `.github/workflows/ci.yml`, `packages/game/` | done | Merged |
@@ -47,6 +48,7 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 - T-011 Solo-loop DB layer
 - T-012 OpenNext / Cloudflare Workers spike
 - T-013 Capture mode + capture/destroy workers
+- T-014 Solo game end to end
 
 ## Review log
 
@@ -263,3 +265,24 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
   - the capture gate isn't verified in workerd;
   - `_worker.js` is 67 KB because of zod;
   - the web e2e file-tree test flaked once under heavy load. Watch it.
+
+### T-014: accepted (M2, last task)
+- Hub test-merged and re-ran on a fresh clone with the real local Supabase stack:
+  - repo pipeline green: 663 unit tests, including web 70, runtime 99, shell 53;
+  - `supabase test db` 492/492;
+  - capture integration 12/12;
+  - **solo e2e 2/2 on two runs** (ship → real screenshot + speedrun → destroy → permanent page; auto-ship with CSS);
+  - runtime e2e 25/25.
+- Web e2e: 12/13. The file-tree test (`playground.spec.ts:206`) failed. The hub repeated it 6×: 1 failure. A click right after "Reset to template" is lost (the counter stays at 0).
+  - It's pre-existing: it also flaked once during T-013, so it isn't a T-014 regression.
+  - It's likely a real UX bug (a double rebuild after reset replaces the frame), so it goes to **T-015** rather than a test retry.
+- Hub viewed the 4 UI screenshots (spin, build, results, permanent page). The flow and design are good.
+- Accepted scope extensions:
+  - client thumbnail in the shell + `PreviewHandle.captureThumbnail()`;
+  - a shell focus fix: live-mode frames no longer steal keyboard focus from the editor, covered by e2e.
+- UX decisions relayed to the user: reel timing; the server picks the time limit; BUILD preloads under the spin; ship the last working preview if the production build fails; amber at 60 s and red at 10 s; 60 s last look; stats on the permanent page.
+- Follow-ups:
+  - OG image can't embed WebP (the worker should also emit a PNG card, or use CF image transforms);
+  - ISR on R2 for `/battles/[id]`;
+  - the local auth limit of 30 anonymous sign-ups per hour affects repeated test runs;
+  - realtime instead of polling (M3).

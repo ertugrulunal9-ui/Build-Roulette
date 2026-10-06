@@ -38,6 +38,7 @@ import {
 } from '@br/protocol';
 import { createChildFrame, injectBuild, installBuildApi, openBuildDocument } from './build-frame';
 import { RESET_ENDPOINT } from './headers';
+import { captureThumbnail } from './thumbnail';
 import { SerialQueue, wipeOriginStorage } from './wipe';
 
 /** Injected at build time: origins allowed to embed and drive this shell. */
@@ -210,9 +211,16 @@ function onPortMessage(event: MessageEvent): void {
       }, 0);
       return;
     }
-    case 'capture-thumbnail':
-      // Not implemented in M1 (schema only).
+    case 'capture-thumbnail': {
+      // Best effort (thumbnail.ts): no answer when no image can be made; the app times out.
+      const { requestId, width, height } = msg;
+      void queue.push(async () => {
+        const webp = await captureThumbnail(frame, width, height);
+        if (webp)
+          post({ type: 'thumbnail', webp, ...(requestId === undefined ? {} : { requestId }) });
+      });
       return;
+    }
   }
 }
 

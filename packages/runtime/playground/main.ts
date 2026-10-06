@@ -46,6 +46,8 @@ export interface PlaygroundApi {
   waitForReady(loadId: number, timeoutMs?: number): Promise<number>;
   lastLoadId(): number;
   resetStorage(): Promise<StorageResetMessage>;
+  /** Best-effort WebP thumbnail of the running build (data URL), or null. */
+  captureThumbnail(width: number, height: number): Promise<string | null>;
   restartPreview(): Promise<void>;
   /** Run mode for the following loads; a different mode replaces the preview iframe. */
   setMode(mode: RunMode): void;
@@ -271,6 +273,7 @@ const api: PlaygroundApi = {
   waitForReady,
   lastLoadId: () => lastLoadId,
   resetStorage: () => preview.resetStorage(),
+  captureThumbnail: (width, height) => preview.captureThumbnail({ width, height }),
   restartPreview,
   setMode(next) {
     mode = next;

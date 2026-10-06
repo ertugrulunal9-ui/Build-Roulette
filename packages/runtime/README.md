@@ -386,8 +386,15 @@ The watchdog fires 5 s after the *last pong*. Pings are 1 s apart and the check 
   imported *from inside a CDN package* would fail to resolve (loudly).
 - Every rebuild is a full `esbuild.build()` (no incremental context yet), and there are no
   sourcemaps yet (runtime errors point into the blob bundle).
-- The client thumbnail (`capture-thumbnail`) and capture mode are schema-only / ignored. Safe-mode
-  restart (timers paused until the user clicks) is not implemented. `mode` selects the iframe's
+- **Client thumbnail** (T-014): `PreviewHandle.captureThumbnail({width, height})` sends
+  `capture-thumbnail`; the shell (`apps/sandbox-shell/src/thumbnail.ts`) copies the build's
+  main canvas when one covers at least half of the viewport, otherwise it renders the build's
+  DOM through an SVG `<foreignObject>` (styles included; external images, web fonts and
+  WebGL without `preserveDrawingBuffer` are missing). It answers `thumbnail {webp}` or
+  nothing; the handle resolves null on timeout (4 s), frame replacement or disposal, and
+  accepts one answer per request. It is the fallback for the server capture only, and as
+  untrusted as any shell message. Safe-mode restart (timers paused until the user clicks) is
+  not implemented. `mode` selects the iframe's
   `sandbox`/`allow` (app side) and the child frame's `allow` (shell side), nothing else yet.
 - The shell's own console rate limit (100/s) reports the dropped count on the next console
   call after the window, not on a timer. The app-side budget reports on a timer.

@@ -24,7 +24,7 @@ export const LIMITS = {
   importMapMaxEntries: 200,
   /** Max characters of an import map specifier or URL. */
   importMapValueMaxChars: 2_048,
-  /** Max characters of a thumbnail data URL (schema only in M1). */
+  /** Max characters of a thumbnail data URL. */
   thumbnailMaxChars: 2_000_000,
   /** Max error strings in a storage-reset ack. */
   storageResetMaxErrors: 20,

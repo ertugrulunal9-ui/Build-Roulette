@@ -108,7 +108,7 @@ export const ResetStorageSchema = z.object({
   requestId,
 });
 
-/** Schema only in M1: the client thumbnail is not implemented yet. */
+/** Best-effort client thumbnail of the running build (T-014); the shell may not answer. */
 export const CaptureThumbnailSchema = z.object({
   type: z.literal('capture-thumbnail'),
   requestId,
@@ -204,7 +204,7 @@ export const StorageResetSchema = z.object({
   ),
 });
 
-/** Schema only in M1. Untrusted display data, like everything else from the shell. */
+/** Answer to `capture-thumbnail`. Untrusted display data, like everything else from the shell. */
 export const ThumbnailSchema = z.object({
   type: z.literal('thumbnail'),
   requestId,

@@ -1,32 +1,55 @@
 /**
  * The local Supabase stack from the solo e2e's point of view: psql as the superuser to move
  * deadlines and inspect storage (like the pgTAP tests and supabase/scripts/e2e-solo.mjs).
- * DB_URL comes from the environment or `supabase status -o env`.
+ * Connection settings come from the environment or `supabase status -o env`.
  */
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const repoRoot = fileURLToPath(new URL('../../../', import.meta.url));
-let dbUrl: string | null = process.env['DB_URL'] ?? null;
+let statusEnv: Record<string, string> | null = null;
 
-function databaseUrl(): string {
-  if (dbUrl) return dbUrl;
-  const out = execFileSync('npx', ['-y', 'supabase@2.119.0', 'status', '-o', 'env'], {
-    cwd: repoRoot,
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'ignore'],
-  });
-  const m = /^DB_URL="?(.*?)"?$/m.exec(out);
-  if (!m?.[1]) throw new Error('DB_URL not found: is the local Supabase stack running?');
-  dbUrl = m[1];
-  return dbUrl;
+/** DB_URL, API_URL, SERVICE_ROLE_KEY…: from the environment or `supabase status -o env`. */
+function stackEnv(key: 'DB_URL' | 'API_URL' | 'SERVICE_ROLE_KEY'): string {
+  const fromEnv = process.env[key];
+  if (fromEnv) return fromEnv;
+  if (!statusEnv) {
+    const out = execFileSync('npx', ['-y', 'supabase@2.119.0', 'status', '-o', 'env'], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    statusEnv = {};
+    for (const line of out.split('\n')) {
+      const m = /^([A-Z_]+)="?(.*?)"?$/.exec(line.trim());
+      if (m?.[1] && m[2]) statusEnv[m[1]] = m[2];
+    }
+  }
+  const value = statusEnv[key];
+  if (!value) throw new Error(`${key} not found: is the local Supabase stack running?`);
+  return value;
+}
+
+/**
+ * An object of the `ephemeral-builds` bucket as text (service role), or null if missing.
+ * E.g. `{battle}/{user}/autosave/source.json`.
+ */
+export async function ephemeralText(path: string): Promise<string | null> {
+  const key = stackEnv('SERVICE_ROLE_KEY');
+  const res = await fetch(
+    `${stackEnv('API_URL')}/storage/v1/object/authenticated/ephemeral-builds/${path}`,
+    { headers: { apikey: key, authorization: `Bearer ${key}` } },
+  );
+  if (res.status === 400 || res.status === 404) return null;
+  if (!res.ok) throw new Error(`download ${path}: HTTP ${String(res.status)}`);
+  return res.text();
 }
 
 /** Runs SQL as the superuser; returns the unaligned, tuples-only output. */
 export function sql(query: string): string {
   return execFileSync(
     'psql',
-    [databaseUrl(), '-X', '-q', '-A', '-t', '-v', 'ON_ERROR_STOP=1', '-c', query],
+    [stackEnv('DB_URL'), '-X', '-q', '-A', '-t', '-v', 'ON_ERROR_STOP=1', '-c', query],
     { encoding: 'utf8' },
   ).trim();
 }

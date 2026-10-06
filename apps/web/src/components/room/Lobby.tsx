@@ -272,23 +272,31 @@ export function Lobby({ controller, state, room, lastBattle }: LobbyProps) {
 }
 
 function LastBattle({ battle }: { battle: BattleSnapshot }) {
-  const ranked = battle.builds
-    .filter((b) => b.final_rank !== null)
-    .sort((a, b) => (a.final_rank ?? 0) - (b.final_rank ?? 0))
-    .slice(0, 3);
+  const abandoned = battle.battle.phase === 'abandoned';
+  // An abandoned battle has no ranks: its shipped builds are listed in shipping order.
+  const shown = abandoned
+    ? battle.builds
+        .filter((b) => b.status === 'shipped' || b.status === 'auto_shipped')
+        .sort((a, b) => (a.shipped_at ?? '').localeCompare(b.shipped_at ?? ''))
+    : battle.builds
+        .filter((b) => b.final_rank !== null)
+        .sort((a, b) => (a.final_rank ?? 0) - (b.final_rank ?? 0))
+        .slice(0, 3);
   const name = (id: string) => battle.players.find((p) => p.user_id === id)?.display_name ?? '';
   const medals = ['🥇', '🥈', '🥉'];
   return (
-    <section className={panel} data-testid="last-battle">
+    <section className={panel} data-testid="last-battle" data-phase={battle.battle.phase}>
       <h2 className="font-bold">Last battle</h2>
       <p className="mb-3 text-sm text-zinc-500">{battle.challenge.build.text}</p>
-      {ranked.length === 0 ? (
+      {shown.length === 0 ? (
         <p className="text-sm text-zinc-500">Nobody shipped.</p>
       ) : (
         <ol className="flex flex-col gap-1.5 text-sm">
-          {ranked.map((b) => (
+          {shown.map((b) => (
             <li key={b.id} className="flex items-center gap-2">
-              <span aria-hidden="true">{medals[(b.final_rank ?? 1) - 1] ?? '🏅'}</span>
+              <span aria-hidden="true">
+                {abandoned ? '🚀' : (medals[(b.final_rank ?? 1) - 1] ?? '🏅')}
+              </span>
               <span className="min-w-0 flex-1 truncate">
                 <strong>{b.name ?? `${name(b.builder_id)}'s build`}</strong> · {name(b.builder_id)}
               </span>

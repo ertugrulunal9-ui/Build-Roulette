@@ -155,7 +155,12 @@ export default function RoomApp({ code }: { code: string }) {
           battleState={battleState}
           state={state}
           code={room.room.code}
-          leave={leave}
+          leave={
+            <>
+              <Reconnecting state={state} />
+              {leave}
+            </>
+          }
         />
         {overlays}
       </>
@@ -281,18 +286,25 @@ function RoomHeader({ state, code, leave }: { state: RoomState; code: string; le
         </h1>
       </div>
       <div className="flex flex-wrap items-center gap-2">
-        {state.sync.connection === 'degraded' && (
-          <span
-            className="rounded-full bg-amber-100 px-3 py-1 text-xs font-bold text-amber-900 dark:bg-amber-950 dark:text-amber-200"
-            data-testid="reconnecting"
-          >
-            Reconnecting…
-          </span>
-        )}
+        <Reconnecting state={state} />
         <CopyInvite code={code} />
         {leave}
       </div>
     </header>
+  );
+}
+
+/** Shown while the room's Realtime channel is down (the engine polls meanwhile). */
+function Reconnecting({ state }: { state: RoomState }) {
+  if (state.sync.connection !== 'degraded') return null;
+  return (
+    <span
+      role="status"
+      className="rounded-full bg-amber-100 px-3 py-1 text-xs font-bold text-amber-900 dark:bg-amber-950 dark:text-amber-200"
+      data-testid="reconnecting"
+    >
+      Reconnecting…
+    </span>
   );
 }
 

@@ -55,6 +55,7 @@ export function ProgressSidebar({ battle, presence, layout }: ProgressSidebarPro
           data-name={p.display_name}
           data-state={state}
           data-online={live ? 'true' : 'false'}
+          data-host={battle.battle.host_id === p.user_id ? 'true' : 'false'}
           className={`flex min-w-52 flex-col gap-1.5 rounded-xl border p-3 text-sm ${
             state === 'shipped'
               ? 'border-emerald-300 bg-emerald-50 dark:border-emerald-800 dark:bg-emerald-950/50'
@@ -64,7 +65,11 @@ export function ProgressSidebar({ battle, presence, layout }: ProgressSidebarPro
           <div className="flex items-center gap-2">
             <Avatar userId={p.user_id} name={p.display_name} size="sm" />
             <span className="min-w-0 flex-1 truncate font-bold">
-              {battle.battle.host_id === p.user_id && <span title="Host">👑 </span>}
+              {battle.battle.host_id === p.user_id && (
+                <span title="Host" aria-label="Host" data-testid="host-crown">
+                  👑{' '}
+                </span>
+              )}
               {p.display_name}
               {p.user_id === me && <span className="font-normal text-zinc-500"> (you)</span>}
             </span>

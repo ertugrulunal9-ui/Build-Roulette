@@ -257,4 +257,12 @@ section.
   - a user can host at most 3 open rooms;
   - an idle room (no event and no heartbeat for 2 h) is closed, and closed rooms are
     purged after 7 days.
+- **Client (T-017):**
+  - Presence is tracked on the **room** topic only, and powers both the lobby and the
+    BUILD sidebar; the battle topic is subscribed without Presence;
+  - the sync engine (`apps/web/src/lib/room/sync.ts`) applies the version rules, buffers
+    events during a refetch, polls every 5 s while the room channel is down, and resyncs
+    on visible/online;
+  - after DESTROY everyone returns to the lobby, which shows a "Last battle" podium and a
+    rematch button for the host.
 

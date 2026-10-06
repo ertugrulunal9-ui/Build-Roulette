@@ -12,8 +12,8 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 | T-014 | Solo game UI: spin → build → ship → results → destroy, plus the `/battles/[id]` results page | `apps/web/` (+ small `supabase/` and `apps/capture-worker/` changes for the autosave CSS) | done | Merged |
 | T-015 | Fix flaky playground e2e (`playground.spec.ts:206`): a click right after "Reset to template" is lost, likely a double rebuild replacing the frame (≈1/6 runs) | `apps/web/`, `packages/runtime/` | done | Merged |
 | T-016 | M3 DB layer: rooms + members RPCs, multiplayer `start_battle`/`advance_battle` (shipping → results until M4), heartbeat, host migration, abandonment, kick, late joiners as spectators, Realtime broadcast triggers + private-channel authorization | `supabase/`, `ci.yml` | done | Merged |
-| T-017 | M3 web: create/join room (code + link), lobby with presence and ready-up, host controls, multiplayer battle flow, realtime sync loop with resync | `apps/web/`, `packages/game/` | in-progress | M3, task 2 of 3 |
-| T-018 | M3 resilience: multi-context Playwright battles with chaos (network drops, clock skew, refresh, host leaves), admin event-log page | `apps/web/` (e2e), `supabase/` (tests), `apps/capture-worker/` (integration-test isolation) | todo | M3, task 3 of 3 |
+| T-017 | M3 web: create/join room (code + link), lobby with presence and ready-up, host controls, multiplayer battle flow, realtime sync loop with resync | `apps/web/`, `packages/game/` | done | Merged |
+| T-018 | M3 resilience: multi-context Playwright battles with chaos (network drops, clock skew, refresh, host leaves), admin event-log page | `apps/web/` (e2e + fixes), `supabase/` (tests), `apps/capture-worker/` (integration-test isolation) | in-progress | M3, task 3 of 3 |
 | T-001 | Monorepo skeleton: pnpm + Turborepo, Next.js app, lint/format/strict TS, Vitest, CI | root config, `apps/web/`, `packages/game/`, `.github/` | done | Merged in b29110a |
 | T-002 | Supabase scaffold: initial schema migration, Supabase-compatible local Postgres test harness, pgTAP | `supabase/` | done | Merged |
 | T-004 | Run DB tests in CI + add a `@br/game` ↔ SQL enum drift test | `.github/workflows/ci.yml`, `packages/game/` | done | Merged |
@@ -56,6 +56,7 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 - T-014 Solo game end to end
 - T-015 Lost click after template reset (root-cause fix)
 - T-016 M3 DB layer: rooms, multiplayer, realtime
+- T-017 M3 multiplayer web UI
 
 ## Review log
 
@@ -328,3 +329,16 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
   - M3 ranking by completion time;
   - `reveal_vote` flag as the M4 seam.
 - Open: kicked users' already-open subscriptions keep receiving until they rejoin; turn off public Realtime channels in production; rate-limit join attempts by code (Turnstile).
+
+### T-017: accepted (M3 task 2)
+- Hub test-merged and re-ran on a fresh clone with the real local stack (Realtime on):
+  - repo pipeline green (web 162 unit tests, game 108 including new drift checks);
+  - solo e2e 2/2.
+- **Multiplayer e2e:**
+  - first run (fresh build + `db reset`, cold caches): **the main 3-player test failed once**, and the error wasn't captured;
+  - after that: 2/2, then a repeat of the whole suite 6/6, then 6/6 of the main test alone.
+  - So the main test fails about 1 in 10, plausibly cold-start timing. Root-causing it is now an explicit **T-018** item.
+- Hub viewed 4 UI screenshots (lobby, BUILD with progress sidebar, spectator, ranked results with awards). Good.
+- Decisions relayed to the user: Presence on the room topic only; auto-return to lobby after DESTROY with a "Last battle" podium; spectators get no last look; the ship dialog closes into a "locked" banner (solo too); only `max_players` in host settings until M4.
+- Bugs the worker found and fixed: no last look for an auto-shipped player; the ship dialog stayed open.
+- Test workaround to revisit in T-018: `bringToFront()` before clicks in background windows.

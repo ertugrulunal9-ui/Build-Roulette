@@ -177,6 +177,59 @@ jobs:
         if: always()
         run: npx -y "$SUPABASE_CLI" stop --no-backup
 
+  multiplayer:
+    name: Rooms e2e (local Supabase stack with Realtime + Playwright Chromium, 3+ players)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SUPABASE_CLI: supabase@2.119.0
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # One Chromium for the players (Playwright 1.56.1) and the capture worker (same build).
+      - name: Install Playwright Chromium
+        run: pnpm --filter @br/capture-worker exec playwright-core install --with-deps chromium
+
+      # Rooms need Realtime (private channels, broadcasts from the database, Presence), so
+      # unlike the capture job this stack keeps it.
+      - name: Start the local Supabase stack (with Realtime)
+        run: >-
+          npx -y "$SUPABASE_CLI" start
+          -x studio,imgproxy,vector,logflare,edge-runtime,supavisor,mailpit,postgres-meta
+
+      # Several browser contexts (anonymous players) against next start, the sandbox shell,
+      # the mock CDN and the capture worker (apps/web/scripts/solo-services.ts --realtime):
+      # create/join, lobby presence, ready/start, ship and auto-ship, ranked results with
+      # screenshots, destroy, rematch, a late spectator, a refresh mid-BUILD, kick. Needs psql.
+      - name: Run the rooms e2e
+        run: pnpm --filter @br/web test:e2e:multi
+
+      - name: Upload Playwright output
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: multiplayer-e2e-results
+          path: apps/web/test-results/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Stop the stack
+        if: always()
+        run: npx -y "$SUPABASE_CLI" stop --no-backup
+
   e2e:
     name: E2E (runtime + web playground, Playwright Chromium)
     runs-on: ubuntu-latest

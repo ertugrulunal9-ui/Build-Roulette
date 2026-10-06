@@ -24,3 +24,44 @@ export {
 
 export { estimateClockOffset, remainingMs } from './clock';
 export type { ClockSample } from './clock';
+
+export {
+  AUTO_AWARDS,
+  BATTLE_EVENT_TYPES,
+  BATTLE_ROLES,
+  BUILD_STATUSES,
+  CAPTURE_STATUSES,
+  HEARTBEAT_INTERVAL_MS,
+  MEMBER_CHANGES,
+  MEMBER_ROLES,
+  MEMBER_STATES,
+  PRESENCE_THROTTLE_MS,
+  ROOM_CHANGES,
+  ROOM_CODE_ALPHABET,
+  ROOM_CODE_LENGTH,
+  ROOM_EVENT_TYPES,
+  ROOM_LIMITS,
+  ROOM_STATUSES,
+  battleTopic,
+  isRoomCode,
+  normalizeRoomCode,
+  roomMaxPlayers,
+  roomTopic,
+} from './rooms';
+export type {
+  AutoAward,
+  BattleEventType,
+  BattleRole,
+  BuildStatus,
+  CaptureStatus,
+  MemberChange,
+  MemberRole,
+  MemberState,
+  RoomChange,
+  RoomEventType,
+  RoomLimits,
+  RoomStatus,
+} from './rooms';
+
+export { JOIN_ROOM_ERRORS, RPC_ERROR_CODES, SERVICE_ERROR_CODES, isRpcErrorCode } from './errors';
+export type { JoinRoomError, RpcErrorCode } from './errors';

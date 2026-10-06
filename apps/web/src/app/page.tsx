@@ -1,8 +1,5 @@
 import { HAPPY_PATH_PHASES, PHASE_LABELS } from '@br/game';
-import Link from 'next/link';
-
-const buttonClass =
-  'rounded-lg px-5 py-3 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-50';
+import { HomeActions } from '../components/home/HomeActions';
 
 export default function HomePage() {
   return (
@@ -32,31 +29,11 @@ export default function HomePage() {
         ))}
       </ol>
 
-      <div className="flex flex-col gap-3 sm:flex-row">
-        <Link
-          href="/play"
-          data-testid="play-solo"
-          className={`${buttonClass} bg-emerald-600 text-white hover:bg-emerald-700`}
-        >
-          Play solo
-        </Link>
-        <button
-          type="button"
-          disabled
-          className={`${buttonClass} bg-zinc-900 text-zinc-50 dark:bg-zinc-100 dark:text-zinc-900`}
-        >
-          Create room
-        </button>
-        <button
-          type="button"
-          disabled
-          className={`${buttonClass} border border-zinc-300 dark:border-zinc-700`}
-        >
-          Join with code
-        </button>
-      </div>
-      <p className="text-sm text-zinc-500">
-        Rooms are coming soon. Until then, spin a challenge and race the clock on your own.
+      <HomeActions />
+
+      <p className="max-w-md text-sm text-zinc-500">
+        Create a room and send the link to up to 7 friends (and 20 spectators), or race the clock on
+        your own. No account needed.
       </p>
     </main>
   );

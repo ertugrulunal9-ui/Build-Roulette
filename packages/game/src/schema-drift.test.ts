@@ -10,6 +10,11 @@
  *   `DEFAULT_PHASE_DURATIONS` the `<phase>_s` keys of `private.default_battle_settings()`,
  *   taking the last definition of each function across the migrations.
  *
+ * - The room enums (`room_status`, `member_role`, `build_status`, `capture_status`), the
+ *   room limits (`private.room_limits()`), the Realtime event names and change kinds
+ *   (`private.battle_broadcast`, `private.room_broadcast`) and the RPC error codes (every
+ *   `message = '...'` the migrations raise) must match `rooms.ts` and `errors.ts` (T-017).
+ *
  * Vote categories are not checked here: `@br/game` does not expose them (yet).
  */
 import { readFileSync, readdirSync } from 'node:fs';
@@ -18,7 +23,19 @@ import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { BUILD_TIME_LIMITS_MINUTES, DEFAULT_PHASE_DURATIONS } from './durations';
+import { JOIN_ROOM_ERRORS, RPC_ERROR_CODES, SERVICE_ERROR_CODES } from './errors';
 import { BATTLE_PHASES, isBattlePhase } from './phases';
+import {
+  BATTLE_EVENT_TYPES,
+  BUILD_STATUSES,
+  CAPTURE_STATUSES,
+  MEMBER_CHANGES,
+  MEMBER_ROLES,
+  ROOM_CHANGES,
+  ROOM_EVENT_TYPES,
+  ROOM_LIMITS,
+  ROOM_STATUSES,
+} from './rooms';
 
 const MIGRATIONS_DIR = resolve(import.meta.dirname, '../../../supabase/migrations');
 const ENUM_NAME = 'battle_phase';
@@ -68,22 +85,23 @@ function unquote(literal: string): string {
 
 const LITERAL = String.raw`'(?:[^']|'')*'`;
 // Optional `public.` schema and optional double quotes around the type name.
-const TYPE_NAME = String.raw`(?:"?public"?\s*\.\s*)?"?${ENUM_NAME}"?`;
+function statementPatterns(enumName: string) {
+  const typeName = String.raw`(?:"?public"?\s*\.\s*)?"?${enumName}"?`;
+  return {
+    create: new RegExp(String.raw`\bcreate\s+type\s+${typeName}\s+as\s+enum\s*\(([^)]*)\)`, 'gi'),
+    addValue: new RegExp(
+      String.raw`\balter\s+type\s+${typeName}\s+add\s+value\s+(?:if\s+not\s+exists\s+)?(${LITERAL})(?:\s+(before|after)\s+(${LITERAL}))?`,
+      'gi',
+    ),
+    renameValue: new RegExp(
+      String.raw`\balter\s+type\s+${typeName}\s+rename\s+value\s+(${LITERAL})\s+to\s+(${LITERAL})`,
+      'gi',
+    ),
+    drop: new RegExp(String.raw`\bdrop\s+type\s+(?:if\s+exists\s+)?${typeName}(?![\w$])`, 'gi'),
+  } as const;
+}
 
-const STATEMENT_PATTERNS = {
-  create: new RegExp(String.raw`\bcreate\s+type\s+${TYPE_NAME}\s+as\s+enum\s*\(([^)]*)\)`, 'gi'),
-  addValue: new RegExp(
-    String.raw`\balter\s+type\s+${TYPE_NAME}\s+add\s+value\s+(?:if\s+not\s+exists\s+)?(${LITERAL})(?:\s+(before|after)\s+(${LITERAL}))?`,
-    'gi',
-  ),
-  renameValue: new RegExp(
-    String.raw`\balter\s+type\s+${TYPE_NAME}\s+rename\s+value\s+(${LITERAL})\s+to\s+(${LITERAL})`,
-    'gi',
-  ),
-  drop: new RegExp(String.raw`\bdrop\s+type\s+(?:if\s+exists\s+)?${TYPE_NAME}(?![\w$])`, 'gi'),
-} as const;
-
-type StatementKind = keyof typeof STATEMENT_PATTERNS;
+type StatementKind = keyof ReturnType<typeof statementPatterns>;
 
 interface Statement {
   kind: StatementKind;
@@ -91,21 +109,25 @@ interface Statement {
   match: RegExpExecArray;
 }
 
-function fail(file: string, message: string): never {
-  throw new Error(`${file}: ${message} (enum public.${ENUM_NAME})`);
+function failFor(file: string, message: string, enumName: string): never {
+  throw new Error(`${file}: ${message} (enum public.${enumName})`);
 }
 
 /** Replays every migration and returns the final enum values, or null if never created. */
-function battlePhaseEnumFromMigrations(
+function enumFromMigrations(
   files: readonly { name: string; sql: string }[],
+  enumName: string,
 ): string[] | null {
   let values: string[] | null = null;
+  const patterns = statementPatterns(enumName);
+  const fail: (file: string, message: string) => never = (file, message) =>
+    failFor(file, message, enumName);
 
   for (const { name, sql } of files) {
     const text = stripSqlComments(sql);
     const statements: Statement[] = [];
-    for (const kind of Object.keys(STATEMENT_PATTERNS) as StatementKind[]) {
-      for (const match of text.matchAll(STATEMENT_PATTERNS[kind])) {
+    for (const kind of Object.keys(patterns) as StatementKind[]) {
+      for (const match of text.matchAll(patterns[kind])) {
         statements.push({ kind, index: match.index, match });
       }
     }
@@ -160,6 +182,13 @@ function battlePhaseEnumFromMigrations(
   return values;
 }
 
+/** Replays every migration and returns the final `battle_phase` values, or null. */
+function battlePhaseEnumFromMigrations(
+  files: readonly { name: string; sql: string }[],
+): string[] | null {
+  return enumFromMigrations(files, ENUM_NAME);
+}
+
 function readMigrations(): { name: string; sql: string }[] {
   const names = readdirSync(MIGRATIONS_DIR)
     .filter((name) => name.endsWith('.sql'))
@@ -192,9 +221,11 @@ describe('schema drift: BATTLE_PHASES vs SQL enum public.battle_phase', () => {
 function lastPrivateFunctionBody(
   files: readonly { name: string; sql: string }[],
   functionName: string,
+  { anyArgs = false, schema = 'private' }: { anyArgs?: boolean; schema?: string } = {},
 ): string | null {
+  const args = anyArgs ? String.raw`\([^)]*\)` : String.raw`\(\s*\)`;
   const pattern = new RegExp(
-    String.raw`\bcreate\s+(?:or\s+replace\s+)?function\s+"?private"?\s*\.\s*"?${functionName}"?\s*\(\s*\)` +
+    String.raw`\bcreate\s+(?:or\s+replace\s+)?function\s+"?${schema}"?\s*\.\s*"?${functionName}"?\s*${args}` +
       String.raw`[\s\S]*?\bas\s+(\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$)([\s\S]*?)\1`,
     'gi',
   );
@@ -322,5 +353,109 @@ describe('battlePhaseEnumFromMigrations (parser)', () => {
         file('2.sql', "alter type battle_phase add value 'b' after 'nope';"),
       ]),
     ).toThrow(/2\.sql: ADD VALUE after unknown value 'nope'/);
+  });
+});
+
+// ─── Rooms and multiplayer (T-017) ────────────────────────────────────────────────────
+
+describe('schema drift: room enums', () => {
+  it.each([
+    ['room_status', ROOM_STATUSES],
+    ['member_role', MEMBER_ROLES],
+    ['build_status', BUILD_STATUSES],
+    ['capture_status', CAPTURE_STATUSES],
+  ] as const)('public.%s matches @br/game', (enumName, expected) => {
+    expect(enumFromMigrations(readMigrations(), enumName)).toEqual([...expected]);
+  });
+});
+
+/** `private.room_limits()`: every `'<key>', <integer>` pair of its jsonb_build_object. */
+function roomLimitsFromMigrations(files: readonly { name: string; sql: string }[]) {
+  const body = lastPrivateFunctionBody(files, 'room_limits');
+  if (body === null) return null;
+  const limits: Record<string, number> = {};
+  for (const match of body.matchAll(/'([a-z_]+)'\s*,\s*(\d+)/g)) {
+    limits[match[1] ?? ''] = Number(match[2]);
+  }
+  return limits;
+}
+
+/** The quoted words of the `in (...)` list that follows `marker` in a function body. */
+function inList(body: string, marker: RegExp): string[] {
+  const at = marker.exec(body);
+  if (!at) return [];
+  const list = /\bin\s*\(([^)]*)\)/i.exec(body.slice(at.index))?.[1] ?? '';
+  return [...list.matchAll(new RegExp(LITERAL, 'g'))].map((m) => unquote(m[0]));
+}
+
+/** Every `v_type := '<name>'` assignment in a function body, in order, deduplicated. */
+function assignedTypes(body: string): string[] {
+  const names = [...body.matchAll(/\bv_type\s*:=\s*'([a-z_]+)'/g)].map((m) => m[1] ?? '');
+  return [...new Set(names)];
+}
+
+describe('schema drift: rooms and Realtime', () => {
+  it('ROOM_LIMITS matches private.room_limits()', () => {
+    expect(roomLimitsFromMigrations(readMigrations())).toEqual({ ...ROOM_LIMITS });
+  });
+
+  it('BATTLE_EVENT_TYPES matches private.battle_broadcast()', () => {
+    const body = lastPrivateFunctionBody(readMigrations(), 'battle_broadcast', { anyArgs: true });
+    expect(body, 'private.battle_broadcast not found').not.toBeNull();
+    expect(assignedTypes(body ?? '').sort()).toEqual([...BATTLE_EVENT_TYPES].sort());
+  });
+
+  it('ROOM_EVENT_TYPES, MEMBER_CHANGES and ROOM_CHANGES match private.room_broadcast()', () => {
+    const body = lastPrivateFunctionBody(readMigrations(), 'room_broadcast', { anyArgs: true });
+    expect(body, 'private.room_broadcast not found').not.toBeNull();
+    expect(assignedTypes(body ?? '').sort()).toEqual([...ROOM_EVENT_TYPES].sort());
+    expect(inList(body ?? '', /\bif\s+p_event\.type\b/i)).toEqual([...MEMBER_CHANGES]);
+    expect(inList(body ?? '', /\belsif\s+p_event\.type\b/i)).toEqual([...ROOM_CHANGES]);
+  });
+
+  it('the error codes are exactly the codes the migrations raise', () => {
+    const raised = new Set<string>();
+    for (const { sql } of readMigrations()) {
+      for (const m of stripSqlComments(sql).matchAll(/\bmessage\s*=\s*'([a-z_]+)'/g)) {
+        raised.add(m[1] ?? '');
+      }
+    }
+    const known = [...RPC_ERROR_CODES, ...SERVICE_ERROR_CODES];
+    expect(new Set(known).size, 'a code is listed twice').toBe(known.length);
+    expect([...raised].sort()).toEqual([...known].sort());
+  });
+
+  it('JOIN_ROOM_ERRORS lists what public.join_room raises (plus the display name check)', () => {
+    const body = lastPrivateFunctionBody(readMigrations(), 'join_room', {
+      anyArgs: true,
+      schema: 'public',
+    });
+    expect(body, 'public.join_room not found').not.toBeNull();
+    const raised = new Set(
+      [...(body ?? '').matchAll(/\bmessage\s*=\s*'([a-z_]+)'/g)].map((m) => m[1] ?? ''),
+    );
+    expect(body).toMatch(/private\.check_display_name\(/);
+    raised.add('invalid_display_name');
+    expect([...raised].sort()).toEqual([...JOIN_ROOM_ERRORS].sort());
+  });
+
+  it('parses room_limits, in-lists and v_type assignments', () => {
+    const files = [
+      {
+        name: '1.sql',
+        sql: `create function private.room_limits() returns jsonb language sql as $$
+                select jsonb_build_object('max_players', 8, 'present_s', 30) $$;
+              create function private.room_broadcast(p_event public.room_events) returns jsonb
+              language plpgsql as $$ begin
+                if p_event.type in ('a', 'b') then v_type := 'member';
+                elsif p_event.type in ('c') then v_type := 'room';
+                else v_type := 'sync'; end if; end $$;`,
+      },
+    ];
+    expect(roomLimitsFromMigrations(files)).toEqual({ max_players: 8, present_s: 30 });
+    const body = lastPrivateFunctionBody(files, 'room_broadcast', { anyArgs: true }) ?? '';
+    expect(assignedTypes(body)).toEqual(['member', 'room', 'sync']);
+    expect(inList(body, /\bif\s+p_event\.type\b/i)).toEqual(['a', 'b']);
+    expect(inList(body, /\belsif\s+p_event\.type\b/i)).toEqual(['c']);
   });
 });

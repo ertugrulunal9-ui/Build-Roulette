@@ -9,8 +9,11 @@
  * The workspace is a fresh template per battle, stored in IndexedDB under `battle:{id}`
  * (restored from the remote autosave when this device has no copy).
  */
-import { useEffect, useState } from 'react';
+import type { Workspace } from '@br/workspace';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { WorkspacePanes } from '../playground/WorkspacePanes';
+import type { Activity } from '../../lib/room/types';
+import { countLines } from '../../lib/solo/stats';
 import { PasteImportDialog } from '../playground/PasteImportDialog';
 import { BuildStatusText } from '../playground/BuildStatusText';
 import { usePrefersDark } from '../../lib/playground/use-prefers-dark';
@@ -22,6 +25,7 @@ import {
   type SoloState,
 } from '../../lib/solo/controller';
 import { describeError } from '../../lib/solo/errors';
+import { formatCountdown } from '../../lib/solo/format';
 import { suggestBuildName } from '../../lib/solo/names';
 import { CARD_LABEL, cardClass } from '../results/ResultPieces';
 import { Countdown, LOW_TIME_MS, timeLevel, type TimeLevel } from './Countdown';
@@ -32,7 +36,20 @@ interface BuildStageProps {
   state: SoloState;
   /** Time left in the phase (ticks in the parent). */
   remaining: number | null;
+  /** After "Build Roulette ·" in the header (default "Solo"; a room shows its code). */
+  subtitle?: ReactNode;
+  /** Extra header buttons (a room's "Leave room"). */
+  headerActions?: ReactNode;
+  /** Shown next to the panes (a room's progress sidebar). */
+  sidebar?: ReactNode;
+  /** The player's activity for the others (rooms): lines, last build, typing. */
+  onActivity?: (activity: Activity) => void;
+  /** After "Shipped … Your build is locked." (a room: waiting for the others). */
+  shippedNote?: ReactNode;
 }
+
+/** "Typing" lasts this long after the last edit. */
+const TYPING_MS = 3_000;
 
 const headerButton =
   'rounded-md border border-zinc-300 px-2.5 py-1 text-xs font-medium hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800';
@@ -58,13 +75,25 @@ function autosaveText(state: SoloState): string {
   }
 }
 
-export function BuildStage({ controller, state, remaining }: BuildStageProps) {
+export function BuildStage({
+  controller,
+  state,
+  remaining,
+  subtitle = 'Solo',
+  headerActions,
+  sidebar,
+  onActivity,
+  shippedNote = 'Wrapping up the battle…',
+}: BuildStageProps) {
   const snapshot = state.snapshot;
   if (!snapshot) throw new Error('BuildStage needs a snapshot');
   const battleId = snapshot.battle.id;
   const phase = snapshot.battle.phase;
   const mine = myBuild(snapshot);
   const shipBusy = state.ship.status !== 'idle' && state.ship.status !== 'error';
+  /** Shipped: the dialog closes and a banner says so (a room keeps BUILD on screen). */
+  const shipped = state.ship.status === 'done' || mine?.status === 'shipped';
+  const shipInFlight = shipBusy && !shipped;
   const timeUp = phase === 'shipping' || (phase === 'building' && remaining === 0);
   const locked = phase !== 'building' || timeUp || shipBusy || mine?.status !== 'draft';
 
@@ -108,6 +137,35 @@ export function BuildStage({ controller, state, remaining }: BuildStageProps) {
     });
   }, [controller, sandboxController, getWorkspace, pasteCount]);
 
+  // Rooms: the activity the others see in their progress sidebar (Presence, throttled by
+  // the sync engine). "Typing" means an edit in the last 3 s.
+  const editedAt = useRef<number | null>(null);
+  const seenWorkspace = useRef<Workspace | null>(null);
+  useEffect(() => {
+    if (!workspace) return;
+    if (seenWorkspace.current !== null && seenWorkspace.current !== workspace) {
+      editedAt.current = Date.now();
+    }
+    seenWorkspace.current = workspace;
+  }, [workspace]);
+  const buildOk = sandbox.lastBuild?.ok !== false;
+  useEffect(() => {
+    if (!onActivity || !workspace) return;
+    const emit = () => {
+      const typing = editedAt.current !== null && Date.now() - editedAt.current < TYPING_MS;
+      onActivity({
+        lines: countLines(workspace.files),
+        last_build: buildOk ? 'ok' : 'error',
+        typing,
+      });
+    };
+    emit();
+    const id = setTimeout(emit, TYPING_MS);
+    return () => {
+      clearTimeout(id);
+    };
+  }, [onActivity, workspace, buildOk]);
+
   // Low-time warnings: a banner for 4 s after crossing one minute, and for the last 10 s.
   const level = timeLevel(phase === 'building' ? remaining : null);
   const toast =
@@ -119,15 +177,44 @@ export function BuildStage({ controller, state, remaining }: BuildStageProps) {
           ? TOASTS.low
           : null;
 
-  const shipOpenNow = shipOpen || shipBusy || state.ship.status === 'error';
+  const shipOpenNow = (shipOpen || shipInFlight || state.ship.status === 'error') && !shipped;
+
+  const panes = workspace ? (
+    <WorkspacePanes
+      session={session}
+      dark={dark}
+      previewOverlay={
+        timeUp && mine?.status === 'draft' ? (
+          <div
+            className="absolute inset-0 z-10 grid place-items-center bg-zinc-950/95 p-6 text-center text-white"
+            data-testid="times-up"
+          >
+            <div className="flex flex-col gap-2">
+              <p className="text-4xl font-black">Time&apos;s up!</p>
+              <p className="text-sm text-zinc-300">
+                {state.autosave.lastSavedAt !== null || state.autosave.status === 'saving'
+                  ? 'Your last autosave is being shipped for you…'
+                  : 'Wrapping up the battle…'}
+              </p>
+            </div>
+          </div>
+        ) : null
+      }
+    />
+  ) : (
+    <div className="grid flex-1 place-items-center text-sm text-zinc-500">
+      Loading your workspace…
+    </div>
+  );
 
   return (
     <main className="flex h-dvh flex-col bg-zinc-50 dark:bg-zinc-950" data-testid="build-stage">
       <header className="flex flex-col gap-2 border-b border-zinc-200 bg-white px-3 py-2 dark:border-zinc-800 dark:bg-zinc-900">
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
           <h1 className="text-sm font-bold tracking-tight">
-            Build Roulette <span className="font-normal text-zinc-500">· Solo</span>
+            Build Roulette <span className="font-normal text-zinc-500">· {subtitle}</span>
           </h1>
+          {headerActions}
           <button
             type="button"
             disabled={locked}
@@ -201,33 +288,27 @@ export function BuildStage({ controller, state, remaining }: BuildStageProps) {
           {notice}
         </p>
       )}
+      {shipped && (
+        <p
+          role="status"
+          data-testid="shipped-banner"
+          className="border-b border-emerald-200 bg-emerald-50 px-3 py-1.5 text-center text-sm font-semibold text-emerald-900 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-200"
+        >
+          🚀 Shipped{mine?.name ? ` “${mine.name}”` : ''}
+          {mine?.completion_ms !== null && mine?.completion_ms !== undefined
+            ? ` at ${formatCountdown(mine.completion_ms)}`
+            : ''}
+          . Your build is locked. {shippedNote}
+        </p>
+      )}
 
-      {workspace ? (
-        <WorkspacePanes
-          session={session}
-          dark={dark}
-          previewOverlay={
-            timeUp && mine?.status === 'draft' ? (
-              <div
-                className="absolute inset-0 z-10 grid place-items-center bg-zinc-950/95 p-6 text-center text-white"
-                data-testid="times-up"
-              >
-                <div className="flex flex-col gap-2">
-                  <p className="text-4xl font-black">Time&apos;s up!</p>
-                  <p className="text-sm text-zinc-300">
-                    {state.autosave.lastSavedAt !== null || state.autosave.status === 'saving'
-                      ? 'Your last autosave is being shipped for you…'
-                      : 'Wrapping up the battle…'}
-                  </p>
-                </div>
-              </div>
-            ) : null
-          }
-        />
-      ) : (
-        <div className="grid flex-1 place-items-center text-sm text-zinc-500">
-          Loading your workspace…
+      {sidebar ? (
+        <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col">{panes}</div>
+          {sidebar}
         </div>
+      ) : (
+        panes
       )}
 
       {workspace && (
@@ -249,7 +330,7 @@ export function BuildStage({ controller, state, remaining }: BuildStageProps) {
         />
       )}
       <ShipDialog
-        open={shipBusy || (shipOpenNow && !timeUp)}
+        open={shipInFlight || (shipOpenNow && !timeUp)}
         defaultName={defaultName}
         ship={state.ship}
         onShip={(name, opts) => {

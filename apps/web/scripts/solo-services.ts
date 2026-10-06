@@ -1,7 +1,8 @@
 /**
- * Everything the solo game needs locally, in one process:
+ * Everything the solo game and the rooms need locally, in one process:
  *
- *   local Supabase stack     http://127.0.0.1:54321   (`supabase start`; checked or started)
+ *   local Supabase stack     http://127.0.0.1:54321   (`supabase start` WITH Realtime;
+ *                                                      checked or started)
  *   mock package CDN         http://localhost:4322
  *   sandbox shell            http://127.0.0.1:4321/v1/          (preview, a different site)
  *     + capture page         http://127.0.0.1:4321/v1/capture   (HMAC gate, same shell)
@@ -9,10 +10,12 @@
  *   Next.js                  http://localhost:3000   (only with --next: `next dev`)
  *
  *   pnpm --filter @br/web dev:solo          # all of the above, starting the stack if needed
- *   tsx scripts/solo-services.ts            # without Next (the solo e2e starts `next start`)
+ *   pnpm --filter @br/web dev:multi         # the same, and Realtime must be up (rooms)
+ *   tsx scripts/solo-services.ts            # without Next (the e2e suites start `next start`)
  *
  * Flags: --next (run `next dev`), --start-stack (run `supabase start` when the stack is not
- * up; needs Docker). Env: BR_APP_ORIGINS (default http://localhost:3000), SHELL_PORT (4321),
+ * up; needs Docker), --realtime (fail when the stack runs without Realtime, which rooms need:
+ * private channels, broadcasts from the database, Presence). Env: BR_APP_ORIGINS (default http://localhost:3000), SHELL_PORT (4321),
  * CDN_PORT (4322), APP_PORT (3000, with --next), CAPTURE_HMAC_SECRET (default: random per
  * run), SUPABASE_INTERNAL_IMAGE_REGISTRY (passed to `supabase start`), and the stack's
  * API_URL / ANON_KEY / SERVICE_ROLE_KEY (default: `supabase status -o env`).
@@ -25,8 +28,9 @@ import { startShellServer } from '@br/sandbox-shell/server';
 import { startMockCdn } from '../../../packages/runtime/test-support/mock-cdn';
 
 const SUPABASE_CLI = 'supabase@2.119.0';
+// Realtime stays on: rooms need it (the solo game does not).
 const EXCLUDED_SERVICES =
-  'studio,imgproxy,vector,logflare,edge-runtime,supavisor,mailpit,realtime,postgres-meta';
+  'studio,imgproxy,vector,logflare,edge-runtime,supavisor,mailpit,postgres-meta';
 const repoRoot = fileURLToPath(new URL('../../../', import.meta.url));
 const webDir = fileURLToPath(new URL('../', import.meta.url));
 
@@ -94,6 +98,25 @@ if (!stack) {
   process.exit(1);
 }
 log(`Supabase      ${stack.API_URL}`);
+
+// Rooms need Realtime; the solo game works without it (e.g. a stack started with -x realtime).
+const realtimeUp = await fetch(`${stack.API_URL}/realtime/v1/api/ping`, {
+  headers: { apikey: stack.ANON_KEY },
+  signal: AbortSignal.timeout(5_000),
+})
+  .then((r) => r.ok)
+  .catch(() => false);
+if (realtimeUp) {
+  log('Realtime      up (rooms work)');
+} else if (args.has('--realtime')) {
+  process.stderr.write(
+    `Realtime is not running, and rooms need it. Restart the stack without "realtime" in -x:\n` +
+      `  npx -y ${SUPABASE_CLI} stop && npx -y ${SUPABASE_CLI} start -x ${EXCLUDED_SERVICES}\n`,
+  );
+  process.exit(1);
+} else {
+  log('Realtime      NOT running: solo works, rooms will not (start the stack with Realtime)');
+}
 
 const secret = env['CAPTURE_HMAC_SECRET'] ?? randomBytes(32).toString('hex');
 const cdn = await startMockCdn({ port: cdnPort, host: 'localhost' });
@@ -178,7 +201,9 @@ if (args.has('--next')) {
     },
     webDir,
   );
-  log(`app           http://localhost:${String(appPort)}/play`);
+  log(`app           http://localhost:${String(appPort)}/play (solo)`);
+  log(`              http://localhost:${String(appPort)}/ (Create room, then open the link in a`);
+  log(`              second browser window, e.g. a private one: each window is another player)`);
 }
 
 async function stop(code: number): Promise<void> {

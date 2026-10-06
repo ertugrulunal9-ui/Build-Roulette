@@ -132,9 +132,3 @@ export interface PublicBuild {
   capture_status: CaptureStatus;
   screenshot_path: string | null;
 }
-
-export const TERMINAL_CAPTURE: readonly CaptureStatus[] = ['captured', 'fallback', 'failed'];
-
-export function isCaptureTerminal(s: CaptureStatus): boolean {
-  return TERMINAL_CAPTURE.includes(s);
-}

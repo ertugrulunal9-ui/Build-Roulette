@@ -30,12 +30,7 @@ import type { Workspace } from '@br/workspace';
 import type { BuildFile, SoloApi } from './api';
 import { GameError, toGameError } from './errors';
 import { buildStats, parseSourceJson, sourceJson } from './stats';
-import {
-  isCaptureTerminal,
-  type BattleSnapshot,
-  type BuildStats,
-  type SnapshotBuild,
-} from './types';
+import type { BattleSnapshot, BuildStats, SnapshotBuild } from './types';
 
 // ─── Dependencies ─────────────────────────────────────────────────────────────────────
 
@@ -865,11 +860,4 @@ export class SoloController {
   private emit(): void {
     for (const l of this.listeners) l();
   }
-}
-
-/** True once the build's screenshot is final (captured, fallback or failed). */
-export function captureSettled(snapshot: BattleSnapshot | null): boolean {
-  const mine = myBuild(snapshot);
-  if (!mine || (mine.status !== 'shipped' && mine.status !== 'auto_shipped')) return true;
-  return isCaptureTerminal(mine.capture_status);
 }

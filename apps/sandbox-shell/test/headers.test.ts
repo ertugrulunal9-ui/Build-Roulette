@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CAPTURE_SANDBOX_FLAGS,
   FORM_ACTION,
+  captureCsp,
+  captureHeaders,
   PERMISSIONS_POLICY,
   RESET_HEADERS,
   renderHeadersFile,
@@ -89,6 +92,7 @@ describe('shell headers', () => {
       '/v1/',
       '/v1/index.html',
       '/v1/shell.js',
+      '/v1/capture.js',
       '/v1/reset',
     ]);
     expect(rules[0]?.headers).toEqual(securityHeaders(PROD));
@@ -99,6 +103,27 @@ describe('shell headers', () => {
     expect(rules.find((r) => r.pattern === '/v1/shell.js')?.headers['Cache-Control']).toContain(
       'immutable',
     );
+  });
+
+  it('capture page: shell CSP family, top-level only, sandboxed, never cached', () => {
+    const csp = captureCsp(PROD);
+    // Same sources as the preview shell, so a build behaves the same in a capture.
+    expect(csp).toContain(
+      shellCsp(PROD).replace('frame-ancestors https://buildroulette.app', "frame-ancestors 'none'"),
+    );
+    expect(csp).not.toContain('https://buildroulette.app');
+    expect(
+      csp.endsWith('; sandbox allow-scripts allow-same-origin allow-forms allow-pointer-lock'),
+    ).toBe(true);
+    expect(CAPTURE_SANDBOX_FLAGS).not.toContain('allow-popups');
+    expect(CAPTURE_SANDBOX_FLAGS).not.toContain('allow-modals');
+    expect(CAPTURE_SANDBOX_FLAGS).not.toContain('allow-top-navigation');
+    const h = captureHeaders(PROD);
+    expect(h['Content-Security-Policy']).toBe(csp);
+    expect(h['Cache-Control']).toBe('no-store');
+    expect(h['X-Robots-Tag']).toBe('noindex, nofollow');
+    expect(h['Permissions-Policy']).toBe(PERMISSIONS_POLICY);
+    expect(h['Origin-Agent-Cluster']).toBe('?1');
   });
 
   it('renders a _headers file', () => {

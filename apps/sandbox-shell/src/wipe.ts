@@ -197,3 +197,71 @@ export async function fetchClearSiteData(url: URL, timeoutMs: number): Promise<v
     clearTimeout(timer);
   }
 }
+
+function deleteDatabase(name: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      resolve(`IndexedDB "${name}" deletion timed out`);
+    }, 3000);
+    const req = indexedDB.deleteDatabase(name);
+    req.onsuccess = () => {
+      clearTimeout(timer);
+      resolve(null);
+    };
+    req.onerror = () => {
+      clearTimeout(timer);
+      resolve(`IndexedDB "${name}": ${req.error?.message ?? 'error'}`);
+    };
+  });
+}
+
+/**
+ * Wipes everything the origin can hold (browser only): `localStorage`, `sessionStorage`,
+ * every IndexedDB database, CacheStorage, cookies, OPFS, Storage Buckets and service
+ * workers, then fetches `resetUrl` for `Clear-Site-Data`. Close the running build first: an
+ * open IndexedDB connection blocks deletion. Never throws; returns the errors.
+ */
+export async function wipeOriginStorage(resetUrl: URL): Promise<string[]> {
+  const errors: string[] = [];
+  const attempt = async (what: string, fn: () => unknown) => {
+    try {
+      await fn();
+    } catch (e) {
+      errors.push(`${what}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+  await attempt('localStorage', () => {
+    localStorage.clear();
+  });
+  await attempt('sessionStorage', () => {
+    sessionStorage.clear();
+  });
+  await attempt('indexedDB', async () => {
+    const dbs = await indexedDB.databases();
+    const results = await Promise.all(
+      dbs.map((db) => (db.name ? deleteDatabase(db.name) : Promise.resolve(null))),
+    );
+    for (const r of results) if (r) errors.push(r);
+  });
+  await attempt('caches', async () => {
+    if (typeof caches === 'undefined') return;
+    for (const key of await caches.keys()) await caches.delete(key);
+  });
+  await attempt('cookies', async () => {
+    const store = (globalThis as { cookieStore?: CookieStoreLike }).cookieStore;
+    if (store) await clearCookieStore(store);
+    // Also without the Cookie Store API (Firefox < 140, Safari < 18.4), and for anything it
+    // left: expire every visible name for each path prefix and Domain variant, with and
+    // without `Partitioned`.
+    expireDocumentCookies(document, location);
+    const left = cookieNames(document.cookie);
+    if (left.length > 0) throw new Error(`still visible: ${left.join(', ')}`);
+  });
+  await attempt('opfs', () => clearOpfs(navigator.storage));
+  await attempt('storageBuckets', () => clearStorageBuckets(navigator));
+  await attempt('serviceWorkers', () => clearServiceWorkers(navigator));
+  // Last: the host's Clear-Site-Data endpoint covers what script cannot reach (HttpOnly
+  // cookies, cookies on other paths or the parent domain, the HTTP cache).
+  await attempt('clearSiteData', () => fetchClearSiteData(resetUrl, 5000));
+  return errors;
+}

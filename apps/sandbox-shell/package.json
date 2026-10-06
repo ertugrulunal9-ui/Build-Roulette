@@ -6,7 +6,9 @@
   "description": "Versioned runtime shell served from the sandbox (usercontent) origin. Runs untrusted builds.",
   "exports": {
     "./server": "./src/server.ts",
-    "./headers": "./src/headers.ts"
+    "./headers": "./src/headers.ts",
+    "./capture-sig": "./src/capture-sig.ts",
+    "./capture-gate": "./src/capture-gate.ts"
   },
   "scripts": {
     "build": "tsx scripts/build.ts",

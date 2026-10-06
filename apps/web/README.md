@@ -4,11 +4,11 @@ The Next.js app (App Router). Routes:
 
 | Route | What |
 |---|---|
-| `/` | Landing page. "Play solo" goes to `/play`; "Create room" stays disabled until M3. |
+| `/` | Landing page: "Play solo" (`/play`), "Create room" (a name → `create_room` → `/r/{code}`) and "Join with code" (any case, trimmed, or a pasted invite link). |
 | `/play` | The solo game: name → SPIN → BUILD → SHIP → RESULTS → DESTROY. `?battle={id}` resumes a battle after a refresh. |
 | `/battles/[id]` | The permanent, shareable results page (server-rendered), plus `/battles/[id]/opengraph-image`. |
 | `/playground` | Single-player editor and live preview, no game. |
-| `/r/[code]` | Room placeholder (M3). |
+| `/r/[code]` | A room (M3): join → lobby → SPIN → BUILD → SHIP → RESULTS → DESTROY → lobby (rematch). |
 
 ## Play the solo game locally
 
@@ -59,6 +59,35 @@ The game, step by step:
    shipped bundle runs in a **reveal-mode** preview for the 60 s last look.
 7. **DESTROY.** A short destroy animation, then the battle's IndexedDB workspace is deleted
    and the preview iframe is wiped and removed. Links to the permanent page and "Play again".
+
+## Play in a room locally (2–4 players on one machine)
+
+Rooms need the local stack **with Realtime** (private channels, broadcasts from the
+database, Presence). `dev:multi` is `dev:solo` that refuses to run without Realtime:
+
+```sh
+pnpm --filter @br/web dev:multi    # then open http://localhost:3000
+```
+
+Every browser *profile* is a separate anonymous player (the session is in localStorage), so
+use a normal window plus a private/incognito window (and another browser for a third
+player):
+
+1. Window 1: **Create room**, pick a name. You land on `/r/K7QXM` as the host (👑).
+2. **Copy invite link** and open it in window 2 (private). Pick a name, **Join the room**.
+   Both lobbies show both players online (Presence) and "2/8 players".
+3. Both click **Ready up**; the host clicks **Start battle**. Everyone sees the same reels,
+   then BUILD with a sidebar of everyone's progress (lines, build status, typing, and
+   "Ada shipped 'Snack Overflow' at 3:12" badges).
+4. Ship, or wait for the deadline (5, 10 or 15 min, drawn by the server; force it with
+   psql as in `e2e/multiplayer.spec.ts` if you are impatient). RESULTS ranks every build
+   with its screenshot and awards, shows your own build for the last look, then DESTROY
+   and everyone is back in the lobby. **Start the rematch** for the next battle.
+5. A window that joins during a battle is a spectator (countdown and progress, no editor);
+   the host can kick from the lobby; **Leave room** leaves (rejoin with the link).
+
+If you started the stack yourself with `-x …,realtime,…` (as the capture CI job does), solo
+still works but rooms do not: restart it without `realtime` in `-x`.
 
 ### Environment variables
 
@@ -137,7 +166,10 @@ CDN (T-006) replaces it.
 |---|---|
 | Editing session shared by `/playground` and BUILD (workspace + sandbox + editor state) | `src/lib/playground/use-workspace-session.ts`, `src/components/playground/WorkspacePanes.tsx` |
 | Bundler worker + preview glue | `src/lib/playground/sandbox.ts` (`SandboxController`) |
-| Solo game loop (plain TS, unit tested with fakes) | `src/lib/solo/controller.ts` (`SoloController`) |
+| Solo game loop (plain TS, unit tested with fakes); also runs a room's battle in external mode | `src/lib/solo/controller.ts` (`SoloController`) |
+| Room sync engine: private topics, versions/gaps, heartbeat, resync, clock, presence | `src/lib/room/sync.ts` (`RoomSync`), `src/lib/room/reducer.ts` |
+| Room page logic: join, lobby intents, battles, toasts, leave/kick | `src/lib/room/controller.ts` (`RoomController`), `src/lib/room/api.ts` |
+| Room screens (lobby, progress sidebar, spectator, ranked results) | `src/components/room/*` |
 | Backend calls (RPCs, storage) | `src/lib/solo/api.ts` (`SupabaseSoloApi`), `src/lib/supabase/*` |
 | Error contract → messages | `src/lib/solo/errors.ts` |
 | React binding | `src/lib/solo/use-solo-game.ts` |
@@ -147,9 +179,10 @@ CDN (T-006) replaces it.
 ## Tests
 
 ```sh
-pnpm --filter @br/web test             # unit (Vitest): solo controller, hook, errors, sandbox
+pnpm --filter @br/web test             # unit (Vitest): solo + room controllers, sync engine, reducer, …
 pnpm --filter @br/web test:e2e         # /playground (Playwright), no Supabase needed
 pnpm --filter @br/web test:e2e:solo    # /play against the REAL local Supabase stack
+pnpm --filter @br/web test:e2e:multi   # rooms: 3+ browser contexts, REAL stack WITH Realtime
 ```
 
 - `test:e2e` runs `next build`, then Playwright starts `next start -p 3100` and
@@ -170,10 +203,26 @@ pnpm --filter @br/web test:e2e:solo    # /play against the REAL local Supabase s
 
   The tests commit data (anonymous users, battles), like `supabase/scripts/e2e-solo.mjs`.
   `SOLO_SCREENSHOT_DIR=/dir` saves UI screenshots; `E2E_REUSE_SERVERS=1` reuses servers that
-  are already running. The local Auth server allows 30 anonymous sign-ups per hour per IP
-  (`GOTRUE_RATE_LIMIT_ANONYMOUS_USERS`); many runs in a row (each test signs up one user,
-  the capture integration four) can hit it, and Spin then says "Too many requests".
-  Restarting the stack resets it.
+  are already running. The local Auth server allows 300 anonymous sign-ups per hour per IP
+  (`[auth.rate_limit] anonymous_users` in `supabase/config.toml`); many runs in a row (each
+  solo test signs up one user, the rooms e2e seven, the capture integration four) can hit
+  it, and the UI then says "Too many requests". Restarting the stack resets it.
+- `test:e2e:multi` (`playwright.multi.config.ts`) needs the local stack running **with
+  Realtime**; same servers as the solo e2e (`solo-services.ts --realtime`). Each player is
+  its own browser context, i.e. its own anonymous user (`e2e/multiplayer.spec.ts`):
+  - **a 3-player room:** create (landing page), join by link and by a lower-case code,
+    everyone online, ready, start, the same challenge for all; a late joiner is a spectator
+    (countdown and progress, no editor); the host ships fast, a player refreshes mid-BUILD
+    and gets the same battle with the work restored, then autosaves; another ships late;
+    the deadline is forced → auto-shipped; RESULTS ranks 3 builds with real screenshots and
+    the awards (`speedrun` + `fastest_ship` for the host only); each player's last look; the
+    last look is forced → DESTROY for everyone → lobby (the spectator was promoted) →
+    rematch;
+  - **kick:** the host kicks a member in the lobby (with confirmation); they see the kicked
+    screen and cannot rejoin;
+  - **join errors:** an unknown code and a malformed one.
+
+  `MULTI_SCREENSHOT_DIR=/dir` saves `t017-{lobby,build-sidebar,spectator,results}.png`.
 - `test:e2e:cf` runs the playground suite against the Cloudflare Workers build
   (`cf:build`, then `opennextjs-cloudflare preview`, which is `wrangler dev` on workerd)
   instead of `next start` (`E2E_APP_SERVER=workers` in `playwright.config.ts`).
@@ -191,7 +240,9 @@ deploys, secrets, custom domain and caching.
   WebP, which is what the local capture worker stores, so the card then shows the build name
   in a frame instead. Fix options: the capture worker also writes a PNG card image, or
   Cloudflare image transformations in production.
-- **No Realtime yet:** the solo game polls `get_battle_snapshot` (every 2–10 s depending on the
-  phase, and right after each deadline).
+- **The solo game polls** `get_battle_snapshot` (every 2–10 s depending on the phase, and
+  right after each deadline); rooms use Realtime.
+- **Rooms (M3):** no REVEAL or VOTE yet (M4); presence is tracked on the room topic only;
+  chaos testing (network drops, clock skew, host leaving mid-battle) is T-018.
 - `/battles/[id]` is rendered per request; ISR on the R2 incremental cache is a follow-up
   (DEPLOY.md, "Caching").

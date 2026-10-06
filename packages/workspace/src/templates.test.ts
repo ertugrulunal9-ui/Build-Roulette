@@ -30,6 +30,13 @@ describe('templates', () => {
     },
   );
 
+  it.each(TEMPLATE_IDS)('%s tells the capture renderer when its first frame is on screen', (id) => {
+    const ws = createWorkspace(id);
+    const entry = ws.files[ws.manifest.entry] ?? '';
+    expect(entry).toContain('requestAnimationFrame(');
+    expect(entry).toContain('window.buildRoulette?.ready()');
+  });
+
   it('returns independent copies', () => {
     const a = createWorkspace();
     a.files['src/App.tsx'] = 'changed';

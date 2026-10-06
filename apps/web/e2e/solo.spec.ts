@@ -216,6 +216,8 @@ test('auto-ship: no ship; at the deadline the autosave (with its CSS) is shipped
   // The background colour comes only from the CSS file.
   await openFile(page, 'src/styles.css');
   await replaceEditorText(page, `body { margin: 0; background: rgb(0, 160, 80); }\n`);
+  // Let that rebuild land before the next edit.
+  await expect(buildFrame(page).locator('body')).toHaveCSS('background-color', 'rgb(0, 160, 80)');
   await openFile(page, 'src/App.tsx');
   await replaceEditorText(
     page,

@@ -64,4 +64,4 @@ export type {
 } from './rooms';
 
 export { JOIN_ROOM_ERRORS, RPC_ERROR_CODES, SERVICE_ERROR_CODES, isRpcErrorCode } from './errors';
-export type { RpcErrorCode } from './errors';
+export type { JoinRoomError, RpcErrorCode } from './errors';

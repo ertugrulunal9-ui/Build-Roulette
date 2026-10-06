@@ -69,3 +69,5 @@ export const JOIN_ROOM_ERRORS = [
   'room_full',
   'invalid_display_name',
 ] as const satisfies readonly RpcErrorCode[];
+
+export type JoinRoomError = (typeof JOIN_ROOM_ERRORS)[number];

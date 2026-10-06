@@ -23,7 +23,7 @@ import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { BUILD_TIME_LIMITS_MINUTES, DEFAULT_PHASE_DURATIONS } from './durations';
-import { RPC_ERROR_CODES, SERVICE_ERROR_CODES } from './errors';
+import { JOIN_ROOM_ERRORS, RPC_ERROR_CODES, SERVICE_ERROR_CODES } from './errors';
 import { BATTLE_PHASES, isBattlePhase } from './phases';
 import {
   BATTLE_EVENT_TYPES,
@@ -221,11 +221,11 @@ describe('schema drift: BATTLE_PHASES vs SQL enum public.battle_phase', () => {
 function lastPrivateFunctionBody(
   files: readonly { name: string; sql: string }[],
   functionName: string,
-  { anyArgs = false }: { anyArgs?: boolean } = {},
+  { anyArgs = false, schema = 'private' }: { anyArgs?: boolean; schema?: string } = {},
 ): string | null {
   const args = anyArgs ? String.raw`\([^)]*\)` : String.raw`\(\s*\)`;
   const pattern = new RegExp(
-    String.raw`\bcreate\s+(?:or\s+replace\s+)?function\s+"?private"?\s*\.\s*"?${functionName}"?\s*${args}` +
+    String.raw`\bcreate\s+(?:or\s+replace\s+)?function\s+"?${schema}"?\s*\.\s*"?${functionName}"?\s*${args}` +
       String.raw`[\s\S]*?\bas\s+(\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$)([\s\S]*?)\1`,
     'gi',
   );
@@ -423,6 +423,20 @@ describe('schema drift: rooms and Realtime', () => {
     const known = [...RPC_ERROR_CODES, ...SERVICE_ERROR_CODES];
     expect(new Set(known).size, 'a code is listed twice').toBe(known.length);
     expect([...raised].sort()).toEqual([...known].sort());
+  });
+
+  it('JOIN_ROOM_ERRORS lists what public.join_room raises (plus the display name check)', () => {
+    const body = lastPrivateFunctionBody(readMigrations(), 'join_room', {
+      anyArgs: true,
+      schema: 'public',
+    });
+    expect(body, 'public.join_room not found').not.toBeNull();
+    const raised = new Set(
+      [...(body ?? '').matchAll(/\bmessage\s*=\s*'([a-z_]+)'/g)].map((m) => m[1] ?? ''),
+    );
+    expect(body).toMatch(/private\.check_display_name\(/);
+    raised.add('invalid_display_name');
+    expect([...raised].sort()).toEqual([...JOIN_ROOM_ERRORS].sort());
   });
 
   it('parses room_limits, in-lists and v_type assignments', () => {

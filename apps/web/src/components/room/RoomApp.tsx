@@ -5,7 +5,7 @@
  * none), then the lobby, the battle (the solo stages, driven by the room's sync engine) and
  * back to the lobby for the rematch. Every join error and end state has its own screen.
  */
-import { isTerminalPhase } from '@br/game';
+import { ROOM_LIMITS, isTerminalPhase, type JoinRoomError } from '@br/game';
 import Link from 'next/link';
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { playgroundConfig } from '../../lib/playground/config';
@@ -462,7 +462,14 @@ function NameForm({
   );
 }
 
-const JOIN_ERRORS: Partial<Record<string, { title: string; text: (code: string) => string }>> = {
+/**
+ * A screen for every `join_room` error (`invalid_display_name` goes back to the name
+ * prompt). Typed against @br/game's list, so a new code cannot be forgotten.
+ */
+const JOIN_ERRORS: Record<
+  Exclude<JoinRoomError, 'invalid_display_name'>,
+  { title: string; text: (code: string) => string }
+> = {
   room_not_found: {
     title: 'Room not found',
     text: (code) => `No room has the code ${code}. Check the code, or create your own room.`,
@@ -477,7 +484,8 @@ const JOIN_ERRORS: Partial<Record<string, { title: string; text: (code: string) 
   },
   room_full: {
     title: 'This room is full',
-    text: () => 'Every player and spectator slot is taken (8 players and 20 spectators).',
+    text: () =>
+      `Every player and spectator slot is taken (${String(ROOM_LIMITS.max_players)} players and ${String(ROOM_LIMITS.max_spectators)} spectators).`,
   },
 };
 
@@ -490,7 +498,10 @@ function JoinError({
   error: GameError | null;
   onRetry: () => void;
 }) {
-  const known = error ? JOIN_ERRORS[error.code] : undefined;
+  const known =
+    error && Object.prototype.hasOwnProperty.call(JOIN_ERRORS, error.code)
+      ? JOIN_ERRORS[error.code as keyof typeof JOIN_ERRORS]
+      : undefined;
   return (
     <Centered testId="join-error">
       <p className="text-6xl" aria-hidden="true">

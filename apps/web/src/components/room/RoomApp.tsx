@@ -247,6 +247,9 @@ function BattleView({
             <ProgressSidebar battle={snapshot} presence={state.sync.presence} layout="sidebar" />
           }
           onActivity={onActivity}
+          shippedNote={`Waiting for the others (${String(
+            snapshot.builds.filter((b) => b.status === 'shipped').length,
+          )}/${String(snapshot.players.length)} shipped)…`}
         />
         {spin}
         {battleState.error && (

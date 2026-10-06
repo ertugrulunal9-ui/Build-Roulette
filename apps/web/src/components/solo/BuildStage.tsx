@@ -25,6 +25,7 @@ import {
   type SoloState,
 } from '../../lib/solo/controller';
 import { describeError } from '../../lib/solo/errors';
+import { formatCountdown } from '../../lib/solo/format';
 import { suggestBuildName } from '../../lib/solo/names';
 import { CARD_LABEL, cardClass } from '../results/ResultPieces';
 import { Countdown, LOW_TIME_MS, timeLevel, type TimeLevel } from './Countdown';
@@ -43,6 +44,8 @@ interface BuildStageProps {
   sidebar?: ReactNode;
   /** The player's activity for the others (rooms): lines, last build, typing. */
   onActivity?: (activity: Activity) => void;
+  /** After "Shipped … Your build is locked." (a room: waiting for the others). */
+  shippedNote?: ReactNode;
 }
 
 /** "Typing" lasts this long after the last edit. */
@@ -80,6 +83,7 @@ export function BuildStage({
   headerActions,
   sidebar,
   onActivity,
+  shippedNote = 'Wrapping up the battle…',
 }: BuildStageProps) {
   const snapshot = state.snapshot;
   if (!snapshot) throw new Error('BuildStage needs a snapshot');
@@ -87,6 +91,9 @@ export function BuildStage({
   const phase = snapshot.battle.phase;
   const mine = myBuild(snapshot);
   const shipBusy = state.ship.status !== 'idle' && state.ship.status !== 'error';
+  /** Shipped: the dialog closes and a banner says so (a room keeps BUILD on screen). */
+  const shipped = state.ship.status === 'done' || mine?.status === 'shipped';
+  const shipInFlight = shipBusy && !shipped;
   const timeUp = phase === 'shipping' || (phase === 'building' && remaining === 0);
   const locked = phase !== 'building' || timeUp || shipBusy || mine?.status !== 'draft';
 
@@ -170,7 +177,7 @@ export function BuildStage({
           ? TOASTS.low
           : null;
 
-  const shipOpenNow = shipOpen || shipBusy || state.ship.status === 'error';
+  const shipOpenNow = (shipOpen || shipInFlight || state.ship.status === 'error') && !shipped;
 
   const panes = workspace ? (
     <WorkspacePanes
@@ -281,6 +288,19 @@ export function BuildStage({
           {notice}
         </p>
       )}
+      {shipped && (
+        <p
+          role="status"
+          data-testid="shipped-banner"
+          className="border-b border-emerald-200 bg-emerald-50 px-3 py-1.5 text-center text-sm font-semibold text-emerald-900 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-200"
+        >
+          🚀 Shipped{mine?.name ? ` “${mine.name}”` : ''}
+          {mine?.completion_ms !== null && mine?.completion_ms !== undefined
+            ? ` at ${formatCountdown(mine.completion_ms)}`
+            : ''}
+          . Your build is locked. {shippedNote}
+        </p>
+      )}
 
       {sidebar ? (
         <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
@@ -310,7 +330,7 @@ export function BuildStage({
         />
       )}
       <ShipDialog
-        open={shipBusy || (shipOpenNow && !timeUp)}
+        open={shipInFlight || (shipOpenNow && !timeUp)}
         defaultName={defaultName}
         ship={state.ship}
         onShip={(name, opts) => {

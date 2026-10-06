@@ -275,6 +275,83 @@ describe('battle events', () => {
     s.stop();
   });
 
+  // A host change: applied from its payload alone (no refetch of its own).
+  const hostEvent = (version: number) => ({ type: 'host', version, host_id: BOB });
+
+  it('separate holes in a row are each refetched (a lossy link never freezes the battle)', async () => {
+    const { s, topic } = await inBattle();
+    // Every other event is lost: 3, 5, 7, 9 arrive; the server is always one ahead.
+    for (const v of [4, 6, 8, 10]) {
+      api.battles.set(BATTLE_1, battleSnapshot({ version: v, phase: 'building' }));
+      topic.send(hostEvent(v));
+      await flush();
+      expect(s.getSnapshot().battle?.battle.version).toBe(v);
+    }
+    expect(api.count('getBattleSnapshot')).toBe(4);
+    expect(s.stats.gaps).toBe(4);
+    // And the next event in line applies as usual.
+    topic.send(hostEvent(11));
+    expect(s.getSnapshot().battle?.battle.version).toBe(11);
+    s.stop();
+  });
+
+  it('a hole the refetch does not close is retried with backoff; the event is kept', async () => {
+    const { s, topic } = await inBattle();
+    // The snapshot lags behind the event (still version 2) for a while.
+    topic.send(hostEvent(5));
+    await flush();
+    expect(api.count('getBattleSnapshot')).toBe(1);
+    await vi.advanceTimersByTimeAsync(999);
+    expect(api.count('getBattleSnapshot')).toBe(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(api.count('getBattleSnapshot')).toBe(2); // +1 s
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(api.count('getBattleSnapshot')).toBe(3); // +2 s
+    // The server catches up (version 4): event 5 is the next one and is applied.
+    api.battles.set(BATTLE_1, battleSnapshot({ version: 4, phase: 'building' }));
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(api.count('getBattleSnapshot')).toBe(4); // +4 s
+    expect(s.getSnapshot().battle?.battle.version).toBe(5);
+    // Settled: no more retries, and the next hole is fetched at once again.
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(api.count('getBattleSnapshot')).toBe(4);
+    api.battles.set(BATTLE_1, battleSnapshot({ version: 7, phase: 'building' }));
+    topic.send(hostEvent(7));
+    await flush();
+    expect(api.count('getBattleSnapshot')).toBe(5);
+    expect(s.getSnapshot().battle?.battle.version).toBe(7);
+    s.stop();
+  });
+
+  it('a failed refetch is retried with backoff (at most every 30 s) until it succeeds', async () => {
+    const { s, topic } = await inBattle();
+    const fresh = api.onBattle;
+    api.onBattle = () => {
+      throw new GameError('network');
+    };
+    topic.send({
+      type: 'phase',
+      version: 3,
+      phase: 'shipping',
+      phase_started_at: new Date().toISOString(),
+      phase_ends_at: new Date(Date.now() + 15_000).toISOString(),
+    });
+    await flush();
+    expect(api.count('getBattleSnapshot')).toBe(1);
+    await vi.advanceTimersByTimeAsync(1_000 + 2_000 + 4_000 + 8_000 + 16_000);
+    expect(api.count('getBattleSnapshot')).toBe(6);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(api.count('getBattleSnapshot')).toBe(7); // capped at 30 s
+    api.battles.set(BATTLE_1, battleSnapshot({ version: 3, phase: 'shipping' }));
+    api.onBattle = fresh;
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(api.count('getBattleSnapshot')).toBe(8);
+    expect(s.getSnapshot().battle?.battle).toMatchObject({ version: 3, phase: 'shipping' });
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(api.count('getBattleSnapshot')).toBe(8);
+    s.stop();
+  });
+
   it('switches the battle topic when a new battle starts (rematch)', async () => {
     const { s } = await inBattle();
     const room = rt.open(ROOM_TOPIC);
@@ -390,6 +467,27 @@ describe('recovery', () => {
     s.stop();
   });
 
+  it('offline: degraded at once and polling (the socket may look open); online: live and resynced', async () => {
+    api.room = roomSnapshot({ battleId: BATTLE_1 });
+    api.battles.set(BATTLE_1, battleSnapshot());
+    const s = await started();
+    expect(s.getSnapshot().connection).toBe('live');
+    env.fire('offline');
+    expect(s.getSnapshot().connection).toBe('degraded');
+    api.clearCalls();
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(api.count('getRoomSnapshot')).toBe(1);
+    expect(api.count('getBattleSnapshot')).toBe(1);
+    env.fire('online');
+    expect(s.getSnapshot().connection).toBe('live');
+    await flush();
+    expect(api.count('getRoomSnapshot')).toBe(2); // the resync
+    api.clearCalls();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(api.count('getRoomSnapshot')).toBe(0); // no more polling
+    s.stop();
+  });
+
   it('a dropped channel polls until Realtime rejoins, then refetches and tracks again', async () => {
     api.room = roomSnapshot({ battleId: BATTLE_1 });
     api.battles.set(BATTLE_1, battleSnapshot());
@@ -498,7 +596,7 @@ describe('stop', () => {
     api.room = roomSnapshot({ battleId: BATTLE_1 });
     api.battles.set(BATTLE_1, battleSnapshot());
     const s = await started();
-    expect(env.size).toBe(1);
+    expect(env.size).toBe(2); // resume + offline
     s.stop();
     expect(rt.topics.every((t) => t.closed)).toBe(true);
     expect(vi.getTimerCount()).toBe(0);

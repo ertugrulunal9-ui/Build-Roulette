@@ -330,14 +330,23 @@ export class FakeRealtime implements RealtimePort {
 
 export class FakeEnvironment implements SyncEnvironment {
   private readonly listeners = new Set<(reason: 'visible' | 'online') => void>();
+  private readonly offlineListeners = new Set<() => void>();
   onResume(cb: (reason: 'visible' | 'online') => void): () => void {
     this.listeners.add(cb);
     return () => this.listeners.delete(cb);
   }
-  fire(reason: 'visible' | 'online'): void {
+  onOffline(cb: () => void): () => void {
+    this.offlineListeners.add(cb);
+    return () => this.offlineListeners.delete(cb);
+  }
+  fire(reason: 'visible' | 'online' | 'offline'): void {
+    if (reason === 'offline') {
+      for (const l of this.offlineListeners) l();
+      return;
+    }
     for (const l of this.listeners) l(reason);
   }
   get size(): number {
-    return this.listeners.size;
+    return this.listeners.size + this.offlineListeners.size;
   }
 }

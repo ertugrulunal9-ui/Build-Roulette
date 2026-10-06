@@ -8,8 +8,8 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 |---|---|---|---|---|
 | T-011 | DB layer for the solo loop: RPCs (start, advance, ship, snapshot), storage buckets + policies, jobs, deadline sweep, card deck seed; tests on the real local Supabase stack | `supabase/`, `.github/workflows/ci.yml` (db job only) | done | Merged |
 | T-012 | Spike: Next.js 16 on Cloudflare Workers via OpenNext (local preview, no account) | `apps/web/` (deploy config only) | done | Merged: GO with caveats |
-| T-013 | Capture mode in the shell + local capture/destroy workers (Playwright stands in for Browser Rendering) | `apps/sandbox-shell/`, `apps/capture-worker/` | in-progress | M2 wave 2 (one worker at a time) |
-| T-014 | Solo game UI: spin → build → ship → results → destroy, plus the `/battles/[id]` results page | `apps/web/` | todo | M2 wave 2, after T-011/T-012 |
+| T-013 | Capture mode in the shell + local capture/destroy workers (Playwright stands in for Browser Rendering) | `apps/sandbox-shell/`, `apps/capture-worker/` | done | Merged |
+| T-014 | Solo game UI: spin → build → ship → results → destroy, plus the `/battles/[id]` results page | `apps/web/` (+ small `supabase/` and `apps/capture-worker/` changes for the autosave CSS) | in-progress | M2, last task |
 | T-001 | Monorepo skeleton: pnpm + Turborepo, Next.js app, lint/format/strict TS, Vitest, CI | root config, `apps/web/`, `packages/game/`, `.github/` | done | Merged in b29110a |
 | T-002 | Supabase scaffold: initial schema migration, Supabase-compatible local Postgres test harness, pgTAP | `supabase/` | done | Merged |
 | T-004 | Run DB tests in CI + add a `@br/game` ↔ SQL enum drift test | `.github/workflows/ci.yml`, `packages/game/` | done | Merged |
@@ -46,6 +46,7 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 - T-010 Package CDN availability hardening
 - T-011 Solo-loop DB layer
 - T-012 OpenNext / Cloudflare Workers spike
+- T-013 Capture mode + capture/destroy workers
 
 ## Review log
 
@@ -246,3 +247,19 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 - The plain-Postgres harness is retired, and CI's `db` job now runs `supabase start` + `test db` + `e2e-solo.mjs`. Check the first GitHub run.
 - Accepted product call: a new solo auto-award, `speedrun` (shipped using ≤ 50% of the time).
 - Implementation notes recorded in docs/05 §5.7.
+
+### T-013: accepted (M2)
+- The worker was interrupted once by the usage limit and resumed.
+- Hub test-merged and re-ran on a fresh clone with the real local Supabase stack:
+  - repo pipeline green (capture-worker 63 unit tests, shell 47);
+  - `supabase test db` 462/462;
+  - **capture integration 12/12** (real Chromium + real Supabase: captured, fallback, auto_shipped, retry → failed, destroy leaves zero objects);
+  - runtime e2e 23/23, web e2e 11/11.
+- Hub looked at the produced screenshot: 1280×800 WebP with the build's real content.
+- Design: an HMAC capture gate on the server side (Pages `_worker.js`), so there's no secret in public JS; renderer-decided readiness; navigation guard; sharp WebP; a blank check that falls back to the client thumbnail. Recorded in docs/03.
+- Follow-ups:
+  - the autosave has no CSS slot, handled in T-014;
+  - the production Browser Rendering adapter is still a stub (needs an account);
+  - the capture gate isn't verified in workerd;
+  - `_worker.js` is 67 KB because of zod;
+  - the web e2e file-tree test flaked once under heavy load. Watch it.

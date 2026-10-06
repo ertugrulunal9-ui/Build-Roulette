@@ -293,3 +293,36 @@ depend on them. In particular:
 
 **Browser caveat:** only Chromium has been tested. Firefox ignores the `Permissions-Policy` header (the iframe `allow` list still works). Storage Buckets and `Origin-Agent-Cluster` are Chromium-only. Safari supports `Clear-Site-Data` only partly.
 
+### Capture mode as implemented (T-013; supersedes the §3.7 URL shape)
+
+- **URL:** `GET /v1/capture?css=&exp=&map=&src=&sig=`. The HMAC-SHA256 covers
+  `br-capture-v1\n<host>\n<path>\n<sorted query without sig>`. `exp` must be at most
+  10 minutes ahead. Unknown or repeated parameters are refused. `map` is the import map as
+  JSON and is part of the signature.
+- **The secret never reaches public JS.** A server-side **capture gate** checks the
+  signature: in production it's a Cloudflare Pages `_worker.js` routed only to
+  `/v1/capture`, with the secret stored as a Pages secret; locally the shell's dev server
+  runs the same check. Requests failing the check get an empty 403. Because the gate runs
+  on the server, nobody can open `/v1/capture?src=<anything>` and get top-level JS on our
+  origin.
+- **The capture page:** wipes origin storage, then fetches the bundle `no-store`,
+  credential-free and with no redirects. It runs the build in a fresh 1280×800 frame. Its
+  headers are `frame-ancestors 'none'` and a CSP `sandbox` with the same flags as the
+  `capture` run mode.
+- **Readiness is decided by the renderer:** the build calls
+  `window.buildRoulette.ready()`, *or* the network has been idle for 2 s, with a 6 s cap
+  either way. A forged signal can only make the capture earlier.
+- **Renderer:** `PlaywrightRenderer` locally. It allows navigation only to the exact
+  capture URL (other navigations get a 204), closes popups, dismisses dialogs and enforces
+  a hard timeout. The output is a WebP via sharp. For production the plan is a Worker with
+  a Browser Rendering binding and `@cloudflare/playwright`, reusing the same logic, and
+  storing PNG or using Cloudflare Images because sharp doesn't run in workerd.
+- **Fallback:** if the render fails or is blank (pixel variance check), the client's
+  `thumb.webp` is used and marked `fallback`. When neither exists, the result is `failed`.
+- **Destroy worker:** checks the battle is destroyed or abandoned, recursively deletes
+  `ephemeral-builds/{battle}/`, re-lists to confirm nothing is left, then calls
+  `complete_destroy`.
+- **Stage-1 domains:** with the sandbox on a single `*.pages.dev` origin, every build
+  shares one capture origin. Isolation then relies on the storage wipe before each run.
+  Per-build origins come with the stage-2 domain.
+

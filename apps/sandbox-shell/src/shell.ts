@@ -168,8 +168,9 @@ function runLoad(msg: LoadMessage): void {
       post({ type: 'ready', loadId: msg.loadId });
     },
   });
-  // Keyboard games: a click on the outer frame should land in the build.
-  opened.window.focus();
+  // No `focus()` here: every rebuild loads a new frame, and focusing it would pull the
+  // keyboard out of the app's editor mid-typing. A click on the build focuses it; a click on
+  // the shell's own document is forwarded to the build (the `focus` listener in start()).
 }
 
 async function resetStorage(requestId: number | undefined): Promise<void> {

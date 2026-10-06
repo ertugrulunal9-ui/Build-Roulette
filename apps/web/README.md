@@ -170,7 +170,10 @@ pnpm --filter @br/web test:e2e:solo    # /play against the REAL local Supabase s
 
   The tests commit data (anonymous users, battles), like `supabase/scripts/e2e-solo.mjs`.
   `SOLO_SCREENSHOT_DIR=/dir` saves UI screenshots; `E2E_REUSE_SERVERS=1` reuses servers that
-  are already running.
+  are already running. The local Auth server allows 30 anonymous sign-ups per hour per IP
+  (`GOTRUE_RATE_LIMIT_ANONYMOUS_USERS`); many runs in a row (each test signs up one user,
+  the capture integration four) can hit it, and Spin then says "Too many requests".
+  Restarting the stack resets it.
 - `test:e2e:cf` runs the playground suite against the Cloudflare Workers build
   (`cf:build`, then `opennextjs-cloudflare preview`, which is `wrangler dev` on workerd)
   instead of `next start` (`E2E_APP_SERVER=workers` in `playwright.config.ts`).

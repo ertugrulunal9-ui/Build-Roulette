@@ -29,6 +29,9 @@ export default defineConfig({
     channel: 'chromium',
     headless: true,
     viewport: { width: 1440, height: 900 },
+    // A long, stateful flow: keep what is needed to debug a failure (CI uploads test-results).
+    trace: 'retain-on-failure',
+    screenshot: 'only-on-failure',
   },
   webServer: [
     {

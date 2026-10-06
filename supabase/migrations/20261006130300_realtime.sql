@@ -43,6 +43,9 @@
 -- Send (INSERT): PRESENCE ONLY, and only for active members (not left, not
 --   kicked): room:{id} → active member of the room; battle:{id} → active
 --   member of the battle's room (roster players for a solo battle).
+-- Both policies also require the row's topic to be the channel's topic
+-- (realtime.topic(), set by Realtime for the check), so a grant for one topic
+-- never covers rows of another.
 -- Client broadcast sends are refused on both topics: every broadcast is
 -- authoritative state from Postgres, and a member who could broadcast could
 -- forge `phase` events with a higher version that other clients would apply.
@@ -293,6 +296,7 @@ begin
       on realtime.messages for select to authenticated
       using (
         extension in ('broadcast', 'presence')
+        and topic = (select realtime.topic())
         and public.can_use_realtime_topic((select realtime.topic()), false)
       )
   $p$;
@@ -302,6 +306,7 @@ begin
       on realtime.messages for insert to authenticated
       with check (
         extension = 'presence'
+        and topic = (select realtime.topic())
         and public.can_use_realtime_topic((select realtime.topic()), true)
       )
   $p$;

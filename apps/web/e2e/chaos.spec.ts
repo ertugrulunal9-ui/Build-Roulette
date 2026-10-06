@@ -7,6 +7,7 @@ import {
   joinByLink,
   member,
   newPlayer,
+  openFile,
   phaseOf,
   progress,
   ship,
@@ -213,6 +214,29 @@ async function expectTerminal(
     final.filter((x) => x.capture_status === 'captured' || x.capture_status === 'fallback').length,
   );
   return b;
+}
+
+/** Every file of the battle's workspace in this page's IndexedDB. */
+async function storedFiles(page: Page, battleId: string): Promise<Record<string, string>> {
+  return page.evaluate(async (key) => {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const req = indexedDB.open('br-workspaces');
+      req.onsuccess = () => {
+        resolve(req.result);
+      };
+      req.onerror = () => {
+        reject(new Error('open failed'));
+      };
+    });
+    const value = await new Promise<unknown>((resolve) => {
+      const r = db.transaction('workspaces', 'readonly').objectStore('workspaces').get(key);
+      r.onsuccess = () => {
+        resolve(r.result as unknown);
+      };
+    });
+    db.close();
+    return (value as { files?: Record<string, string> } | undefined)?.files ?? {};
+  }, `battle:${battleId}`);
 }
 
 /** Ends the RESULTS last look now (pg_cron moves the battle to DESTROYED within 5 s). */
@@ -606,6 +630,65 @@ test('abandoned: no roster player for 5 min; a returning player finds the battle
   });
   expect(row.builds.find((b) => b.builder === jo.name)?.status).toBe('draft');
   await jo.context.close();
+});
+
+// ─── Steady typing vs Realtime's presence limit ───────────────────────────────────────
+
+test('a minute of steady typing keeps the room channel (Realtime closes channels above 5 presence messages per 30 s)', async ({
+  browser,
+}, info) => {
+  test.setTimeout(4 * MIN);
+  const pia = await newPlayer(browser, info, 'Pia Typist');
+  const quinn = await newPlayer(browser, info, 'Quinn Watcher');
+  // What the Realtime server tells Pia's page (it closes a channel over the limit).
+  const serverErrors: string[] = [];
+  pia.page.on('websocket', (ws) => {
+    ws.on('framereceived', (f) => {
+      const text = typeof f.payload === 'string' ? f.payload : f.payload.toString();
+      if (/rate limit|"status":"error"/i.test(text)) serverErrors.push(text);
+    });
+  });
+  const code = await gather([pia, quinn]);
+  const battleId = await startBattle(code, [pia, quinn], 300);
+  await openFile(pia.page, 'src/App.tsx');
+  await pia.page.locator('[data-testid=code-editor] .cm-content').click();
+  await pia.page.keyboard.press('ControlOrMeta+End');
+
+  // A new line every ~1.5 s for 60 s: the activity (lines, typing) changes all the time.
+  let reconnecting = 0;
+  const until = Date.now() + 60_000;
+  let n = 0;
+  while (Date.now() < until) {
+    n++;
+    await pia.page.keyboard.type(`\n// line ${String(n)}`, { delay: 100 });
+    reconnecting += await pia.page.getByTestId('reconnecting').count();
+  }
+  // Her line count (all files, as the activity counts them) once the edits are saved locally.
+  let lines = 0;
+  await expect
+    .poll(async () => {
+      const files = await storedFiles(pia.page, battleId);
+      lines = Object.values(files).reduce(
+        (sum, t) => sum + (t.length === 0 ? 0 : t.split('\n').length - (t.endsWith('\n') ? 1 : 0)),
+        0,
+      );
+      return files['src/App.tsx'] ?? '';
+    })
+    .toContain(`// line ${String(n)}`);
+  expect(serverErrors, 'Realtime refused or closed something').toEqual([]);
+  expect(reconnecting, 'Pia never lost the room channel').toBe(0);
+  // Quinn sees Pia's latest line count (within the presence budget).
+  await expect(progress(quinn.page, pia.name).getByTestId('activity')).toContainText(
+    `${String(lines)} lines`,
+    { timeout: 30_000 },
+  );
+  await expect(progress(quinn.page, pia.name)).toHaveAttribute('data-online', 'true');
+  expectNoPageErrors([pia, quinn]);
+  for (const p of [pia, quinn]) await p.context.close();
+  sql(`update public.room_members set last_seen_at = now() - interval '6 minutes'
+        where room_id = (select room_id from public.battles where id = '${battleId}')`);
+  await expect.poll(() => phaseOf(battleId), { timeout: 30_000 }).toBe('abandoned');
+  await expectTerminal(battleId, { phase: 'abandoned', shipped: {} });
 });
 
 // ─── A full room ──────────────────────────────────────────────────────────────────────

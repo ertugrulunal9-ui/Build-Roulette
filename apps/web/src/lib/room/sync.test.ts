@@ -488,6 +488,47 @@ describe('recovery', () => {
     s.stop();
   });
 
+  it('a channel the server closes is subscribed again with backoff (supabase-js does not)', async () => {
+    api.room = roomSnapshot({ battleId: BATTLE_1 });
+    api.battles.set(BATTLE_1, battleSnapshot());
+    const s = await started();
+    s.setPresence('Ada');
+    const first = rt.open(ROOM_TOPIC);
+    first.status('CLOSED'); // e.g. "Client presence rate limit exceeded"
+    expect(s.getSnapshot().connection).toBe('degraded');
+    await vi.advanceTimersByTimeAsync(999);
+    expect(rt.open(ROOM_TOPIC)).toBe(first);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(first.closed).toBe(true);
+    const second = rt.open(ROOM_TOPIC);
+    expect(second).not.toBe(first);
+    expect(second.presenceKey).toBe(ME);
+    // Closed again before it could join: the next try waits 2 s.
+    second.status('CLOSED');
+    await vi.advanceTimersByTimeAsync(1_999);
+    expect(rt.open(ROOM_TOPIC)).toBe(second);
+    await vi.advanceTimersByTimeAsync(1);
+    const third = rt.open(ROOM_TOPIC);
+    // A late status of an old subscription changes nothing.
+    first.status('SUBSCRIBED');
+    expect(s.getSnapshot().connection).toBe('degraded');
+    third.status('SUBSCRIBED');
+    await flush();
+    expect(s.getSnapshot().connection).toBe('live');
+    expect(third.tracked).toHaveLength(1); // presence is claimed again
+    // The battle topic too.
+    const battle = rt.open(B1_TOPIC);
+    battle.status('CLOSED');
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(rt.open(B1_TOPIC)).not.toBe(battle);
+    api.clearCalls();
+    rt.open(B1_TOPIC).status('SUBSCRIBED');
+    await flush();
+    expect(api.count('getBattleSnapshot')).toBe(1);
+    s.stop();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it('a dropped channel polls until Realtime rejoins, then refetches and tracks again', async () => {
     api.room = roomSnapshot({ battleId: BATTLE_1 });
     api.battles.set(BATTLE_1, battleSnapshot());
@@ -546,6 +587,49 @@ describe('presence', () => {
     s.setActivity({ lines: 10, last_build: 'ok', typing: true });
     await vi.advanceTimersByTimeAsync(3_000);
     expect(topic.tracked).toHaveLength(2);
+    s.stop();
+  });
+
+  it("stays within Realtime's presence limit (it closes channels above 5 per 30 s): at most 4 per 30 s", async () => {
+    const s = await started();
+    s.setPresence('Ada');
+    const topic = rt.open(ROOM_TOPIC);
+    const times: number[] = [];
+    const track = topic.track.bind(topic);
+    topic.track = (p) => {
+      times.push(Date.now());
+      return track(p);
+    };
+    // Someone typing for two minutes: the activity changes every 500 ms.
+    for (let i = 1; i <= 240; i++) {
+      s.setActivity({ lines: i, last_build: 'ok', typing: true });
+      await vi.advanceTimersByTimeAsync(500);
+    }
+    for (const t of times) {
+      expect(times.filter((u) => u > t - 30_000 && u <= t).length).toBeLessThanOrEqual(4);
+    }
+    expect(times.length).toBeGreaterThanOrEqual(15); // still about every 7.5 s
+    // The latest activity is what ends up tracked.
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(topic.tracked.at(-1)).toMatchObject({ activity: { lines: 240 } });
+    s.stop();
+  });
+
+  it('holds presence back while offline and sends one update when back online', async () => {
+    const s = await started();
+    s.setPresence('Ada');
+    const topic = rt.open(ROOM_TOPIC);
+    await vi.advanceTimersByTimeAsync(5_000);
+    const before = topic.tracked.length;
+    env.fire('offline');
+    for (let i = 1; i <= 10; i++) {
+      s.setActivity({ lines: i, last_build: 'ok', typing: true });
+      await vi.advanceTimersByTimeAsync(2_000);
+    }
+    expect(topic.tracked).toHaveLength(before);
+    env.fire('online');
+    expect(topic.tracked).toHaveLength(before + 1);
+    expect(topic.tracked.at(-1)).toMatchObject({ activity: { lines: 10 } });
     s.stop();
   });
 

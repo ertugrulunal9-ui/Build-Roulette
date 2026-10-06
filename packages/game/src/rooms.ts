@@ -31,6 +31,15 @@ export const HEARTBEAT_INTERVAL_MS = 10_000;
 /** Presence updates (activity during BUILD) are sent at most this often (docs/04 §4.7). */
 export const PRESENCE_THROTTLE_MS = 2_000;
 
+/**
+ * Supabase Realtime limits presence messages per client and channel: by default 5 per
+ * 30 s (`CLIENT_PRESENCE_MAX_CALLS`, `CLIENT_PRESENCE_WINDOW_MS`; Realtime 2.140), and a
+ * client that goes over has its channel CLOSED by the server ("Client presence rate limit
+ * exceeded"). Clients stay one below it: at most this many tracks per window.
+ */
+export const PRESENCE_MAX_PER_WINDOW = 4;
+export const PRESENCE_WINDOW_MS = 30_000;
+
 /** Enum `public.room_status`. */
 export const ROOM_STATUSES = ['open', 'in_battle', 'closed'] as const;
 export type RoomStatus = (typeof ROOM_STATUSES)[number];

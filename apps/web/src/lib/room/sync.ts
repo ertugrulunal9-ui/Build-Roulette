@@ -25,13 +25,25 @@
  *   heartbeat times out, so the `offline` event is the first sign, not the channel status.)
  * - **Clock:** `server_now()` sampled 3× (lowest RTT) at start, every 60 s and on recovery.
  * - **Presence:** `{user_id, display_name, device, activity}` tracked on the room topic,
- *   at most once per 2 s, again after every (re)subscribe.
+ *   at most once per 2 s and 4 times per 30 s (Realtime closes the channel of a client
+ *   that sends more than 5 presence messages in 30 s), again after every (re)subscribe,
+ *   never while offline (they would arrive as one burst).
+ * - **Closed channels:** a topic the server closes (CLOSED, e.g. a rate limit or an
+ *   expired token; supabase-js does not rejoin those) is subscribed again after 1 s, 2 s,
+ *   4 s… (at most 30 s). Errors and timeouts are left to supabase-js, which rejoins.
  * - **Teardown:** `stop()` closes both topics and every timer and listener.
  *
  * Plain TypeScript with injected API, Realtime, clock and environment, unit tested with
  * fakes (sync.test.ts). React reads it through the RoomController.
  */
-import { HEARTBEAT_INTERVAL_MS, PRESENCE_THROTTLE_MS, battleTopic, roomTopic } from '@br/game';
+import {
+  HEARTBEAT_INTERVAL_MS,
+  PRESENCE_MAX_PER_WINDOW,
+  PRESENCE_THROTTLE_MS,
+  PRESENCE_WINDOW_MS,
+  battleTopic,
+  roomTopic,
+} from '@br/game';
 import { measureClockOffset } from '../solo/clock-sync';
 import { realClock, type SoloClock, type TimerHandle } from '../solo/controller';
 import { toGameError, type GameError } from '../solo/errors';
@@ -125,6 +137,9 @@ export interface SyncTimings {
   heartbeatMs: number;
   clockResyncMs: number;
   presenceThrottleMs: number;
+  /** At most `presenceMaxPerWindow` tracks per `presenceWindowMs` (Realtime's limit is 5/30 s). */
+  presenceMaxPerWindow: number;
+  presenceWindowMs: number;
   /** Snapshot polling while the room topic is not subscribed. */
   fallbackPollMs: number;
   /** First retry of a snapshot that is still behind (or failed); doubles each time. */
@@ -136,6 +151,8 @@ export const DEFAULT_SYNC_TIMINGS: SyncTimings = {
   heartbeatMs: HEARTBEAT_INTERVAL_MS,
   clockResyncMs: 60_000,
   presenceThrottleMs: PRESENCE_THROTTLE_MS,
+  presenceMaxPerWindow: PRESENCE_MAX_PER_WINDOW,
+  presenceWindowMs: PRESENCE_WINDOW_MS,
   fallbackPollMs: 5_000,
   retryBaseMs: 1_000,
   retryMaxMs: 30_000,
@@ -361,7 +378,7 @@ export class VersionedTopic<S, E extends { version: number }> {
 
 // ─── The engine ───────────────────────────────────────────────────────────────────────
 
-type TimerName = 'heartbeat' | 'clock' | 'poll' | 'presence';
+type TimerName = 'heartbeat' | 'clock' | 'poll' | 'presence' | 'rejoinRoom' | 'rejoinBattle';
 
 function deviceKind(): 'desktop' | 'mobile' {
   try {
@@ -447,6 +464,10 @@ export class RoomSync {
   private activity: Activity = IDLE_ACTIVITY;
   private lastTrackAt = Number.NEGATIVE_INFINITY;
   private lastTracked: string | null = null;
+  /** When the recent tracks were sent (the 30 s budget). */
+  private trackTimes: number[] = [];
+  /** Server-closed subscriptions in a row, per topic (the rejoin backoff). */
+  private rejoins = { room: 0, battle: 0 };
 
   constructor(deps: RoomSyncDeps) {
     this.api = deps.api;
@@ -511,22 +532,7 @@ export class RoomSync {
     // Private channels need the session token before the first join.
     await this.realtime.setAuth().catch(() => undefined);
     if (this.isStopped()) return;
-    this.roomSub = this.realtime.subscribe(
-      roomTopic(roomId),
-      { presenceKey: this.userId },
-      {
-        broadcast: (_event, payload) => {
-          const ev = parseRoomEvent(payload);
-          if (ev) this.roomTopic?.receive(ev);
-        },
-        presence: (state) => {
-          this.patch({ presence: normalizePresence(state) });
-        },
-        status: (status) => {
-          this.onRoomStatus(status);
-        },
-      },
-    );
+    this.subscribeRoom(roomId);
     // Show the room at once; the SUBSCRIBED callback refetches again (nothing is missed).
     void this.roomTopic.refetch();
     void this.syncClock();
@@ -580,7 +586,7 @@ export class RoomSync {
     this.flushPresence();
   }
 
-  /** The player's BUILD activity (lines, last build, typing); sent at most every 2 s. */
+  /** The player's BUILD activity (lines, last build, typing); throttled (see flushPresence). */
   setActivity(activity: Activity): void {
     this.activity = activity;
     this.flushPresence();
@@ -588,9 +594,40 @@ export class RoomSync {
 
   // --- Room ---------------------------------------------------------------------------
 
-  private onRoomStatus(status: ChannelStatus): void {
+  private subscribeRoom(roomId: string): void {
+    this.roomSub?.close();
+    const sub: TopicSubscription = this.realtime.subscribe(
+      roomTopic(roomId),
+      { presenceKey: this.userId },
+      {
+        broadcast: (_event, payload) => {
+          const ev = parseRoomEvent(payload);
+          if (ev) this.roomTopic?.receive(ev);
+        },
+        presence: (state) => {
+          this.patch({ presence: normalizePresence(state) });
+        },
+        status: (status) => {
+          if (this.roomSub === sub) this.onRoomStatus(status, roomId);
+        },
+      },
+    );
+    this.roomSub = sub;
+  }
+
+  /** Subscribes again after the server closed a topic: 1 s, 2 s, 4 s… at most 30 s. */
+  private scheduleRejoin(topic: 'room' | 'battle', rejoin: () => void): void {
+    const name = topic === 'room' ? 'rejoinRoom' : 'rejoinBattle';
+    if (this.stopped || this.timers.has(name)) return;
+    const n = this.rejoins[topic]++;
+    const delay = Math.min(this.timings.retryBaseMs * 2 ** n, this.timings.retryMaxMs);
+    this.setTimer(name, delay, rejoin);
+  }
+
+  private onRoomStatus(status: ChannelStatus, roomId: string): void {
     if (this.stopped) return;
     if (status === 'SUBSCRIBED') {
+      this.rejoins.room = 0;
       this.roomSubscribed = true;
       this.patch({ connection: this.offline ? 'degraded' : 'live' });
       // (Re)subscribed: anything may have been missed. Presence must be tracked again.
@@ -600,8 +637,14 @@ export class RoomSync {
       this.flushPresence();
     } else {
       this.roomSubscribed = false;
-      // supabase-js rejoins on its own; poll meanwhile.
+      // supabase-js rejoins after an error or a timeout, not after the server closed the
+      // channel: then this engine subscribes again. Poll meanwhile.
       this.patch({ connection: 'degraded' });
+      if (status === 'CLOSED') {
+        this.scheduleRejoin('room', () => {
+          this.subscribeRoom(roomId);
+        });
+      }
     }
     this.schedulePoll();
   }
@@ -612,6 +655,8 @@ export class RoomSync {
     this.offline = offline;
     this.patch({ connection: !offline && this.roomSubscribed ? 'live' : 'degraded' });
     this.schedulePoll();
+    // Presence held back while offline goes out now (one message, not a burst).
+    if (!offline) this.flushPresence();
   }
 
   private onRoomChange(room: RoomSnapshot): void {
@@ -659,8 +704,18 @@ export class RoomSync {
       retryMaxMs: this.timings.retryMaxMs,
     });
     this.battleTopic = topic;
+    this.rejoins.battle = 0;
+    this.subscribeBattle(battleId, topic);
+    void topic.refetch();
+  }
+
+  private subscribeBattle(
+    battleId: string,
+    topic: VersionedTopic<BattleSnapshot, BattleEvent>,
+  ): void {
+    this.battleSub?.close();
     // Presence lives on the room topic (lobby and BUILD sidebar alike): none here.
-    this.battleSub = this.realtime.subscribe(
+    const sub: TopicSubscription = this.realtime.subscribe(
       battleTopic(battleId),
       { presenceKey: null },
       {
@@ -670,14 +725,23 @@ export class RoomSync {
         },
         presence: () => undefined,
         status: (status) => {
-          if (status === 'SUBSCRIBED') void topic.refetch();
+          if (this.battleSub !== sub || this.stopped) return;
+          if (status === 'SUBSCRIBED') {
+            this.rejoins.battle = 0;
+            void topic.refetch();
+          } else if (status === 'CLOSED') {
+            this.scheduleRejoin('battle', () => {
+              if (this.battleTopic === topic) this.subscribeBattle(battleId, topic);
+            });
+          }
         },
       },
     );
-    void topic.refetch();
+    this.battleSub = sub;
   }
 
   private closeBattle(): void {
+    this.clearTimer('rejoinBattle');
     this.battleSub?.close();
     this.battleSub = null;
     this.battleTopic?.dispose();
@@ -749,10 +813,18 @@ export class RoomSync {
 
   private flushPresence(): void {
     if (this.stopped || !this.presence || !this.roomSub || !this.roomSubscribed) return;
+    if (this.offline) return; // sent when the network is back
     const payload: PresencePayload = { ...this.presence, activity: this.activity };
     const json = JSON.stringify(payload);
     if (json === this.lastTracked) return;
-    const wait = this.lastTrackAt + this.timings.presenceThrottleMs - this.clock.now();
+    const now = this.clock.now();
+    const { presenceThrottleMs, presenceMaxPerWindow, presenceWindowMs } = this.timings;
+    this.trackTimes = this.trackTimes.filter((t) => t > now - presenceWindowMs);
+    let wait = this.lastTrackAt + presenceThrottleMs - now;
+    const oldest = this.trackTimes[0];
+    if (this.trackTimes.length >= presenceMaxPerWindow && oldest !== undefined) {
+      wait = Math.max(wait, oldest + presenceWindowMs - now);
+    }
     if (wait > 0) {
       if (!this.timers.has('presence')) {
         this.setTimer('presence', wait, () => {
@@ -761,7 +833,8 @@ export class RoomSync {
       }
       return;
     }
-    this.lastTrackAt = this.clock.now();
+    this.lastTrackAt = now;
+    this.trackTimes.push(now);
     this.lastTracked = json;
     void this.roomSub.track(payload).then((ok) => {
       if (!ok && this.lastTracked === json) this.lastTracked = null;

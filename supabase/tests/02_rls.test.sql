@@ -14,7 +14,7 @@ begin;
 create extension if not exists pgtap with schema extensions;
 
 select plan(
-  49
+  50
   -- 3 write attempts (INSERT/UPDATE/DELETE) per public table
   + 3 * (select count(*)::int from pg_class
          where relnamespace = 'public'::regnamespace and relkind in ('r', 'p'))
@@ -263,9 +263,11 @@ select is((select count(*)::int from public.builds
            where battle_id = 'b0000000-0000-0000-0000-000000000001'), 0,
           'carl: kicked, no longer sees its builds');
 
--- ═══ pat: kicked roster player (2) ════════════════════════════════════════
--- Documented semantics: the roster is frozen, so a kicked roster player loses
--- the room but keeps seeing the battle they are on.
+-- ═══ pat: kicked roster player (3) ════════════════════════════════════════
+-- Documented semantics (T-016, replacing the T-002 decision): a kick removes
+-- every live view of the room, including the running battle the player is on
+-- (their draft is disqualified). The battle becomes visible again, like for
+-- everyone, once it reaches RESULTS. Their solo battle b2 is unaffected.
 reset role;
 update public.room_members set kicked_at = now()
   where room_id = 'e1000000-0000-0000-0000-000000000001'
@@ -274,8 +276,10 @@ set local role authenticated;
 set local request.jwt.claims = '{"sub":"0a000000-0000-0000-0000-000000000002","role":"authenticated"}';
 
 select is_empty($$ select * from public.rooms $$, 'pat: kicked, no longer sees the room');
-select ok(exists (select 1 from public.battles where id = 'b0000000-0000-0000-0000-000000000001'),
-          'pat: kicked roster player still sees the battle via the roster');
+select ok(not exists (select 1 from public.battles where id = 'b0000000-0000-0000-0000-000000000001'),
+          'pat: kicked roster player no longer sees the running battle of that room');
+select ok(exists (select 1 from public.battles where id = 'b0000000-0000-0000-0000-000000000002'),
+          'pat: kicked roster player still sees a battle outside that room');
 
 -- ═══ rita: abandoned battle is visible to its roster only (2) ═════════════
 set local request.jwt.claims = '{"sub":"0a000000-0000-0000-0000-000000000006","role":"authenticated"}';

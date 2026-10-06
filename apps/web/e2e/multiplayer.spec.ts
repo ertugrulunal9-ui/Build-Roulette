@@ -6,7 +6,7 @@ import {
   type Page,
   type TestInfo,
 } from '@playwright/test';
-import { buildFrame, replaceEditorText } from './helpers';
+import { buildFrame, clickRouted, replaceEditorText } from './helpers';
 import { sql } from './stack';
 
 /**
@@ -71,18 +71,7 @@ async function waitForBuild(page: Page): Promise<void> {
   });
 }
 
-/**
- * Several players' windows are open at once, but a person clicks in the window they are
- * looking at. Without this, Chromium can route a click on the ship dialog (drawn over the
- * cross-site preview iframe) with stale hit-test data of a background window to the iframe
- * underneath: the click never reaches the dialog (seen about 1 run in 6).
- */
-async function front(page: Page): Promise<void> {
-  await page.bringToFront();
-}
-
 async function writeApp(page: Page, title: string, background: string): Promise<void> {
-  await front(page);
   await openFile(page, 'src/App.tsx');
   await replaceEditorText(
     page,
@@ -99,10 +88,10 @@ async function writeApp(page: Page, title: string, background: string): Promise<
 }
 
 async function ship(page: Page, name: string): Promise<void> {
-  await front(page);
   await page.getByTestId('ship-button').click();
   await page.getByTestId('build-name').fill(name);
-  await page.getByTestId('confirm-ship').click();
+  // The dialog is drawn over the cross-site preview iframe (see clickRouted).
+  await clickRouted(page.getByTestId('confirm-ship'));
   // Shipped: the dialog closes; a banner says the build is locked.
   await expect(page.getByTestId('shipped-banner')).toContainText(`Shipped “${name}”`);
   await expect(page.getByTestId('ship-dialog')).toBeHidden();

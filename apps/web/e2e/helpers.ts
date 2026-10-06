@@ -1,4 +1,46 @@
-import { expect, type FrameLocator, type Page } from '@playwright/test';
+import { expect, type FrameLocator, type Locator, type Page } from '@playwright/test';
+
+/**
+ * Clicks `target` once the browser really routes pointer input at its centre to it.
+ *
+ * Chromium decides which frame gets a mouse event from the compositor's hit-test data, not
+ * from the DOM. Right after a modal dialog opens over the cross-site preview iframe, that
+ * data can still show the iframe at the dialog's place (measured under CPU load: 16 of 25
+ * first clicks on a freshly opened dialog went to the iframe; one second later, all reached
+ * the dialog). A person cannot click a button before it is drawn, but Playwright clicks as
+ * soon as the DOM is stable. So this helper hovers the target until the element itself
+ * receives the pointer move (proof that routing is up to date), then clicks.
+ */
+export async function clickRouted(target: Locator): Promise<void> {
+  const page = target.page();
+  await target.scrollIntoViewIfNeeded();
+  await target.evaluate((el) => {
+    const e = el as HTMLElement & { __routed?: boolean };
+    e.__routed = false;
+    el.addEventListener(
+      'pointermove',
+      () => {
+        e.__routed = true;
+      },
+      { once: true },
+    );
+  });
+  let nudge = 0;
+  await expect
+    .poll(
+      async () => {
+        const box = await target.boundingBox();
+        if (!box) return false;
+        // A slightly different point each time, so every poll is a real pointer move.
+        nudge = (nudge + 1) % 3;
+        await page.mouse.move(box.x + box.width / 2 + nudge - 1, box.y + box.height / 2);
+        return target.evaluate((el) => (el as HTMLElement & { __routed?: boolean }).__routed);
+      },
+      { message: 'pointer input never reached the element', intervals: [50, 100, 200] },
+    )
+    .toBe(true);
+  await target.click();
+}
 
 /** The user's document lives in the shell's child iframe: preview iframe -> build iframe. */
 export function buildFrame(page: Page): FrameLocator {

@@ -4,6 +4,7 @@
  * supabase/README.md and the `ephemeral-builds` bucket (paths and content types as in
  * supabase/scripts/e2e-solo.mjs). Every method throws a `GameError`.
  */
+import type { BattlePhase } from '@br/game';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { EPHEMERAL_BUCKET } from '../supabase/config';
 import { toGameError } from './errors';
@@ -42,6 +43,8 @@ export interface SoloApi {
   upload(battleId: string, userId: string, file: BuildFile, body: Blob | string): Promise<void>;
   /** Reads one of the player's own files; null when it does not exist. */
   download(battleId: string, userId: string, file: BuildFile): Promise<string | null>;
+  /** The phase of each battle the user may see (`battles` RLS); others are left out. */
+  battlePhases(battleIds: string[]): Promise<Record<string, BattlePhase>>;
 }
 
 export class SupabaseSoloApi implements SoloApi {
@@ -136,5 +139,21 @@ export class SupabaseSoloApi implements SoloApi {
       throw toGameError(res.error);
     }
     return res.data.text();
+  }
+
+  async battlePhases(battleIds: string[]): Promise<Record<string, BattlePhase>> {
+    if (battleIds.length === 0) return {};
+    let res;
+    try {
+      res = await this.supabase
+        .from('battles')
+        .select('id, phase')
+        .in('id', battleIds)
+        .overrideTypes<{ id: string; phase: BattlePhase }[], { merge: false }>();
+    } catch (e) {
+      throw toGameError(e);
+    }
+    if (res.error) throw toGameError(res.error);
+    return Object.fromEntries(res.data.map((b) => [b.id, b.phase]));
   }
 }

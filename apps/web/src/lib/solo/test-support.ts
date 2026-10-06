@@ -153,6 +153,18 @@ export class FakeApi implements SoloApi {
     return typeof body === 'string' ? Promise.resolve(body) : body.text();
   }
 
+  /** Phases the server reports for `battlePhases` (battles not listed are not visible). */
+  phases: Record<string, BattleSnapshot['battle']['phase']> = {};
+  battlePhases(ids: string[]): Promise<Record<string, BattleSnapshot['battle']['phase']>> {
+    this.calls.push(['battlePhases', ids]);
+    const out: Record<string, BattleSnapshot['battle']['phase']> = {};
+    for (const id of ids) {
+      const phase = this.phases[id];
+      if (phase !== undefined) out[id] = phase;
+    }
+    return Promise.resolve(out);
+  }
+
   count(method: string): number {
     return this.calls.filter((c) => c[0] === method).length;
   }
@@ -201,13 +213,14 @@ export class FakeBridge implements WorkspaceBridge {
 
 export class FakeLocalWorkspaces implements LocalWorkspaces {
   readonly deleted: string[] = [];
-  readonly kept: (string | null)[] = [];
+  /** Stored battle workspaces (id → last save). */
+  readonly stored = new Map<string, number>();
   delete(id: string): Promise<void> {
     this.deleted.push(id);
+    this.stored.delete(id);
     return Promise.resolve();
   }
-  deleteBattleWorkspacesExcept(keep: string | null): Promise<void> {
-    this.kept.push(keep);
-    return Promise.resolve();
+  listBattleWorkspaces(): Promise<{ id: string; updatedAt: number }[]> {
+    return Promise.resolve([...this.stored].map(([id, updatedAt]) => ({ id, updatedAt })));
   }
 }

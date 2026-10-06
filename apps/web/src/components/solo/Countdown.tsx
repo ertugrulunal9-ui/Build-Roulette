@@ -1,6 +1,7 @@
 'use client';
 
 import { formatCountdown } from '../../lib/solo/format';
+import { useTicker } from '../../lib/solo/use-ticker';
 
 /** At or below this, the countdown turns amber and warns once. */
 export const LOW_TIME_MS = 60_000;
@@ -24,8 +25,19 @@ const LEVEL_CLASS: Record<TimeLevel, string> = {
   up: 'bg-red-700 text-white',
 };
 
-/** The BUILD countdown, from server time (docs/04 §4.5). */
-export function Countdown({ remaining, label }: { remaining: number | null; label: string }) {
+/**
+ * The BUILD countdown, from server time (docs/04 §4.5). It re-renders itself four times a
+ * second; the rest of the page ticks once a second.
+ */
+export function Countdown({
+  getRemaining,
+  label,
+}: {
+  getRemaining: () => number | null;
+  label: string;
+}) {
+  useTicker(250);
+  const remaining = getRemaining();
   const level = timeLevel(remaining);
   return (
     <div

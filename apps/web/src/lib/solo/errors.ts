@@ -38,6 +38,8 @@ export const CLIENT_ERROR_CODES = [
   'nothing_built',
   /** The server could not be reached. */
   'network',
+  /** HTTP 429, e.g. too many anonymous sign-ups from one address. */
+  'rate_limited',
   'unknown',
 ] as const;
 
@@ -80,6 +82,9 @@ export function toGameError(e: unknown): GameError {
   const status =
     typeof rawStatus === 'string' || typeof rawStatus === 'number' ? String(rawStatus) : '';
   const text = typeof message === 'string' ? message : String(e);
+  if (status === '429' || /rate limit/i.test(text)) {
+    return new GameError('rate_limited', text, e);
+  }
   if (status === '413' || /maximum allowed size|payload too large/i.test(text)) {
     return new GameError('file_too_large', text, e);
   }
@@ -118,6 +123,7 @@ const MESSAGES: Record<ErrorCode, string> = {
   build_failed: 'Your code does not build. Fix the errors under Problems first.',
   nothing_built: 'Nothing has built successfully yet, so there is nothing to ship.',
   network: 'Cannot reach the server. Check your connection and try again.',
+  rate_limited: 'Too many requests from your network right now. Wait a minute and try again.',
   unknown: 'Something went wrong. Try again.',
 };
 

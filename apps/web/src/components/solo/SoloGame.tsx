@@ -46,8 +46,9 @@ export default function SoloGame() {
   const { controller, state } = useSoloGame(createDeps, initialBattle);
   const snapshot = state.snapshot;
   const phase = snapshot?.battle.phase;
-  // Countdowns re-render four times a second while a battle runs.
-  useTicker(250, state.stage === 'battle' && phase !== undefined && !isTerminalPhase(phase));
+  // Deadline-driven UI (locking, warnings, captions) re-renders once a second while a battle
+  // runs; the countdown itself ticks faster on its own.
+  useTicker(1000, state.stage === 'battle' && phase !== undefined && !isTerminalPhase(phase));
 
   if (!controller) {
     return <Centered>Loading…</Centered>;

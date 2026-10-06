@@ -39,6 +39,9 @@ describe('toGameError: the T-011 error contract', () => {
     expect(toGameError({ message: 'TypeError: NetworkError when attempting to fetch' }).code).toBe(
       'network',
     );
+    expect(toGameError({ message: 'Request rate limit reached', status: 429 }).code).toBe(
+      'rate_limited',
+    );
     expect(toGameError('weird').code).toBe('unknown');
     const g = new GameError('deck_empty');
     expect(toGameError(g)).toBe(g);

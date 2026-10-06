@@ -147,7 +147,10 @@ export function BuildStage({ controller, state, remaining }: BuildStageProps) {
             >
               {autosaveText(state)}
             </span>
-            <Countdown remaining={remaining} label={phase === 'building' ? 'Build' : 'Grace'} />
+            <Countdown
+              getRemaining={() => controller.remainingMs()}
+              label={phase === 'building' ? 'Build' : 'Grace'}
+            />
             <button
               type="button"
               data-testid="ship-button"

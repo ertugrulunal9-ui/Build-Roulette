@@ -168,9 +168,11 @@ function runLoad(msg: LoadMessage): void {
       post({ type: 'ready', loadId: msg.loadId });
     },
   });
-  // No `focus()` here: every rebuild loads a new frame, and focusing it would pull the
-  // keyboard out of the app's editor mid-typing. A click on the build focuses it; a click on
-  // the shell's own document is forwarded to the build (the `focus` listener in start()).
+  // Keyboard games: someone else's build (reveal, capture) gets the keyboard at once. Not in
+  // `live` mode: there every rebuild loads a new frame, and focusing it would pull the
+  // keyboard out of the app's editor mid-typing. A click on the build focuses it, and a
+  // click on the shell's own document is forwarded to it (the `focus` listener in start()).
+  if (msg.mode !== 'live') opened.window.focus();
 }
 
 async function resetStorage(requestId: number | undefined): Promise<void> {

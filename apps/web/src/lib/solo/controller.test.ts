@@ -558,6 +558,25 @@ describe('external mode (multiplayer)', () => {
     c.dispose();
   });
 
+  it('the last look loads once a later snapshot shows the build auto-shipped', async () => {
+    const { c } = external();
+    api.files.set(`${BATTLE}/${USER}/autosave/bundle.js`, 'auto-js');
+    api.files.set(`${BATTLE}/${USER}/autosave/source.json`, '{"manifest":{"dependencies":{}}}');
+    // The `phase` event (applied at once) still has the draft; the refetch has auto_shipped.
+    c.openExternal(snapshotAt('shipping', { version: 4 }), 0);
+    c.receive(snapshotAt('results', { version: 5, endsInMs: 60_000, status: 'draft' }));
+    expect(state(c).reveal.status).toBe('unavailable');
+    c.receive(snapshotAt('results', { version: 5, endsInMs: 60_000, status: 'auto_shipped' }));
+    await flush();
+    expect(state(c).reveal).toMatchObject({ status: 'ready', build: { js: 'auto-js' } });
+    expect(api.count('download')).toBe(3);
+    // Only once.
+    c.receive(snapshotAt('results', { version: 6, endsInMs: 60_000, status: 'auto_shipped' }));
+    await flush();
+    expect(api.count('download')).toBe(3);
+    c.dispose();
+  });
+
   it('a new clock offset moves the countdown', () => {
     const { c } = external();
     c.openExternal(snapshotAt('building', { version: 2, endsInMs: 60_000 }), 0);

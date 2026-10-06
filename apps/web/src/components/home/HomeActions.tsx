@@ -196,7 +196,11 @@ export function HomeActions() {
             </button>
           </div>
           {codeError && (
-            <p role="alert" className="text-sm text-red-700 dark:text-red-300">
+            <p
+              role="alert"
+              data-testid="code-error"
+              className="text-sm text-red-700 dark:text-red-300"
+            >
               {codeError}
             </p>
           )}

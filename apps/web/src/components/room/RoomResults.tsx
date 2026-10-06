@@ -156,7 +156,8 @@ function RankedBuilds({ snapshot }: { snapshot: BattleSnapshot }) {
             </div>
             <div className="flex min-w-0 flex-1 flex-col gap-1.5">
               <p className="truncate text-lg font-black" data-testid="ranked-build-name">
-                {b.name ?? (b.status === 'dnf' ? 'Did not finish' : 'Untitled')}
+                {b.name ??
+                  (b.status === 'dnf' ? 'Did not finish' : `${nameOf(b.builder_id)}'s build`)}
               </p>
               <p className="text-sm text-zinc-600 dark:text-zinc-400">
                 by <strong>{nameOf(b.builder_id)}</strong>

@@ -101,19 +101,22 @@ export function Lobby({ controller, state, room, lastBattle }: LobbyProps) {
             {m.is_ready ? '✓ Ready' : 'Not ready'}
           </span>
         )}
-        {me.is_host && !isMe && (
-          <button
-            type="button"
-            data-testid="kick"
-            title={`Remove ${m.display_name}`}
-            onClick={() => {
-              setKickTarget(m);
-            }}
-            className="rounded-md border border-zinc-300 px-2 py-1 text-xs font-semibold text-red-700 hover:bg-red-50 dark:border-zinc-700 dark:text-red-300 dark:hover:bg-red-950"
-          >
-            Kick
-          </button>
-        )}
+        {me.is_host &&
+          (isMe ? (
+            <span className="w-12" aria-hidden="true" />
+          ) : (
+            <button
+              type="button"
+              data-testid="kick"
+              title={`Remove ${m.display_name}`}
+              onClick={() => {
+                setKickTarget(m);
+              }}
+              className="w-12 rounded-md border border-zinc-300 py-1 text-xs font-semibold text-red-700 hover:bg-red-50 dark:border-zinc-700 dark:text-red-300 dark:hover:bg-red-950"
+            >
+              Kick
+            </button>
+          ))}
       </li>
     );
   };
@@ -287,7 +290,7 @@ function LastBattle({ battle }: { battle: BattleSnapshot }) {
             <li key={b.id} className="flex items-center gap-2">
               <span aria-hidden="true">{medals[(b.final_rank ?? 1) - 1] ?? '🏅'}</span>
               <span className="min-w-0 flex-1 truncate">
-                <strong>{b.name ?? 'Untitled'}</strong> · {name(b.builder_id)}
+                <strong>{b.name ?? `${name(b.builder_id)}'s build`}</strong> · {name(b.builder_id)}
               </span>
               {b.completion_ms !== null && (
                 <span className="font-mono text-xs text-zinc-500">

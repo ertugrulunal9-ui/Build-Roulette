@@ -236,6 +236,8 @@ export class SoloController {
   private autosaving: Promise<void> | null = null;
   private lastAutosaved: { build: BuildArtifacts; workspace: Workspace } | null = null;
   private destroyedSeenAt: number | null = null;
+  /** The last-look bundle was requested (it is fetched once per battle). */
+  private revealAttempted = false;
 
   constructor(deps: SoloControllerDeps) {
     this.deps = deps;
@@ -547,6 +549,7 @@ export class SoloController {
     this.shippingAutosaveDone = false;
     this.lastAutosaved = null;
     this.destroyedSeenAt = null;
+    this.revealAttempted = false;
   }
 
   /** Samples `server_now()` three times and keeps the lowest-RTT estimate. */
@@ -627,7 +630,10 @@ export class SoloController {
     }
     if (phase === 'building') this.ensureAutosaveLoop();
 
-    if (phase === 'results' && this.state.reveal.status === 'none') void this.loadReveal();
+    // The last look: once per battle, as soon as a snapshot shows the build shipped.
+    if (phase === 'results' && !this.revealAttempted && this.state.destroy === 'none') {
+      void this.loadReveal();
+    }
 
     if (isTerminalPhase(phase) && this.state.destroy === 'none') {
       this.destroyedSeenAt = this.clock.now();
@@ -808,9 +814,14 @@ export class SoloController {
     const snap = this.state.snapshot;
     const mine = myBuild(snap);
     if (!snap || !mine || (mine.status !== 'shipped' && mine.status !== 'auto_shipped')) {
-      this.patch({ reveal: { status: 'unavailable', build: null } });
+      // Not final yet in this snapshot (a room's `phase` event arrives before the refetch
+      // that brings auto_shipped), or a DNF: a later snapshot may still change it.
+      if (this.state.reveal.status !== 'unavailable') {
+        this.patch({ reveal: { status: 'unavailable', build: null } });
+      }
       return;
     }
+    this.revealAttempted = true;
     const epoch = this.epoch;
     this.patch({ reveal: { status: 'loading', build: null } });
     const prefix = mine.status === 'shipped' ? '' : 'autosave/';

@@ -106,6 +106,7 @@ describe('start', () => {
     api.battles.set(BATTLE_1, battleSnapshot({ version: 4 }));
     const s = await started();
     expect(rt.isOpen(B1_TOPIC)).toBe(true);
+    expect(rt.open(B1_TOPIC).presenceKey).toBeNull(); // Presence lives on the room topic
     expect(s.getSnapshot().battle?.battle.version).toBe(4);
     s.stop();
   });

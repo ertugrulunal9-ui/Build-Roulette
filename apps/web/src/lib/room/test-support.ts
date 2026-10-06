@@ -279,7 +279,7 @@ export class FakeTopic implements TopicSubscription {
   trackResult = true;
   constructor(
     readonly topic: string,
-    readonly presenceKey: string,
+    readonly presenceKey: string | null,
     readonly handlers: TopicHandlers,
   ) {}
   track(payload: object): Promise<boolean> {
@@ -308,7 +308,11 @@ export class FakeRealtime implements RealtimePort {
     this.authCalls++;
     return Promise.resolve();
   }
-  subscribe(topic: string, opts: { presenceKey: string }, handlers: TopicHandlers): FakeTopic {
+  subscribe(
+    topic: string,
+    opts: { presenceKey: string | null },
+    handlers: TopicHandlers,
+  ): FakeTopic {
     const t = new FakeTopic(topic, opts.presenceKey, handlers);
     this.topics.push(t);
     return t;

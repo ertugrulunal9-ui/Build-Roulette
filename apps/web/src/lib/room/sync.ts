@@ -72,13 +72,14 @@ export interface TopicSubscription {
   close(): void;
 }
 
-/** The part of Supabase Realtime the engine uses (realtime.ts adapts supabase-js). */
+/** The part of Supabase Realtime the engine uses (api.ts adapts supabase-js). */
 export interface RealtimePort {
   /** Hands the session's access token to Realtime (private channels need it). */
   setAuth(): Promise<void>;
+  /** `presenceKey` null: no Presence on this topic. */
   subscribe(
     topic: string,
-    opts: { presenceKey: string },
+    opts: { presenceKey: string | null },
     handlers: TopicHandlers,
   ): TopicSubscription;
 }
@@ -561,9 +562,10 @@ export class RoomSync {
       stats: this.stats,
     });
     this.battleTopic = topic;
+    // Presence lives on the room topic (lobby and BUILD sidebar alike): none here.
     this.battleSub = this.realtime.subscribe(
       battleTopic(battleId),
-      { presenceKey: this.userId },
+      { presenceKey: null },
       {
         broadcast: (_event, payload) => {
           const ev = parseBattleEvent(payload);

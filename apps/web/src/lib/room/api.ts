@@ -134,7 +134,7 @@ export class SupabaseRealtime implements RealtimePort {
 
   subscribe(
     topic: string,
-    opts: { presenceKey: string },
+    opts: { presenceKey: string | null },
     handlers: {
       broadcast(event: string, payload: unknown): void;
       presence(state: Record<string, unknown[]>): void;
@@ -142,22 +142,25 @@ export class SupabaseRealtime implements RealtimePort {
     },
   ): TopicSubscription {
     let closed = false;
+    const key = opts.presenceKey;
     const ready = (this.removing.get(topic) ?? Promise.resolve()).then(() => {
       if (closed) return null;
       const channel = this.supabase.channel(topic, {
-        config: { private: true, presence: { key: opts.presenceKey } },
+        config: key === null ? { private: true } : { private: true, presence: { key } },
       });
-      channel
-        .on('broadcast', { event: '*' }, (msg: { event: string; payload?: unknown }) => {
-          if (!closed) handlers.broadcast(msg.event, msg.payload);
-        })
-        .on('presence', { event: 'sync' }, () => {
+      channel.on('broadcast', { event: '*' }, (msg: { event: string; payload?: unknown }) => {
+        if (!closed) handlers.broadcast(msg.event, msg.payload);
+      });
+      // Presence is joined only where it is used (the room topic).
+      if (key !== null) {
+        channel.on('presence', { event: 'sync' }, () => {
           if (!closed) handlers.presence(channel.presenceState());
-        })
-        .subscribe((status, err) => {
-          if (closed) return;
-          handlers.status(status, err?.message);
         });
+      }
+      channel.subscribe((status, err) => {
+        if (closed) return;
+        handlers.status(status, err?.message);
+      });
       return channel;
     });
     return {

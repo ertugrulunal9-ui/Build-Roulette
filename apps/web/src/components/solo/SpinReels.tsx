@@ -110,9 +110,18 @@ interface SpinReelsProps {
   endsAt: number;
   serverNow: () => number;
   playerName: string;
+  /** Above "SPIN" (default "{playerName}, your challenge is…"). */
+  heading?: string;
 }
 
-export function SpinReels({ challenge, startedAt, endsAt, serverNow, playerName }: SpinReelsProps) {
+export function SpinReels({
+  challenge,
+  startedAt,
+  endsAt,
+  serverNow,
+  playerName,
+  heading,
+}: SpinReelsProps) {
   useTicker(80);
   const now = serverNow();
   const span = Math.max(1, endsAt - startedAt);
@@ -126,7 +135,7 @@ export function SpinReels({ challenge, startedAt, endsAt, serverNow, playerName 
     >
       <header className="text-center">
         <p className="text-sm font-semibold tracking-widest text-zinc-400 uppercase">
-          {playerName}, your challenge is…
+          {heading ?? `${playerName}, your challenge is…`}
         </p>
         <h1 className="mt-2 text-5xl font-black tracking-tight sm:text-6xl">SPIN</h1>
       </header>

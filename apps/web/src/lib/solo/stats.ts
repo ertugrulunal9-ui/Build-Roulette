@@ -12,20 +12,24 @@ export function byteLength(s: string): number {
   return encoder.encode(s).byteLength;
 }
 
+/** Lines of code in the workspace (images, stored as data: URLs, are not code). */
+export function countLines(files: Readonly<Record<string, string>>): number {
+  let lines = 0;
+  for (const text of Object.values(files)) {
+    if (text.startsWith('data:')) continue;
+    lines += text.length === 0 ? 0 : text.split('\n').length - (text.endsWith('\n') ? 1 : 0);
+  }
+  return lines;
+}
+
 export function buildStats(
   workspace: Workspace,
   bundle: { js: string; css: string },
   counters: { rebuilds: number; pastes: number },
 ): BuildStats {
-  let lines = 0;
-  for (const text of Object.values(workspace.files)) {
-    // Binary images are stored as data: URLs; they are not code.
-    if (text.startsWith('data:')) continue;
-    lines += text.length === 0 ? 0 : text.split('\n').length - (text.endsWith('\n') ? 1 : 0);
-  }
   return {
     files: Object.keys(workspace.files).length,
-    lines,
+    lines: countLines(workspace.files),
     deps: Object.keys(workspace.manifest.dependencies).sort(),
     bundle_bytes: byteLength(bundle.js) + byteLength(bundle.css),
     rebuilds: Math.max(0, Math.floor(counters.rebuilds)),

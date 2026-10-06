@@ -1,8 +1,9 @@
 -- Function hygiene and EXECUTE privileges. Catalog-driven: functions added by
 -- later migrations to `public` or `private` are covered automatically.
 --
--- The rule: anon can execute nothing; authenticated can execute exactly the
--- client RPCs plus the RLS helpers that policies call; the worker and sweep
+-- The rule: anon can execute exactly get_public_battle (the permanent results
+-- page, T-014); authenticated can execute exactly the client RPCs plus the RLS
+-- helpers that policies call; the worker and sweep
 -- functions are service_role only; nothing in `private` is reachable by an
 -- API role.
 
@@ -25,7 +26,7 @@ where n.nspname in ('public', 'private')
 grant select on our_functions to public;
 
 -- ─── Hygiene (3) ──────────────────────────────────────────────────────────
-select cmp_ok((select count(*)::int from our_functions), '>=', 29,
+select cmp_ok((select count(*)::int from our_functions), '>=', 30,
   'the checks below see all our functions');
 
 select is_empty(
@@ -38,9 +39,10 @@ select is_empty(
   'every function in public and private pins search_path to empty');
 
 -- ─── EXECUTE (6) ──────────────────────────────────────────────────────────
-select is_empty(
+select set_eq(
   $$ select signature from our_functions where has_function_privilege('anon', oid, 'EXECUTE') $$,
-  'anon can execute no function');
+  array['public.get_public_battle(p_battle_id uuid)'],
+  'anon can execute exactly get_public_battle (public results pages)');
 
 select set_eq(
   $$ select signature from our_functions where has_function_privilege('authenticated', oid, 'EXECUTE') $$,
@@ -51,6 +53,7 @@ select set_eq(
     'public.advance_battle(p_battle_id uuid, p_expected_version integer)',
     'public.ship_build(p_battle_id uuid, p_name text, p_stats jsonb)',
     'public.get_battle_snapshot(p_battle_id uuid)',
+    'public.get_public_battle(p_battle_id uuid)',
     -- RLS helpers called by table and storage policies
     'public.is_room_member(p_room_id uuid)',
     'public.is_battle_member(p_battle_id uuid)',

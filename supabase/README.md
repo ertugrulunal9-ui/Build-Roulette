@@ -17,7 +17,8 @@ supabase/
 │   ├── 20261004120200_storage.sql                     buckets + storage.objects policies
 │   ├── 20261004120300_solo_battle.sql                 state machine + client RPCs
 │   ├── 20261004120400_jobs.sql                        capture/destroy job queue (service role)
-│   └── 20261004120500_sweeps_and_cron.sql             sweep_deadlines, sweep_ttl, pg_cron schedule
+│   ├── 20261004120500_sweeps_and_cron.sql             sweep_deadlines, sweep_ttl, pg_cron schedule
+│   └── 20261006120000_autosave_css_and_public_battle.sql  autosave/bundle.css slot, get_public_battle (T-014)
 ├── tests/                       pgTAP tests (*.test.sql), one transaction each, rolled back
 │   ├── 00_schema.test.sql       tables/enums exist, RLS on every table, policies, table privileges
 │   ├── 01_constraints.test.sql  room codes, time limits, one build per player, vote PK, cascades
@@ -28,7 +29,8 @@ supabase/
 │   ├── 06_guards.test.sql       every RPC guard
 │   ├── 07_jobs.test.sql         claim / fail / backoff / lease, complete_capture, complete_destroy
 │   ├── 08_storage.test.sql      storage.objects policies as the API roles
-│   └── 09_sweeps.test.sql       sweep_deadlines, sweep_ttl, pg_cron jobs
+│   ├── 09_sweeps.test.sql       sweep_deadlines, sweep_ttl, pg_cron jobs
+│   └── 10_public_battle.test.sql   get_public_battle (permanent data only, RESULTS/DESTROYED only), autosave/bundle.css
 └── scripts/
     └── e2e-solo.mjs             the solo loop through the real HTTP APIs (Auth, PostgREST, Storage, pg_cron)
 ```
@@ -93,7 +95,9 @@ CI (`.github/workflows/ci.yml`, job `db`) runs the same three steps on a fresh s
 - RLS is enabled on every `public` table. Table policies are SELECT-only and granted `to authenticated`.
 - `anon` and `authenticated` have no INSERT/UPDATE/DELETE/TRUNCATE privilege on any table.
   All writes go through `SECURITY DEFINER` RPCs.
-- `anon` (a request with no session) can read nothing and execute nothing. Anonymous
+- `anon` (a request with no session) can read nothing and execute exactly one function,
+  `get_public_battle`, which returns the permanent results of a battle in RESULTS or
+  DESTROYED (the shareable `/battles/[id]` page renders with the anon key). Anonymous
   sign-ins still get the `authenticated` role.
 - Default privileges: tables, sequences and functions created by later migrations are *not*
   auto-exposed to `anon`/`authenticated` (functions not to `PUBLIC` either). Grant
@@ -102,7 +106,7 @@ CI (`.github/workflows/ci.yml`, job `db`) runs the same three steps on a fresh s
   references. Internal helpers live in schema `private`, on which no API role has USAGE
   and which the Data API does not expose.
 - `authenticated` can execute exactly: `server_now`, `start_solo_battle`,
-  `advance_battle`, `ship_build`, `get_battle_snapshot`, and the RLS helpers
+  `advance_battle`, `ship_build`, `get_battle_snapshot`, `get_public_battle`, and the RLS helpers
   `is_room_member`, `is_battle_member`, `can_view_battle`, `can_write_build_object`.
   Worker and sweep functions are `service_role` only.
 
@@ -117,6 +121,7 @@ Errors use a stable snake_case `message` (supabase-js `error.message`) and a hum
 | `advance_battle(p_battle_id uuid, p_expected_version int)` | battle member, service role | `{changed, version, phase, phase_ends_at}` |
 | `ship_build(p_battle_id uuid, p_name text, p_stats jsonb default '{}')` | roster player | `{build: {id, status, name, shipped_at, completion_ms, stats}, battle: {version, phase, phase_ends_at}}` |
 | `get_battle_snapshot(p_battle_id uuid)` | member, or anyone signed in once RESULTS/DESTROYED | `{server_now, me, battle, challenge, players, builds, awards}` |
+| `get_public_battle(p_battle_id uuid)` | anyone, including `anon`; RESULTS/DESTROYED only, otherwise `battle_not_found` | `{battle, challenge, players, builds, awards}`: permanent data only (display names, no user ids, no ephemeral paths; screenshot path only once captured) |
 | `claim_job(p_kind job_kind)` | service role | `jobs` row, or all-null when there is nothing to do |
 | `complete_capture(p_build_id uuid, p_status capture_status, p_path text)` | service role | void |
 | `fail_job(p_job_id bigint, p_error text)` | service role | `jobs` row |

@@ -19,9 +19,9 @@ below).
 
 ```
 claim_job('capture') ─► builds row (status, battle, builder)
-  ─► signed Storage URLs, TTL 120 s: bundle.js (+ bundle.css for shipped builds)
+  ─► signed Storage URLs, TTL 120 s: bundle.js (+ bundle.css when the build has one)
        shipped:      {battle}/{uid}/bundle.js, bundle.css, source.json
-       auto_shipped: {battle}/{uid}/autosave/bundle.js, autosave/source.json (no CSS slot)
+       auto_shipped: {battle}/{uid}/autosave/bundle.js, autosave/bundle.css, autosave/source.json
   ─► import map from source.json's manifest (buildImportMap from @br/runtime, PKG_CDN_URL)
   ─► capture URL signed with the HMAC secret, expiring with the Storage URLs
   ─► renderer: fresh context, 1280×800 @1x, readiness rule, hard timeout ─► PNG
@@ -203,5 +203,5 @@ workerd: WebP would come from Cloudflare Images, or the PNG is stored (the bucke
 - A build can always ruin its own capture (navigate its page, paint nothing, loop forever);
   the result is the thumbnail fallback or `failed`, never someone else's content.
 - A uniform single-colour build counts as blank and gets the thumbnail if there is one.
-- The autosave has no CSS slot (docs/05 §5.5), so an auto-shipped build is captured without
-  its CSS unless the client inlines CSS into `autosave/bundle.js` (T-014).
+- Autosaves made before the `autosave/bundle.css` slot (T-014) have no CSS file; such a
+  build is captured without its CSS.

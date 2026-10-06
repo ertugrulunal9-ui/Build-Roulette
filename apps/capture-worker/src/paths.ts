@@ -2,7 +2,7 @@
  * Object names (docs/05 §5.5, supabase/migrations/20261004120200_storage.sql).
  *
  *   ephemeral-builds/{battle}/{uid}/source.json | bundle.js | bundle.css | thumb.webp
- *   ephemeral-builds/{battle}/{uid}/autosave/source.json | autosave/bundle.js
+ *   ephemeral-builds/{battle}/{uid}/autosave/source.json | autosave/bundle.js | autosave/bundle.css
  *   screenshots/{battle}/{build}.webp
  *
  * Every id is checked to be a canonical UUID before it goes into a path, so a bad row can
@@ -14,8 +14,11 @@ export interface BuildSources {
   /** Where the frozen bundle lives: `shipped` uses the final files, `auto_shipped` the autosave. */
   kind: 'shipped' | 'autosave';
   js: string;
-  /** Only shipped builds have a CSS file (the autosave has no CSS slot). */
-  css: string | null;
+  /**
+   * The CSS file. Optional in both cases: a build without CSS has none, and autosaves made
+   * before the `autosave/bundle.css` slot existed (T-014) have none either.
+   */
+  css: string;
   source: string;
   /** The client thumbnail (fallback), if the client uploaded one. */
   thumb: string;
@@ -44,7 +47,7 @@ export function buildSources(
     return {
       kind: 'autosave',
       js: `${base}autosave/bundle.js`,
-      css: null,
+      css: `${base}autosave/bundle.css`,
       source: `${base}autosave/source.json`,
       thumb: `${base}thumb.webp`,
     };

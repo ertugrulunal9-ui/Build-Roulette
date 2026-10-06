@@ -60,8 +60,8 @@ select lives_ok(
   format($$ insert into storage.objects (bucket_id, name, owner_id)
             select 'ephemeral-builds', %L || '/' || f, %L
             from unnest(array['source.json', 'bundle.js', 'bundle.css', 'thumb.webp',
-                              'autosave/source.json', 'autosave/bundle.js']) f $$, :'lp', :'liam_id'),
-  'the owner can create all six allowed files under {battle}/{uid}/ while BUILDING');
+                              'autosave/source.json', 'autosave/bundle.js', 'autosave/bundle.css']) f $$, :'lp', :'liam_id'),
+  'the owner can create all seven allowed files under {battle}/{uid}/ while BUILDING');
 
 select throws_ok(format($$ insert into storage.objects (bucket_id, name) values ('ephemeral-builds', %L) $$,
                         :'lp' || '/index.html'),
@@ -103,7 +103,7 @@ reset role;
 -- ─── Reads (5) ────────────────────────────────────────────────────────────
 set local role authenticated;
 select set_config('request.jwt.claims', :'liam', true);
-select is((select count(*)::int from storage.objects where bucket_id = 'ephemeral-builds'), 6,
+select is((select count(*)::int from storage.objects where bucket_id = 'ephemeral-builds'), 7,
   'the owner reads their own files');
 select set_config('request.jwt.claims', :'mia', true);
 select is((select count(*)::int from storage.objects where bucket_id = 'ephemeral-builds'), 0,
@@ -180,7 +180,7 @@ with u as (
   returning 1)
 select count(*) as n from u \gset
 select is(:n, 0, 'after building_ends_at + grace, overwrites are refused');
-select is((select count(*)::int from storage.objects where bucket_id = 'ephemeral-builds'), 6,
+select is((select count(*)::int from storage.objects where bucket_id = 'ephemeral-builds'), 7,
   'the owner still reads their files after the deadline');
 reset role;
 
@@ -194,7 +194,7 @@ select is(public.ship_build(:'l_battle', 'Done', '{}') -> 'build' ->> 'status', 
 select throws_ok(format($$ insert into storage.objects (bucket_id, name) values ('ephemeral-builds', %L) $$,
                         :'lp' || '/thumb.webp'),
   '42501', null, 'nothing can be written after ship (the build is final)');
-select is((select count(*)::int from storage.objects where bucket_id = 'ephemeral-builds'), 6,
+select is((select count(*)::int from storage.objects where bucket_id = 'ephemeral-builds'), 7,
   'the owner still reads their files after ship');
 reset role;
 
@@ -205,7 +205,7 @@ select lives_ok(format($$ insert into storage.objects (bucket_id, name) values (
                        :'l_battle' || '/' || gen_random_uuid() || '.webp'),
   'the service role writes screenshots');
 select is((select count(*)::int from storage.objects where bucket_id = 'ephemeral-builds'
-           and name like :'l_battle' || '/%'), 6,
+           and name like :'l_battle' || '/%'), 7,
   'the service role reads every ephemeral file (capture and destroy workers)');
 reset role;
 

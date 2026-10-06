@@ -54,11 +54,22 @@ select set_eq(
     'public.ship_build(p_battle_id uuid, p_name text, p_stats jsonb)',
     'public.get_battle_snapshot(p_battle_id uuid)',
     'public.get_public_battle(p_battle_id uuid)',
-    -- RLS helpers called by table and storage policies
+    -- room RPCs (T-016)
+    'public.create_room(p_display_name text)',
+    'public.join_room(p_code text, p_display_name text)',
+    'public.leave_room(p_room_id uuid)',
+    'public.set_ready(p_room_id uuid, p_ready boolean)',
+    'public.update_room_settings(p_room_id uuid, p_settings jsonb)',
+    'public.kick_member(p_room_id uuid, p_user_id uuid)',
+    'public.heartbeat(p_room_id uuid)',
+    'public.get_room_snapshot(p_room_id uuid)',
+    'public.start_battle(p_room_id uuid)',
+    -- RLS helpers called by table, storage and realtime.messages policies
     'public.is_room_member(p_room_id uuid)',
     'public.is_battle_member(p_battle_id uuid)',
     'public.can_view_battle(p_battle_id uuid)',
-    'public.can_write_build_object(p_name text)'
+    'public.can_write_build_object(p_name text)',
+    'public.can_use_realtime_topic(p_topic text, p_send boolean)'
   ],
   'authenticated can execute exactly the client RPCs and the RLS helpers');
 

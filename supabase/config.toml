@@ -44,3 +44,22 @@ jwt_expiry = 3600
 enable_signup = true
 # Zero-setup onboarding (docs/01 §1.1): players sign in anonymously.
 enable_anonymous_sign_ins = true
+# An anonymous player can later link GitHub or Google to keep their history
+# (supabase.auth.linkIdentity), which needs manual linking.
+enable_manual_linking = true
+
+# Local only: the e2e scripts (solo, multiplayer, realtime) and the capture tests
+# sign up a dozen anonymous users per run, more than the default 30 per hour.
+# The hosted project keeps its own limit (dashboard → Auth → Rate limits).
+[auth.rate_limit]
+anonymous_users = 300
+
+# Bot protection is OFF locally (tests sign up without a token). In production,
+# turn on Cloudflare Turnstile (docs/01 §1.3): dashboard → Auth → Bot and Abuse
+# Protection → CAPTCHA, provider Turnstile, with the Turnstile secret key; or,
+# when the config is pushed from here:
+#   [auth.captcha]
+#   enabled = true
+#   provider = "turnstile"
+#   secret = "env(SUPABASE_AUTH_CAPTCHA_SECRET)"
+# The client then passes the Turnstile token to signInAnonymously({ options: { captchaToken } }).

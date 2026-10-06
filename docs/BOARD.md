@@ -2,7 +2,7 @@
 
 Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 
-## Current milestone: M2 Solo loop, complete (local). One flaky test fix (T-015) pending.
+## Current milestone: M2 Solo loop, complete (local). Next: M3 Rooms + multiplayer (awaiting user go-ahead)
 
 | ID | Task | Scope | Status | Notes |
 |---|---|---|---|---|
@@ -10,7 +10,7 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 | T-012 | Spike: Next.js 16 on Cloudflare Workers via OpenNext (local preview, no account) | `apps/web/` (deploy config only) | done | Merged: GO with caveats |
 | T-013 | Capture mode in the shell + local capture/destroy workers (Playwright stands in for Browser Rendering) | `apps/sandbox-shell/`, `apps/capture-worker/` | done | Merged |
 | T-014 | Solo game UI: spin → build → ship → results → destroy, plus the `/battles/[id]` results page | `apps/web/` (+ small `supabase/` and `apps/capture-worker/` changes for the autosave CSS) | done | Merged |
-| T-015 | Fix flaky playground e2e (`playground.spec.ts:206`): a click right after "Reset to template" is lost, likely a double rebuild replacing the frame (≈1/6 runs) | `apps/web/`, `packages/runtime/` | todo | Next (one worker) |
+| T-015 | Fix flaky playground e2e (`playground.spec.ts:206`): a click right after "Reset to template" is lost, likely a double rebuild replacing the frame (≈1/6 runs) | `apps/web/`, `packages/runtime/` | done | Merged |
 | T-001 | Monorepo skeleton: pnpm + Turborepo, Next.js app, lint/format/strict TS, Vitest, CI | root config, `apps/web/`, `packages/game/`, `.github/` | done | Merged in b29110a |
 | T-002 | Supabase scaffold: initial schema migration, Supabase-compatible local Postgres test harness, pgTAP | `supabase/` | done | Merged |
 | T-004 | Run DB tests in CI + add a `@br/game` ↔ SQL enum drift test | `.github/workflows/ci.yml`, `packages/game/` | done | Merged |
@@ -49,6 +49,7 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 - T-012 OpenNext / Cloudflare Workers spike
 - T-013 Capture mode + capture/destroy workers
 - T-014 Solo game end to end
+- T-015 Lost click after template reset (root-cause fix)
 
 ## Review log
 
@@ -286,3 +287,21 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
   - ISR on R2 for `/battles/[id]`;
   - the local auth limit of 30 anonymous sign-ups per hour affects repeated test runs;
   - realtime instead of polling (M3).
+
+### T-015: accepted
+- **The hub's hypothesis (double rebuild) was wrong.** The worker proved with instrumentation that a reset makes exactly one build and one load.
+- **Root cause:** until that load arrives, the *old* project's preview stays live and accepts clicks. Both templates show "Clicked 0 times", so the click hit the stale page and was lost. 7 of the 10 old "passing" runs were checking the old page.
+- **Second bug:** concurrent builds could deliver an older result after a newer one.
+- **Fix:**
+  - `SandboxController.replace()` swaps files and manifest atomically, replaces the preview iframe immediately, and builds immediately (newest wins);
+  - `EsmBrowserRuntime` delivers `onBuild` results in start order;
+  - used by template reset/switch and paste-import replace mode (`/playground` and `/play`).
+- **Tests:**
+  - the e2e now clicks right after reset and asserts the new page: 9/10 fail on the old code, 10/10 pass after;
+  - runtime and controller unit tests fail on the old code.
+- Hub re-ran:
+  - pipeline green (runtime 101, web 75);
+  - runtime e2e 25/25;
+  - **playground e2e ×5: 70/70**;
+  - solo e2e 2/2 on the real stack.
+- Known limitation: "Restart preview" after a failed build of a replaced project reloads the last good (old) build. Leave as is for now.

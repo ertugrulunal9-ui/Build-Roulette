@@ -47,12 +47,15 @@ const DECOYS: Record<CardKind | 'time', readonly string[]> = {
   time: ['3 min', '5 min', '10 min', '15 min', '20 min', '30 min'],
 };
 
-/** When each reel lands, as a fraction of the spin window. */
+/**
+ * When each reel lands, as a fraction of the spin window. The last one lands at 72%, so the
+ * whole challenge stays on screen for the last ~1.7 s of a 6 s spin before BUILD starts.
+ */
 const LANDS_AT: Record<CardKind | 'time', number> = {
-  build: 0.35,
-  rule: 0.55,
-  style: 0.75,
-  time: 0.88,
+  build: 0.3,
+  rule: 0.45,
+  style: 0.6,
+  time: 0.72,
 };
 
 function Reel({

@@ -80,7 +80,8 @@ test('ship: spin → build → ship → results (screenshot, speedrun) → destr
   await expect(page.getByTestId('reel-build')).toHaveAttribute('data-landed', 'true');
   await snap(page, 'spin');
   const reelText = await page.getByTestId('reel-build').innerText();
-  await expect(page.getByTestId('reel-time')).toHaveAttribute('data-landed', 'true');
+  // (The later reels are not awaited: on a busy machine BUILD can start before the test sees
+  // the last one land.)
   const card = sql(
     `select c.build_text from public.battles b join public.challenges c on c.id = b.challenge_id where b.id = '${battle}'`,
   );

@@ -390,6 +390,106 @@ test('6 players under chaos: skewed clocks, a network drop, refreshes, the host 
   await expectTerminal(rematch, { phase: 'abandoned', shipped: {} });
 });
 
+// ─── Random chaos (seeded) ────────────────────────────────────────────────────────────
+
+/** A small seeded PRNG (mulberry32): the same CHAOS_SEED replays the same run. */
+function prng(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+test('random chaos (seeded): drops, refreshes, edits and ships at random on skewed clocks; no shipped build is lost', async ({
+  browser,
+}, info) => {
+  test.setTimeout(7 * MIN);
+  const seed = Number(process.env['CHAOS_SEED'] ?? Date.now() % 1_000_000);
+  info.annotations.push({ type: 'CHAOS_SEED', description: String(seed) });
+  console.log(`random chaos: CHAOS_SEED=${String(seed)}`);
+  const rnd = prng(seed);
+  const pick = <T>(xs: readonly T[]): T => xs[Math.floor(rnd() * xs.length)] as T;
+
+  const skews = [-5 * MIN, 0, 5 * MIN] as const;
+  const players: Player[] = [];
+  for (const name of ['Lou Random', 'Max Random', 'Ned Random', 'Oz Random']) {
+    players.push(await newPlayer(browser, info, name, { clockSkewMs: pick(skews) }));
+  }
+  const code = await gather(players);
+  const battleId = await startBattle(code, players, 100);
+  const shipped: Record<string, string> = {};
+  const log: string[] = [];
+
+  // Chaos until 25 s before the deadline.
+  let step = 0;
+  while (serverRemainingS(battleId) > 25) {
+    step++;
+    const p = pick(players);
+    const action = shipped[p.name]
+      ? pick(['drop', 'refresh'] as const)
+      : pick(['drop', 'refresh', 'edit', 'edit', 'ship'] as const);
+    log.push(`${String(step)} ${p.name} ${action}`);
+    if (action === 'drop') {
+      const ms = 3_000 + Math.floor(rnd() * 9_000);
+      await p.context.setOffline(true);
+      await expect(p.page.getByTestId('reconnecting')).toBeVisible();
+      if (!shipped[p.name]) {
+        await writeApp(p.page, `${p.name} offline ${String(step)}`, 'rgb(90, 90, 200)', {
+          waitForPreview: false,
+        });
+      }
+      await p.page.waitForTimeout(ms);
+      await p.context.setOffline(false);
+      await expect(p.page.getByTestId('reconnecting')).toBeHidden({ timeout: 30_000 });
+    } else if (action === 'refresh') {
+      await p.page.reload();
+      await expect(p.page.getByTestId('build-stage')).toBeVisible({ timeout: 30_000 });
+      await expect(p.page.getByTestId('build-status')).toHaveText(/^Built in \d+ ms$/, {
+        timeout: 30_000,
+      });
+    } else if (action === 'edit') {
+      await writeApp(p.page, `${p.name} edit ${String(step)}`, 'rgb(200, 90, 90)');
+    } else {
+      const name = `${p.name.split(' ')[0] ?? 'X'} ship ${String(step)}`;
+      await ship(p.page, name);
+      shipped[p.name] = name;
+    }
+    // Whatever happened, every countdown shows the server's time.
+    await expectCountdownInSync(p, battleId);
+  }
+  console.log(`random chaos steps: ${log.join('; ')}`);
+  for (const p of players) await expectCountdownInSync(p, battleId);
+
+  // The rest is up to the server: deadline, auto-ship, captures, RESULTS, DESTROY.
+  for (const p of players) {
+    await expect(p.page.getByTestId('results')).toBeVisible({ timeout: 2 * MIN });
+  }
+  await expect
+    .poll(
+      () =>
+        sql(
+          `select count(*) from public.builds where battle_id = '${battleId}' and status in ('shipped', 'auto_shipped') and capture_status = 'pending'`,
+        ),
+      { timeout: 3 * MIN, intervals: [1_000] },
+    )
+    .toBe('0');
+  endLastLook(battleId);
+  for (const p of players) {
+    await expect(p.page.getByTestId('lobby')).toBeVisible({ timeout: MIN });
+  }
+  const row = await expectTerminal(battleId, { phase: 'destroyed', shipped });
+  // Everyone who did not ship had autosaved (the 30 s loop or the final autosave).
+  for (const b of row.builds) {
+    expect(b.status, b.builder).toBe(shipped[b.builder] ? 'shipped' : 'auto_shipped');
+  }
+  expectNoPageErrors(players);
+  for (const p of players) await p.context.close();
+});
+
 // ─── Everyone gone at T-0 ─────────────────────────────────────────────────────────────
 
 test('all clients closed at T-0: pg_cron alone ends BUILD, auto-ships the autosaves, captures and reaches RESULTS', async ({

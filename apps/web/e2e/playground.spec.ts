@@ -246,11 +246,15 @@ test('the file tree adds, renames and deletes files within the limits', async ({
   // Switching templates changes the entry and the dependencies too.
   await page.getByLabel('Template').selectOption('vanilla-ts');
   await page.getByRole('button', { name: 'Reset to template' }).click();
+  // Both templates show a "Clicked 0 times" button. The React preview must be gone as soon as
+  // the reset happens: a click right away lands in the new vanilla build, not in the old
+  // document that the next load would replace.
+  await buildFrame(page).getByRole('button').click();
+  // The vanilla build has no paragraph; the React one does.
+  await expect(buildFrame(page).locator('main.app > p')).toHaveCount(0);
+  await expect(buildFrame(page).getByRole('button')).toHaveText('Clicked 1 time');
   await expect(page.locator('[data-testid=file-item]')).toHaveCount(2);
   await expect(page.locator('[data-testid=file-item][data-path="src/main.ts"]')).toHaveCount(1);
-  await expect(buildFrame(page).getByRole('button')).toHaveText('Clicked 0 times');
-  await buildFrame(page).getByRole('button').click();
-  await expect(buildFrame(page).getByRole('button')).toHaveText('Clicked 1 time');
 });
 
 test('typing with pauses across rebuilds keeps the keyboard in the editor', async ({ page }) => {

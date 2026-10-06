@@ -226,6 +226,49 @@ describe('resetStorage: clean slate', () => {
   });
 });
 
+describe('captureThumbnail: best-effort client thumbnail', () => {
+  const WEBP = 'data:image/webp;base64,UklGRg==';
+
+  it('sends capture-thumbnail and resolves with the matching answer', async () => {
+    const { handle, connect } = setup();
+    const shell = connect();
+    const thumb = handle.captureThumbnail({ width: 640, height: 400.4 });
+    const [req] = shell.received('capture-thumbnail');
+    expect(req).toMatchObject({ width: 640, height: 400 });
+    // An answer for another request is rejected and does not settle this one.
+    shell.send({ type: 'thumbnail', requestId: 999, webp: WEBP });
+    expect(handle.stats.rejectedMessages).toBe(1);
+    shell.send({ type: 'thumbnail', requestId: req?.['requestId'], webp: WEBP });
+    await expect(thumb).resolves.toBe(WEBP);
+    // A second answer to the same request is rejected too.
+    shell.send({ type: 'thumbnail', requestId: req?.['requestId'], webp: WEBP });
+    expect(handle.stats.rejectedMessages).toBe(2);
+  });
+
+  it('drops answers that are not WebP data URLs (schema)', async () => {
+    const { handle, connect } = setup();
+    const shell = connect();
+    const thumb = handle.captureThumbnail({ width: 64, height: 40 }, 500);
+    const requestId = shell.received('capture-thumbnail')[0]?.['requestId'];
+    shell.send({ type: 'thumbnail', requestId, webp: 'data:image/png;base64,AAAA' });
+    expect(handle.stats.rejectedMessages).toBe(1);
+    vi.advanceTimersByTime(501);
+    await expect(thumb).resolves.toBeNull();
+  });
+
+  it('resolves null when not connected, on timeout and when the frame is replaced', async () => {
+    const { handle, connect } = setup();
+    await expect(handle.captureThumbnail({ width: 64, height: 40 })).resolves.toBeNull();
+    connect();
+    const timedOut = handle.captureThumbnail({ width: 64, height: 40 }, 1000);
+    vi.advanceTimersByTime(1001);
+    await expect(timedOut).resolves.toBeNull();
+    const replaced = handle.captureThumbnail({ width: 64, height: 40 });
+    handle.restart();
+    await expect(replaced).resolves.toBeNull();
+  });
+});
+
 describe('watchdog: ping round trips', () => {
   it('pings every second with increasing seq; pongs keep it alive', () => {
     const { handle, connect } = setup();

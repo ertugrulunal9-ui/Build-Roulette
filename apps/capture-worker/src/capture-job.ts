@@ -1,7 +1,7 @@
 /**
  * One capture job (docs/01 §1.5 "Ship → capture → destroy", docs/03 §3.7).
  *
- *   build row ─► signed Storage URLs (bundle.js, bundle.css; short TTL)
+ *   build row ─► signed Storage URLs (bundle.js, bundle.css if any; short TTL)
  *             ─► import map from the build's manifest (source.json)
  *             ─► signed capture page URL (HMAC, short expiry)
  *             ─► renderer (PNG 1280×800) ─► blank check ─► WebP ─► screenshots/{battle}/{build}.webp
@@ -124,9 +124,8 @@ async function renderBuild(
   const ttl = config.signedUrlTtlSeconds;
   const src = await backend.createSignedUrl(BUCKET_EPHEMERAL, sources.js, ttl);
   if (!src) return { kind: 'missing' };
-  const css = sources.css
-    ? await backend.createSignedUrl(BUCKET_EPHEMERAL, sources.css, ttl)
-    : null;
+  // The CSS file is optional (null when the build has none).
+  const css = await backend.createSignedUrl(BUCKET_EPHEMERAL, sources.css, ttl);
   const map = await importMapFor(backend, sources.source, config.pkgCdnUrl, log);
   const now = deps.now ?? Date.now;
   const url = await signCaptureUrl({

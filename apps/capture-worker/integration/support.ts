@@ -122,7 +122,7 @@ export function reactApp(opts: {
   title: string;
   background: string;
   signalReady: boolean;
-  /** Inline styles instead of a CSS file (autosaves have no CSS file). */
+  /** Inline styles instead of a CSS file. */
   inlineStyles?: boolean;
 }): Record<string, string> {
   const css = `body { margin: 0; }

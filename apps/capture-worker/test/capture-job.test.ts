@@ -115,11 +115,34 @@ describe('capture job: server render', () => {
     expect(backend.callsTo('failJob')).toEqual([]);
   });
 
-  it('auto_shipped builds render the autosave bundle, without a CSS file', async () => {
+  it('auto_shipped builds render the autosave bundle and its CSS', async () => {
+    backend.addBuild({ status: 'auto_shipped' });
+    backend.put(BUCKET_EPHEMERAL, `${PREFIX}/autosave/bundle.js`, 'x');
+    backend.put(BUCKET_EPHEMERAL, `${PREFIX}/autosave/bundle.css`, 'body{}');
+    backend.put(BUCKET_EPHEMERAL, `${PREFIX}/autosave/source.json`, SOURCE);
+    backend.put(BUCKET_EPHEMERAL, `${PREFIX}/bundle.js`, 'stale, must not be used');
+    backend.put(BUCKET_EPHEMERAL, `${PREFIX}/bundle.css`, 'stale, must not be used');
+    backend.addJob('capture', BUILD);
+    const renderer = new FakeRenderer(() => Promise.resolve(rendered(goodPng)));
+    const out = await processCaptureJob(deps(renderer), await claim(), never);
+    expect(out.result).toBe('captured');
+    const verified = await verifyCaptureUrl(renderer.requests[0]?.url ?? '', SECRET, 1_800_000_000);
+    if (!verified.ok) throw new Error(verified.reason);
+    expect(verified.params.src).toContain(`${PREFIX}/autosave/bundle.js`);
+    expect(verified.params.css).toBe(
+      `https://storage.test/sign/${BUCKET_EPHEMERAL}/${PREFIX}/autosave/bundle.css?token=t120`,
+    );
+    expect(backend.callsTo('download')[0]).toEqual([
+      BUCKET_EPHEMERAL,
+      `${PREFIX}/autosave/source.json`,
+    ]);
+  });
+
+  it('an autosave without a CSS file renders without one', async () => {
     backend.addBuild({ status: 'auto_shipped' });
     backend.put(BUCKET_EPHEMERAL, `${PREFIX}/autosave/bundle.js`, 'x');
     backend.put(BUCKET_EPHEMERAL, `${PREFIX}/autosave/source.json`, SOURCE);
-    backend.put(BUCKET_EPHEMERAL, `${PREFIX}/bundle.js`, 'stale, must not be used');
+    backend.put(BUCKET_EPHEMERAL, `${PREFIX}/bundle.css`, 'stale, must not be used');
     backend.addJob('capture', BUILD);
     const renderer = new FakeRenderer(() => Promise.resolve(rendered(goodPng)));
     const out = await processCaptureJob(deps(renderer), await claim(), never);

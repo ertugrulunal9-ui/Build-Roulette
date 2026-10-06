@@ -5,7 +5,7 @@
  * Players (anonymous users) play solo battles through the HTTP APIs:
  *   alice  ships a React build (bundle.js + bundle.css)           → captured
  *   bob    ships a bundle that throws on load + a client thumb   → fallback
- *   carol  only autosaves; the deadline auto-ships it             → captured (autosave paths)
+ *   carol  only autosaves (js + css); the deadline auto-ships it  → captured (autosave paths)
  *   dave   ships a throwing bundle without a thumb                → retry, then failed on the
  *                                                                    last attempt
  * Then every battle goes to DESTROYED and the destroy worker deletes the files.
@@ -228,25 +228,22 @@ describe('capture + destroy workers on the local Supabase stack', () => {
     expect(colorClose(pixelStats(img).dominant, GREEN, 16)).toBe(true);
   });
 
-  it('captures an auto_shipped build from its autosave', async () => {
+  it('captures an auto_shipped build from its autosave, with its CSS', async () => {
     const user = await stack.signUp();
     const battle = await user.startBuilding();
+    // The blue background comes only from the CSS file (autosave/bundle.css, T-014).
     const react = await buildReactBundle(
       fx.cdn.url,
-      reactApp({
-        title: 'Autosaved',
-        background: 'rgb(33, 150, 243)',
-        signalReady: true,
-        inlineStyles: true,
-      }),
+      reactApp({ title: 'Autosaved', background: 'rgb(33, 150, 243)', signalReady: true }),
     );
-    expect(react.css).toBe('');
+    expect(react.css).toContain('background:#2196f3');
     await user.upload(
       `${battle}/${user.id}/autosave/source.json`,
       react.source,
       'application/json',
     );
     await user.upload(`${battle}/${user.id}/autosave/bundle.js`, react.js, 'text/javascript');
+    await user.upload(`${battle}/${user.id}/autosave/bundle.css`, react.css, 'text/css');
     // BUILDING → SHIPPING (deadline passed) → RESULTS (grace passed): the autosave is shipped.
     stack.sql(`update public.battles set building_ends_at = now() - interval '20 seconds',
                  phase_ends_at = now() - interval '20 seconds' where id = '${battle}'`);

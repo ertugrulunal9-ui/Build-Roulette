@@ -13,6 +13,8 @@ interface FileTreeProps {
   onCreate: (path: string) => string | null;
   onRename: (from: string, to: string) => string | null;
   onDelete: (path: string) => string | null;
+  /** Hide create, rename and delete (the build is locked). */
+  readOnly?: boolean;
 }
 
 type Editing = { kind: 'create' } | { kind: 'rename'; path: string } | null;
@@ -78,6 +80,7 @@ export function FileTree({
   onCreate,
   onRename,
   onDelete,
+  readOnly = false,
 }: FileTreeProps) {
   const [editing, setEditing] = useState<Editing>(null);
   const [error, setError] = useState<string | null>(null);
@@ -134,6 +137,7 @@ export function FileTree({
             onOpen(path);
           }}
           onDoubleClick={() => {
+            if (readOnly) return;
             setEditing({ kind: 'rename', path });
             setError(null);
           }}
@@ -149,7 +153,10 @@ export function FileTree({
           {basename(path)}
           {path === entry && <span className="ml-1.5 text-[10px] text-zinc-500">entry</span>}
         </button>
-        <span className="absolute top-0.5 right-1 flex gap-0.5 opacity-0 group-focus-within:opacity-100 group-hover:opacity-100">
+        <span
+          hidden={readOnly}
+          className="absolute top-0.5 right-1 flex gap-0.5 opacity-0 group-focus-within:opacity-100 group-hover:opacity-100"
+        >
           <button
             type="button"
             aria-label={`Rename ${path}`}
@@ -192,6 +199,7 @@ export function FileTree({
             setError(null);
           }}
           disabled={full}
+          hidden={readOnly}
           title={full ? `The workspace is limited to ${LIMITS.maxFiles} files` : 'New file'}
           className="rounded px-1.5 text-sm text-zinc-600 hover:bg-zinc-200 disabled:opacity-40 dark:text-zinc-300 dark:hover:bg-zinc-800"
         >

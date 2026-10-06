@@ -22,11 +22,23 @@ export interface PersistentWorkspace {
   notice: string | null;
 }
 
+export interface PersistentWorkspaceOptions {
+  /**
+   * Called when IndexedDB has no workspace for `id`, before falling back to the template:
+   * e.g. a battle restored from its remote autosave on another device (docs/04 §4.8).
+   */
+  restore?: () => Promise<Workspace | null>;
+}
+
 /**
- * Loads workspace `id` from IndexedDB (or starts from the default template) and keeps it
- * saved. Saves are flushed when the tab is hidden or closed.
+ * Loads workspace `id` from IndexedDB (or `restore`, or the default template) and keeps it
+ * saved. Saves are flushed when the tab is hidden or closed. Read once per `id`.
  */
-export function usePersistentWorkspace(id: string): PersistentWorkspace {
+export function usePersistentWorkspace(
+  id: string,
+  opts: PersistentWorkspaceOptions = {},
+): PersistentWorkspace {
+  const restoreRef = useRef(opts.restore);
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [saveState, setSaveState] = useState<SaveState>('idle');
   const [notice, setNotice] = useState<string | null>(null);
@@ -76,7 +88,9 @@ export function usePersistentWorkspace(id: string): PersistentWorkspace {
           `The saved workspace could not be read (${loaded.reason}); started from the template.`,
         );
       }
-      const initial = createWorkspace();
+      const restored = await (restoreRef.current?.() ?? Promise.resolve(null)).catch(() => null);
+      if (isCancelled()) return;
+      const initial = restored ?? createWorkspace();
       setWorkspace(initial);
       saverRef.current.schedule(initial);
       setSaveState('saving');

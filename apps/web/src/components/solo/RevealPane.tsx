@@ -1,0 +1,120 @@
+'use client';
+
+/**
+ * The "last look": the shipped bundle running in a fresh preview iframe in **reveal** mode
+ * (no popups, no modals, no clipboard; docs/03 §3.9) until DESTROY. When the build is
+ * destroyed (or the pane unmounts) the sandbox origin's storage is wiped in a new iframe,
+ * then the preview is disposed: nothing of the build stays in this tab.
+ */
+import { PreviewHandle, type PreviewBuild } from '@br/runtime';
+import { useEffect, useRef, useState } from 'react';
+import { playgroundConfig } from '../../lib/playground/config';
+import type { DestroyStage } from '../../lib/solo/controller';
+
+interface RevealPaneProps {
+  build: PreviewBuild | null;
+  status: 'none' | 'loading' | 'ready' | 'unavailable' | 'destroyed';
+  destroy: DestroyStage;
+  /** Shown above the frame (the last-look countdown). */
+  caption: string;
+}
+
+export function RevealPane({ build, status, destroy, caption }: RevealPaneProps) {
+  const hostRef = useRef<HTMLDivElement>(null);
+  const [crashed, setCrashed] = useState(false);
+
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!build || !host) return;
+    const iframe = host.ownerDocument.createElement('iframe');
+    iframe.title = 'Your shipped build (last look)';
+    iframe.dataset['testid'] = 'reveal-frame';
+    iframe.style.cssText =
+      'position:absolute;inset:0;width:100%;height:100%;border:0;background:#fff';
+    host.replaceChildren(iframe);
+    const preview = new PreviewHandle(iframe, {
+      shellUrl: playgroundConfig.shellUrl,
+      mode: 'reveal',
+    });
+    const offCrash = preview.on('crash', () => {
+      setCrashed(true);
+    });
+    preview.load(build, 'reveal');
+    return () => {
+      offCrash();
+      setCrashed(false);
+      // Wipe what the build stored on the sandbox origin, in a new iframe, then let it go.
+      let wiping: Promise<unknown>;
+      try {
+        wiping = preview.resetStorage(5000);
+      } catch {
+        wiping = Promise.resolve(); // already crashed or detached
+      }
+      void wiping
+        .catch(() => undefined)
+        .finally(() => {
+          preview.dispose();
+        });
+    };
+  }, [build]);
+
+  return (
+    <section className="flex min-h-[24rem] flex-col overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+      <p
+        className="border-b border-zinc-200 px-4 py-2 text-xs font-semibold tracking-wide text-zinc-500 uppercase dark:border-zinc-800"
+        data-testid="last-look"
+      >
+        {caption}
+      </p>
+      <div className="relative min-h-0 flex-1 bg-white">
+        <div
+          ref={hostRef}
+          className={`absolute inset-0 ${destroy === 'animating' ? 'br-destroying' : ''}`}
+          data-testid="reveal-host"
+          hidden={destroy === 'done'}
+        />
+        {status === 'loading' && (
+          <p className="absolute inset-0 grid place-items-center text-sm text-zinc-500">
+            Loading your build…
+          </p>
+        )}
+        {status === 'unavailable' && (
+          <p className="absolute inset-0 grid place-items-center p-6 text-center text-sm text-zinc-500">
+            Nothing to show: no build was shipped.
+          </p>
+        )}
+        {crashed && destroy === 'none' && (
+          <p className="absolute inset-0 grid place-items-center bg-zinc-100 p-6 text-center text-sm dark:bg-zinc-900">
+            The build stopped responding.
+          </p>
+        )}
+        {destroy === 'animating' && (
+          <div
+            className="pointer-events-none absolute inset-0 grid place-items-center"
+            data-testid="destroy-moment"
+          >
+            <p className="br-stamp rounded-lg border-8 border-red-600 bg-black/70 px-6 py-3 text-3xl font-black tracking-widest text-red-500 sm:text-5xl">
+              DESTROYING
+            </p>
+          </div>
+        )}
+        {destroy === 'done' && (
+          <div
+            className="absolute inset-0 grid place-items-center bg-zinc-950 p-6 text-center text-white"
+            data-testid="build-destroyed"
+          >
+            <div className="flex flex-col items-center gap-2">
+              <p className="br-stamp rounded-lg border-8 border-red-600 px-6 py-3 text-3xl font-black tracking-widest text-red-500 sm:text-4xl">
+                BUILD DESTROYED
+              </p>
+              <p className="max-w-sm text-sm text-zinc-400">
+                The code and bundle are gone: from this browser now, and from the server in a
+                moment. The results stay forever.
+              </p>
+            </div>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}

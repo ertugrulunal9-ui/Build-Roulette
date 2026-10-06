@@ -38,6 +38,7 @@ import {
 } from '@br/protocol';
 import { createChildFrame, injectBuild, installBuildApi, openBuildDocument } from './build-frame';
 import { RESET_ENDPOINT } from './headers';
+import { captureThumbnail } from './thumbnail';
 import { SerialQueue, wipeOriginStorage } from './wipe';
 
 /** Injected at build time: origins allowed to embed and drive this shell. */
@@ -167,8 +168,11 @@ function runLoad(msg: LoadMessage): void {
       post({ type: 'ready', loadId: msg.loadId });
     },
   });
-  // Keyboard games: a click on the outer frame should land in the build.
-  opened.window.focus();
+  // Keyboard games: someone else's build (reveal, capture) gets the keyboard at once. Not in
+  // `live` mode: there every rebuild loads a new frame, and focusing it would pull the
+  // keyboard out of the app's editor mid-typing. A click on the build focuses it, and a
+  // click on the shell's own document is forwarded to it (the `focus` listener in start()).
+  if (msg.mode !== 'live') opened.window.focus();
 }
 
 async function resetStorage(requestId: number | undefined): Promise<void> {
@@ -210,9 +214,16 @@ function onPortMessage(event: MessageEvent): void {
       }, 0);
       return;
     }
-    case 'capture-thumbnail':
-      // Not implemented in M1 (schema only).
+    case 'capture-thumbnail': {
+      // Best effort (thumbnail.ts): no answer when no image can be made; the app times out.
+      const { requestId, width, height } = msg;
+      void queue.push(async () => {
+        const webp = await captureThumbnail(frame, width, height);
+        if (webp)
+          post({ type: 'thumbnail', webp, ...(requestId === undefined ? {} : { requestId }) });
+      });
       return;
+    }
   }
 }
 

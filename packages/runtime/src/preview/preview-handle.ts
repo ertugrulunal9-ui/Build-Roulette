@@ -257,6 +257,8 @@ export class PreviewHandle {
   private nextLoadId = 1;
   private nextRequestId = 1;
   private readonly storageRequests = new Map<number, StorageRequest>();
+  /** Outstanding `capture-thumbnail` requests (requestId -> settle). */
+  private readonly thumbnailRequests = new Map<number, (webp: string | null) => void>();
   private nextPingSeq = 1;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
   private readonly outstandingPings = new Map<number, number>();
@@ -394,6 +396,38 @@ export class PreviewHandle {
   }
 
   /**
+   * Asks the shell for a best-effort WebP thumbnail of the running build (the fallback for
+   * the server-side capture, docs/03 §3.7). Resolves with a `data:image/webp;base64,…` URL,
+   * or null when the preview is not connected, the shell cannot make one, the frame is
+   * replaced or `timeoutMs` passes. Never rejects. The image is untrusted display data:
+   * the build can answer for the shell. Only one answer per request is accepted.
+   */
+  captureThumbnail(
+    size: { width: number; height: number },
+    timeoutMs = 4000,
+  ): Promise<string | null> {
+    if (this._state !== 'connected' || !this.port) return Promise.resolve(null);
+    const requestId = this.nextRequestId++;
+    return new Promise<string | null>((resolve) => {
+      const timer = setTimeout(() => {
+        settle(null);
+      }, timeoutMs);
+      const settle = (webp: string | null) => {
+        clearTimeout(timer);
+        this.thumbnailRequests.delete(requestId);
+        resolve(webp);
+      };
+      this.thumbnailRequests.set(requestId, settle);
+      this.send({
+        type: 'capture-thumbnail',
+        requestId,
+        width: Math.round(size.width),
+        height: Math.round(size.height),
+      });
+    });
+  }
+
+  /**
    * Replaces the iframe with a new one and loads the shell into it (a new realm, a new
    * handshake). Also recovers a crashed handle. Call `load()` afterwards.
    */
@@ -487,6 +521,8 @@ export class PreviewHandle {
     this.outstandingPings.clear();
     if (this.pingTimer !== null) clearInterval(this.pingTimer);
     this.pingTimer = null;
+    // Thumbnails were asked of the shell behind this port: no answer can come any more.
+    for (const settle of [...this.thumbnailRequests.values()]) settle(null);
   }
 
   private readonly onWindowMessage = (event: MessageEvent): void => {
@@ -617,9 +653,16 @@ export class PreviewHandle {
         // `hello` only counts on the window channel.
         this._stats.rejectedMessages++;
         return;
-      case 'thumbnail':
-        // Not implemented in M1.
+      case 'thumbnail': {
+        const settle =
+          msg.requestId === undefined ? undefined : this.thumbnailRequests.get(msg.requestId);
+        if (!settle) {
+          this._stats.rejectedMessages++;
+          return;
+        }
+        settle(msg.webp);
         return;
+      }
     }
   }
 

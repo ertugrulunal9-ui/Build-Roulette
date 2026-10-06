@@ -3,3 +3,115 @@
 :root {
   color-scheme: light dark;
 }
+
+/* ─── Solo game animations (/play) ─────────────────────────────────────────── */
+
+/* A spinning reel: a strip of decoy cards scrolling up, looped. */
+@keyframes br-reel {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(-50%);
+  }
+}
+
+/* A reel landing on the server's card. */
+@keyframes br-land {
+  0% {
+    transform: translateY(-40%) scale(0.96);
+    opacity: 0;
+  }
+  60% {
+    transform: translateY(6%) scale(1.03);
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes br-pulse-red {
+  0%,
+  100% {
+    background-color: rgb(220 38 38);
+  }
+  50% {
+    background-color: rgb(127 29 29);
+  }
+}
+
+/* DESTROY: shake, glitch, collapse. */
+@keyframes br-destroy {
+  0% {
+    transform: none;
+    filter: none;
+    opacity: 1;
+  }
+  10%,
+  30%,
+  50% {
+    transform: translate(-6px, 3px) rotate(-1deg);
+  }
+  20%,
+  40% {
+    transform: translate(6px, -3px) rotate(1deg);
+    filter: hue-rotate(90deg) saturate(3);
+  }
+  60% {
+    transform: scale(1.02);
+    filter: contrast(3) grayscale(1);
+  }
+  100% {
+    transform: scale(0.2, 0.002);
+    filter: brightness(4) grayscale(1);
+    opacity: 0;
+  }
+}
+
+@keyframes br-stamp {
+  0% {
+    transform: scale(3) rotate(-12deg);
+    opacity: 0;
+  }
+  60% {
+    transform: scale(0.9) rotate(-8deg);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1) rotate(-8deg);
+    opacity: 1;
+  }
+}
+
+.br-reel-strip {
+  animation: br-reel 0.45s linear infinite;
+}
+
+.br-reel-land {
+  animation: br-land 0.45s cubic-bezier(0.2, 0.8, 0.3, 1.2) both;
+}
+
+.br-pulse-red {
+  animation: br-pulse-red 1s ease-in-out infinite;
+}
+
+.br-destroying {
+  animation: br-destroy 2.2s ease-in forwards;
+}
+
+.br-stamp {
+  animation: br-stamp 0.5s cubic-bezier(0.2, 0.8, 0.3, 1.2) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .br-reel-strip,
+  .br-reel-land,
+  .br-pulse-red,
+  .br-stamp {
+    animation: none;
+  }
+  .br-destroying {
+    animation: br-destroy 2.2s steps(1, end) forwards;
+  }
+}

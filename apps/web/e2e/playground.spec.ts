@@ -252,3 +252,41 @@ test('the file tree adds, renames and deletes files within the limits', async ({
   await buildFrame(page).getByRole('button').click();
   await expect(buildFrame(page).getByRole('button')).toHaveText('Clicked 1 time');
 });
+
+test('typing with pauses across rebuilds keeps the keyboard in the editor', async ({ page }) => {
+  await openPlayground(page);
+  await page.locator('[data-testid=code-editor] .cm-content').click();
+  await page.keyboard.press('ControlOrMeta+End');
+  // Each pause is longer than the 150 ms rebuild debounce, so a new build frame loads
+  // between keystrokes. None of them may take the focus (T-014).
+  const text = '// typed slowly';
+  await page.keyboard.type(text, { delay: 300 });
+  await expect(page.getByTestId('build-status')).toHaveText(/^Built in \d+ ms$/);
+  expect(await editorText(page)).toContain(text);
+  expect(await page.evaluate(() => document.activeElement?.classList.contains('cm-content'))).toBe(
+    true,
+  );
+});
+
+test('a click into the preview gives the keyboard to the build', async ({ page }) => {
+  await openPlayground(page);
+  await replaceEditorText(
+    page,
+    `import { useEffect, useState } from 'react';
+export function App() {
+  const [key, setKey] = useState('none');
+  useEffect(() => {
+    const on = (e: KeyboardEvent) => setKey(e.key);
+    window.addEventListener('keydown', on);
+    return () => window.removeEventListener('keydown', on);
+  }, []);
+  return <h1 className="keys" style={{ minHeight: '100vh', margin: 0 }}>{key}</h1>;
+}
+`,
+  );
+  const h1 = buildFrame(page).locator('h1.keys');
+  await expect(h1).toHaveText('none');
+  await h1.click();
+  await page.keyboard.press('x');
+  await expect(h1).toHaveText('x');
+});

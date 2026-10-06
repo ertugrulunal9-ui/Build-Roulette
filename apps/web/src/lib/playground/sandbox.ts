@@ -112,6 +112,8 @@ export class SandboxController {
   /** Errors received since the last frame flush. */
   private pendingErrors: RuntimeErrorMessage[] = [];
   private readonly batcher: FrameBatcher;
+  /** Build results received so far (the `rebuilds` stat). */
+  private builds = 0;
 
   constructor(host: HTMLElement, config: PlaygroundConfig, deps: SandboxControllerDeps = {}) {
     this.host = host;
@@ -217,6 +219,37 @@ export class SandboxController {
     if (this.lastOk) this.load(this.lastOk);
   }
 
+  /** The latest successful build (what the preview runs), or null before the first one. */
+  lastGoodBuild(): BuildResult | null {
+    return this.lastOk;
+  }
+
+  /** Number of build results so far (debounced rebuilds and explicit builds). */
+  get buildCount(): number {
+    return this.builds;
+  }
+
+  /**
+   * A production build (minified, `NODE_ENV=production`) of the current files. Like every
+   * build it goes to `onBuild`, so a successful one also becomes the preview and the last
+   * good build. Rejects only after dispose().
+   */
+  productionBuild(): Promise<BuildResult> {
+    if (this.disposed) return Promise.reject(new Error('sandbox disposed'));
+    return this.runtime.build('production');
+  }
+
+  /**
+   * A best-effort WebP thumbnail of what the preview shows (the shell renders it; docs/03
+   * §3.7 fallback). Null when the preview is not running or the shell cannot make one.
+   */
+  async captureThumbnail(size: { width: number; height: number }): Promise<Blob | null> {
+    const preview = this.preview;
+    if (this.disposed || preview?.state !== 'connected') return null;
+    const url = await preview.captureThumbnail(size);
+    return url ? dataUrlToBlob(url) : null;
+  }
+
   dismissErrors(): void {
     this.pendingErrors = [];
     this.update({ runtimeErrors: [] });
@@ -246,6 +279,7 @@ export class SandboxController {
 
   private readonly onBuild = (result: BuildResult): void => {
     if (this.disposed) return;
+    this.builds++;
     const initFailure = result.diagnostics.find((d) => d.code === 'bundler-init-failed');
     this.update({
       // A build after a failed start retried starting the bundler: reflect the outcome.
@@ -329,4 +363,18 @@ export class SandboxController {
         : {}),
     });
   };
+}
+
+/** Decodes a base64 `data:` URL (the shell's WebP thumbnail) into a Blob. */
+export function dataUrlToBlob(url: string): Blob | null {
+  const m = /^data:([^;,]+);base64,(.*)$/s.exec(url);
+  if (!m?.[1] || m[2] === undefined) return null;
+  try {
+    const bin = atob(m[2]);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new Blob([bytes], { type: m[1] });
+  } catch {
+    return null;
+  }
 }

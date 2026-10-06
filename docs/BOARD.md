@@ -2,7 +2,7 @@
 
 Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 
-## Current milestone: M2 Solo loop, complete (local). Next: M3 Rooms + multiplayer (awaiting user go-ahead)
+## Current milestone: M3 Rooms + multiplayer state machine + realtime (M2 complete)
 
 | ID | Task | Scope | Status | Notes |
 |---|---|---|---|---|
@@ -11,6 +11,9 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 | T-013 | Capture mode in the shell + local capture/destroy workers (Playwright stands in for Browser Rendering) | `apps/sandbox-shell/`, `apps/capture-worker/` | done | Merged |
 | T-014 | Solo game UI: spin → build → ship → results → destroy, plus the `/battles/[id]` results page | `apps/web/` (+ small `supabase/` and `apps/capture-worker/` changes for the autosave CSS) | done | Merged |
 | T-015 | Fix flaky playground e2e (`playground.spec.ts:206`): a click right after "Reset to template" is lost, likely a double rebuild replacing the frame (≈1/6 runs) | `apps/web/`, `packages/runtime/` | done | Merged |
+| T-016 | M3 DB layer: rooms + members RPCs, multiplayer `start_battle`/`advance_battle` (shipping → results until M4), heartbeat, host migration, abandonment, kick, late joiners as spectators, Realtime broadcast triggers + private-channel authorization | `supabase/`, `ci.yml` | in-progress | M3, task 1 of 3 |
+| T-017 | M3 web: create/join room (code + link), lobby with presence and ready-up, host controls, multiplayer battle flow, realtime sync loop with resync | `apps/web/`, `packages/game/` | todo | M3, task 2 of 3 |
+| T-018 | M3 resilience: multi-context Playwright battles with chaos (network drops, clock skew, refresh, host leaves), admin event-log page | `apps/web/` (e2e), `supabase/` (tests) | todo | M3, task 3 of 3 |
 | T-001 | Monorepo skeleton: pnpm + Turborepo, Next.js app, lint/format/strict TS, Vitest, CI | root config, `apps/web/`, `packages/game/`, `.github/` | done | Merged in b29110a |
 | T-002 | Supabase scaffold: initial schema migration, Supabase-compatible local Postgres test harness, pgTAP | `supabase/` | done | Merged |
 | T-004 | Run DB tests in CI + add a `@br/game` ↔ SQL enum drift test | `.github/workflows/ci.yml`, `packages/game/` | done | Merged |
@@ -32,6 +35,8 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 | Later: second (usercontent) domain + Public Suffix List entry (F1) | Per-build isolation as the game grows |
 
 **User decisions (2026-10-04):** option A, so everything is hosted on Cloudflare and Vercel is dropped. The sandbox starts on `*.pages.dev` (already on the PSL), so there is no second domain at launch. Package CDN runs on Cloudflare Containers. Continue M2 locally.
+
+**User decisions (2026-10-06):** keep the `speedrun` award; the time limit stays server-random (5/10/15 min, like a fourth card); start M3. In M3, multiplayer battles go `shipping → results` like solo, and M4 inserts REVEAL + VOTE.
 
 ## Done
 

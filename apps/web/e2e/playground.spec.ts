@@ -102,6 +102,39 @@ Have fun!`;
   await expect(page.locator('[data-testid=file-item]')).toHaveCount(5);
 });
 
+test('paste-import in replace mode swaps the preview at once', async ({ page }) => {
+  await openPlayground(page);
+  // Same button text as the React template's, in a different document.
+  const blob = `**src/main.tsx**
+
+${F}tsx
+let count = 0;
+const button = document.createElement('button');
+const render = () => {
+  button.textContent = 'Clicked ' + String(count) + (count === 1 ? ' time' : ' times');
+};
+button.onclick = () => {
+  count += 1;
+  render();
+};
+render();
+const main = document.createElement('main');
+main.className = 'pasted';
+main.append(button);
+document.getElementById('root')!.append(main);
+${F}
+`;
+  await page.getByRole('button', { name: 'Paste import' }).click();
+  await page.getByTestId('paste-input').fill(blob);
+  await page.getByLabel('Delete them, keep only the pasted files').check();
+  await page.getByRole('button', { name: 'Import 1 file' }).click();
+  // A click right away lands in the pasted build, not in the template's React preview.
+  await buildFrame(page).getByRole('button').click();
+  await expect(buildFrame(page).locator('main.pasted')).toHaveCount(1);
+  await expect(buildFrame(page).getByRole('button')).toHaveText('Clicked 1 time');
+  await expect(page.locator('[data-testid=file-item]')).toHaveCount(1);
+});
+
 test('a reload restores edited files from IndexedDB', async ({ page }) => {
   await openPlayground(page);
   await openFile(page, 'src/styles.css');

@@ -31,7 +31,8 @@ const headerButton =
 
 export default function Playground() {
   const session = useWorkspaceSession(WORKSPACE_ID);
-  const { workspace, saveState, notice, snapshot, apply, setActivePath, setEditError } = session;
+  const { workspace, saveState, notice, snapshot, apply, replace, setActivePath, setEditError } =
+    session;
   const dark = usePrefersDark();
   const [pasteOpen, setPasteOpen] = useState(false);
   // The template picked in the menu; until the user picks one, the menu shows the template
@@ -90,7 +91,7 @@ export default function Playground() {
                   `Replace all files with the ${TEMPLATES[template].label} template? Your current files will be lost.`,
                 )
               ) {
-                apply(() => ({ ok: true, workspace: createWorkspace(template) }));
+                replace(createWorkspace(template));
                 setActivePath(null);
                 setEditError(null);
               }
@@ -125,8 +126,9 @@ export default function Playground() {
         onClose={() => {
           setPasteOpen(false);
         }}
-        onImport={(next, paths) => {
-          apply(() => ({ ok: true, workspace: next }));
+        onImport={(next, paths, mode) => {
+          if (mode === 'replace') replace(next);
+          else apply(() => ({ ok: true, workspace: next }));
           setPasteOpen(false);
           setEditError(null);
           const first = paths[0];

@@ -114,6 +114,11 @@ export class SandboxController {
   private readonly batcher: FrameBatcher;
   /** Build results received so far (the `rebuilds` stat). */
   private builds = 0;
+  /**
+   * Set while the build of a `replace()` runs: results are held (newest wins) instead of
+   * loaded, so a build of the old project that finishes meanwhile never reaches the preview.
+   */
+  private replacing: { latest: BuildResult | null } | null = null;
 
   constructor(host: HTMLElement, config: PlaygroundConfig, deps: SandboxControllerDeps = {}) {
     this.host = host;
@@ -165,30 +170,42 @@ export class SandboxController {
     if (this.disposed || prev === null || prev === workspace) return;
     // If the bundler failed to start, the debounced build retries starting it and reports
     // the outcome through onBuild like any other build.
-    let changed = false;
-    for (const [path, contents] of Object.entries(workspace.files)) {
-      if (prev.files[path] !== contents) {
-        this.runtime.writeFile(path, contents);
-        changed = true;
-      }
+    if (this.mirror(prev, workspace) && !this.snapshot.building) this.update({ building: true });
+  }
+
+  /**
+   * Replaces the whole project (reset to a template, paste-import in replace mode). An edit
+   * keeps the running preview until its debounced rebuild loads, but here that preview is a
+   * different project: anything the user does in it is thrown away by the next load. So the
+   * preview frame is replaced at once (no document of the old project is left to click) and
+   * the new files build right away, as one build and one load. Results of builds that were
+   * still running for the old files are not loaded.
+   */
+  replace(workspace: Workspace): void {
+    const prev = this.synced;
+    this.synced = workspace;
+    if (this.disposed || prev === null) return;
+    if (prev !== workspace) this.mirror(prev, workspace);
+    if (this.snapshot.bundler !== 'ready') {
+      // Booting: start() builds the mirrored files. Failed: like an edit, the debounced
+      // build retries starting the bundler.
+      if (prev !== workspace && !this.snapshot.building) this.update({ building: true });
+      return;
     }
-    for (const path of Object.keys(prev.files)) {
-      if (!Object.prototype.hasOwnProperty.call(workspace.files, path)) {
-        this.runtime.deleteFile(path);
-        changed = true;
-      }
-    }
-    const a = prev.manifest;
-    const b = workspace.manifest;
-    if (
-      a.entry !== b.entry ||
-      a.template !== b.template ||
-      !sameDependencies(a.dependencies, b.dependencies)
-    ) {
-      this.runtime.setManifest(b);
-      changed = true;
-    }
-    if (changed && !this.snapshot.building) this.update({ building: true });
+    const replacing: { latest: BuildResult | null } = { latest: null };
+    this.replacing = replacing;
+    this.freshPreview();
+    this.update({ building: true });
+    // build() cancels the debounced build the mirrored edits scheduled.
+    this.runtime.build().then(
+      (own) => {
+        if (this.disposed || this.replacing !== replacing) return; // a newer replace() runs
+        this.replacing = null;
+        // The runtime delivers results in order, so a held result is this build's or newer.
+        this.applyBuild(replacing.latest ?? own);
+      },
+      () => undefined, // only after dispose()
+    );
   }
 
   /** Builds now (the result is loaded by `onBuild`). */
@@ -207,16 +224,9 @@ export class SandboxController {
    */
   restartPreview(): void {
     if (this.disposed) return;
-    const preview = this.preview;
-    if (preview && preview.state !== 'disposed') {
-      this.batcher.cancel();
-      this.pendingErrors = [];
-      preview.restart();
-      this.update({ preview: 'connecting', crash: null, runtimeErrors: [] });
-    } else {
-      this.createPreview();
-    }
-    if (this.lastOk) this.load(this.lastOk);
+    this.freshPreview();
+    // During a replace() the last good build is the old project: its own build loads next.
+    if (this.lastOk && !this.replacing) this.load(this.lastOk);
   }
 
   /** The latest successful build (what the preview runs), or null before the first one. */
@@ -280,6 +290,15 @@ export class SandboxController {
   private readonly onBuild = (result: BuildResult): void => {
     if (this.disposed) return;
     this.builds++;
+    if (this.replacing) {
+      this.replacing.latest = result;
+      return;
+    }
+    this.applyBuild(result);
+  };
+
+  /** Shows a build result: status, Problems, and (when it is good) the preview. */
+  private applyBuild(result: BuildResult): void {
     const initFailure = result.diagnostics.find((d) => d.code === 'bundler-init-failed');
     this.update({
       // A build after a failed start retried starting the bundler: reflect the outcome.
@@ -292,7 +311,61 @@ export class SandboxController {
     if (!result.ok) return; // keep the last good preview running
     this.lastOk = result;
     if (this.snapshot.preview !== 'crashed') this.load(result);
-  };
+  }
+
+  /**
+   * Writes the difference between two workspace states into the runtime (each write
+   * schedules the debounced rebuild). Files and manifest go in together, before any build
+   * can start. Returns whether anything changed.
+   */
+  private mirror(prev: Workspace, workspace: Workspace): boolean {
+    let changed = false;
+    for (const [path, contents] of Object.entries(workspace.files)) {
+      if (prev.files[path] !== contents) {
+        this.runtime.writeFile(path, contents);
+        changed = true;
+      }
+    }
+    for (const path of Object.keys(prev.files)) {
+      if (!Object.prototype.hasOwnProperty.call(workspace.files, path)) {
+        this.runtime.deleteFile(path);
+        changed = true;
+      }
+    }
+    const a = prev.manifest;
+    const b = workspace.manifest;
+    if (
+      a.entry !== b.entry ||
+      a.template !== b.template ||
+      !sameDependencies(a.dependencies, b.dependencies)
+    ) {
+      this.runtime.setManifest(b);
+      changed = true;
+    }
+    return changed;
+  }
+
+  /**
+   * A new preview document: the same handle restarted (new iframe element, new shell realm),
+   * or a new handle if there is none. Errors and console of the old document are dropped.
+   */
+  private freshPreview(): void {
+    const preview = this.preview;
+    if (preview && preview.state !== 'disposed') {
+      this.batcher.cancel();
+      this.pendingErrors = [];
+      preview.restart();
+      preview.clearConsole();
+      this.update({
+        preview: 'connecting',
+        crash: null,
+        runtimeErrors: [],
+        console: preview.consoleEntries(),
+      });
+    } else {
+      this.createPreview();
+    }
+  }
 
   private load(result: BuildResult): void {
     const preview = this.preview;

@@ -25,6 +25,8 @@ interface CodeEditorProps {
   dark: boolean;
   onChange: (path: string, value: string) => void;
   reveal: RevealRequest | null;
+  /** No edits (after the deadline or once shipped). */
+  readOnly?: boolean;
 }
 
 function languageFor(path: string): Extension {
@@ -73,7 +75,18 @@ const lightTheme = EditorView.theme(
  * CodeMirror 6 editor. One EditorView; each file keeps its own EditorState (undo history,
  * selection) while it is unchanged from outside.
  */
-export function CodeEditor({ path, value, dark, onChange, reveal }: CodeEditorProps) {
+function readOnlyExtension(readOnly: boolean): Extension {
+  return readOnly ? [EditorState.readOnly.of(true), EditorView.editable.of(false)] : [];
+}
+
+export function CodeEditor({
+  path,
+  value,
+  dark,
+  onChange,
+  reveal,
+  readOnly = false,
+}: CodeEditorProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const statesRef = useRef(new Map<string, EditorState>());
@@ -81,6 +94,8 @@ export function CodeEditor({ path, value, dark, onChange, reveal }: CodeEditorPr
   const onChangeRef = useRef(onChange);
   const darkRef = useRef(dark);
   const themeRef = useRef(new Compartment());
+  const readOnlyRef = useRef(readOnly);
+  const readOnlyCompartment = useRef(new Compartment());
 
   useEffect(() => {
     onChangeRef.current = onChange;
@@ -95,6 +110,7 @@ export function CodeEditor({ path, value, dark, onChange, reveal }: CodeEditorPr
         languageFor(filePath),
         baseTheme,
         themeRef.current.of(darkRef.current ? oneDark : lightTheme),
+        readOnlyCompartment.current.of(readOnlyExtension(readOnlyRef.current)),
         EditorView.contentAttributes.of({ 'aria-label': `Code editor: ${filePath}` }),
         EditorView.updateListener.of((update) => {
           if (update.docChanged) {
@@ -148,6 +164,13 @@ export function CodeEditor({ path, value, dark, onChange, reveal }: CodeEditorPr
   }, [dark]);
 
   useEffect(() => {
+    readOnlyRef.current = readOnly;
+    viewRef.current?.dispatch({
+      effects: readOnlyCompartment.current.reconfigure(readOnlyExtension(readOnly)),
+    });
+  }, [readOnly]);
+
+  useEffect(() => {
     const view = viewRef.current;
     if (!view || reveal?.path !== pathRef.current) return;
     const doc = view.state.doc;
@@ -157,5 +180,12 @@ export function CodeEditor({ path, value, dark, onChange, reveal }: CodeEditorPr
     view.focus();
   }, [reveal]);
 
-  return <div ref={hostRef} className="h-full min-h-0 overflow-hidden" data-testid="code-editor" />;
+  return (
+    <div
+      ref={hostRef}
+      className="h-full min-h-0 overflow-hidden"
+      data-testid="code-editor"
+      data-readonly={readOnly ? 'true' : undefined}
+    />
+  );
 }

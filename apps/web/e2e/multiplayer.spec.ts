@@ -1,12 +1,19 @@
+import { expect, test, type Page } from '@playwright/test';
+import { buildFrame } from './helpers';
 import {
-  expect,
-  test,
-  type Browser,
-  type BrowserContext,
-  type Page,
-  type TestInfo,
-} from '@playwright/test';
-import { buildFrame, clickRouted, replaceEditorText } from './helpers';
+  battleOf,
+  joinByLink,
+  member,
+  newPlayer,
+  phaseOf,
+  progress,
+  setVisibility,
+  ship,
+  storedFile,
+  waitForBuild,
+  writeApp,
+  type Player,
+} from './rooms';
 import { sql } from './stack';
 
 /**
@@ -19,123 +26,9 @@ import { sql } from './stack';
 
 const SHOTS = process.env['MULTI_SCREENSHOT_DIR'];
 
-interface Player {
-  name: string;
-  context: BrowserContext;
-  page: Page;
-  errors: string[];
-}
-
 async function snap(page: Page, name: string): Promise<void> {
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/t017-${name}.png` });
 }
-
-/** A fresh browser context: its own storage, so its own anonymous user. */
-async function newPlayer(browser: Browser, info: TestInfo, name: string): Promise<Player> {
-  const baseURL = info.project.use.baseURL;
-  const context = await browser.newContext({
-    ...(baseURL ? { baseURL } : {}),
-    viewport: { width: 1440, height: 900 },
-  });
-  const page = await context.newPage();
-  const errors: string[] = [];
-  page.on('pageerror', (e) => errors.push(e.message));
-  return { name, context, page, errors };
-}
-
-/** Opens the invite link and joins with `name` (no profile yet: the name prompt). */
-async function joinByLink(p: Player, code: string): Promise<void> {
-  await p.page.goto(`/r/${code}`);
-  const input = p.page.getByTestId('display-name');
-  await expect(input).not.toHaveValue(''); // a fun default
-  await input.fill(p.name);
-  await p.page.getByTestId('join-room').click();
-}
-
-const member = (page: Page, name: string) =>
-  page.locator(`[data-testid=member][data-name="${name}"]`);
-const progress = (page: Page, name: string) =>
-  page.locator(`[data-testid=progress-player][data-name="${name}"]`);
-
-async function openFile(page: Page, path: string): Promise<void> {
-  await page.locator(`[data-testid=file-item][data-path="${path}"] > button`).first().click();
-  await expect(page.getByTestId('active-file')).toHaveText(path);
-}
-
-/** SPIN is over and the template's first preview is up. */
-async function waitForBuild(page: Page): Promise<void> {
-  await expect(page.getByTestId('spin')).toBeHidden({ timeout: 30_000 });
-  await expect(page.getByTestId('build-stage')).toBeVisible();
-  await expect(page.getByTestId('build-status')).toHaveText(/^Built in \d+ ms$/, {
-    timeout: 30_000,
-  });
-}
-
-async function writeApp(page: Page, title: string, background: string): Promise<void> {
-  await openFile(page, 'src/App.tsx');
-  await replaceEditorText(
-    page,
-    `export function App() {
-  return (
-    <main style={{ minHeight: '100vh', display: 'grid', placeContent: 'center', background: '${background}', color: 'white' }}>
-      <h1 className="e2e-title">${title}</h1>
-    </main>
-  );
-}
-`,
-  );
-  await expect(buildFrame(page).locator('h1.e2e-title')).toHaveText(title);
-}
-
-async function ship(page: Page, name: string): Promise<void> {
-  await page.getByTestId('ship-button').click();
-  await page.getByTestId('build-name').fill(name);
-  // The dialog is drawn over the cross-site preview iframe (see clickRouted).
-  await clickRouted(page.getByTestId('confirm-ship'));
-  // Shipped: the dialog closes; a banner says the build is locked.
-  await expect(page.getByTestId('shipped-banner')).toContainText(`Shipped “${name}”`);
-  await expect(page.getByTestId('ship-dialog')).toBeHidden();
-}
-
-async function setVisibility(page: Page, state: 'hidden' | 'visible'): Promise<void> {
-  await page.evaluate((s) => {
-    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => s });
-    document.dispatchEvent(new Event('visibilitychange'));
-  }, state);
-}
-
-/** The workspace text of `path` stored in this page's IndexedDB under `battle:{id}`. */
-async function storedFile(page: Page, battleId: string, path: string): Promise<string | null> {
-  return page.evaluate(
-    async ({ key, path }) => {
-      const db = await new Promise<IDBDatabase>((resolve, reject) => {
-        const req = indexedDB.open('br-workspaces');
-        req.onsuccess = () => {
-          resolve(req.result);
-        };
-        req.onerror = () => {
-          reject(new Error('open failed'));
-        };
-      });
-      const tx = db.transaction('workspaces', 'readonly');
-      const value = await new Promise<unknown>((resolve) => {
-        const r = tx.objectStore('workspaces').get(key);
-        r.onsuccess = () => {
-          resolve(r.result as unknown);
-        };
-      });
-      db.close();
-      const files = (value as { files?: Record<string, string> } | undefined)?.files;
-      return files?.[path] ?? null;
-    },
-    { key: `battle:${battleId}`, path },
-  );
-}
-
-const battleOf = (code: string) =>
-  sql(`select current_battle_id from public.rooms where code = '${code}'`);
-const phaseOf = (battleId: string) =>
-  sql(`select phase from public.battles where id = '${battleId}'`);
 
 test('a 3-player room: lobby → battle → ship and auto-ship → ranked results → destroy → rematch', async ({
   browser,

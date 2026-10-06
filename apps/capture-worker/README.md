@@ -185,7 +185,10 @@ pnpm --filter @br/capture-worker test:integration  # real Chromium + the local S
   `destroyed_at` / `source_destroyed_at` set and the screenshots kept.
   `CAPTURE_TEST_SHOT_OUT=/path/shot.webp` keeps the React screenshot,
   `CAPTURE_TEST_LOG=/path/log.jsonl` the worker log. The test commits data, like
-  `supabase/scripts/e2e-solo.mjs`.
+  `supabase/scripts/e2e-solo.mjs`. It runs on a stack other scripts have used: the
+  harness's `OwnJobsBackend` claims only the test's own jobs (the product's `claim_job`,
+  run as the superuser in one transaction that parks the other jobs and restores them), so
+  jobs left by the e2e suites are neither processed nor changed.
 
 ## Production: Cloudflare Browser Rendering
 

@@ -492,6 +492,82 @@ describe('results and destroy', () => {
   });
 });
 
+describe('external mode (multiplayer)', () => {
+  function external() {
+    const refetches: number[] = [];
+    const c = new SoloController({
+      api,
+      cdnBaseUrl: 'https://pkg.test',
+      localWorkspaces: local,
+      clock: { ...realClock, random: () => 0 },
+      external: {
+        refetch: () => {
+          refetches.push(Date.now());
+          return Promise.resolve();
+        },
+      },
+    });
+    return { c, refetches };
+  }
+
+  it('opens from a pushed snapshot and never polls or samples the clock itself', async () => {
+    const { c, refetches } = external();
+    c.openExternal(snapshotAt('building', { version: 2, endsInMs: 300_000 }), 1_500);
+    expect(state(c)).toMatchObject({ stage: 'battle', battleId: BATTLE, clockOffsetMs: 1_500 });
+    expect(local.kept).toEqual([battleWorkspaceId(BATTLE)]);
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(api.count('getSnapshot')).toBe(0);
+    expect(api.count('serverNow')).toBe(0);
+    expect(refetches).toEqual([]);
+    c.dispose();
+  });
+
+  it('applies newer snapshots, ignores stale and foreign ones', () => {
+    const { c } = external();
+    c.openExternal(snapshotAt('building', { version: 3 }), 0);
+    c.receive(snapshotAt('shipping', { version: 2 }));
+    expect(state(c).snapshot?.battle.phase).toBe('building');
+    c.receive({
+      ...snapshotAt('results', { version: 9 }),
+      battle: { ...snapshotAt('results').battle, id: 'other' },
+    });
+    expect(state(c).snapshot?.battle.phase).toBe('building');
+    c.receive(snapshotAt('shipping', { version: 4 }));
+    expect(state(c).snapshot?.battle.phase).toBe('shipping');
+    c.dispose();
+  });
+
+  it('a deadline nudge refetches through the engine', async () => {
+    const { c, refetches } = external();
+    c.openExternal(snapshotAt('spinning', { version: 1, endsInMs: 6_000 }), 0);
+    await vi.advanceTimersByTimeAsync(6_000);
+    expect(api.count('advanceBattle')).toBe(1);
+    expect(refetches).toHaveLength(1);
+    c.dispose();
+  });
+
+  it('a ship refetches through the engine', async () => {
+    const { c, refetches } = external();
+    c.openExternal(snapshotAt('building', { version: 2, endsInMs: 300_000 }), 0);
+    c.attachWorkspace(new FakeBridge());
+    await c.ship('Snack Overflow');
+    expect(api.count('shipBuild')).toBe(1);
+    expect(state(c).ship.status).toBe('done');
+    expect(refetches.length).toBeGreaterThanOrEqual(1);
+    expect(api.count('getSnapshot')).toBe(0);
+    c.dispose();
+  });
+
+  it('a new clock offset moves the countdown', () => {
+    const { c } = external();
+    c.openExternal(snapshotAt('building', { version: 2, endsInMs: 60_000 }), 0);
+    expect(c.remainingMs()).toBe(60_000);
+    c.setClockOffset(10_000);
+    expect(c.remainingMs()).toBe(50_000);
+    c.dispose();
+  });
+});
+
 describe('restoreWorkspace', () => {
   it('reads the remote autosave back, and ignores garbage', async () => {
     const c = await openIn();

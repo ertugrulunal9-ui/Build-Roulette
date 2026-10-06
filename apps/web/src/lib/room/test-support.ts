@@ -6,15 +6,15 @@
 import type { BattlePhase } from '@br/game';
 import type { BattleSnapshot, SnapshotBuild } from '../solo/types';
 import { GameError } from '../solo/errors';
+import type { RoomApi } from './api';
 import type {
   ChannelStatus,
   RealtimePort,
-  RoomSyncApi,
   SyncEnvironment,
   TopicHandlers,
   TopicSubscription,
 } from './sync';
-import type { HeartbeatResult, RoomMember, RoomSnapshot } from './types';
+import type { HeartbeatResult, JoinResult, RoomMember, RoomSettings, RoomSnapshot } from './types';
 
 export const ROOM = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 export const BATTLE_1 = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1';
@@ -181,9 +181,56 @@ export function battleSnapshot(
 
 type Handler<A extends unknown[], R> = (...args: A) => R | Promise<R>;
 
-export class FakeRoomApi implements RoomSyncApi {
+export class FakeRoomApi implements RoomApi {
   readonly calls: [string, ...unknown[]][] = [];
   serverOffsetMs = 0;
+  profile: string | null = 'Ada';
+  onJoin: Handler<[string, string], JoinResult> = (code) => ({
+    room_id: ROOM,
+    code,
+    role: 'player',
+  });
+  /** Lobby intents fail with this when set. */
+  failWith: GameError | null = null;
+
+  async ensureSession(): Promise<string> {
+    this.calls.push(['ensureSession']);
+    return Promise.resolve(ME);
+  }
+  async profileName(userId: string): Promise<string | null> {
+    this.calls.push(['profileName', userId]);
+    return Promise.resolve(this.profile);
+  }
+  async createRoom(name: string): Promise<JoinResult> {
+    this.calls.push(['createRoom', name]);
+    return Promise.resolve({ room_id: ROOM, code: 'K7QXM' });
+  }
+  async joinRoom(code: string, name: string): Promise<JoinResult> {
+    this.calls.push(['joinRoom', code, name]);
+    return this.onJoin(code, name);
+  }
+  private async intent(name: string, ...args: unknown[]): Promise<void> {
+    this.calls.push([name, ...args]);
+    if (this.failWith) throw this.failWith;
+    return Promise.resolve();
+  }
+  leaveRoom(roomId: string): Promise<void> {
+    return this.intent('leaveRoom', roomId);
+  }
+  setReady(roomId: string, ready: boolean): Promise<void> {
+    return this.intent('setReady', roomId, ready);
+  }
+  async updateSettings(roomId: string, settings: RoomSettings): Promise<RoomSettings> {
+    await this.intent('updateSettings', roomId, settings);
+    return settings;
+  }
+  kickMember(roomId: string, userId: string): Promise<void> {
+    return this.intent('kickMember', roomId, userId);
+  }
+  async startBattle(roomId: string): Promise<string> {
+    await this.intent('startBattle', roomId);
+    return BATTLE_1;
+  }
   room: RoomSnapshot = roomSnapshot();
   battles = new Map<string, BattleSnapshot>();
   onRoom: Handler<[], RoomSnapshot> = () => structuredClone(this.room);

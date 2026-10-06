@@ -125,9 +125,9 @@ export interface RoomSyncDeps {
   realtime: RealtimePort;
   /** The signed-in user (the presence key). */
   userId: string;
-  clock?: SoloClock;
-  env?: SyncEnvironment;
-  timings?: Partial<SyncTimings>;
+  clock?: SoloClock | undefined;
+  env?: SyncEnvironment | undefined;
+  timings?: Partial<SyncTimings> | undefined;
 }
 
 // ─── State ────────────────────────────────────────────────────────────────────────────

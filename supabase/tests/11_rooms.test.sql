@@ -34,7 +34,7 @@ select plan(84);
 insert into auth.users (id, is_anonymous)
 select ('11a00000-0000-0000-0000-00000000000' || n)::uuid, true from generate_series(1, 7) n;
 
--- ═══ Not signed in (9) ════════════════════════════════════════════════════
+-- ═══ Not signed in ════════════════════════════════════════════════════
 set local role authenticated;
 select set_config('request.jwt.claims', :'nobody', true);
 select throws_ok($$ select public.create_room('x') $$, '42501', 'not_authenticated', 'create_room needs a user');
@@ -52,7 +52,7 @@ select throws_ok($$ select public.start_battle(gen_random_uuid()) $$, '42501', '
   'start_battle needs a user');
 reset role;
 
--- ═══ create_room (8) ══════════════════════════════════════════════════════
+-- ═══ create_room ══════════════════════════════════════════════════════
 set local role authenticated;
 select set_config('request.jwt.claims', :'hana', true);
 select throws_ok($$ select public.create_room('  ') $$, '22023', 'invalid_display_name', 'blank display name');
@@ -85,7 +85,7 @@ select public.create_room('lou') as l3 \gset
 select throws_ok($$ select public.create_room('lou') $$, 'P0001', 'too_many_rooms', 'a fourth hosted room is refused');
 reset role;
 
--- ═══ join_room (14) ═══════════════════════════════════════════════════════
+-- ═══ join_room ═══════════════════════════════════════════════════════
 set local role authenticated;
 select set_config('request.jwt.claims', :'ivan', true);
 select throws_ok($$ select public.join_room('ZZZZZ', 'ivan') $$, 'P0002', 'room_not_found', 'unknown code');
@@ -153,7 +153,7 @@ select results_eq(
   $$ values (1) $$,
   'the refused join left no member row');
 
--- ═══ set_ready (7) ════════════════════════════════════════════════════════
+-- ═══ set_ready ════════════════════════════════════════════════════════
 set local role authenticated;
 select set_config('request.jwt.claims', :'ivan', true);
 select throws_ok(format($$ select public.set_ready(%L, null) $$, :'room_a'), '22023', 'invalid_ready', 'ready must not be null');
@@ -175,7 +175,7 @@ select public.set_ready(:'room_a', true);
 reset role;
 select is((select version from public.rooms where id = :'room_a'), :v_before, 'readying again changes nothing');
 
--- ═══ update_room_settings (11) ════════════════════════════════════════════
+-- ═══ update_room_settings ════════════════════════════════════════════
 set local role authenticated;
 select set_config('request.jwt.claims', :'ivan', true);
 select throws_ok(format($$ select public.update_room_settings(%L, '{"max_players": 4}') $$, :'room_a'), '42501', 'not_host',
@@ -208,7 +208,7 @@ select is(public.update_room_settings(:'room_a', '{"voting_s": null}'), '{"max_p
   'a null value removes the key');
 reset role;
 
--- ═══ heartbeat (6) ════════════════════════════════════════════════════════
+-- ═══ heartbeat ════════════════════════════════════════════════════════
 update public.room_members set last_seen_at = now() - interval '3 seconds'
  where room_id = :'room_a' and user_id = :'ivan_id';
 select version as v_hb from public.rooms where id = :'room_a' \gset
@@ -237,7 +237,7 @@ select is((select last_seen_at from public.room_members where room_id = :'room_a
 select is((select version from public.rooms where id = :'room_a'), :v_hb,
   'heartbeats do not bump the room version (no broadcast)');
 
--- ═══ get_room_snapshot (6) ════════════════════════════════════════════════
+-- ═══ get_room_snapshot ════════════════════════════════════════════════
 set local role authenticated;
 select set_config('request.jwt.claims', :'jo', true);
 select public.get_room_snapshot(:'room_a') as snap \gset
@@ -264,7 +264,7 @@ select is(
 select is((:'snap'::jsonb) -> 'battle', 'null'::jsonb, 'snapshot: no battle yet');
 select ok(not ((:'snap'::jsonb)::text like '%kicked%'), 'snapshot: no kicked members listed');
 
--- ═══ kick_member (12) ═════════════════════════════════════════════════════
+-- ═══ kick_member ═════════════════════════════════════════════════════
 set local role authenticated;
 select set_config('request.jwt.claims', :'ivan', true);
 select throws_ok(format($$ select public.kick_member(%L, %L) $$, :'room_a', :'max_id'), '42501', 'not_host',
@@ -293,7 +293,7 @@ select throws_ok(format($$ select public.leave_room(%L) $$, :'room_a'), '42501',
 select is_empty(format($$ select 1 from public.rooms where id = %L $$, :'room_a'), 'RLS: a kicked user sees no room row');
 reset role;
 
--- ═══ leave_room and host migration (11) ═══════════════════════════════════
+-- ═══ leave_room and host migration ═══════════════════════════════════
 -- hana (host) leaves: ivan joined earliest of the present players.
 set local role authenticated;
 select set_config('request.jwt.claims', :'hana', true);

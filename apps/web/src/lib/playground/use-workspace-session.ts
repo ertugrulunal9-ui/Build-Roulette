@@ -39,6 +39,12 @@ export interface WorkspaceSession {
   snapshot: SandboxSnapshot;
   /** Applies an edit; returns an error message for the UI, or null. Refused while read-only. */
   apply: (fn: (ws: Workspace) => WorkspaceResult) => string | null;
+  /**
+   * Replaces the whole project (reset to a template, paste-import in replace mode): the old
+   * preview goes away at once and the new files build immediately, as one build and one
+   * load (`SandboxController.replace`). Returns an error message, or null.
+   */
+  replace: (next: Workspace) => string | null;
   activePath: string | null;
   setActivePath: (path: string | null) => void;
   editError: string | null;
@@ -64,6 +70,8 @@ export function useWorkspaceSession(
   const readOnlyRef = useRef(readOnly);
   const pastes = useRef(0);
   const [controller, setController] = useState<SandboxController | null>(null);
+  /** The controller, also between renders (for callbacks). */
+  const controllerRef = useRef<SandboxController | null>(null);
   const [activePath, setActivePath] = useState<string | null>(null);
   const [editError, setEditError] = useState<string | null>(null);
   const [reveal, setReveal] = useState<RevealRequest | null>(null);
@@ -88,10 +96,12 @@ export function useWorkspaceSession(
     const ws = workspaceRef.current;
     if (!loaded || !host || !ws) return;
     const c = new SandboxController(host, config);
+    controllerRef.current = c;
     setController(c);
     void c.start(ws);
     return () => {
       c.dispose();
+      if (controllerRef.current === c) controllerRef.current = null;
       setController(null);
     };
     // The config is fixed for the session.
@@ -111,6 +121,21 @@ export function useWorkspaceSession(
       if (!result.ok) return result.errors.map(describeWorkspaceError).join(' ');
       workspaceRef.current = result.workspace;
       update(result.workspace);
+      return null;
+    },
+    [update],
+  );
+
+  const replace = useCallback(
+    (next: Workspace): string | null => {
+      if (readOnlyRef.current) return 'The build is locked.';
+      if (!workspaceRef.current) return 'The workspace is still loading.';
+      workspaceRef.current = next;
+      // Right now, in the event handler, not in the sync effect after the next render: the
+      // old project's preview must not take a click in between. The effect's sync() then
+      // finds the controller already up to date.
+      controllerRef.current?.replace(next);
+      update(next);
       return null;
     },
     [update],
@@ -137,6 +162,7 @@ export function useWorkspaceSession(
     controller,
     snapshot,
     apply,
+    replace,
     activePath,
     setActivePath,
     editError,

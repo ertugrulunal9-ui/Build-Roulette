@@ -31,7 +31,12 @@ export interface SandboxRuntime {
    * with `ok: false` and a `bundler-init-failed` diagnostic. Rejects only after `destroy()`.
    */
   build(mode?: BuildMode): Promise<BuildResult>;
-  /** Called with the result of every build (debounced or explicit). */
+  /**
+   * Called with the result of every build (debounced or explicit), in the order the builds
+   * were started: builds can run concurrently, and a result that arrives after the result of
+   * a newer build is not delivered (`build()` still returns it), so a listener never
+   * replaces a newer result with an older one.
+   */
   onBuild(listener: (result: BuildResult) => void): () => void;
   /** Attaches a preview to an iframe; the caller derives `shellUrl` from the build id. */
   attachPreview(frame: HTMLIFrameElement, opts: PreviewOptions): PreviewHandle;
@@ -56,6 +61,9 @@ export class EsmBrowserRuntime implements SandboxRuntime {
   private readonly buildListeners = new Set<(r: BuildResult) => void>();
   private readonly previews = new Set<PreviewHandle>();
   private destroyed = false;
+  /** Builds started so far, and the latest of them whose result went to listeners. */
+  private started = 0;
+  private delivered = 0;
 
   constructor(opts: EsmBrowserRuntimeOptions) {
     this.bundler = new BundlerClient(opts);
@@ -93,6 +101,7 @@ export class EsmBrowserRuntime implements SandboxRuntime {
       clearTimeout(this.timer);
       this.timer = null;
     }
+    const seq = ++this.started;
     const manifest = this.manifest;
     let result: BuildResult;
     try {
@@ -117,8 +126,13 @@ export class EsmBrowserRuntime implements SandboxRuntime {
         durationMs: 0,
       };
     }
-    // A build that finished just as destroy() ran is returned but not broadcast.
-    if (!this.isDestroyed()) for (const l of this.buildListeners) l(result);
+    // A build that finished just as destroy() ran is returned but not broadcast, and so is
+    // one that a newer build overtook (the worker runs builds concurrently, so a slow build
+    // of older files can finish last).
+    if (!this.isDestroyed() && seq > this.delivered) {
+      this.delivered = seq;
+      for (const l of this.buildListeners) l(result);
+    }
     return result;
   }
 

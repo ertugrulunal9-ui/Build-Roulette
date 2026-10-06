@@ -14,7 +14,8 @@ interface PasteImportDialogProps {
   open: boolean;
   workspace: Workspace;
   onClose: () => void;
-  onImport: (next: Workspace, importedPaths: string[]) => void;
+  /** `mode: 'replace'` means `next` is a whole new project (see `WorkspaceSession.replace`). */
+  onImport: (next: Workspace, importedPaths: string[], mode: ImportMode) => void;
 }
 
 const PLACEHOLDER = `Paste a multi-file answer from an AI chat, for example:
@@ -58,6 +59,7 @@ export function PasteImportDialog({ open, workspace, onClose, onImport }: PasteI
     onImport(
       outcome.workspace,
       parsed.parsed.map((p) => p.path),
+      mode,
     );
     setText('');
   };

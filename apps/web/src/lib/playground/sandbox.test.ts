@@ -72,17 +72,42 @@ class FakePreview {
 
 class FakeRuntime implements PlaygroundRuntime {
   readonly previews: FakePreview[] = [];
+  /** `build()` calls so far. */
+  builds = 0;
+  /** writeFile/deleteFile/setManifest calls so far (each one schedules a debounced build). */
+  edits = 0;
+  /** When true, `build()` waits for `finishBuilds()`. */
+  manual = false;
+  private readonly running: (() => void)[] = [];
   private buildListener: ((r: BuildResult) => void) | null = null;
   boot = () => Promise.resolve({ coldStartMs: 1, wasmInitMs: 1 });
-  writeFile = () => undefined;
-  deleteFile = () => undefined;
-  setManifest = () => undefined;
+  writeFile = () => {
+    this.edits++;
+  };
+  deleteFile = () => {
+    this.edits++;
+  };
+  setManifest = () => {
+    this.edits++;
+  };
   /** Like EsmBrowserRuntime: the result also goes to onBuild listeners. */
   build = () => {
-    const r = this.result();
-    this.buildListener?.(r);
-    return Promise.resolve(r);
+    this.builds++;
+    const r = this.result(`build ${String(this.builds)}`);
+    if (!this.manual) {
+      this.buildListener?.(r);
+      return Promise.resolve(r);
+    }
+    return new Promise<BuildResult>((resolve) => {
+      this.running.push(() => {
+        this.buildListener?.(r);
+        resolve(r);
+      });
+    });
   };
+  finishBuilds(): void {
+    for (const finish of this.running.splice(0)) finish();
+  }
   onBuild = (l: (r: BuildResult) => void) => {
     this.buildListener = l;
     return () => {
@@ -95,13 +120,14 @@ class FakeRuntime implements PlaygroundRuntime {
     return p as unknown as PreviewHandle;
   };
   destroy = () => Promise.resolve();
-  emitBuild(): void {
-    this.buildListener?.(this.result());
+  /** A build result the controller did not ask for (a debounced build, or an older one). */
+  emitBuild(js = ''): void {
+    this.buildListener?.(this.result(js));
   }
-  private result(): BuildResult {
+  private result(js: string): BuildResult {
     return {
       ok: true,
-      js: '',
+      js,
       css: '',
       importMap: { imports: {} },
       diagnostics: [],
@@ -222,5 +248,80 @@ describe('SandboxController output batching', () => {
     expect(runtime.previews).toHaveLength(1);
     expect(controller.getSnapshot().crash).toBeNull();
     expect(preview.loads).toHaveLength(2); // the first build, then the reload after restart
+  });
+});
+
+/** The js of every build the preview was asked to run, in order. */
+const loaded = (p: FakePreview) => p.loads.map((b) => (b as BuildResult).js);
+const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+describe('SandboxController.replace (reset to a template, paste-import in replace mode)', () => {
+  it('drops the old preview at once, then builds and loads the new project exactly once', async () => {
+    const { controller, runtime, preview } = await setup();
+    runtime.manual = true;
+    expect(loaded(preview)).toEqual(['build 1']);
+    const next = createWorkspace('vanilla-ts');
+    controller.replace(next);
+    // The old project's document is gone before the new build exists, so nothing in it can
+    // take a click that the next load would throw away.
+    expect(preview.restarts).toBe(1);
+    expect(controller.getSnapshot()).toMatchObject({ preview: 'connecting', building: true });
+    // Built right away (no 150 ms debounce), once.
+    expect(runtime.builds).toBe(2);
+    runtime.finishBuilds();
+    await settle();
+    expect(loaded(preview)).toEqual(['build 1', 'build 2']);
+    expect(controller.getSnapshot().building).toBe(false);
+    // The session's sync effect then sees the same workspace: nothing more to build.
+    const edits = runtime.edits;
+    controller.sync(next);
+    expect(runtime.edits).toBe(edits);
+    await settle();
+    expect(runtime.builds).toBe(2);
+    expect(loaded(preview)).toEqual(['build 1', 'build 2']);
+  });
+
+  it('does not load a build of the old files that finishes during the replace', async () => {
+    const { controller, runtime, preview } = await setup();
+    runtime.manual = true;
+    controller.replace(createWorkspace('vanilla-ts'));
+    runtime.emitBuild('old files'); // a build that was already running for the old project
+    expect(loaded(preview)).toEqual(['build 1']);
+    expect(controller.getSnapshot().building).toBe(true);
+    runtime.finishBuilds();
+    await settle();
+    expect(loaded(preview)).toEqual(['build 1', 'build 2']);
+  });
+
+  it('loads an edit that lands right after the replace instead of the replace build', async () => {
+    const { controller, runtime, preview } = await setup();
+    runtime.manual = true;
+    controller.replace(createWorkspace('vanilla-ts'));
+    runtime.finishBuilds();
+    runtime.emitBuild('edit after the replace');
+    await settle();
+    expect(loaded(preview)).toEqual(['build 1', 'edit after the replace']);
+  });
+
+  it('restartPreview during a replace waits for the new project instead of reloading the old one', async () => {
+    const { controller, runtime, preview } = await setup();
+    runtime.manual = true;
+    controller.replace(createWorkspace('vanilla-ts'));
+    controller.restartPreview();
+    expect(loaded(preview)).toEqual(['build 1']);
+    runtime.finishBuilds();
+    await settle();
+    expect(loaded(preview)).toEqual(['build 1', 'build 2']);
+  });
+
+  it('a newer replace wins over an older one still building', async () => {
+    const { controller, runtime, preview } = await setup();
+    runtime.manual = true;
+    controller.replace(createWorkspace('vanilla-ts'));
+    controller.replace(createWorkspace('react-ts'));
+    expect(preview.restarts).toBe(2);
+    runtime.finishBuilds();
+    await settle();
+    expect(loaded(preview)).toEqual(['build 1', 'build 3']);
   });
 });

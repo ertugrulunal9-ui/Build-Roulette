@@ -77,6 +77,7 @@ export function BuildStage({ controller, state, remaining }: BuildStageProps) {
     snapshot: sandbox,
     controller: sandboxController,
     apply,
+    replace,
     notice,
     getWorkspace,
     countPaste,
@@ -236,8 +237,10 @@ export function BuildStage({ controller, state, remaining }: BuildStageProps) {
           onClose={() => {
             setPasteOpen(false);
           }}
-          onImport={(next, paths) => {
-            if (apply(() => ({ ok: true, workspace: next })) === null) countPaste();
+          onImport={(next, paths, mode) => {
+            const err =
+              mode === 'replace' ? replace(next) : apply(() => ({ ok: true, workspace: next }));
+            if (err === null) countPaste();
             setPasteOpen(false);
             setEditError(null);
             const first = paths[0];

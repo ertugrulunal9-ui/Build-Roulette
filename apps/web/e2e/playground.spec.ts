@@ -102,6 +102,39 @@ Have fun!`;
   await expect(page.locator('[data-testid=file-item]')).toHaveCount(5);
 });
 
+test('paste-import in replace mode swaps the preview at once', async ({ page }) => {
+  await openPlayground(page);
+  // Same button text as the React template's, in a different document.
+  const blob = `**src/main.tsx**
+
+${F}tsx
+let count = 0;
+const button = document.createElement('button');
+const render = () => {
+  button.textContent = 'Clicked ' + String(count) + (count === 1 ? ' time' : ' times');
+};
+button.onclick = () => {
+  count += 1;
+  render();
+};
+render();
+const main = document.createElement('main');
+main.className = 'pasted';
+main.append(button);
+document.getElementById('root')!.append(main);
+${F}
+`;
+  await page.getByRole('button', { name: 'Paste import' }).click();
+  await page.getByTestId('paste-input').fill(blob);
+  await page.getByLabel('Delete them, keep only the pasted files').check();
+  await page.getByRole('button', { name: 'Import 1 file' }).click();
+  // A click right away lands in the pasted build, not in the template's React preview.
+  await buildFrame(page).getByRole('button').click();
+  await expect(buildFrame(page).locator('main.pasted')).toHaveCount(1);
+  await expect(buildFrame(page).getByRole('button')).toHaveText('Clicked 1 time');
+  await expect(page.locator('[data-testid=file-item]')).toHaveCount(1);
+});
+
 test('a reload restores edited files from IndexedDB', async ({ page }) => {
   await openPlayground(page);
   await openFile(page, 'src/styles.css');
@@ -246,11 +279,15 @@ test('the file tree adds, renames and deletes files within the limits', async ({
   // Switching templates changes the entry and the dependencies too.
   await page.getByLabel('Template').selectOption('vanilla-ts');
   await page.getByRole('button', { name: 'Reset to template' }).click();
+  // Both templates show a "Clicked 0 times" button. The React preview must be gone as soon as
+  // the reset happens: a click right away lands in the new vanilla build, not in the old
+  // document that the next load would replace.
+  await buildFrame(page).getByRole('button').click();
+  // The vanilla build has no paragraph; the React one does.
+  await expect(buildFrame(page).locator('main.app > p')).toHaveCount(0);
+  await expect(buildFrame(page).getByRole('button')).toHaveText('Clicked 1 time');
   await expect(page.locator('[data-testid=file-item]')).toHaveCount(2);
   await expect(page.locator('[data-testid=file-item][data-path="src/main.ts"]')).toHaveCount(1);
-  await expect(buildFrame(page).getByRole('button')).toHaveText('Clicked 0 times');
-  await buildFrame(page).getByRole('button').click();
-  await expect(buildFrame(page).getByRole('button')).toHaveText('Clicked 1 time');
 });
 
 test('typing with pauses across rebuilds keeps the keyboard in the editor', async ({ page }) => {

@@ -119,3 +119,52 @@ describe('EsmBrowserRuntime lifecycle', () => {
     });
   });
 });
+
+describe('EsmBrowserRuntime build ordering', () => {
+  /** A result whose js names the build that produced it. */
+  const resultOf = (js: string): BuildResult => ({
+    ok: true,
+    js,
+    css: '',
+    importMap: { imports: {} },
+    diagnostics: [],
+    durationMs: 1,
+  });
+  const buildIds = (w: FakeWorker) => w.posted.flatMap((m) => (m.type === 'build' ? [m.id] : []));
+
+  it('a build that finishes after a newer one is not delivered to onBuild (but still returned)', async () => {
+    // The worker runs builds concurrently (CDN fetches are async), so a slow build of the old
+    // files can finish after a fast build of the new ones.
+    const worker = new FakeWorker('ok', 'manual');
+    const { rt } = runtimeWith(worker);
+    await rt.boot({ files: FILES, manifest: MANIFEST });
+    const delivered: string[] = [];
+    rt.onBuild((r) => delivered.push(r.js));
+    const older = rt.build();
+    rt.writeFile('src/main.ts', 'console.log(2)');
+    const newer = rt.build();
+    await expect.poll(() => buildIds(worker).length).toBe(2);
+    const [olderId = 0, newerId = 0] = buildIds(worker);
+    worker.emit({ type: 'build-result', id: newerId, result: resultOf('newer') });
+    expect((await newer).js).toBe('newer');
+    worker.emit({ type: 'build-result', id: olderId, result: resultOf('older') });
+    expect((await older).js).toBe('older');
+    expect(delivered).toEqual(['newer']);
+  });
+
+  it('results that arrive in order are all delivered', async () => {
+    const worker = new FakeWorker('ok', 'manual');
+    const { rt } = runtimeWith(worker);
+    await rt.boot({ files: FILES, manifest: MANIFEST });
+    const delivered: string[] = [];
+    rt.onBuild((r) => delivered.push(r.js));
+    const a = rt.build();
+    const b = rt.build();
+    await expect.poll(() => buildIds(worker).length).toBe(2);
+    const [aId = 0, bId = 0] = buildIds(worker);
+    worker.emit({ type: 'build-result', id: aId, result: resultOf('a') });
+    worker.emit({ type: 'build-result', id: bId, result: resultOf('b') });
+    await Promise.all([a, b]);
+    expect(delivered).toEqual(['a', 'b']);
+  });
+});

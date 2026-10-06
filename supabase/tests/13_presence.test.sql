@@ -20,7 +20,7 @@
 begin;
 create extension if not exists pgtap with schema extensions;
 
-select plan(41);
+select plan(44);
 
 \set hh '{"sub":"13a00000-0000-0000-0000-000000000001","role":"authenticated"}'
 \set pp '{"sub":"13a00000-0000-0000-0000-000000000002","role":"authenticated"}'
@@ -158,6 +158,29 @@ update public.room_members set last_seen_at = now() - interval '5 minutes'
 select ok(
   (select ensured = false from (select private.ensure_host('13e00000-0000-0000-0000-000000000002', null) as ensured) x),
   'nobody present: the host stays');
+
+-- ═══ A host RPC is proof of presence (room 11, created through the RPCs) ══
+set local role authenticated;
+select set_config('request.jwt.claims', :'qq', true);
+select public.create_room('qq') as c11 \gset
+select (:'c11'::jsonb) ->> 'room_id' as room_11, (:'c11'::jsonb) ->> 'code' as code_11 \gset
+select set_config('request.jwt.claims', :'pp', true);
+select public.join_room(:'code_11', 'pp');
+reset role;
+update public.room_members set last_seen_at = now() - interval '31 seconds'
+ where room_id = :'room_11' and user_id = :'qq_id';
+set local role authenticated;
+select set_config('request.jwt.claims', :'qq', true);
+select lives_ok(format($$ select public.update_room_settings(%L, '{"max_players": 5}') $$, :'room_11'),
+  'a host whose heartbeat is late can still use host powers: the call itself counts as presence');
+reset role;
+select results_eq(
+  format($$ select r.host_id, m.last_seen_at from public.rooms r
+            join public.room_members m on m.room_id = r.id and m.user_id = r.host_id where r.id = %L $$, :'room_11'),
+  format($$ values (%L::uuid, now()) $$, :'qq_id'),
+  '...the host is unchanged and their last_seen_at refreshed');
+select is_empty(format($$ select 1 from public.room_events where room_id = %L and type = 'host_changed' $$, :'room_11'),
+  '...and no host change was logged');
 
 -- ═══ Abandonment and host migration in the sweep ══════════════════════════
 -- room 3 (b31): host silent 1 min, others present → host migration, battle kept.

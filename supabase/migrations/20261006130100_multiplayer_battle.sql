@@ -515,6 +515,7 @@ declare
 begin
   r := private.lock_room_for(p_room_id);
   perform private.require_active_member(p_room_id, v_uid);
+  perform private.touch_member(p_room_id, v_uid);
   perform private.ensure_host(p_room_id, v_uid);
   select * into r from public.rooms where id = p_room_id;
   if r.host_id <> v_uid then

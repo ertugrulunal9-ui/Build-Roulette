@@ -24,6 +24,8 @@
 -- * Presence: clients call heartbeat(room_id) every ~10 s. A member is
 --   `present` when active and last_seen_at is at most 30 s old. Writes are
 --   rate-limited to one per 5 s per member (extra calls are cheap no-ops).
+--   Every member RPC (join, ready, settings, kick, start) also counts as
+--   presence, so a host whose heartbeat is late keeps the host role.
 -- * Host migration: when the host is not present (left, kicked, or silent for
 --   30 s), the present member who joined earliest (players before
 --   spectators) becomes host. Done lazily by the room RPCs and by the
@@ -359,6 +361,19 @@ begin
   end loop;
   return v_count;
 end;
+$$;
+
+-- Any client RPC is proof that its caller is here: stamps last_seen_at, so a
+-- host whose heartbeat is late is not migrated away by their own call. The
+-- caller holds private.lock_room() (lock order: room before member rows).
+create function private.touch_member(p_room_id uuid, p_uid uuid)
+returns void
+language sql
+security definer
+set search_path = ''
+as $$
+  update public.room_members set last_seen_at = now()
+   where room_id = p_room_id and user_id = p_uid and last_seen_at < now();
 $$;
 
 -- The caller's member row, which must be active. Used by the member RPCs.
@@ -740,6 +755,7 @@ declare
 begin
   r := private.lock_room_for(p_room_id);
   perform private.require_active_member(p_room_id, v_uid);
+  perform private.touch_member(p_room_id, v_uid);
   perform private.ensure_host(p_room_id, v_uid);
   select * into r from public.rooms where id = p_room_id;
   if r.host_id <> v_uid then
@@ -817,6 +833,7 @@ declare
 begin
   r := private.lock_room_for(p_room_id);
   perform private.require_active_member(p_room_id, v_uid);
+  perform private.touch_member(p_room_id, v_uid);
   perform private.ensure_host(p_room_id, v_uid);
   select * into r from public.rooms where id = p_room_id;
   if r.host_id <> v_uid then
@@ -1001,6 +1018,7 @@ revoke all on function private.ensure_host(uuid, uuid)                    from p
 revoke all on function private.fill_player_slots(uuid, uuid)              from public, anon, authenticated;
 revoke all on function private.require_active_member(uuid, uuid)          from public, anon, authenticated;
 revoke all on function private.require_auth()                             from public, anon, authenticated;
+revoke all on function private.touch_member(uuid, uuid)                   from public, anon, authenticated;
 revoke all on function private.lock_room_for(uuid)                        from public, anon, authenticated;
 
 revoke all on function public.create_room(text)                           from public, anon;

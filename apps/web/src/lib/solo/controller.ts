@@ -370,17 +370,13 @@ export class SoloController {
       try {
         built = await bridge.productionBuild();
       } catch (e) {
-        {
-          fail(e);
-          return;
-        }
+        fail(e);
+        return;
       }
       if (epoch !== this.epoch) return;
       if (!built.ok) {
-        {
-          fail(new GameError('build_failed'), bridge.lastGoodBuild() !== null);
-          return;
-        }
+        fail(new GameError('build_failed'), bridge.lastGoodBuild() !== null);
+        return;
       }
       bundle = built;
     }
@@ -401,10 +397,8 @@ export class SoloController {
       if (thumb) uploads.push(this.api.upload(battleId, userId, 'thumb.webp', thumb));
       await Promise.all(uploads);
     } catch (e) {
-      {
-        fail(e);
-        return;
-      }
+      fail(e);
+      return;
     }
     if (epoch !== this.epoch) return;
 

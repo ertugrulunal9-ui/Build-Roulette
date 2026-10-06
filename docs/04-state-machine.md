@@ -207,3 +207,54 @@ document.addEventListener('visibilitychange', () => document.visibilityState ===
 - Award ties are shared (several `awards` rows).
 - Individual ballots are never exposed to clients, only tallies after RESULTS.
 - Solo or 1-player battles skip VOTING and get auto-awards only.
+
+## 4.10 Implementation notes (T-016, M3)
+
+The migrations are the source of truth; the event table in §4.7 is superseded by this
+section.
+
+- **M3 flow:** multiplayer battles run SPINNING → BUILDING → SHIPPING → RESULTS →
+  DESTROYED. `settings.reveal_vote = false` is the seam for M4, which inserts REVEAL and
+  VOTING after SHIPPING.
+- **Heartbeat:**
+  - per room, sent by clients about every **10 s** (60 s can't work with the 30 s host
+    threshold);
+  - the server writes at most one per 5 s per member;
+  - any member RPC also counts as presence.
+- **Host migration:** goes to the earliest-joined *present* member, players before
+  spectators. It happens lazily in RPCs and in `sweep_deadlines`.
+- **Abandonment:** a running battle is abandoned when no roster player has been seen for
+  5 min, in any running phase except RESULTS. Abandoned battles keep partial data and
+  have no ranks.
+- **Ranking until votes exist (M3):**
+  1. lower `completion_ms`;
+  2. at equal time, hand-shipped before auto-shipped;
+  3. then earlier `shipped_at`.
+
+  Builds equal on all three share a rank. DNF and disqualified builds are unranked.
+  Awards are `clutch_ship`, `speedrun`, and `fastest_ship` (only when ≥2 builds were
+  shipped by hand; ties share it).
+- **Realtime:**
+  - private topics `room:{id}` and `battle:{id}`, sent by an AFTER INSERT trigger on
+    `room_events` / `battle_events` with `realtime.send`. That gives exactly one message
+    per version, with allow-listed fields only;
+  - battle events: `phase`, `build`, `player`, `host`, `capture`, `destroyed`, `sync`;
+  - room events: `room`, `member`, `sync`;
+  - every payload carries `version`, and room and battle versions are independent;
+  - clients refetch the battle snapshot after each `phase` event and on any version gap.
+- **Realtime authorization (RLS on `realtime.messages`):**
+  - only members receive;
+  - clients may send **Presence only**, and only as active members;
+  - client Broadcast is refused, so members can't forge phase events.
+  - Policies are checked at join time, so a kicked user's already-open subscription keeps
+    receiving until it rejoins. Every RPC re-checks, and the payloads aren't secret.
+- **Kick:** the kicked user loses the room, its topics and the running battle; the battle
+  is public again from RESULTS. Only a *draft* build is disqualified.
+- **Rooms:**
+  - 2–8 players and up to 20 spectators;
+  - late joiners and overflow become spectators, and are promoted in join order when a
+    player slot frees up or the room reopens;
+  - a user can host at most 3 open rooms;
+  - an idle room (no event and no heartbeat for 2 h) is closed, and closed rooms are
+    purged after 7 days.
+

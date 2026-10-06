@@ -11,9 +11,9 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 | T-013 | Capture mode in the shell + local capture/destroy workers (Playwright stands in for Browser Rendering) | `apps/sandbox-shell/`, `apps/capture-worker/` | done | Merged |
 | T-014 | Solo game UI: spin → build → ship → results → destroy, plus the `/battles/[id]` results page | `apps/web/` (+ small `supabase/` and `apps/capture-worker/` changes for the autosave CSS) | done | Merged |
 | T-015 | Fix flaky playground e2e (`playground.spec.ts:206`): a click right after "Reset to template" is lost, likely a double rebuild replacing the frame (≈1/6 runs) | `apps/web/`, `packages/runtime/` | done | Merged |
-| T-016 | M3 DB layer: rooms + members RPCs, multiplayer `start_battle`/`advance_battle` (shipping → results until M4), heartbeat, host migration, abandonment, kick, late joiners as spectators, Realtime broadcast triggers + private-channel authorization | `supabase/`, `ci.yml` | in-progress | M3, task 1 of 3 |
-| T-017 | M3 web: create/join room (code + link), lobby with presence and ready-up, host controls, multiplayer battle flow, realtime sync loop with resync | `apps/web/`, `packages/game/` | todo | M3, task 2 of 3 |
-| T-018 | M3 resilience: multi-context Playwright battles with chaos (network drops, clock skew, refresh, host leaves), admin event-log page | `apps/web/` (e2e), `supabase/` (tests) | todo | M3, task 3 of 3 |
+| T-016 | M3 DB layer: rooms + members RPCs, multiplayer `start_battle`/`advance_battle` (shipping → results until M4), heartbeat, host migration, abandonment, kick, late joiners as spectators, Realtime broadcast triggers + private-channel authorization | `supabase/`, `ci.yml` | done | Merged |
+| T-017 | M3 web: create/join room (code + link), lobby with presence and ready-up, host controls, multiplayer battle flow, realtime sync loop with resync | `apps/web/`, `packages/game/` | in-progress | M3, task 2 of 3 |
+| T-018 | M3 resilience: multi-context Playwright battles with chaos (network drops, clock skew, refresh, host leaves), admin event-log page | `apps/web/` (e2e), `supabase/` (tests), `apps/capture-worker/` (integration-test isolation) | todo | M3, task 3 of 3 |
 | T-001 | Monorepo skeleton: pnpm + Turborepo, Next.js app, lint/format/strict TS, Vitest, CI | root config, `apps/web/`, `packages/game/`, `.github/` | done | Merged in b29110a |
 | T-002 | Supabase scaffold: initial schema migration, Supabase-compatible local Postgres test harness, pgTAP | `supabase/` | done | Merged |
 | T-004 | Run DB tests in CI + add a `@br/game` ↔ SQL enum drift test | `.github/workflows/ci.yml`, `packages/game/` | done | Merged |
@@ -55,6 +55,7 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 - T-013 Capture mode + capture/destroy workers
 - T-014 Solo game end to end
 - T-015 Lost click after template reset (root-cause fix)
+- T-016 M3 DB layer: rooms, multiplayer, realtime
 
 ## Review log
 
@@ -310,3 +311,20 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
   - **playground e2e ×5: 70/70**;
   - solo e2e 2/2 on the real stack.
 - Known limitation: "Restart preview" after a failed build of a replaced project reloads the last good (old) build. Leave as is for now.
+
+### T-016: accepted (M3 task 1)
+- Hub test-merged and re-ran on a fresh clone, with the real local stack **including Realtime**:
+  - repo pipeline green;
+  - `supabase test db` **762/762**;
+  - `e2e-solo` 44/44, `e2e-multiplayer` 48/48, `e2e-realtime` 33/33 (non-members refused, Presence for members only).
+- Capture integration: **12/12 on a fresh DB**. It fails 2/12 when run after the multiplayer/realtime scripts on the same DB, because the test assumes an empty job queue and the worker legitimately claims leftover jobs.
+  - It's test isolation, not a product bug. CI isn't affected (the capture job uses a fresh stack).
+  - Hardening the test goes into **T-018**.
+- Key decisions, recorded in docs/04 §4.10 and docs/05 §5.7:
+  - `realtime.send` from event-log triggers (not `broadcast_changes`, which would leak full rows);
+  - client Broadcast refused, Presence-only for active members;
+  - kicked users lose battle visibility until RESULTS;
+  - heartbeat every ~10 s;
+  - M3 ranking by completion time;
+  - `reveal_vote` flag as the M4 seam.
+- Open: kicked users' already-open subscriptions keep receiving until they rejoin; turn off public Realtime channels in production; rate-limit join attempts by code (Turnstile).

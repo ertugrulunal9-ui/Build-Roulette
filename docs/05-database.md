@@ -382,4 +382,17 @@ migrations in `supabase/migrations/` are the source of truth.
     awards, display stats, final screenshot path) and only for battles in
     `results`/`destroyed`; anything else is `battle_not_found`. It powers `/battles/[id]`
     without a service key in the web app.
+- **T-016 additions (M3):**
+  - `rooms.version` and a `room_events` log (service role only).
+  - Room RPCs: `create_room` → `{room_id, code}` (no settings argument),
+    `join_room` → `{room_id, code, role}`, `leave_room`, `set_ready`,
+    `update_room_settings` (keys `max_players`, `reveal_slot_s`, `voting_s`),
+    `kick_member`, `heartbeat` → `{server_now, room_version, host_id, status}`,
+    `get_room_snapshot`, and `start_battle`.
+  - New `ship_build` errors: `kicked`, `not_a_member`, `disqualified`.
+  - `is_battle_member` excludes kicked users. This replaces the T-002 decision.
+  - Auth: `enable_manual_linking = true`. Turnstile is documented for production. The
+    local anonymous sign-up limit is 300/h.
+  - Tests: 762 pgTAP tests, plus `e2e-solo` (44), `e2e-multiplayer` (48) and
+    `e2e-realtime` (33) scripts.
 

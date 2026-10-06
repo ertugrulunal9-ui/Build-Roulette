@@ -73,7 +73,7 @@ export default async function BattlePage({ params }: BattlePageProps) {
             <li
               key={b.id}
               data-testid="public-build"
-              className="overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900"
+              className="grid overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm md:grid-cols-[3fr_2fr] dark:border-zinc-800 dark:bg-zinc-900"
             >
               <div className="relative aspect-[16/10] bg-zinc-100 dark:bg-zinc-800">
                 {b.screenshot_path ? (
@@ -90,7 +90,7 @@ export default async function BattlePage({ params }: BattlePageProps) {
                   </p>
                 )}
               </div>
-              <div className="flex flex-col gap-3 p-5">
+              <div className="flex flex-col justify-center gap-3 p-5">
                 <div className="flex flex-wrap items-baseline justify-between gap-2">
                   <h2
                     className="text-2xl font-black tracking-tight"

@@ -174,10 +174,9 @@ test('ship: spin → build → ship → results (screenshot, speedrun) → destr
     timeout: 60_000,
   });
   expect(ephemeralObjects(battle)).toEqual([]);
-  expect(battleRow(battle)).toMatchObject({
-    phase: 'destroyed',
-    destroyed_at: expect.any(String) as string,
-  });
+  const row = battleRow(battle);
+  expect(row.phase).toBe('destroyed');
+  expect(row.destroyed_at).not.toBeNull();
 
   // The permanent page.
   await page.getByTestId('permanent-link').click();

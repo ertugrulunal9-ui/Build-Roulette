@@ -124,6 +124,9 @@ function run(
     cwd,
     env: { ...env, ...extraEnv },
     stdio: ['ignore', 'pipe', 'pipe'],
+    // Own process group: a Ctrl+C or a stop signal reaches this script only, and stop()
+    // forwards exactly one SIGTERM (a second one would force the worker to quit at once).
+    detached: true,
   });
   const prefix = (chunk: Buffer) =>
     chunk
@@ -142,10 +145,13 @@ function run(
   return child;
 }
 
+// The binaries themselves rather than `pnpm …`, which does not pass SIGTERM on: a stop must
+// reach the capture worker (it hands its in-flight job back) and Next.
+const captureDir = fileURLToPath(new URL('../../capture-worker/', import.meta.url));
 run(
   'capture',
-  'pnpm',
-  ['--filter', '@br/capture-worker', 'dev'],
+  `${captureDir}node_modules/.bin/tsx`,
+  ['src/main.ts'],
   {
     SUPABASE_URL: stack.API_URL,
     SUPABASE_SERVICE_ROLE_KEY: stack.SERVICE_ROLE_KEY,
@@ -155,14 +161,14 @@ run(
     // Pick up new jobs quickly while someone is playing.
     WORKER_IDLE_MAX_MS: env['WORKER_IDLE_MAX_MS'] ?? '2000',
   },
-  repoRoot,
+  captureDir,
 );
 
 if (args.has('--next')) {
   run(
     'next',
-    'pnpm',
-    ['exec', 'next', 'dev', '-p', String(appPort)],
+    `${webDir}node_modules/.bin/next`,
+    ['dev', '-p', String(appPort)],
     {
       NEXT_TELEMETRY_DISABLED: '1',
       NEXT_PUBLIC_SUPABASE_URL: env.NEXT_PUBLIC_SUPABASE_URL ?? stack.API_URL,
@@ -178,7 +184,13 @@ if (args.has('--next')) {
 async function stop(code: number): Promise<void> {
   if (stopping) return;
   stopping = true;
+  const exited = children
+    .filter((c) => c.exitCode === null && c.signalCode === null)
+    .map((c) => new Promise((resolve) => c.once('exit', resolve)));
+  // tsx and next relay the signal to their own child process.
   for (const c of children) c.kill('SIGTERM');
+  // The capture worker finishes (or hands back) its current job first; cap the wait.
+  await Promise.race([Promise.all(exited), new Promise((r) => setTimeout(r, 35_000))]);
   await Promise.all([shell.close(), cdn.close()]);
   process.exit(code);
 }

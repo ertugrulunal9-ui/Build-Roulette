@@ -51,6 +51,9 @@ placeholder geo data.
 ```sh
 NEXT_PUBLIC_SANDBOX_SHELL_URL=https://<sandbox>.pages.dev/v1/ \
 NEXT_PUBLIC_PKG_CDN_URL=https://<package-cdn-host> \
+NEXT_PUBLIC_SUPABASE_URL=https://<project>.supabase.co \
+NEXT_PUBLIC_SUPABASE_ANON_KEY=<anon or publishable key> \
+NEXT_PUBLIC_SITE_URL=https://<app-origin> \
   pnpm --filter @br/web cf:build
 pnpm --filter @br/web cf:deploy
 ```
@@ -60,7 +63,9 @@ pnpm --filter @br/web cf:deploy
   runs `wrangler deploy`. Use it rather than plain `wrangler deploy`, which skips that copy.
 - `NEXT_PUBLIC_*` values are baked into the browser code **at build time**, so set them when
   you run `cf:build`, not in the Cloudflare dashboard. Without them the build points at the
-  local dev servers (`127.0.0.1:4321`, `localhost:4322`). The sandbox shell must also be
+  local dev servers (`127.0.0.1:4321`, `localhost:4322`) and the local Supabase stack
+  (`127.0.0.1:54321` with its demo anon key). The anon/publishable key is public by design;
+  the service-role key never goes into the web app. The sandbox shell must also be
   built to allow the app's production origin (see `apps/sandbox-shell`).
 - Every deploy creates a new version. To roll back, use Workers & Pages → `build-roulette-web`
   → Deployments, or run `wrangler rollback`.
@@ -89,10 +94,17 @@ pnpm --filter @br/web cf:deploy
    "routes": [{ "pattern": "buildroulette.example", "custom_domain": true }]
    ```
    Cloudflare creates the DNS record and TLS certificate.
-3. Set `metadataBase` in `src/app/layout.tsx` to the real origin. Otherwise OG image URLs
-   point at `http://localhost:3000`.
+3. Build with `NEXT_PUBLIC_SITE_URL` set to the real origin (it becomes `metadataBase` in
+   `src/app/layout.tsx`). Otherwise OG image URLs point at `http://localhost:3000`.
 
 ## Caching (when `/battles/[id]` gets ISR)
+
+Status (T-014): `/battles/[id]` and its `opengraph-image` are rendered per request (the
+`get_public_battle` fetch is `no-store`), because a battle's results still change for a
+while after RESULTS (the screenshot lands, then `destroyed_at`). Both were checked under
+`cf:preview`. ISR on R2 is the follow-up below; a good rule is to revalidate only once the
+battle is `destroyed` with `destroyed_at` set, since nothing changes after that.
+
 
 Right now `open-next.config.ts` uses the read-only **static-assets cache**: prerendered pages
 are served from Workers static assets, and everything else is rendered per request. That

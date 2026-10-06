@@ -35,6 +35,8 @@ export default defineConfig({
       command: 'tsx scripts/solo-services.ts',
       url: 'http://127.0.0.1:4321/v1/',
       env: { BR_APP_ORIGINS: APP_ORIGIN },
+      // SIGTERM, so the capture worker can hand its job back before it exits.
+      gracefulShutdown: { signal: 'SIGTERM', timeout: 40_000 },
       reuseExistingServer: process.env['E2E_REUSE_SERVERS'] === '1',
       stdout: 'pipe',
       timeout: 120_000,

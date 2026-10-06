@@ -22,12 +22,19 @@
  *
  * Plain TypeScript with injected API, clock and storage, like SandboxController, so it can
  * be unit tested with fakes and fake timers. React reads it with useSyncExternalStore.
+ *
+ * **Multiplayer (T-017):** the same controller runs one battle of a room in *external* mode
+ * (`deps.external`, `openExternal`): the room's sync engine (src/lib/room/sync.ts) owns the
+ * battle snapshot (Realtime events + refetches) and the server clock, and pushes them in with
+ * `receive()` and `setClockOffset()`. The controller then neither polls nor samples the
+ * clock; everything else (deadline nudges, autosave, ship, last look, destroy) is shared.
  */
-import { estimateClockOffset, isTerminalPhase, remainingMs, type ClockSample } from '@br/game';
+import { isTerminalPhase, remainingMs } from '@br/game';
 import type { ImportMap } from '@br/protocol';
 import { buildImportMap, type PreviewBuild } from '@br/runtime';
 import type { Workspace } from '@br/workspace';
 import type { BuildFile, SoloApi } from './api';
+import { measureClockOffset } from './clock-sync';
 import { GameError, toGameError } from './errors';
 import { buildStats, parseSourceJson, sourceJson } from './stats';
 import type { BattleSnapshot, BuildStats, SnapshotBuild } from './types';
@@ -113,8 +120,18 @@ export const DEFAULT_TIMINGS: SoloTimings = {
   thumbnailSize: { width: 640, height: 400 },
 };
 
+/**
+ * Multiplayer: who owns the snapshot. `refetch()` asks for a fresh battle snapshot, which
+ * arrives through `SoloController.receive()`.
+ */
+export interface ExternalBattleSync {
+  refetch(): Promise<void>;
+}
+
 export interface SoloControllerDeps {
   api: SoloApi;
+  /** Multiplayer: the room sync engine drives snapshots and the clock (no polling). */
+  external?: ExternalBattleSync;
   cdnBaseUrl: string;
   localWorkspaces: LocalWorkspaces;
   clock?: SoloClock;
@@ -324,7 +341,8 @@ export class SoloController {
 
   /** The tab is visible again: resync (timers may have been throttled). */
   onVisible(): void {
-    if (this.state.stage !== 'battle' || this.disposed) return;
+    // In external mode the room sync engine resyncs on visibility itself.
+    if (this.state.stage !== 'battle' || this.disposed || this.deps.external) return;
     void this.syncClock().then(() => this.refresh());
   }
 
@@ -436,6 +454,43 @@ export class SoloController {
     return text === null ? null : parseSourceJson(text);
   }
 
+  // --- External mode (multiplayer) ----------------------------------------------------
+
+  /** Opens a room battle from a snapshot the room sync engine already has. */
+  openExternal(snapshot: BattleSnapshot, clockOffsetMs: number): void {
+    this.epoch++;
+    this.clearAllTimers();
+    this.resetBattleState();
+    this.state = {
+      ...INITIAL_SOLO_STATE,
+      stage: 'battle',
+      userId: snapshot.me.user_id,
+      battleId: snapshot.battle.id,
+      clockOffsetMs,
+    };
+    this.emit();
+    this.apply(snapshot);
+    void this.deps.localWorkspaces
+      .deleteBattleWorkspacesExcept(
+        isTerminalPhase(snapshot.battle.phase) ? null : battleWorkspaceId(snapshot.battle.id),
+      )
+      .catch(() => undefined);
+  }
+
+  /** A newer snapshot of the open battle (stale or foreign ones are ignored). */
+  receive(snapshot: BattleSnapshot): void {
+    if (this.disposed || snapshot.battle.id !== this.state.battleId) return;
+    if (snapshot === this.state.snapshot) return;
+    this.apply(snapshot);
+  }
+
+  /** The room sync engine measured the server clock again. */
+  setClockOffset(ms: number): void {
+    if (this.disposed || ms === this.state.clockOffsetMs) return;
+    this.patch({ clockOffsetMs: ms });
+    this.schedule();
+  }
+
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
@@ -496,23 +551,18 @@ export class SoloController {
 
   /** Samples `server_now()` three times and keeps the lowest-RTT estimate. */
   private async syncClock(): Promise<void> {
-    const samples: ClockSample[] = [];
-    for (let i = 0; i < 3; i++) {
-      const clientSentAt = this.clock.now();
-      try {
-        const serverTime = await this.api.serverNow();
-        samples.push({ clientSentAt, serverTime, clientReceivedAt: this.clock.now() });
-      } catch {
-        // A failed sample is skipped; with none, the previous offset stays.
-      }
-    }
-    if (samples.length > 0 && !this.disposed) {
-      this.patch({ clockOffsetMs: estimateClockOffset(samples) });
-    }
+    const offset = await measureClockOffset(
+      () => this.api.serverNow(),
+      () => this.clock.now(),
+    );
+    // With no successful sample, the previous offset stays.
+    if (offset !== null && !this.disposed) this.patch({ clockOffsetMs: offset });
   }
 
   /** Fetches the snapshot and reschedules. Concurrent calls coalesce into one more fetch. */
   private refresh(): Promise<void> {
+    // Multiplayer: the room sync engine fetches (and coalesces), then calls receive().
+    if (this.deps.external) return this.deps.external.refetch().catch(() => undefined);
     if (this.refreshing) {
       this.refreshAgain = true;
       return this.refreshing;
@@ -621,7 +671,8 @@ export class SoloController {
       else if (rem > 0) runFinal();
     }
 
-    let poll = this.timings.pollMs[phase] ?? null;
+    // Multiplayer snapshots come from Realtime events (the engine refetches): no polling.
+    let poll = this.deps.external ? null : (this.timings.pollMs[phase] ?? null);
     if (phase === 'destroyed' || phase === 'abandoned') {
       const seen = this.destroyedSeenAt ?? now;
       if (snap.battle.destroyed_at !== null || now - seen > this.timings.destroyedPollLimitMs) {
@@ -633,7 +684,7 @@ export class SoloController {
     }
     if (poll !== null) this.setTimer('poll', poll, () => void this.refresh());
 
-    if (!isTerminalPhase(phase)) {
+    if (!isTerminalPhase(phase) && !this.deps.external) {
       this.setTimer('clock', this.timings.clockResyncMs, () => {
         void this.syncClock().then(() => {
           this.schedule();

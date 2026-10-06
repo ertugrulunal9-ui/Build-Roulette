@@ -1,0 +1,186 @@
+/**
+ * The room RPCs (supabase/README.md "Rooms and multiplayer") and Supabase Realtime, behind
+ * interfaces so the sync engine and the room controller can be unit tested with fakes.
+ * Every method throws a `GameError`.
+ */
+import type { SupabaseClient } from '@supabase/supabase-js';
+import { toGameError } from '../solo/errors';
+import type { BattleSnapshot } from '../solo/types';
+import type { ChannelStatus, RealtimePort, RoomSyncApi, TopicSubscription } from './sync';
+import type { HeartbeatResult, JoinResult, RoomSettings, RoomSnapshot } from './types';
+
+export interface RoomApi extends RoomSyncApi {
+  /** Signs in anonymously if needed; returns the user id. */
+  ensureSession(): Promise<string>;
+  /** The profile's display name, or null when the user has none yet. */
+  profileName(userId: string): Promise<string | null>;
+  createRoom(displayName: string): Promise<JoinResult>;
+  joinRoom(code: string, displayName: string): Promise<JoinResult>;
+  leaveRoom(roomId: string): Promise<void>;
+  setReady(roomId: string, ready: boolean): Promise<void>;
+  updateSettings(roomId: string, settings: RoomSettings): Promise<RoomSettings>;
+  kickMember(roomId: string, userId: string): Promise<void>;
+  /** Returns the new battle's id. */
+  startBattle(roomId: string): Promise<string>;
+}
+
+export class SupabaseRoomApi implements RoomApi {
+  constructor(
+    private readonly supabase: SupabaseClient,
+    private readonly signIn: (s: SupabaseClient) => Promise<string>,
+  ) {}
+
+  ensureSession(): Promise<string> {
+    return this.signIn(this.supabase).catch((e: unknown) => {
+      throw toGameError(e);
+    });
+  }
+
+  private async rpc<T>(fn: string, args: Record<string, unknown> = {}): Promise<T> {
+    let res;
+    try {
+      res = await this.supabase.rpc(fn, args);
+    } catch (e) {
+      throw toGameError(e);
+    }
+    if (res.error) throw toGameError(res.error);
+    return res.data as T;
+  }
+
+  async profileName(userId: string): Promise<string | null> {
+    let res;
+    try {
+      res = await this.supabase
+        .from('profiles')
+        .select('display_name')
+        .eq('id', userId)
+        .maybeSingle<{ display_name: string }>();
+    } catch (e) {
+      throw toGameError(e);
+    }
+    if (res.error) throw toGameError(res.error);
+    const name = res.data?.display_name.trim() ?? '';
+    return name.length > 0 ? name : null;
+  }
+
+  async serverNow(): Promise<number> {
+    const iso = await this.rpc<string>('server_now');
+    const t = Date.parse(iso);
+    if (!Number.isFinite(t)) throw toGameError(new Error(`server_now returned ${iso}`));
+    return t;
+  }
+
+  createRoom(displayName: string): Promise<JoinResult> {
+    return this.rpc<JoinResult>('create_room', { p_display_name: displayName });
+  }
+
+  joinRoom(code: string, displayName: string): Promise<JoinResult> {
+    return this.rpc<JoinResult>('join_room', { p_code: code, p_display_name: displayName });
+  }
+
+  async leaveRoom(roomId: string): Promise<void> {
+    await this.rpc('leave_room', { p_room_id: roomId });
+  }
+
+  async setReady(roomId: string, ready: boolean): Promise<void> {
+    await this.rpc('set_ready', { p_room_id: roomId, p_ready: ready });
+  }
+
+  updateSettings(roomId: string, settings: RoomSettings): Promise<RoomSettings> {
+    return this.rpc<RoomSettings>('update_room_settings', {
+      p_room_id: roomId,
+      p_settings: settings,
+    });
+  }
+
+  async kickMember(roomId: string, userId: string): Promise<void> {
+    await this.rpc('kick_member', { p_room_id: roomId, p_user_id: userId });
+  }
+
+  startBattle(roomId: string): Promise<string> {
+    return this.rpc<string>('start_battle', { p_room_id: roomId });
+  }
+
+  heartbeat(roomId: string): Promise<HeartbeatResult> {
+    return this.rpc<HeartbeatResult>('heartbeat', { p_room_id: roomId });
+  }
+
+  getRoomSnapshot(roomId: string): Promise<RoomSnapshot> {
+    return this.rpc<RoomSnapshot>('get_room_snapshot', { p_room_id: roomId });
+  }
+
+  getBattleSnapshot(battleId: string): Promise<BattleSnapshot> {
+    return this.rpc<BattleSnapshot>('get_battle_snapshot', { p_battle_id: battleId });
+  }
+}
+
+/**
+ * Supabase Realtime as a RealtimePort: private channels (`config.private`), one presence key
+ * per user, every broadcast event (`event: '*'`; the event name is the payload's `type`).
+ */
+export class SupabaseRealtime implements RealtimePort {
+  /**
+   * supabase-js keeps one channel object per topic name, so a topic that is being removed
+   * (a rejoin right after leaving) must be gone before it is subscribed again.
+   */
+  private readonly removing = new Map<string, Promise<unknown>>();
+
+  constructor(private readonly supabase: SupabaseClient) {}
+
+  async setAuth(): Promise<void> {
+    // No argument: Realtime asks supabase-js for the session's access token.
+    await this.supabase.realtime.setAuth();
+  }
+
+  subscribe(
+    topic: string,
+    opts: { presenceKey: string },
+    handlers: {
+      broadcast(event: string, payload: unknown): void;
+      presence(state: Record<string, unknown[]>): void;
+      status(status: ChannelStatus, error?: string): void;
+    },
+  ): TopicSubscription {
+    let closed = false;
+    const ready = (this.removing.get(topic) ?? Promise.resolve()).then(() => {
+      if (closed) return null;
+      const channel = this.supabase.channel(topic, {
+        config: { private: true, presence: { key: opts.presenceKey } },
+      });
+      channel
+        .on('broadcast', { event: '*' }, (msg: { event: string; payload?: unknown }) => {
+          if (!closed) handlers.broadcast(msg.event, msg.payload);
+        })
+        .on('presence', { event: 'sync' }, () => {
+          if (!closed) handlers.presence(channel.presenceState());
+        })
+        .subscribe((status, err) => {
+          if (closed) return;
+          handlers.status(status, err?.message);
+        });
+      return channel;
+    });
+    return {
+      track: async (payload) => {
+        const channel = await ready;
+        if (!channel || closed) return false;
+        try {
+          return (await channel.track(payload)) === 'ok';
+        } catch {
+          return false;
+        }
+      },
+      close: () => {
+        if (closed) return;
+        closed = true;
+        const removal = ready
+          .then((channel) => (channel ? this.supabase.removeChannel(channel) : null))
+          .catch(() => null)
+          .finally(() => {
+            if (this.removing.get(topic) === removal) this.removing.delete(topic);
+          });
+        this.removing.set(topic, removal);
+      },
+    };
+  }
+}

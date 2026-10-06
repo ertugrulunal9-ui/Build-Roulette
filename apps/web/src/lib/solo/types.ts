@@ -2,10 +2,9 @@
  * Shapes returned by the solo RPCs (supabase/migrations/20261004120300_solo_battle.sql and
  * 20261006120000_autosave_css_and_public_battle.sql). Timestamps are ISO strings.
  */
-import type { BattlePhase } from '@br/game';
+import type { BattlePhase, BattleRole, BuildStatus, CaptureStatus, MemberState } from '@br/game';
 
-export type BuildStatus = 'draft' | 'shipped' | 'auto_shipped' | 'dnf' | 'disqualified';
-export type CaptureStatus = 'pending' | 'captured' | 'fallback' | 'failed';
+export type { BuildStatus, CaptureStatus };
 export type AwardKind = 'clutch_ship' | 'speedrun' | 'fastest_ship' | (string & {});
 
 export interface ChallengeCard {
@@ -36,10 +35,18 @@ export interface Award {
   votes: number | null;
 }
 
-/** `get_battle_snapshot` (members, or anyone signed in once RESULTS/DESTROYED). */
+/**
+ * `get_battle_snapshot` (members, or anyone signed in once RESULTS/DESTROYED). Multiplayer
+ * battles add `me.role`, `me.is_host` and `players[].state` (T-016).
+ */
 export interface BattleSnapshot {
   server_now: string;
-  me: { user_id: string; is_player: boolean };
+  me: {
+    user_id: string;
+    is_player: boolean;
+    role?: BattleRole;
+    is_host?: boolean;
+  };
   battle: {
     id: string;
     room_id: string | null;
@@ -58,9 +65,16 @@ export interface BattleSnapshot {
     created_at: string;
   };
   challenge: Challenge & { id: string };
-  players: { user_id: string; display_name: string }[];
+  players: SnapshotPlayer[];
   builds: SnapshotBuild[];
   awards: Award[];
+}
+
+export interface SnapshotPlayer {
+  user_id: string;
+  display_name: string;
+  /** Multiplayer only: the roster player's room membership. */
+  state?: MemberState;
 }
 
 export interface SnapshotBuild {

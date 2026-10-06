@@ -208,7 +208,7 @@ export function BuildStage({ controller, state, remaining }: BuildStageProps) {
           previewOverlay={
             timeUp && mine?.status === 'draft' ? (
               <div
-                className="absolute inset-0 z-10 grid place-items-center bg-zinc-950/85 p-6 text-center text-white"
+                className="absolute inset-0 z-10 grid place-items-center bg-zinc-950/95 p-6 text-center text-white"
                 data-testid="times-up"
               >
                 <div className="flex flex-col gap-2">

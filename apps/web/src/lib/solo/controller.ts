@@ -438,7 +438,9 @@ export class SoloController {
    */
   async restoreWorkspace(): Promise<Workspace | null> {
     const snap = this.state.snapshot;
-    if (!snap) return null;
+    // Nothing can have been autosaved before BUILDING (and the BUILD screen first mounts
+    // during SPIN, so this skips a pointless request for every new battle).
+    if (!snap || snap.battle.phase === 'spinning') return null;
     const text = await this.api
       .download(snap.battle.id, snap.me.user_id, 'autosave/source.json')
       .catch(() => null);

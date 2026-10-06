@@ -60,7 +60,7 @@ jobs:
         run: pnpm build
 
   db:
-    name: Database tests (local Supabase stack, pgTAP + API e2e)
+    name: Database tests (local Supabase stack, pgTAP + API and Realtime e2e)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -72,19 +72,27 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      # Node only runs the Supabase CLI (npx) and the API e2e script; no workspace install.
+      # The multiplayer and Realtime scripts use @supabase/supabase-js, resolved from apps/web.
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
       - name: Set up Node.js
         uses: actions/setup-node@v6
         with:
           node-version-file: .nvmrc
+          cache: pnpm
 
-      # The tests need Postgres (with pg_cron), Auth, PostgREST, Storage and the Kong gateway.
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # The tests need Postgres (with pg_cron), Auth, PostgREST, Storage, Realtime (broadcast
+      # from the database, private-channel authorization, presence) and the Kong gateway.
       # Everything else is excluded to keep the start fast. `supabase start` applies the
       # migrations to a fresh database.
       - name: Start the local Supabase stack
         run: >-
           npx -y "$SUPABASE_CLI" start
-          -x studio,imgproxy,vector,logflare,edge-runtime,supavisor,mailpit,realtime,postgres-meta
+          -x studio,imgproxy,vector,logflare,edge-runtime,supavisor,mailpit,postgres-meta
 
       - name: Run pgTAP tests (supabase test db)
         run: npx -y "$SUPABASE_CLI" test db
@@ -95,6 +103,14 @@ jobs:
         run: |
           psql --version
           node supabase/scripts/e2e-solo.mjs
+
+      # A 3-player battle through Auth, PostgREST, Storage, Realtime and pg_cron (T-016).
+      - name: Run the multiplayer end-to-end check
+        run: node supabase/scripts/e2e-multiplayer.mjs
+
+      # Private topics, gap-free broadcast versions, presence, refused subscriptions (T-016).
+      - name: Run the Realtime check
+        run: node supabase/scripts/e2e-realtime.mjs
 
       - name: Stop the stack
         if: always()

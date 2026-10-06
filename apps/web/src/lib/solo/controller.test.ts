@@ -491,3 +491,17 @@ describe('results and destroy', () => {
     c.dispose();
   });
 });
+
+describe('restoreWorkspace', () => {
+  it('reads the remote autosave back, and ignores garbage', async () => {
+    const c = await openIn();
+    const bridge = new FakeBridge();
+    c.attachWorkspace(bridge);
+    expect(await c.restoreWorkspace()).toBeNull();
+    await c.autosaveNow();
+    expect(await c.restoreWorkspace()).toEqual(bridge.ws);
+    api.files.set(`${BATTLE}/${USER}/autosave/source.json`, '{"files": {"a": 1}}');
+    expect(await c.restoreWorkspace()).toBeNull();
+    c.dispose();
+  });
+});

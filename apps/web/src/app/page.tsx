@@ -1,4 +1,5 @@
 import { HAPPY_PATH_PHASES, PHASE_LABELS } from '@br/game';
+import Link from 'next/link';
 
 const buttonClass =
   'rounded-lg px-5 py-3 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-50';
@@ -32,6 +33,13 @@ export default function HomePage() {
       </ol>
 
       <div className="flex flex-col gap-3 sm:flex-row">
+        <Link
+          href="/play"
+          data-testid="play-solo"
+          className={`${buttonClass} bg-emerald-600 text-white hover:bg-emerald-700`}
+        >
+          Play solo
+        </Link>
         <button
           type="button"
           disabled
@@ -47,7 +55,9 @@ export default function HomePage() {
           Join with code
         </button>
       </div>
-      <p className="text-sm text-zinc-500">Rooms are coming soon.</p>
+      <p className="text-sm text-zinc-500">
+        Rooms are coming soon. Until then, spin a challenge and race the clock on your own.
+      </p>
     </main>
   );
 }

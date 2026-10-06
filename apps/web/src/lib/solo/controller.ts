@@ -29,7 +29,7 @@ import { buildImportMap, type PreviewBuild } from '@br/runtime';
 import type { Workspace } from '@br/workspace';
 import type { BuildFile, SoloApi } from './api';
 import { GameError, toGameError } from './errors';
-import { buildStats, sourceJson } from './stats';
+import { buildStats, parseSourceJson, sourceJson } from './stats';
 import {
   isCaptureTerminal,
   type BattleSnapshot,
@@ -298,6 +298,11 @@ export class SoloController {
     this.patch({ error: null });
   }
 
+  /** Closes a failed ship attempt (the player keeps building). */
+  clearShipError(): void {
+    if (this.state.ship.status === 'error') this.patch({ ship: INITIAL_SOLO_STATE.ship });
+  }
+
   /** Back to the name entry for a new battle. */
   playAgain(): void {
     this.epoch++;
@@ -425,6 +430,19 @@ export class SoloController {
     if (epoch !== this.epoch) return;
     this.patch({ ship: { status: 'done', error: null, canShipLastGood: false } });
     await this.refresh();
+  }
+
+  /**
+   * The workspace from the remote autosave (`autosave/source.json`), for a player who opens
+   * the battle where IndexedDB has no copy (another device, cleared storage; docs/04 §4.8).
+   */
+  async restoreWorkspace(): Promise<Workspace | null> {
+    const snap = this.state.snapshot;
+    if (!snap) return null;
+    const text = await this.api
+      .download(snap.battle.id, snap.me.user_id, 'autosave/source.json')
+      .catch(() => null);
+    return text === null ? null : parseSourceJson(text);
   }
 
   dispose(): void {

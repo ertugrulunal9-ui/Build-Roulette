@@ -20,6 +20,8 @@ const APP_SERVER_COMMAND =
 
 export default defineConfig({
   testDir: './e2e',
+  // The solo game needs the Supabase stack: playwright.solo.config.ts (`test:e2e:solo`).
+  testIgnore: /solo.*\.spec\.ts$/,
   // One shared mock CDN and shell, and timing-sensitive watchdog checks: run serially.
   workers: 1,
   fullyParallel: false,

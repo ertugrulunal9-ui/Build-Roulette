@@ -29,8 +29,8 @@ const initialSnapshot = () => SandboxController.initialSnapshot;
 
 export interface WorkspaceSession {
   workspace: Workspace | null;
-  /** The latest workspace, also between renders (for callbacks). */
-  workspaceRef: { readonly current: Workspace | null };
+  /** The latest workspace, also between renders (for callbacks, not for rendering). */
+  getWorkspace: () => Workspace | null;
   saveState: SaveState;
   notice: string | null;
   /** The element the SandboxController puts the preview iframe into. */
@@ -45,8 +45,10 @@ export interface WorkspaceSession {
   setEditError: (error: string | null) => void;
   reveal: RevealRequest | null;
   openDiagnostic: (d: Diagnostic) => void;
-  /** Paste-imports so far (the `pastes` stat). */
-  pastes: { current: number };
+  /** Counts a paste-import (the `pastes` stat). */
+  countPaste: () => void;
+  /** Paste-imports so far. */
+  pasteCount: () => number;
   readOnly: boolean;
 }
 
@@ -120,9 +122,15 @@ export function useWorkspaceSession(
     setReveal({ path: d.file, line: d.line ?? 1, column: d.column ?? 0, key: Date.now() });
   }, []);
 
+  const getWorkspace = useCallback(() => workspaceRef.current, []);
+  const countPaste = useCallback(() => {
+    pastes.current += 1;
+  }, []);
+  const pasteCount = useCallback(() => pastes.current, []);
+
   return {
     workspace,
-    workspaceRef,
+    getWorkspace,
     saveState,
     notice,
     hostRef,
@@ -135,7 +143,8 @@ export function useWorkspaceSession(
     setEditError,
     reveal,
     openDiagnostic,
-    pastes,
+    countPaste,
+    pasteCount,
     readOnly,
   };
 }

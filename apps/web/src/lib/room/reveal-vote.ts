@@ -148,6 +148,11 @@ const STALE_VOTE_ERRORS = new Set(['wrong_phase', 'deadline_passed', 'not_a_memb
 
 const REVEALED_PHASES = new Set(['reveal', 'voting', 'results']);
 
+/** A copy of `record` without `key`. */
+function without<V>(record: Readonly<Record<string, V>>, key: string): Record<string, V> {
+  return Object.fromEntries(Object.entries(record).filter(([k]) => k !== key));
+}
+
 // ─── Controller ───────────────────────────────────────────────────────────────────────
 
 export class RevealVoteController {
@@ -256,11 +261,13 @@ export class RevealVoteController {
     if (!snap || this.state.host.pending !== null || snap.battle.phase !== 'reveal') return;
     if (!snap.me.is_host) return;
     this.patch({ host: { pending: kind, error: null } });
-    const call = kind === 'next' ? this.api.revealNext : this.api.skipToVote;
+    const { id, version } = snap.battle;
     let result: HostRevealResult | null = null;
     let error: GameError | null = null;
     try {
-      result = await call.call(this.api, snap.battle.id, snap.battle.version);
+      result = await (kind === 'next'
+        ? this.api.revealNext(id, version)
+        : this.api.skipToVote(id, version));
     } catch (e) {
       error = toGameError(e);
     }
@@ -277,7 +284,7 @@ export class RevealVoteController {
   /** Votes for `buildId` in `category` (a revote replaces the earlier choice). */
   vote(category: string, buildId: string): void {
     const snap = this.snapshot;
-    if (!snap || snap.battle.phase !== 'voting' || !snap.me.can_vote) return;
+    if (snap?.battle.phase !== 'voting' || snap.me.can_vote !== true) return;
     const own = snap.builds.find((b) => b.id === buildId)?.builder_id === snap.me.user_id;
     if (own) return; // the UI never offers it; the server refuses it anyway (self_vote)
     const ballot = this.state.ballot;
@@ -292,11 +299,9 @@ export class RevealVoteController {
   }
 
   private async send(battleId: string, category: string, buildId: string): Promise<void> {
-    const errors = { ...this.state.ballot.errors };
-    delete errors[category];
     this.patchBallot({
       pending: { ...this.state.ballot.pending, [category]: buildId },
-      errors,
+      errors: without(this.state.ballot.errors, category),
     });
     let result: CastVoteResult | null = null;
     let error: GameError | null = null;
@@ -306,8 +311,7 @@ export class RevealVoteController {
       error = toGameError(e);
     }
     if (this.disposed) return;
-    const pending = { ...this.state.ballot.pending };
-    delete pending[category];
+    const pending = without(this.state.ballot.pending, category);
     if (result) {
       this.patchBallot({
         pending,
@@ -326,9 +330,7 @@ export class RevealVoteController {
   }
 
   dismissVoteError(category: string): void {
-    const errors = { ...this.state.ballot.errors };
-    delete errors[category];
-    this.patchBallot({ errors });
+    this.patchBallot({ errors: without(this.state.ballot.errors, category) });
   }
 
   private async loadBallot(): Promise<void> {
@@ -430,11 +432,7 @@ export class RevealVoteController {
     const order = snap?.battle.reveal_order ?? [];
     const wanted = snap?.battle.phase === 'reveal' && [order[index], order[index + 1]].includes(id);
     if (!wanted) {
-      if (this.state.bundles[id]) {
-        const rest = { ...this.state.bundles };
-        delete rest[id];
-        this.patch({ bundles: rest });
-      }
+      if (this.state.bundles[id]) this.patch({ bundles: without(this.state.bundles, id) });
       return;
     }
     this.patch({ bundles: { ...this.state.bundles, [id]: bundle } });

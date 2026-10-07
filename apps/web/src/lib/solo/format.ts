@@ -1,4 +1,5 @@
 /** Display helpers shared by the game UI and the results pages. */
+import { VOTE_CATEGORIES } from '@br/game';
 import type { AwardKind, BuildStatus, CaptureStatus } from './types';
 
 /** `m:ss` for countdowns, rounded up so "0:00" only shows at zero. */
@@ -21,11 +22,35 @@ export function formatTimeLimit(seconds: number): string {
   return seconds % 60 === 0 ? `${String(seconds / 60)} min` : `${String(seconds)} s`;
 }
 
+/** An icon per vote category (`award` of a vote award is the category slug). */
+export const CATEGORY_EMOJI: Record<string, string> = {
+  overall: '🏆',
+  rule: '📜',
+  style: '🎨',
+  chaos: '🌀',
+};
+
+export function categoryEmoji(slug: string): string {
+  return CATEGORY_EMOJI[slug] ?? '🗳️';
+}
+
 export const AWARD_INFO: Record<string, { emoji: string; title: string; text: string }> = {
   speedrun: { emoji: '⚡', title: 'Speedrun', text: 'Shipped using at most half the time.' },
   clutch_ship: { emoji: '⏱️', title: 'Clutch ship', text: 'Shipped in the last 10 seconds.' },
   fastest_ship: { emoji: '🏁', title: 'Fastest ship', text: 'The first build shipped.' },
+  // One per vote category: the most votes in it (ties share).
+  ...Object.fromEntries(
+    VOTE_CATEGORIES.map((c) => [
+      c.slug,
+      { emoji: categoryEmoji(c.slug), title: c.label, text: `Most votes: ${c.description}` },
+    ]),
+  ),
 };
+
+/** Is this award one of the vote categories (rather than an auto-award)? */
+export function isVoteAward(award: AwardKind): boolean {
+  return VOTE_CATEGORIES.some((c) => c.slug === award);
+}
 
 export function awardInfo(award: AwardKind): { emoji: string; title: string; text: string } {
   return AWARD_INFO[award] ?? { emoji: '🏆', title: award.replaceAll('_', ' '), text: '' };

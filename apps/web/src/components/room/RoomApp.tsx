@@ -19,7 +19,7 @@ import {
 } from '../../lib/room/controller';
 import { browserEnvironment, type EndReason } from '../../lib/room/sync';
 import type { Activity } from '../../lib/room/types';
-import { useBattleState, useRoom } from '../../lib/room/use-room';
+import { useBattleState, useRoom, useShowState } from '../../lib/room/use-room';
 import { SupabaseSoloApi } from '../../lib/solo/api';
 import type { SoloController, SoloState } from '../../lib/solo/controller';
 import { describeError, type GameError } from '../../lib/solo/errors';
@@ -31,8 +31,10 @@ import { BuildStage } from '../solo/BuildStage';
 import { SpinReels } from '../solo/SpinReels';
 import { Lobby } from './Lobby';
 import { ProgressSidebar } from './ProgressSidebar';
+import { RevealStage } from './RevealStage';
 import { RoomResults } from './RoomResults';
 import { SpectatorStage } from './SpectatorStage';
+import { VoteStage } from './VoteStage';
 import { Centered, ConfirmDialog, ErrorBanner, Toasts } from './pieces';
 
 const smallButton =
@@ -204,6 +206,8 @@ function BattleView({
 }) {
   const snapshot = battleState.snapshot;
   const phase = snapshot?.battle.phase;
+  const show = state.show;
+  const showState = useShowState(show);
   useTicker(1000, phase !== undefined && !isTerminalPhase(phase));
   const onActivity = useCallback(
     (a: Activity) => {
@@ -266,6 +270,19 @@ function BattleView({
           />
         )}
       </>
+    );
+  }
+  if ((phase === 'reveal' || phase === 'voting') && show) {
+    const Stage = phase === 'reveal' ? RevealStage : VoteStage;
+    return (
+      <Stage
+        battle={battle}
+        battleState={battleState}
+        show={show}
+        showState={showState}
+        code={code}
+        headerActions={leave}
+      />
     );
   }
   return <RoomResults state={battleState} remaining={remaining} />;

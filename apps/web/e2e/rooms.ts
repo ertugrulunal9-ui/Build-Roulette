@@ -11,6 +11,7 @@ import {
   type Page,
   type TestInfo,
 } from '@playwright/test';
+import { trackPage } from './diagnostics';
 import { buildFrame, clickRouted, replaceEditorText } from './helpers';
 import { sql } from './stack';
 
@@ -42,6 +43,10 @@ export async function newPlayer(
     viewport: { width: 1440, height: 900 },
   });
   if (opts.clockSkewMs) await context.addInitScript(skewClock, opts.clockSkewMs);
+  // Every page of the context is logged for diagnostics.ts (a failure attaches the logs).
+  context.on('page', (pg) => {
+    trackPage(info, name, pg);
+  });
   const page = await context.newPage();
   const errors: string[] = [];
   page.on('pageerror', (e) => errors.push(e.message));
@@ -58,6 +63,9 @@ export async function newPhone(browser: Browser, info: TestInfo, name: string): 
   // The profile's default browser is WebKit; newContext only takes its device settings.
   const phone = devices['iPhone 13'];
   const context = await browser.newContext({ ...(baseURL ? { baseURL } : {}), ...phone });
+  context.on('page', (pg) => {
+    trackPage(info, name, pg);
+  });
   const page = await context.newPage();
   const errors: string[] = [];
   page.on('pageerror', (e) => errors.push(e.message));

@@ -24,7 +24,9 @@ import { assertUuid, ephemeralText, sql } from './stack';
  * Rooms under chaos (playwright.chaos.config.ts, docs/04 §4.8, docs/06 M3 exit criteria):
  * several browser contexts against the real local stack (Realtime, pg_cron, the capture and
  * destroy worker), with network drops, skewed clocks, refreshes, a host who disappears,
- * every client gone at T-0, an abandoned battle and a full room.
+ * every client gone at T-0, an abandoned battle and a full room. M4 (T-021) adds REVEAL and
+ * VOTE under chaos: a refresh mid-REVEAL, a vote cast offline (retried until it lands), a
+ * player offline until the vote closes (told in RESULTS) and the host leaving mid-VOTE.
  *
  * Time is real where it matters: the battle's time limit is set (as the superuser) while
  * the battle spins, so BUILD has true deadlines that every client learns from the server.
@@ -506,6 +508,172 @@ test('6 players under chaos: skewed clocks, a network drop, refreshes, the host 
         where room_id = (select room_id from public.battles where id = '${rematch}')`);
   await expect.poll(() => phaseOf(rematch), { timeout: 30_000 }).toBe('abandoned');
   await expectTerminal(rematch, { phase: 'abandoned', shipped: {} });
+});
+
+// ─── REVEAL and VOTE under chaos ──────────────────────────────────────────────────────
+
+test('reveal and vote under chaos: a refresh mid-REVEAL, a vote cast offline (retried), a player offline until the vote closes (told), the host leaves mid-VOTE', async ({
+  browser,
+}, info) => {
+  test.setTimeout(6 * MIN);
+  const hana = await newPlayer(browser, info, 'Hana Host');
+  const ivo = await newPlayer(browser, info, 'Ivo Flaky');
+  const jun = await newPlayer(browser, info, 'Jun Offline');
+  const all = [hana, ivo, jun];
+  const code = await gather(all);
+  // Time to vote, so only presence (not the timer) can end VOTING early below.
+  await hana.page.getByTestId('setting-voting').selectOption('120');
+  await expect(ivo.page.getByTestId('settings-summary')).toContainText('120 s to vote');
+  const battleId = await startBattle(code, all, 120);
+
+  const title: Record<string, string> = {};
+  for (const [i, p] of all.entries()) {
+    title[p.name] = `${p.name} build`;
+    await writeApp(p.page, title[p.name] ?? '', 'rgb(40, 90, 160)');
+    await ship(p.page, `${p.name} build`, { last: i === all.length - 1 });
+  }
+  const buildOf = (name: string) =>
+    sql(
+      `select id from public.builds where battle_id = '${battleId}' and builder_id = '${userOf(battleId, name)}'`,
+    );
+  const order = () =>
+    sql(
+      `select array_to_string(reveal_order, ',') from public.battles where id = '${battleId}'`,
+    ).split(',');
+  const titleOfBuild = (buildId: string) =>
+    title[all.find((p) => buildOf(p.name) === buildId)?.name ?? ''] ?? '';
+
+  // ─── REVEAL: the host moves on, Ivo refreshes and lands on the current build ──────
+  await expect.poll(() => phaseOf(battleId), { timeout: MIN }).toBe('reveal');
+  await expectSameSpotlight(all);
+  await clickRouted(hana.page.getByTestId('reveal-next'));
+  for (const p of all) {
+    await expect(p.page.getByTestId('reveal-stage')).toHaveAttribute('data-index', '1');
+  }
+  const second = order()[1] ?? '';
+  await ivo.page.reload();
+  const stage = ivo.page.getByTestId('reveal-stage');
+  await expect(stage).toBeVisible({ timeout: 30_000 });
+  await expect(stage).toHaveAttribute('data-index', '1');
+  await expect(stage).toHaveAttribute('data-build', second);
+  // The right build runs (not the first one, not the next one), on the server's slot.
+  await expect(revealLive(ivo.page).locator('h1.e2e-title')).toHaveText(titleOfBuild(second), {
+    timeout: 30_000,
+  });
+  await expect(ivo.page.locator('iframe[data-testid=reveal-live-frame]')).toHaveCount(1);
+  await expectCountdownInSync(ivo, battleId);
+  await clickRouted(hana.page.getByTestId('reveal-next'));
+  for (const p of all) {
+    await expect(p.page.getByTestId('reveal-stage')).toHaveAttribute('data-index', '2');
+  }
+  await clickRouted(hana.page.getByTestId('reveal-next')); // the last build: VOTING starts
+  for (const p of all) {
+    await expect(p.page.getByTestId('vote-stage')).toBeVisible({ timeout: 30_000 });
+  }
+  const H = buildOf(hana.name);
+  const J = buildOf(jun.name);
+  const votesOf = (name: string) =>
+    sql(
+      `select coalesce(string_agg(category || '=' || build_id, ',' order by category), '') from public.votes where battle_id = '${battleId}' and voter_id = '${userOf(battleId, name)}'`,
+    );
+
+  // ─── The host votes once and leaves mid-VOTE: nothing waits for her ───────────────
+  await vote(hana.page, 'overall', J);
+  await hana.page.getByTestId('leave-room').click();
+  await hana.page.getByTestId('leave-confirm').getByTestId('confirm').click();
+  await expect(hana.page.getByTestId('room-ended')).toBeVisible();
+  await expect
+    .poll(() => sql(`select host_id from public.battles where id = '${battleId}'`))
+    .toBe(userOf(battleId, ivo.name));
+
+  // ─── Ivo's network drops; the vote he casts offline is kept and retried ───────────
+  await ivo.context.setOffline(true);
+  await ivo.page
+    .locator(
+      `[data-testid=vote-category][data-category=overall] [data-testid=vote-option][data-build="${J}"]`,
+    )
+    .click();
+  await expect(ivo.page.getByTestId('votes-unsent')).toBeVisible();
+  await expect(
+    ivo.page.locator('[data-testid=vote-category][data-category=overall]'),
+  ).toHaveAttribute('data-state', 'unsent');
+  await ivo.page.waitForTimeout(5_000); // a few retries fail meanwhile
+  expect(votesOf(ivo.name), 'nothing reached the server while offline').toBe('');
+  await ivo.context.setOffline(false);
+  await expect(
+    ivo.page.locator(
+      `[data-testid=vote-category][data-category=overall] [data-testid=vote-option][data-build="${J}"]`,
+    ),
+  ).toHaveAttribute('data-selected', 'true', { timeout: 30_000 });
+  await expect(ivo.page.getByTestId('votes-unsent')).toHaveCount(0);
+  expect(votesOf(ivo.name)).toBe(`overall=${J}`);
+
+  // ─── Jun goes offline and picks; Ivo completes his ballot once Jun went silent ─────
+  await jun.context.setOffline(true);
+  await jun.page
+    .locator(
+      `[data-testid=vote-category][data-category=overall] [data-testid=vote-option][data-build="${H}"]`,
+    )
+    .click();
+  await expect(jun.page.getByTestId('votes-unsent')).toBeVisible();
+  for (const cat of ['rule', 'style']) await vote(ivo.page, cat, H);
+  // Jun stops counting as present 30 s after his last heartbeat. (The server re-checks
+  // the early end on a vote, a leave or a kick, not when someone's presence lapses: see
+  // the T-021 report. So Ivo's last pick comes after that.)
+  await expect
+    .poll(
+      () =>
+        sql(
+          `select m.last_seen_at < now() - interval '31 seconds' from public.room_members m join public.rooms r on r.id = m.room_id where r.code = '${code}' and m.user_id = '${userOf(battleId, jun.name)}'`,
+        ),
+      { timeout: 60_000, intervals: [1_000] },
+    )
+    .toBe('t');
+  // Ivo's last pick completes the only ballot that is still expected: neither the host
+  // who left nor the silent Jun holds VOTING up, long before its 120 s timer.
+  await ivo.page
+    .locator(
+      `[data-testid=vote-category][data-category=chaos] [data-testid=vote-option][data-build="${H}"]`,
+    )
+    .click();
+  await expect.poll(() => phaseOf(battleId), { timeout: 30_000 }).toBe('results');
+  expect(
+    sql(
+      `select payload ->> 'reason' from public.battle_events where battle_id = '${battleId}' and type = 'phase' and payload ->> 'from' = 'voting'`,
+    ),
+  ).toBe('all_voted');
+  await expect(ivo.page.getByTestId('results')).toBeVisible({ timeout: 30_000 });
+
+  // ─── Jun comes back: RESULTS tells him his pick did not count ─────────────────────
+  await jun.context.setOffline(false);
+  await expect(jun.page.getByTestId('results')).toBeVisible({ timeout: 60_000 });
+  await expect(jun.page.getByTestId('lost-votes')).toContainText('Best Build');
+  expect(votesOf(jun.name)).toBe('');
+  // The tallies: the left host's partial ballot and the retried vote both count.
+  expect(
+    JSON.parse(
+      sql(
+        `select json_object_agg(id, vote_counts -> 'overall') from public.builds where battle_id = '${battleId}'`,
+      ),
+    ),
+  ).toMatchObject({ [J]: 2, [H]: 0 });
+  await expect(
+    ivo.page.locator(`[data-testid=ranked-build][data-builder="${userOf(battleId, jun.name)}"]`),
+  ).toHaveAttribute('data-rank', '1');
+
+  // ─── DESTROY → lobby: Ivo hosts; Hana is among those who left ─────────────────────
+  endLastLook(battleId);
+  for (const p of [ivo, jun]) {
+    await expect(p.page.getByTestId('lobby')).toBeVisible({ timeout: MIN });
+    await expect(member(p.page, ivo.name)).toHaveAttribute('data-host', 'true');
+  }
+  await expect(member(ivo.page, hana.name).getByTestId('member-status')).toHaveText('left');
+  await expectTerminal(battleId, {
+    phase: 'destroyed',
+    shipped: Object.fromEntries(all.map((p) => [p.name, `${p.name} build`])),
+  });
+  expectNoPageErrors(all);
+  for (const p of all) await p.context.close();
 });
 
 // ─── Random chaos (seeded) ────────────────────────────────────────────────────────────

@@ -71,7 +71,8 @@ export function VoteStage({
       data-can-vote={canVote ? 'true' : 'false'}
     >
       <header className="sticky top-0 z-10 flex flex-wrap items-center gap-3 border-b border-zinc-200 bg-white/95 px-4 py-3 backdrop-blur dark:border-zinc-800 dark:bg-zinc-900/95">
-        <h1 className="text-sm font-bold tracking-tight">
+        {/* The header stays on screen while voting: on a phone, only what matters. */}
+        <h1 className="hidden text-sm font-bold tracking-tight sm:block">
           Build Roulette <span className="font-normal text-zinc-500">· Room {code}</span>
         </h1>
         <span className="rounded-full bg-emerald-600 px-2.5 py-0.5 text-xs font-black tracking-widest text-white uppercase">

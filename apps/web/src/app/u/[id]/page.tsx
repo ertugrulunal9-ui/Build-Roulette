@@ -148,7 +148,7 @@ function HistoryItem({ battle: b }: { battle: HistoryBattle }) {
     b.build.name ?? (b.build.status === 'dnf' ? 'Did not finish' : `${b.display_name}'s build`);
   return (
     <li
-      className={`grid overflow-hidden rounded-2xl border bg-white shadow-sm sm:grid-cols-[14rem_minmax(0,1fr)] dark:bg-zinc-900 ${
+      className={`grid grid-cols-1 overflow-hidden rounded-2xl border bg-white shadow-sm sm:grid-cols-[14rem_minmax(0,1fr)] dark:bg-zinc-900 ${
         winner
           ? 'border-amber-400 ring-2 ring-amber-300/50 dark:border-amber-500'
           : 'border-zinc-200 dark:border-zinc-800'

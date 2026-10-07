@@ -81,7 +81,7 @@ export default async function BattlePage({ params }: BattlePageProps) {
               data-testid="public-build"
               data-rank={b.final_rank ?? ''}
               data-winner={winner ? 'true' : 'false'}
-              className={`relative grid overflow-hidden rounded-2xl border bg-white shadow-sm md:grid-cols-[3fr_2fr] dark:bg-zinc-900 ${
+              className={`relative grid grid-cols-1 overflow-hidden rounded-2xl border bg-white shadow-sm md:grid-cols-[3fr_2fr] dark:bg-zinc-900 ${
                 winner
                   ? 'border-amber-400 ring-4 ring-amber-300/50 dark:border-amber-500'
                   : 'border-zinc-200 dark:border-zinc-800'

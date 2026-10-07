@@ -99,7 +99,7 @@ export function Lobby({ controller, state, room, lastBattle }: LobbyProps) {
         </div>
         <span
           data-testid="role-badge"
-          className={`rounded-full px-2 py-0.5 text-[10px] font-black tracking-widest uppercase ${
+          className={`hidden rounded-full px-2 sm:inline py-0.5 text-[10px] font-black tracking-widest uppercase ${
             m.role === 'player'
               ? 'bg-sky-100 text-sky-900 dark:bg-sky-950 dark:text-sky-200'
               : 'bg-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300'
@@ -109,7 +109,7 @@ export function Lobby({ controller, state, room, lastBattle }: LobbyProps) {
         </span>
         {m.role === 'player' && m.state === 'active' && (
           <span
-            className={`w-20 text-right text-xs font-bold ${
+            className={`w-16 shrink-0 text-right text-xs font-bold sm:w-20 ${
               m.is_ready ? 'text-emerald-600 dark:text-emerald-400' : 'text-zinc-400'
             }`}
           >
@@ -137,7 +137,7 @@ export function Lobby({ controller, state, room, lastBattle }: LobbyProps) {
   };
 
   return (
-    <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_22rem]" data-testid="lobby">
+    <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_22rem]" data-testid="lobby">
       <section className={panel}>
         <header className="mb-3 flex items-baseline justify-between gap-3">
           <h2 className="text-lg font-black tracking-tight">Players</h2>

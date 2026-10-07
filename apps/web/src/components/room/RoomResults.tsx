@@ -70,6 +70,9 @@ export function RoomResults({ state, remaining, lostVotes }: RoomResultsProps) {
   const mine = myBuild(snapshot);
   const isPlayer = snapshot.me.is_player;
   const shipped = mine?.status === 'shipped' || mine?.status === 'auto_shipped';
+  // The last look runs the player's own final build; without one there is nothing to run
+  // (a DNF, e.g. a phone player), so the pane would only take a phone's whole screen.
+  const lastLook = isPlayer && shipped;
   const pendingCaptures = snapshot.builds.some(
     (b) =>
       (b.status === 'shipped' || b.status === 'auto_shipped') && b.capture_status === 'pending',
@@ -117,17 +120,24 @@ export function RoomResults({ state, remaining, lostVotes }: RoomResultsProps) {
       </header>
 
       <div
-        className={`grid gap-6 ${isPlayer ? 'lg:grid-cols-[minmax(0,1fr)_minmax(0,0.9fr)]' : ''}`}
+        className={`grid grid-cols-1 gap-6 ${lastLook ? 'lg:grid-cols-[minmax(0,1fr)_minmax(0,0.9fr)]' : ''}`}
       >
         <section className="flex flex-col gap-3" aria-label="Ranking">
           <RankedBuilds snapshot={snapshot} />
-          {!isPlayer && (
+          {!lastLook && (
             <p className="text-sm text-zinc-500" data-testid="last-look">
               {caption}
             </p>
           )}
+          {mine && !shipped && (
+            <p className="text-sm text-zinc-500" data-testid="no-last-look">
+              {mine.status === 'disqualified'
+                ? 'Your build was disqualified.'
+                : 'You did not ship this time. There is always the rematch.'}
+            </p>
+          )}
         </section>
-        {isPlayer && (
+        {lastLook && (
           <section className="flex flex-col gap-3">
             <RevealPane
               build={state.reveal.build}
@@ -135,13 +145,6 @@ export function RoomResults({ state, remaining, lostVotes }: RoomResultsProps) {
               destroy={state.destroy}
               caption={caption}
             />
-            {mine && !shipped && (
-              <p className="text-sm text-zinc-500">
-                {mine.status === 'disqualified'
-                  ? 'Your build was disqualified.'
-                  : 'You did not ship this time. There is always the rematch.'}
-              </p>
-            )}
           </section>
         )}
       </div>

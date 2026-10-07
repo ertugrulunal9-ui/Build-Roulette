@@ -74,7 +74,7 @@ export function ResultsStage({ controller, state, remaining }: ResultsStageProps
         <AwardBadges awards={awards} />
       </header>
 
-      <div className="grid gap-6 lg:grid-cols-2">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <section className="flex flex-col gap-4">
           <figure className="overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
             <div className="relative aspect-[16/10] bg-zinc-100 dark:bg-zinc-800">

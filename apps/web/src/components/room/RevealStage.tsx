@@ -171,7 +171,7 @@ export function RevealStage({
         </div>
       </header>
 
-      <div className="mx-auto grid w-full max-w-7xl flex-1 gap-5 px-4 py-5 lg:grid-cols-[minmax(0,1fr)_19rem]">
+      <div className="mx-auto grid w-full max-w-7xl flex-1 grid-cols-1 gap-5 px-4 py-5 lg:grid-cols-[minmax(0,1fr)_19rem]">
         <section className="flex min-w-0 flex-col gap-3" aria-label="Spotlight">
           <div className="flex flex-wrap items-end justify-between gap-3">
             <div className="min-w-0">

@@ -26,12 +26,7 @@ import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { BUILD_TIME_LIMITS_MINUTES, DEFAULT_PHASE_DURATIONS } from './durations';
-import {
-  CAST_VOTE_ERRORS,
-  JOIN_ROOM_ERRORS,
-  RPC_ERROR_CODES,
-  SERVICE_ERROR_CODES,
-} from './errors';
+import { CAST_VOTE_ERRORS, JOIN_ROOM_ERRORS, RPC_ERROR_CODES, SERVICE_ERROR_CODES } from './errors';
 import { BATTLE_PHASES, isBattlePhase } from './phases';
 import {
   REVEAL_SLOT_MAX_SECONDS,

@@ -12,7 +12,7 @@ import {
   revealImportMap,
   revealPreviewBuild,
 } from './reveal-files';
-import { RevealVoteController, spotlightBuild, type ObjectUrls } from './reveal-vote';
+import { HOST_RETRIES, RevealVoteController, spotlightBuild, type ObjectUrls } from './reveal-vote';
 import {
   BATTLE_1,
   BOB,
@@ -268,6 +268,56 @@ describe('host controls', () => {
     expect(api.count('revealNext')).toBe(1);
     expect(c.getSnapshot().host).toEqual({ pending: null, error: null });
     expect(refetches).toBe(1);
+    c.dispose();
+  });
+
+  it('a click made stale only by an unrelated event (a capture) is sent again with the server version', async () => {
+    // T-023: 8 captures land one after another right at the start of REVEAL; each one moves
+    // the battle version, so the host's click lost the compare-and-set now and then.
+    const sent: number[] = [];
+    api.onHost = (_k, v) => {
+      sent.push(v);
+      return sent.length === 1
+        ? { changed: false, version: v + 1, phase: 'reveal', phase_ends_at: null, reveal_index: 0 }
+        : { changed: true, version: v + 1, phase: 'reveal', phase_ends_at: null, reveal_index: 1 };
+    };
+    const c = controller();
+    c.receive(reveal(0, 12));
+    await c.next();
+    expect(sent).toEqual([12, 13]);
+    expect(refetches).toBe(0);
+    expect(c.getSnapshot().host).toEqual({ pending: null, error: null });
+    // Never more than HOST_RETRIES resends, then the quiet refetch.
+    sent.length = 0;
+    api.onHost = (_k, v) => {
+      sent.push(v);
+      return {
+        changed: false,
+        version: v + 1,
+        phase: 'reveal',
+        phase_ends_at: null,
+        reveal_index: 0,
+      };
+    };
+    await c.next();
+    expect(sent).toEqual([12, 13, 14, 15].slice(0, HOST_RETRIES + 1));
+    expect(refetches).toBe(1);
+    // A skip still means "skip" on another spotlight; it is resent too.
+    sent.length = 0;
+    api.onHost = (_k, v) => {
+      sent.push(v);
+      return sent.length === 1
+        ? { changed: false, version: v + 2, phase: 'reveal', phase_ends_at: null, reveal_index: 1 }
+        : {
+            changed: true,
+            version: v + 1,
+            phase: 'voting',
+            phase_ends_at: null,
+            reveal_index: null,
+          };
+    };
+    await c.skipToVote();
+    expect(sent).toEqual([12, 14]);
     c.dispose();
   });
 

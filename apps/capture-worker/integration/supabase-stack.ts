@@ -94,6 +94,33 @@ export class Stack {
     return new User(this, body.user.id, body.access_token);
   }
 
+  /**
+   * A moderator (T-024): an email/password user created with the Auth admin API, listed in
+   * private.admins, signed in with the password grant (a non-anonymous token).
+   */
+  async createAdmin(): Promise<User> {
+    const email = `mod-${String(Date.now())}-${String(Math.floor(Math.random() * 1e6))}@capture.test`;
+    const password = `pw-${String(Math.random()).slice(2)}-Aa1`;
+    const created = await this.request('POST', '/auth/v1/admin/users', {
+      apikey: this.env.SERVICE_ROLE_KEY,
+      token: this.env.SERVICE_ROLE_KEY,
+      body: { email, password, email_confirm: true },
+    });
+    const id = (created.body as { id?: string }).id;
+    if (created.status !== 200 || !id) {
+      throw new Error(`admin user creation failed: ${JSON.stringify(created)}`);
+    }
+    this.sql(`insert into private.admins (user_id, note) values ('${id}', 'capture integration')`);
+    const signedIn = await this.request('POST', '/auth/v1/token?grant_type=password', {
+      body: { email, password },
+    });
+    const token = (signedIn.body as { access_token?: string }).access_token;
+    if (signedIn.status !== 200 || !token) {
+      throw new Error(`admin sign-in failed: ${JSON.stringify(signedIn)}`);
+    }
+    return new User(this, id, token);
+  }
+
   /** Moves the battle's current deadline into the past. */
   expirePhase(battleId: string): void {
     this.sql(
@@ -181,7 +208,7 @@ export class OwnJobsBackend extends SupabaseBackend {
     super(opts);
   }
 
-  /** Lets the worker claim the jobs of this build (capture) or battle (destroy). */
+  /** Lets the worker claim the jobs of this build (capture, takedown) or battle (destroy). */
   own(refId: string): void {
     if (!UUID.test(refId)) throw new Error(`not a uuid: ${refId}`);
     this.refs.add(refId);
@@ -190,7 +217,7 @@ export class OwnJobsBackend extends SupabaseBackend {
   override claimJob(kind: JobKind): Promise<Job | null> {
     if (this.refs.size === 0) return Promise.resolve(null);
     const refs = [...this.refs].map((r) => `'${r}'`).join(',');
-    const k = kind === 'capture' ? 'capture' : 'destroy';
+    const k = ({ capture: 'capture', destroy: 'destroy', takedown: 'takedown' } as const)[kind];
     // One psql command string = one transaction; only the last statement prints a row.
     const out = this.stack.sql(`
       create temp table parked on commit drop as

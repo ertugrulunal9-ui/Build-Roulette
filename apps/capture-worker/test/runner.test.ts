@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { BUCKET_EPHEMERAL } from '../src/backend';
+import { BUCKET_EPHEMERAL, BUCKET_SCREENSHOTS } from '../src/backend';
 import type { CaptureConfig } from '../src/capture-job';
 import { createLogger, silentLogger } from '../src/log';
 import { RenderError, type RenderRequest } from '../src/renderer';
@@ -71,6 +71,22 @@ describe('WorkerRunner', () => {
     const destroys = await runner.drain('destroy');
     expect(destroys.map((c) => c.outcome.result)).toEqual(['destroyed']);
     expect(await runner.drain('capture')).toEqual([]);
+  });
+
+  it('runs takedown jobs (T-024), and start() polls all three kinds by default', async () => {
+    const backend = new FakeBackend();
+    backend.addBuild({ taken_down_at: new Date().toISOString() });
+    backend.put(BUCKET_SCREENSHOTS, `${BATTLE}/${BUILD}.webp`, 'shot');
+    backend.addJob('takedown', BUILD);
+    runner = new WorkerRunner(
+      { backend, renderer: hangingRenderer(), capture: CONFIG, log: silentLogger },
+      { idleMinMs: 10, shutdownGraceMs: 0 },
+    );
+    runner.start();
+    await waitFor(() => backend.callsTo('completeTakedown').length === 1, 1000);
+    expect(backend.get(BUCKET_SCREENSHOTS, `${BATTLE}/${BUILD}.webp`)).toBeUndefined();
+    const kinds = new Set(backend.callsTo('claimJob').map(([k]) => k));
+    expect([...kinds].sort()).toEqual(['capture', 'destroy', 'takedown']);
   });
 
   it('a job that runs past jobTimeoutMs is aborted and given back with fail_job', async () => {

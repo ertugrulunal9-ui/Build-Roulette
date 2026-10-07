@@ -69,6 +69,7 @@ export class FakeBackend implements Backend {
       builder_id: USER,
       status: 'shipped',
       capture_status: 'pending',
+      taken_down_at: null,
       ...over,
     };
     this.builds.set(b.id, b);
@@ -136,6 +137,17 @@ export class FakeBackend implements Backend {
   completeDestroy(battleId: string): Promise<void> {
     this.record('completeDestroy', battleId);
     for (const j of this.jobs) if (j.kind === 'destroy' && j.ref_id === battleId) j.status = 'done';
+    return Promise.resolve();
+  }
+
+  completeTakedown(buildId: string): Promise<void> {
+    this.record('completeTakedown', buildId);
+    const b = this.builds.get(buildId);
+    if (!b) return Promise.reject(new BackendError('build_not_found', 404, 'build_not_found'));
+    if (!b.taken_down_at) {
+      return Promise.reject(new BackendError('not_taken_down', 400, 'not_taken_down'));
+    }
+    for (const j of this.jobs) if (j.kind === 'takedown' && j.ref_id === buildId) j.status = 'done';
     return Promise.resolve();
   }
 

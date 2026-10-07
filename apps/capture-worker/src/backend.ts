@@ -6,18 +6,20 @@
  * - `claim_job(kind)` returns a jobs row with a 2-minute lease, or nothing;
  * - `complete_capture(build, status, path)`; `fail_job(job, error)` (backoff and the final
  *   attempt are handled in SQL: at 5 attempts the job fails and the build's
- *   capture_status becomes `failed`); `complete_destroy(battle)`.
+ *   capture_status becomes `failed`); `complete_destroy(battle)`;
+ * - `complete_takedown(build)` (T-024, 20261008120500_takedown.sql) after a moderation
+ *   takedown's screenshot files are deleted.
  */
 
-export type JobKind = 'capture' | 'destroy';
+export type JobKind = 'capture' | 'destroy' | 'takedown';
 export type JobStatus = 'queued' | 'running' | 'done' | 'failed';
-export type BuildStatus = 'draft' | 'shipped' | 'auto_shipped' | 'dnf';
+export type BuildStatus = 'draft' | 'shipped' | 'auto_shipped' | 'dnf' | 'disqualified';
 export type CaptureStatus = 'pending' | 'captured' | 'fallback' | 'failed';
 
 export interface Job {
   id: number;
   kind: JobKind;
-  /** Build id (capture) or battle id (destroy). */
+  /** Build id (capture, takedown) or battle id (destroy). */
   ref_id: string;
   status: JobStatus;
   attempts: number;
@@ -31,6 +33,8 @@ export interface BuildRow {
   builder_id: string;
   status: BuildStatus;
   capture_status: CaptureStatus;
+  /** Set when a moderator took the build down (T-024). */
+  taken_down_at: string | null;
 }
 
 /** Most attempts a job gets (`claim_job` / `fail_job` in SQL). */
@@ -57,6 +61,8 @@ export interface Backend {
   /** Returns the job after the failure was recorded (`status: 'failed'` once given up). */
   failJob(jobId: number, error: string): Promise<Job>;
   completeDestroy(battleId: string): Promise<void>;
+  /** After a takedown's screenshot files are gone (stamps storage_deleted_at, job done). */
+  completeTakedown(buildId: string): Promise<void>;
   getBuild(buildId: string): Promise<BuildRow | null>;
   /** The battle's phase, or null if there is no such battle. */
   getBattlePhase(battleId: string): Promise<string | null>;

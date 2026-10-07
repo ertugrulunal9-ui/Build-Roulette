@@ -8,7 +8,8 @@
  *   carol  only autosaves (js + css); the deadline auto-ships it  → captured (autosave paths)
  *   dave   ships a throwing bundle without a thumb                → retry, then failed on the
  *                                                                    last attempt
- * Then every battle goes to DESTROYED and the destroy worker deletes the files.
+ * Then every battle goes to DESTROYED and the destroy worker deletes the files. Finally a
+ * moderator takes alice's build down (T-024) and the takedown worker deletes its screenshot.
  *
  *   pnpm --filter @br/capture-worker test:integration
  *
@@ -331,5 +332,57 @@ describe('capture + destroy workers on the local Supabase stack', () => {
           .join(',')}) and status = 'done'`,
       ),
     ).toBe('4');
+  });
+
+  it('a moderator takes a build down: hidden at once, then the takedown job deletes its screenshot', async () => {
+    const alice = player('alice');
+    const bob = player('bob');
+    const shot = `${alice.battle}/${alice.build}.webp`;
+    await publicScreenshot(shot);
+
+    const mod = await stack.createAdmin();
+    expect(await mod.rpc('is_admin')).toBe(true);
+    expect(await alice.user.rpc('is_admin')).toBe(false);
+    const td = (await mod.rpc('admin_take_down_build', {
+      p_build_id: alice.build,
+      p_note: 'capture integration',
+    })) as { disqualified: boolean; retried: boolean };
+    expect(td).toMatchObject({ disqualified: false, retried: false });
+
+    // Hidden at once: the public results (anon key) show no name and no screenshot.
+    const pub = await stack.request('POST', '/rest/v1/rpc/get_public_battle', {
+      body: { p_battle_id: alice.battle },
+    });
+    expect(pub.status).toBe(200);
+    expect((pub.body as { builds: unknown[] }).builds[0]).toMatchObject({
+      id: alice.build,
+      name: null,
+      screenshot_path: null,
+      taken_down: true,
+      final_rank: 1,
+    });
+
+    // The file itself is still there until the worker runs.
+    backend.own(alice.build);
+    const results = await runner.drain('takedown');
+    expect(results.map((r) => r.job.ref_id)).toEqual([alice.build]);
+    expect(results[0]?.outcome).toEqual({ result: 'taken_down', deleted: 1 });
+
+    const gone = await fetch(`${stack.env.API_URL}/storage/v1/object/public/screenshots/${shot}`);
+    expect(gone.status).toBeGreaterThanOrEqual(400);
+    expect(
+      stack.sql(
+        `select count(*) from storage.objects where bucket_id = 'screenshots' and name like '${alice.battle}/${alice.build}.%'`,
+      ),
+    ).toBe('0');
+    expect(
+      stack.sql(
+        `select json_build_object('deleted', t.storage_deleted_at is not null, 'job', j.status)
+           from private.build_takedowns t join public.jobs j on j.kind = 'takedown' and j.ref_id = t.build_id
+          where t.build_id = '${alice.build}'`,
+      ),
+    ).toBe('{"deleted" : true, "job" : "done"}');
+    // Nobody else's screenshot is touched.
+    await publicScreenshot(`${bob.battle}/${bob.build}.webp`);
   });
 });

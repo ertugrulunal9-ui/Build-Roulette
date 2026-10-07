@@ -10,7 +10,8 @@
  * ship): each build shows its votes per category, the category awards come first, and the
  * winner is highlighted.
  */
-import { isTerminalPhase } from '@br/game';
+import { VOTE_CATEGORIES, isTerminalPhase } from '@br/game';
+import Link from 'next/link';
 import { myBuild, type SoloState } from '../../lib/solo/controller';
 import { CAPTURE_TEXT, formatCompletion, formatCountdown } from '../../lib/solo/format';
 import type { BattleSnapshot, SnapshotBuild } from '../../lib/solo/types';
@@ -21,6 +22,31 @@ import { RevealPane } from '../solo/RevealPane';
 interface RoomResultsProps {
   state: SoloState;
   remaining: number | null;
+  /**
+   * category → build id of the player's picks that never counted (offline until the vote
+   * closed, or a click that arrived just after): RESULTS says so instead of hiding it.
+   */
+  lostVotes?: Readonly<Record<string, string>>;
+}
+
+/** "Your pick for Best Build (“Snack Overflow”) was not counted…", or null. */
+export function lostVotesText(
+  snapshot: BattleSnapshot,
+  lost: Readonly<Record<string, string>> | undefined,
+): string | null {
+  const entries = Object.entries(lost ?? {});
+  if (entries.length === 0) return null;
+  const label = (slug: string) =>
+    snapshot.vote_categories?.find((c) => c.slug === slug)?.label ??
+    VOTE_CATEGORIES.find((c) => c.slug === slug)?.label ??
+    slug;
+  const picks = entries.map(([slug, buildId]) => {
+    const name = snapshot.builds.find((b) => b.id === buildId)?.name;
+    return name ? `${label(slug)} (“${name}”)` : label(slug);
+  });
+  const list =
+    picks.length === 1 ? picks[0] : `${picks.slice(0, -1).join(', ')} and ${String(picks.at(-1))}`;
+  return `Not counted: your pick${picks.length === 1 ? '' : 's'} for ${String(list)} did not reach the server before voting closed (the connection was down).`;
 }
 
 const MEDALS = ['🥇', '🥈', '🥉'];
@@ -37,13 +63,16 @@ const STATUS_BADGE: Partial<Record<SnapshotBuild['status'], { text: string; tone
   },
 };
 
-export function RoomResults({ state, remaining }: RoomResultsProps) {
+export function RoomResults({ state, remaining, lostVotes }: RoomResultsProps) {
   const snapshot = state.snapshot;
   if (!snapshot) throw new Error('RoomResults needs a snapshot');
   const destroyed = isTerminalPhase(snapshot.battle.phase);
   const mine = myBuild(snapshot);
   const isPlayer = snapshot.me.is_player;
   const shipped = mine?.status === 'shipped' || mine?.status === 'auto_shipped';
+  // The last look runs the player's own final build; without one there is nothing to run
+  // (a DNF, e.g. a phone player), so the pane would only take a phone's whole screen.
+  const lastLook = isPlayer && shipped;
   const pendingCaptures = snapshot.builds.some(
     (b) =>
       (b.status === 'shipped' || b.status === 'auto_shipped') && b.capture_status === 'pending',
@@ -59,6 +88,8 @@ export function RoomResults({ state, remaining }: RoomResultsProps) {
         ? 'Last look · destroying as soon as the screenshots are done…'
         : 'Last look · destroying…';
 
+  const lost = lostVotesText(snapshot, lostVotes);
+
   return (
     <main
       className="mx-auto flex min-h-dvh max-w-6xl flex-col gap-6 px-4 py-8"
@@ -68,27 +99,45 @@ export function RoomResults({ state, remaining }: RoomResultsProps) {
         <p className="text-sm font-semibold tracking-widest text-zinc-500 uppercase">
           {destroyed ? 'Destroy build' : 'Results'}
         </p>
-        <h1 className="text-4xl font-black tracking-tight">{snapshot.challenge.build.text}</h1>
+        <h1 className="text-3xl font-black tracking-tight break-words sm:text-4xl">
+          {snapshot.challenge.build.text}
+        </h1>
         <ChallengeCards challenge={snapshot.challenge} compact />
         <p className="text-sm text-zinc-500" data-testid="ranking-rule">
           {votedResults(snapshot)
             ? 'Ranked by votes: Best Build first, then all votes, then the earlier ship.'
             : 'Ranked by completion time.'}
         </p>
+        {lost && (
+          <p
+            role="alert"
+            data-testid="lost-votes"
+            className="rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-900 dark:border-amber-800 dark:bg-amber-950/60 dark:text-amber-100"
+          >
+            ⚠ {lost}
+          </p>
+        )}
       </header>
 
       <div
-        className={`grid gap-6 ${isPlayer ? 'lg:grid-cols-[minmax(0,1fr)_minmax(0,0.9fr)]' : ''}`}
+        className={`grid grid-cols-1 gap-6 ${lastLook ? 'lg:grid-cols-[minmax(0,1fr)_minmax(0,0.9fr)]' : ''}`}
       >
         <section className="flex flex-col gap-3" aria-label="Ranking">
           <RankedBuilds snapshot={snapshot} />
-          {!isPlayer && (
+          {!lastLook && (
             <p className="text-sm text-zinc-500" data-testid="last-look">
               {caption}
             </p>
           )}
+          {mine && !shipped && (
+            <p className="text-sm text-zinc-500" data-testid="no-last-look">
+              {mine.status === 'disqualified'
+                ? 'Your build was disqualified.'
+                : 'You did not ship this time. There is always the rematch.'}
+            </p>
+          )}
         </section>
-        {isPlayer && (
+        {lastLook && (
           <section className="flex flex-col gap-3">
             <RevealPane
               build={state.reveal.build}
@@ -96,13 +145,6 @@ export function RoomResults({ state, remaining }: RoomResultsProps) {
               destroy={state.destroy}
               caption={caption}
             />
-            {mine && !shipped && (
-              <p className="text-sm text-zinc-500">
-                {mine.status === 'disqualified'
-                  ? 'Your build was disqualified.'
-                  : 'You did not ship this time. There is always the rematch.'}
-              </p>
-            )}
           </section>
         )}
       </div>
@@ -145,7 +187,7 @@ function RankedBuilds({ snapshot }: { snapshot: BattleSnapshot }) {
             data-capture={shipped ? b.capture_status : 'none'}
             data-winner={winner ? 'true' : 'false'}
             data-total-votes={voted ? b.total_votes : ''}
-            className={`relative flex gap-4 rounded-2xl border bg-white p-3 shadow-sm dark:bg-zinc-900 ${
+            className={`relative flex gap-3 rounded-2xl border bg-white p-3 shadow-sm sm:gap-4 dark:bg-zinc-900 ${
               winner
                 ? 'border-amber-400 bg-gradient-to-r from-amber-50 to-white ring-4 ring-amber-300/50 dark:border-amber-500 dark:from-amber-950/60 dark:to-zinc-900'
                 : isMe
@@ -161,7 +203,7 @@ function RankedBuilds({ snapshot }: { snapshot: BattleSnapshot }) {
                 🏆 Winner
               </span>
             )}
-            <div className="flex w-10 shrink-0 flex-col items-center justify-center text-center">
+            <div className="flex w-8 shrink-0 flex-col items-center justify-center text-center sm:w-10">
               <span className="text-2xl" aria-hidden="true">
                 {b.final_rank !== null ? (MEDALS[b.final_rank - 1] ?? '🏅') : '·'}
               </span>
@@ -169,7 +211,7 @@ function RankedBuilds({ snapshot }: { snapshot: BattleSnapshot }) {
                 {b.final_rank !== null ? `#${String(b.final_rank)}` : '–'}
               </span>
             </div>
-            <div className="relative aspect-[16/10] w-36 shrink-0 overflow-hidden rounded-lg bg-zinc-100 sm:w-48 dark:bg-zinc-800">
+            <div className="relative aspect-[16/10] w-24 shrink-0 self-start overflow-hidden rounded-lg bg-zinc-100 sm:w-48 sm:self-auto dark:bg-zinc-800">
               {hasShot && b.screenshot_path ? (
                 // eslint-disable-next-line @next/next/no-img-element -- a public Supabase Storage URL
                 <img
@@ -185,12 +227,25 @@ function RankedBuilds({ snapshot }: { snapshot: BattleSnapshot }) {
               )}
             </div>
             <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-              <p className="truncate text-lg font-black" data-testid="ranked-build-name">
+              <p
+                className="truncate text-base font-black sm:text-lg"
+                data-testid="ranked-build-name"
+              >
                 {b.name ??
                   (b.status === 'dnf' ? 'Did not finish' : `${nameOf(b.builder_id)}'s build`)}
               </p>
               <p className="text-sm text-zinc-600 dark:text-zinc-400">
-                by <strong>{nameOf(b.builder_id)}</strong>
+                by{' '}
+                <Link
+                  href={`/u/${b.builder_id}`}
+                  className="font-bold underline decoration-zinc-300 underline-offset-2 hover:decoration-current dark:decoration-zinc-600"
+                  data-testid="player-history-link"
+                  // A new tab: the room (and the last look) keeps running here.
+                  target="_blank"
+                  title={`${nameOf(b.builder_id)}'s battles (opens a new tab)`}
+                >
+                  {nameOf(b.builder_id)}
+                </Link>
                 {isMe && ' (you)'}
                 {shipped && b.completion_ms !== null && (
                   <>

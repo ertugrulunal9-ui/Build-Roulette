@@ -42,7 +42,7 @@ import {
   type SyncNotice,
   type SyncTimings,
 } from './sync';
-import type { Activity, RoomSnapshot } from './types';
+import type { Activity, RoomSettingsPatch, RoomSnapshot } from './types';
 
 /** Where the display name is remembered between visits (shared with /play). */
 export interface NameStore {
@@ -305,8 +305,17 @@ export class RoomController {
   }
 
   setMaxPlayers(maxPlayers: number): Promise<void> {
+    return this.updateSettings({ max_players: maxPlayers });
+  }
+
+  /**
+   * Host only, lobby only: changes some room settings (`max_players`, `reveal_vote`,
+   * `reveal_slot_s`, `voting_s`; `null` = back to the default). The server validates the
+   * ranges (`invalid_settings`); the room event brings the new settings to everyone.
+   */
+  updateSettings(patch: RoomSettingsPatch): Promise<void> {
     return this.action('settings', async (api, roomId) => {
-      await api.updateSettings(roomId, { max_players: maxPlayers });
+      await api.updateSettings(roomId, patch);
     });
   }
 

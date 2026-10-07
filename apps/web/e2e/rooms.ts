@@ -3,6 +3,7 @@
  * contexts as anonymous players, joining, the BUILD screen, shipping, and IndexedDB reads.
  */
 import {
+  devices,
   expect,
   type Browser,
   type BrowserContext,
@@ -45,6 +46,44 @@ export async function newPlayer(
   const errors: string[] = [];
   page.on('pageerror', (e) => errors.push(e.message));
   return { name, context, page, errors };
+}
+
+/**
+ * A phone: Playwright's iPhone 13 profile (390×664 viewport, touch, mobile, DPR 3) in the
+ * same Chromium as everyone else. It matches `(hover: none) and (pointer: coarse)`, which
+ * is what the app checks (src/lib/device.ts).
+ */
+export async function newPhone(browser: Browser, info: TestInfo, name: string): Promise<Player> {
+  const baseURL = info.project.use.baseURL;
+  // The profile's default browser is WebKit; newContext only takes its device settings.
+  const phone = devices['iPhone 13'];
+  const context = await browser.newContext({ ...(baseURL ? { baseURL } : {}), ...phone });
+  const page = await context.newPage();
+  const errors: string[] = [];
+  page.on('pageerror', (e) => errors.push(e.message));
+  return { name, context, page, errors };
+}
+
+/** Nothing on the page is wider than the viewport (no horizontal scrolling). */
+export async function expectNoHorizontalScroll(page: Page): Promise<void> {
+  // On a mobile viewport, content wider than the device makes Chromium widen the layout
+  // viewport (`innerWidth` grows with it), so measure against the device width instead:
+  // `clientWidth` of the root (the `width=device-width` viewport) and the visual viewport.
+  const widths = await page.evaluate(() => ({
+    scroll: document.documentElement.scrollWidth,
+    body: document.body.scrollWidth,
+    viewport: Math.min(
+      document.documentElement.clientWidth,
+      window.visualViewport?.width ?? Number.POSITIVE_INFINITY,
+    ),
+    innerWidth: window.innerWidth,
+  }));
+  expect(
+    widths.scroll,
+    `page wider than the viewport: ${JSON.stringify(widths)}`,
+  ).toBeLessThanOrEqual(widths.viewport);
+  expect(widths.body).toBeLessThanOrEqual(widths.viewport);
+  expect(widths.innerWidth, 'the layout viewport was widened').toBeLessThanOrEqual(widths.viewport);
 }
 
 /** Runs in the page (an init script): `Date` reads a clock that is `offset` ms off. */

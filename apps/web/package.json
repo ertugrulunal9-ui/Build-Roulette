@@ -16,6 +16,7 @@
     "test:e2e": "pnpm run build && playwright test",
     "test:e2e:solo": "pnpm run build && playwright test -c playwright.solo.config.ts",
     "test:e2e:multi": "pnpm run build && playwright test -c playwright.multi.config.ts",
+    "test:e2e:mobile": "pnpm run build && playwright test -c playwright.multi.config.ts multiplayer-mobile",
     "test:e2e:chaos": "pnpm run build && playwright test -c playwright.chaos.config.ts",
     "cf:build": "NEXT_TELEMETRY_DISABLED=1 WRANGLER_SEND_METRICS=false opennextjs-cloudflare build",
     "cf:preview": "NEXT_TELEMETRY_DISABLED=1 WRANGLER_SEND_METRICS=false opennextjs-cloudflare preview",

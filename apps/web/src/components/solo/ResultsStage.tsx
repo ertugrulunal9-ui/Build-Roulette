@@ -74,7 +74,7 @@ export function ResultsStage({ controller, state, remaining }: ResultsStageProps
         <AwardBadges awards={awards} />
       </header>
 
-      <div className="grid gap-6 lg:grid-cols-2">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <section className="flex flex-col gap-4">
           <figure className="overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
             <div className="relative aspect-[16/10] bg-zinc-100 dark:bg-zinc-800">
@@ -135,6 +135,13 @@ export function ResultsStage({ controller, state, remaining }: ResultsStageProps
                   className="rounded-lg bg-zinc-900 px-4 py-2 text-sm font-bold text-white dark:bg-zinc-100 dark:text-zinc-900"
                 >
                   View the permanent results
+                </Link>
+                <Link
+                  href={`/u/${snapshot.me.user_id}`}
+                  data-testid="my-history-link"
+                  className="rounded-lg border border-zinc-300 px-4 py-2 text-sm font-semibold dark:border-zinc-700"
+                >
+                  Your battle history
                 </Link>
                 <button
                   type="button"

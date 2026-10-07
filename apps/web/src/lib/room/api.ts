@@ -15,7 +15,13 @@ import type {
 } from '../solo/types';
 import type { RevealVoteApi } from './reveal-vote';
 import type { ChannelStatus, RealtimePort, RoomSyncApi, TopicSubscription } from './sync';
-import type { HeartbeatResult, JoinResult, RoomSettings, RoomSnapshot } from './types';
+import type {
+  HeartbeatResult,
+  JoinResult,
+  RoomSettings,
+  RoomSettingsPatch,
+  RoomSnapshot,
+} from './types';
 
 export interface RoomApi extends RoomSyncApi, RevealVoteApi {
   /** Signs in anonymously if needed; returns the user id. */
@@ -26,7 +32,7 @@ export interface RoomApi extends RoomSyncApi, RevealVoteApi {
   joinRoom(code: string, displayName: string): Promise<JoinResult>;
   leaveRoom(roomId: string): Promise<void>;
   setReady(roomId: string, ready: boolean): Promise<void>;
-  updateSettings(roomId: string, settings: RoomSettings): Promise<RoomSettings>;
+  updateSettings(roomId: string, settings: RoomSettingsPatch): Promise<RoomSettings>;
   kickMember(roomId: string, userId: string): Promise<void>;
   /** Returns the new battle's id. */
   startBattle(roomId: string): Promise<string>;
@@ -94,7 +100,7 @@ export class SupabaseRoomApi implements RoomApi {
     await this.rpc('set_ready', { p_room_id: roomId, p_ready: ready });
   }
 
-  updateSettings(roomId: string, settings: RoomSettings): Promise<RoomSettings> {
+  updateSettings(roomId: string, settings: RoomSettingsPatch): Promise<RoomSettings> {
     return this.rpc<RoomSettings>('update_room_settings', {
       p_room_id: roomId,
       p_settings: settings,

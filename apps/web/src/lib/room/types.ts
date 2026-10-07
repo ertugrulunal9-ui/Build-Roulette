@@ -22,6 +22,12 @@ export interface RoomSettings {
   reveal_vote?: boolean;
 }
 
+/**
+ * A change to the room settings (`update_room_settings` merges it): a key with `null`
+ * goes back to the server default (e.g. `reveal_slot_s: null` = by the number of builds).
+ */
+export type RoomSettingsPatch = { [K in keyof RoomSettings]?: RoomSettings[K] | null };
+
 /** A member in `get_room_snapshot.members` (kicked members are not listed). */
 export interface RoomMember {
   user_id: string;

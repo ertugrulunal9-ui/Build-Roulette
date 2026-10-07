@@ -2,11 +2,12 @@
 
 /**
  * The "last look": the shipped bundle running in a fresh preview iframe in **reveal** mode
- * (no popups, no modals, no clipboard; docs/03 §3.9) until DESTROY. When the build is
- * destroyed (or the pane unmounts) the sandbox origin's storage is wiped in a new iframe,
- * then the preview is disposed: nothing of the build stays in this tab.
+ * (no popups, no modals, no clipboard; docs/03 §3.9) until DESTROY. The sandbox origin's
+ * storage is wiped before the bundle loads (so nothing an earlier build stored there, e.g.
+ * during the REVEAL, can reach it), and again when the build is destroyed (or the pane
+ * unmounts), then the preview is disposed: nothing of the build stays in this tab.
  */
-import { PreviewHandle, type PreviewBuild } from '@br/runtime';
+import { PreviewHandle, type CrashReason, type PreviewBuild } from '@br/runtime';
 import { useEffect, useRef, useState } from 'react';
 import { playgroundConfig } from '../../lib/playground/config';
 import type { DestroyStage } from '../../lib/solo/controller';
@@ -21,7 +22,8 @@ interface RevealPaneProps {
 
 export function RevealPane({ build, status, destroy, caption }: RevealPaneProps) {
   const hostRef = useRef<HTMLDivElement>(null);
-  const [crashed, setCrashed] = useState(false);
+  /** Why the watchdog stopped the preview (it froze, or it never started), if it did. */
+  const [crashed, setCrashed] = useState<CrashReason | null>(null);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -36,13 +38,17 @@ export function RevealPane({ build, status, destroy, caption }: RevealPaneProps)
       shellUrl: playgroundConfig.shellUrl,
       mode: 'reveal',
     });
-    const offCrash = preview.on('crash', () => {
-      setCrashed(true);
+    const offCrash = preview.on('crash', ({ reason }) => {
+      setCrashed(reason);
     });
+    // Wipe what an earlier build (another battle's, or a reveal in this tab) left on the
+    // sandbox origin, in a fresh iframe, before this one loads: the load waits for the new
+    // shell, which handles the wipe first (as in the REVEAL spotlight).
+    void preview.resetStorage(10_000).catch(() => undefined);
     preview.load(build, 'reveal');
     return () => {
       offCrash();
-      setCrashed(false);
+      setCrashed(null);
       // Wipe what the build stored on the sandbox origin, in a new iframe, then let it go.
       let wiping: Promise<unknown>;
       try {
@@ -84,8 +90,14 @@ export function RevealPane({ build, status, destroy, caption }: RevealPaneProps)
           </p>
         )}
         {crashed && destroy === 'none' && (
-          <p className="absolute inset-0 grid place-items-center bg-zinc-100 p-6 text-center text-sm dark:bg-zinc-900">
-            The build stopped responding.
+          <p
+            className="absolute inset-0 grid place-items-center bg-zinc-100 p-6 text-center text-sm dark:bg-zinc-900"
+            data-testid="reveal-crashed"
+            data-reason={crashed}
+          >
+            {crashed === 'handshake-timeout'
+              ? 'Your build couldn’t start here: the preview sandbox never answered.'
+              : 'Your build froze (it stopped responding), so it was stopped.'}
           </p>
         )}
         {destroy === 'animating' && (

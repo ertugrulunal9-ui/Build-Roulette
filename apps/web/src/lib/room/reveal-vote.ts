@@ -21,13 +21,16 @@
  *   quiet no-op plus a refetch: the realtime events tell everyone what really happened.
  * - **Ballot:** `get_my_votes` restores the caller's own choices (after a refresh too);
  *   `cast_vote` per category, revotes allowed, one request at a time per category (the
- *   latest click wins). Every refusal is kept per category for the UI.
+ *   latest click wins). Every refusal is kept per category for the UI. **No silent loss:**
+ *   a pick that cannot reach the server (offline) stays `unsent` and is sent again every
+ *   `retryMs` and with every fresh snapshot until it lands; one that never landed before
+ *   VOTING ended (or arrived just after) becomes `lost`, which RESULTS shows the player.
  * - **Memory:** bundles are dropped once REVEAL is over; everything at DESTROY.
  *
  * The snapshot comes from the room's sync engine through `receive()`.
  */
 import { isTerminalPhase } from '@br/game';
-import type { PreviewBuild } from '@br/runtime';
+import type { CrashReason, PreviewBuild } from '@br/runtime';
 import { realClock, type SoloClock, type TimerHandle } from '../solo/controller';
 import { toGameError, type GameError } from '../solo/errors';
 import type {
@@ -95,6 +98,16 @@ export interface BallotState {
   loaded: boolean;
   /** category → build id being sent. */
   pending: Readonly<Record<string, string>>;
+  /**
+   * category → build id the server could not be reached for (offline): sent again every
+   * `retryMs` and with every fresh snapshot, until it lands or VOTING ends.
+   */
+  unsent: Readonly<Record<string, string>>;
+  /**
+   * category → build id picked but never counted: still unsent when VOTING ended, or
+   * refused because the vote had just closed. RESULTS tells the player.
+   */
+  lost: Readonly<Record<string, string>>;
   /** category → why the last vote in it was refused. */
   errors: Readonly<Record<string, GameError>>;
 }
@@ -110,8 +123,14 @@ export interface RevealVoteState {
   thumbs: Readonly<Record<string, string | null>>;
   /** Build ids this viewer chose not to run (local only). */
   skipped: readonly string[];
-  /** Build ids whose preview froze in this tab (the watchdog fired). */
+  /** Build ids whose preview froze in this tab (the watchdog fired: no pong for 5 s). */
   frozen: readonly string[];
+  /**
+   * Build ids whose preview never started in this tab (the shell did not complete its
+   * handshake within 10 s: blocked, offline, or a device that could not load it). Shown
+   * differently from a freeze: the build did nothing wrong.
+   */
+  failedToStart: readonly string[];
   host: { pending: 'next' | 'skip' | null; error: GameError | null };
   ballot: BallotState;
 }
@@ -125,8 +144,17 @@ export function initialRevealVoteState(battleId: string): RevealVoteState {
     thumbs: {},
     skipped: [],
     frozen: [],
+    failedToStart: [],
     host: { pending: null, error: null },
-    ballot: { votes: {}, complete: false, loaded: false, pending: {}, errors: {} },
+    ballot: {
+      votes: {},
+      complete: false,
+      loaded: false,
+      pending: {},
+      unsent: {},
+      lost: {},
+      errors: {},
+    },
   };
 }
 
@@ -145,6 +173,12 @@ export function spotlightBuild(
 const QUIET_HOST_ERRORS = new Set(['not_host', 'wrong_phase', 'invalid_version']);
 /** Vote errors after which the snapshot is surely stale. */
 const STALE_VOTE_ERRORS = new Set(['wrong_phase', 'deadline_passed', 'not_a_member', 'kicked']);
+/**
+ * Vote failures that say nothing about the vote itself (the request did not get an answer):
+ * the pick is kept and sent again. `cast_vote` is an upsert, so a repeat is harmless even
+ * when the first request did land.
+ */
+const TRANSIENT_VOTE_ERRORS = new Set(['network', 'unknown', 'rate_limited']);
 
 /** The phases that use the reveal list (RESULTS shows the screenshots instead). */
 const SHOW_PHASES = new Set(['reveal', 'voting']);
@@ -169,6 +203,8 @@ export class RevealVoteController {
   private ballotLoading = false;
   private thumbsStarted = false;
   private retryTimer: TimerHandle | null = null;
+  /** Sends the picks that are waiting for the connection again. */
+  private voteRetryTimer: TimerHandle | null = null;
   /** Bundle downloads in flight, by build id. */
   private readonly bundleLoads = new Set<string>();
   /** category → the choice to send once the request in flight settles. */
@@ -201,6 +237,7 @@ export class RevealVoteController {
     if (this.disposed || snapshot.battle.id !== this.state.battleId) return;
     this.snapshot = snapshot;
     const phase = snapshot.battle.phase;
+    if (phase !== 'voting') this.closeBallot();
     if (isTerminalPhase(phase)) {
       this.release();
       return;
@@ -221,6 +258,8 @@ export class RevealVoteController {
     if (phase === 'voting' && snapshot.me.is_voter && !this.state.ballot.loaded) {
       void this.loadBallot();
     }
+    // A fresh snapshot means the server answers again: send what is waiting at once.
+    if (phase === 'voting') this.flushUnsent();
   }
 
   // --- Viewer intents (local only) ----------------------------------------------------
@@ -231,18 +270,23 @@ export class RevealVoteController {
     this.patch({ skipped: [...this.state.skipped, buildId] });
   }
 
-  /** Run it again (after a skip or a freeze): a fresh preview. */
+  /** Run it again (after a skip, a freeze or a failed start): a fresh preview. */
   watch(buildId: string): void {
     this.patch({
       skipped: this.state.skipped.filter((id) => id !== buildId),
       frozen: this.state.frozen.filter((id) => id !== buildId),
+      failedToStart: this.state.failedToStart.filter((id) => id !== buildId),
     });
   }
 
-  /** The preview's watchdog gave up on this build (no pong for 5 s). */
-  markFrozen(buildId: string): void {
-    if (this.state.frozen.includes(buildId)) return;
-    this.patch({ frozen: [...this.state.frozen, buildId] });
+  /**
+   * The preview's watchdog gave up on this build: `heartbeat-timeout` (no pong for 5 s: it
+   * froze) or `handshake-timeout` (the shell never answered: it could not start).
+   */
+  markFrozen(buildId: string, reason: CrashReason = 'heartbeat-timeout'): void {
+    const key = reason === 'handshake-timeout' ? 'failedToStart' : 'frozen';
+    if (this.state[key].includes(buildId)) return;
+    this.patch({ [key]: [...this.state[key], buildId] });
   }
 
   // --- Host intents -------------------------------------------------------------------
@@ -299,13 +343,23 @@ export class RevealVoteController {
       this.patch({ ballot: { ...ballot, pending: { ...ballot.pending, [category]: buildId } } });
       return;
     }
-    if (ballot.votes[category] === buildId) return;
+    if (ballot.votes[category] === buildId) {
+      // Back to the confirmed choice: a pick still waiting for the connection is dropped.
+      if (ballot.unsent[category] !== undefined) {
+        this.patchBallot({
+          unsent: without(ballot.unsent, category),
+          errors: without(ballot.errors, category),
+        });
+      }
+      return;
+    }
     void this.send(snap.battle.id, category, buildId);
   }
 
   private async send(battleId: string, category: string, buildId: string): Promise<void> {
     this.patchBallot({
       pending: { ...this.state.ballot.pending, [category]: buildId },
+      unsent: without(this.state.ballot.unsent, category),
       errors: without(this.state.ballot.errors, category),
     });
     let result: CastVoteResult | null = null;
@@ -317,21 +371,89 @@ export class RevealVoteController {
     }
     if (this.disposed) return;
     const pending = without(this.state.ballot.pending, category);
+    // The latest click while this request was in flight.
+    const next = this.queued.get(category);
+    this.queued.delete(category);
+    const latest = next ?? buildId;
+
     if (result) {
       this.patchBallot({
         pending,
         votes: { ...this.state.ballot.votes, [category]: result.build_id },
         complete: result.ballot_complete,
       });
-    } else if (error) {
-      this.patchBallot({ pending, errors: { ...this.state.ballot.errors, [category]: error } });
-      if (STALE_VOTE_ERRORS.has(error.code)) void this.deps.refetch().catch(() => undefined);
+      if (latest !== result.build_id) void this.send(battleId, category, latest);
+      return;
     }
-    const next = this.queued.get(category);
-    this.queued.delete(category);
-    if (next !== undefined && !error && next !== this.state.ballot.votes[category]) {
+    if (!error) return;
+    const ballot = this.state.ballot;
+
+    if (TRANSIENT_VOTE_ERRORS.has(error.code) && this.snapshot?.battle.phase === 'voting') {
+      if (latest === ballot.votes[category]) {
+        // The latest click went back to the confirmed choice: nothing left to send.
+        this.patchBallot({ pending });
+        return;
+      }
+      // The server could not be reached (offline, a dropped connection): the pick is kept
+      // and sent again until it lands or VOTING ends; the UI says it is not saved yet.
+      this.patchBallot({
+        pending,
+        unsent: { ...ballot.unsent, [category]: latest },
+        errors: { ...ballot.errors, [category]: error },
+      });
+      this.scheduleVoteRetry();
+      return;
+    }
+
+    const errors = { ...ballot.errors, [category]: error };
+    if (STALE_VOTE_ERRORS.has(error.code)) {
+      // VOTING is over (or this player is out): the pick did not count. Say so in RESULTS
+      // when it was the voting deadline.
+      const closed = error.code === 'wrong_phase' || error.code === 'deadline_passed';
+      this.patchBallot({
+        pending,
+        errors,
+        lost: closed ? { ...ballot.lost, [category]: latest } : ballot.lost,
+      });
+      void this.deps.refetch().catch(() => undefined);
+      return;
+    }
+    // Refused for this build only (e.g. not_votable): a different later click still goes.
+    this.patchBallot({ pending, errors });
+    if (next !== undefined && next !== buildId && next !== this.state.ballot.votes[category]) {
       void this.send(battleId, category, next);
     }
+  }
+
+  /** Sends again every pick that is waiting for the connection (one request per category). */
+  private flushUnsent(): void {
+    const snap = this.snapshot;
+    if (snap?.battle.phase !== 'voting') return;
+    for (const [category, buildId] of Object.entries(this.state.ballot.unsent)) {
+      if (this.state.ballot.pending[category] === undefined) {
+        void this.send(snap.battle.id, category, buildId);
+      }
+    }
+  }
+
+  private scheduleVoteRetry(): void {
+    if (this.voteRetryTimer !== null || this.disposed) return;
+    this.voteRetryTimer = this.clock.setTimeout(() => {
+      this.voteRetryTimer = null;
+      this.flushUnsent();
+    }, this.retryMs);
+  }
+
+  /**
+   * VOTING is over: picks that never reached the server (offline until the end) did not
+   * count. They are kept as `lost`, so RESULTS can say so; nothing is retried any more.
+   */
+  private closeBallot(): void {
+    if (this.voteRetryTimer !== null) this.clock.clearTimeout(this.voteRetryTimer);
+    this.voteRetryTimer = null;
+    const ballot = this.state.ballot;
+    if (Object.keys(ballot.unsent).length === 0) return;
+    this.patchBallot({ unsent: {}, lost: { ...ballot.lost, ...ballot.unsent } });
   }
 
   dismissVoteError(category: string): void {
@@ -487,6 +609,8 @@ export class RevealVoteController {
     this.disposed = true;
     if (this.retryTimer !== null) this.clock.clearTimeout(this.retryTimer);
     this.retryTimer = null;
+    if (this.voteRetryTimer !== null) this.clock.clearTimeout(this.voteRetryTimer);
+    this.voteRetryTimer = null;
     this.queued.clear();
     this.listeners.clear();
   }

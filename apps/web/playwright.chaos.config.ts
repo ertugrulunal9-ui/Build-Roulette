@@ -4,8 +4,9 @@ import { defineConfig } from '@playwright/test';
  * Chaos e2e for rooms (`e2e/chaos*.spec.ts`, docs/04 §4.8 and the M3 exit criteria): up to
  * 10 browser contexts against the REAL local Supabase stack WITH Realtime, pg_cron and the
  * capture worker, with network drops, skewed clocks, refreshes, a host who vanishes,
- * everyone gone at T-0, an abandoned battle and a full room:
- * `pnpm --filter @br/web test:e2e:chaos` (builds first). About 8 minutes: the battles run
+ * everyone gone at T-0, an abandoned battle, REVEAL and VOTE under chaos, an 8-player battle
+ * and a full room:
+ * `pnpm --filter @br/web test:e2e:chaos` (builds first). About 13 minutes: the battles run
  * real (shortened) deadlines. The stack must be
  * up with Realtime (`supabase start` without `realtime` in `-x`, see supabase/README.md);
  * the tests move deadlines with psql as the superuser and commit their data.

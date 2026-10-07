@@ -1020,15 +1020,41 @@ test('Realtime stops delivering the battle events mid-REVEAL (channels still sub
   dropRealtimeDatabaseFeed();
   expect(realtimeDatabaseFeedUp()).toBe(false);
   counting = true;
+  // The capture worker screenshots the builds meanwhile: more versions nobody hears of, so
+  // the host's Next is likely to go out with a stale version (resent by the controller).
+  await expect
+    .poll(
+      () =>
+        sql(
+          `select count(*) from public.builds where battle_id = '${battleId}' and capture_status = 'pending'`,
+        ),
+      { timeout: MIN, intervals: [250] },
+    )
+    .toBe('0');
 
   // The host moves on: her own page and everyone else's learn it from the heartbeat's
   // battle version check (every 10 s), not from an event.
+  const sentVersions: number[] = [];
+  una.page.on('request', (r) => {
+    if (r.url().endsWith('/rpc/reveal_next')) {
+      sentVersions.push((r.postDataJSON() as { p_expected_version: number }).p_expected_version);
+    }
+  });
   await clickRouted(una.page.getByTestId('reveal-next'));
   for (const p of all) {
     await expect(p.page.getByTestId('reveal-stage')).toHaveAttribute('data-index', '1', {
       timeout: 25_000,
     });
   }
+  // One click: sent once, or resent with the server's version when a capture made it stale.
+  info.annotations.push({ type: 'reveal_next versions', description: sentVersions.join(',') });
+  console.log(`reveal_next expected versions: ${sentVersions.join(', ')}`);
+  expect(sentVersions.length).toBeGreaterThanOrEqual(1);
+  expect(
+    sql(
+      `select count(*) from public.battle_events where battle_id = '${battleId}' and payload ->> 'reason' = 'host_next'`,
+    ),
+  ).toBe('1');
   await expectSameSpotlight(all);
   await clickRouted(una.page.getByTestId('skip-to-vote'));
   for (const p of all) {

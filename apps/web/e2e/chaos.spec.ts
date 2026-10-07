@@ -19,7 +19,13 @@ import {
   writeApp,
   type Player,
 } from './rooms';
-import { assertUuid, ephemeralText, sql } from './stack';
+import {
+  assertUuid,
+  dropRealtimeDatabaseFeed,
+  ephemeralText,
+  realtimeDatabaseFeedUp,
+  sql,
+} from './stack';
 
 /**
  * Rooms under chaos (playwright.chaos.config.ts, docs/04 §4.8, docs/06 M3 exit criteria):
@@ -975,6 +981,95 @@ test('a minute of steady typing keeps the room channel (Realtime closes channels
         where room_id = (select room_id from public.battles where id = '${battleId}')`);
   await expect.poll(() => phaseOf(battleId), { timeout: 30_000 }).toBe('abandoned');
   await expectTerminal(battleId, { phase: 'abandoned', shipped: {} });
+});
+
+// ─── Realtime loses the database feed ─────────────────────────────────────────────────
+
+test('Realtime stops delivering the battle events mid-REVEAL (channels still subscribed): every page still follows the reveal, the vote and the results', async ({
+  browser,
+}, info) => {
+  test.setTimeout(5 * MIN);
+  const una = await newPlayer(browser, info, 'Una Host');
+  const vic = await newPlayer(browser, info, 'Vic Deaf');
+  const wes = await newPlayer(browser, info, 'Wes Deaf');
+  const all = [una, vic, wes];
+  // Battle events (broadcasts on the battle topic) each page receives once the feed is down.
+  let counting = false;
+  const battleFrames = all.map(() => 0);
+  for (const [i, p] of all.entries()) {
+    p.page.on('websocket', (ws) => {
+      ws.on('framereceived', (f) => {
+        const text = typeof f.payload === 'string' ? f.payload : f.payload.toString();
+        if (counting && text.includes('realtime:battle:') && text.includes('"version"')) {
+          battleFrames[i] = (battleFrames[i] ?? 0) + 1;
+        }
+      });
+    });
+  }
+  const code = await gather(all);
+  const battleId = await startBattle(code, all, 120);
+  for (const [i, p] of all.entries()) {
+    await ship(p.page, `${p.name} build`, { last: i === all.length - 1 });
+  }
+  await expect.poll(() => phaseOf(battleId), { timeout: MIN }).toBe('reveal');
+  await expectSameSpotlight(all);
+  const versionBefore = Number(sql(`select version from public.battles where id = '${battleId}'`));
+
+  // From now on no battle broadcast reaches anyone (T-023: the local Realtime does this by
+  // itself every 10 minutes; it made the 6- and 8-player tests fail now and then).
+  dropRealtimeDatabaseFeed();
+  expect(realtimeDatabaseFeedUp()).toBe(false);
+  counting = true;
+
+  // The host moves on: her own page and everyone else's learn it from the heartbeat's
+  // battle version check (every 10 s), not from an event.
+  await clickRouted(una.page.getByTestId('reveal-next'));
+  for (const p of all) {
+    await expect(p.page.getByTestId('reveal-stage')).toHaveAttribute('data-index', '1', {
+      timeout: 25_000,
+    });
+  }
+  await expectSameSpotlight(all);
+  await clickRouted(una.page.getByTestId('skip-to-vote'));
+  for (const p of all) {
+    await expect(p.page.getByTestId('vote-stage')).toBeVisible({ timeout: 25_000 });
+  }
+  const buildOf = (name: string) =>
+    sql(
+      `select id from public.builds where battle_id = '${battleId}' and builder_id = '${userOf(battleId, name)}'`,
+    );
+  for (const [i, p] of all.entries()) {
+    const pick = buildOf((all[(i + 1) % all.length] ?? una).name);
+    for (const cat of ['overall', 'rule', 'style', 'chaos']) {
+      const last = i === all.length - 1 && cat === 'chaos';
+      const option = p.page.locator(
+        `[data-testid=vote-category][data-category=${cat}] [data-testid=vote-option][data-build="${pick}"]`,
+      );
+      // The last pick of the last ballot ends VOTING at once.
+      if (last) await option.click();
+      else await vote(p.page, cat, pick);
+    }
+  }
+  for (const p of all) {
+    await expect(p.page.getByTestId('results')).toBeVisible({ timeout: 25_000 });
+  }
+  // Still no feed: the pages kept up without a single battle event.
+  expect(realtimeDatabaseFeedUp()).toBe(false);
+  expect(battleFrames).toEqual([0, 0, 0]);
+  expect(
+    Number(sql(`select version from public.battles where id = '${battleId}'`)),
+  ).toBeGreaterThanOrEqual(versionBefore + 3); // next, skip, …, results
+
+  endLastLook(battleId);
+  for (const p of all) {
+    await expect(p.page.getByTestId('lobby')).toBeVisible({ timeout: 30_000 });
+  }
+  await expectTerminal(battleId, {
+    phase: 'destroyed',
+    shipped: Object.fromEntries(all.map((p) => [p.name, `${p.name} build`])),
+  });
+  expectNoPageErrors(all);
+  for (const p of all) await p.context.close();
 });
 
 // ─── 8 players: the largest party ─────────────────────────────────────────────────────

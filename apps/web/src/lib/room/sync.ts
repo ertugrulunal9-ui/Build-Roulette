@@ -18,6 +18,15 @@
  * - **Heartbeat:** `heartbeat(room_id)` every ~10 s (presence for the server and host
  *   migration). A newer `room_version` or another host in its answer refetches the room;
  *   `kicked`, `room_closed`, `not_a_member` and `room_not_found` end the session.
+ * - **Lost broadcasts:** Realtime delivers at most once, and can stop delivering the
+ *   database's broadcasts for a while with every channel still SUBSCRIBED (the local stack
+ *   does it every 10 minutes: Realtime drops the tenant's database connection to
+ *   "rebalance" and only reconnects on the next channel join; whatever was sent meanwhile
+ *   is gone). A gap is only noticed when a later event arrives, so the LAST event before
+ *   such a silence (a phase change, the next REVEAL slot) would never be noticed. So every
+ *   heartbeat also reads the battle's version (`battles.version`) while the battle is not
+ *   over, and refetches the snapshot when the server is ahead: nothing stays stale for
+ *   more than one beat.
  * - **Recovery:** on `visibilitychange` → visible and on `online`, the clock is measured
  *   again and both snapshots are refetched. While the room topic is not subscribed
  *   (Realtime down or reconnecting) or the browser is offline, the connection reads
@@ -43,6 +52,7 @@ import {
   PRESENCE_THROTTLE_MS,
   PRESENCE_WINDOW_MS,
   battleTopic,
+  isTerminalPhase,
   roomTopic,
 } from '@br/game';
 import { measureClockOffset } from '../solo/clock-sync';
@@ -73,6 +83,11 @@ export interface RoomSyncApi {
   getRoomSnapshot(roomId: string): Promise<RoomSnapshot>;
   getBattleSnapshot(battleId: string): Promise<BattleSnapshot>;
   heartbeat(roomId: string): Promise<HeartbeatResult>;
+  /**
+   * The battle's current version (`battles.version`; its room's members may read it), or
+   * null when the row is not visible.
+   */
+  battleVersion(battleId: string): Promise<number | null>;
   /** `server_now()` as epoch ms. */
   serverNow(): Promise<number>;
 }
@@ -208,6 +223,8 @@ export interface SyncStats {
   stale: number;
   gaps: number;
   fetches: number;
+  /** Heartbeats that found the battle ahead of the snapshot (broadcasts never arrived). */
+  missed: number;
 }
 
 // ─── One versioned topic ──────────────────────────────────────────────────────────────
@@ -447,7 +464,7 @@ export class RoomSync {
   private readonly timings: SyncTimings;
   private readonly userId: string;
   private readonly timers = new Map<TimerName, TimerHandle>();
-  readonly stats: SyncStats = { applied: 0, stale: 0, gaps: 0, fetches: 0 };
+  readonly stats: SyncStats = { applied: 0, stale: 0, gaps: 0, fetches: 0, missed: 0 };
 
   private roomTopic: VersionedTopic<RoomSnapshot, RoomEvent> | null = null;
   private roomSub: TopicSubscription | null = null;
@@ -763,6 +780,7 @@ export class RoomSync {
   private async beat(): Promise<void> {
     const roomId = this.state.roomId;
     if (!roomId || this.stopped) return;
+    void this.checkBattleVersion();
     let res: HeartbeatResult;
     try {
       res = await this.api.heartbeat(roomId);
@@ -780,6 +798,29 @@ export class RoomSync {
     const room = this.state.room;
     if (room && (res.room_version > room.room.version || res.host_id !== room.room.host_id)) {
       void this.refetchRoom();
+    }
+  }
+
+  /**
+   * The battle moved on but no event said so (see "Lost broadcasts" above): refetch. Errors
+   * are left to the next beat.
+   */
+  private async checkBattleVersion(): Promise<void> {
+    const topic = this.battleTopic;
+    const battleId = this.battleId;
+    const snap = topic?.snapshot;
+    if (!topic || !battleId || !snap || isTerminalPhase(snap.battle.phase)) return;
+    let version: number | null;
+    try {
+      version = await this.api.battleVersion(battleId);
+    } catch {
+      return;
+    }
+    if (this.isStopped() || this.battleTopic !== topic || version === null) return;
+    // Events applied meanwhile count: only a server still ahead of them is a miss.
+    if (version > (topic.snapshot?.battle.version ?? 0)) {
+      this.stats.missed++;
+      void topic.refetch();
     }
   }
 

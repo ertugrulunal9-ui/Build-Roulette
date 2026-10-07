@@ -294,7 +294,8 @@ test('a 3-player room: lobby → battle → ship and auto-ship → reveal → vo
   // Tallies: overall A1 B1 C1 (a three-way tie), rule A1 B2, style B1 C2, chaos A1 B2;
   // totals A 3, B 6, C 3. Ranking: Best Build is tied, so all votes decide: B first; A and
   // C are tied on both, so the earlier ship wins: A (Ada shipped by hand) before C (Cleo's
-  // autosave, shipped at the deadline). Awards: overall shared by all three (ties share),
+  // autosave, shipped at the deadline). Awards, one winner per category (T-022): the
+  // three-way Best Build tie goes to B, who has the most votes in all (6 vs 3 and 3);
   // rule B, style C, chaos B; plus Ada's speedrun and fastest ship.
   for (const [cat, id] of [
     ['overall', B],
@@ -391,10 +392,18 @@ test('a 3-player room: lobby → battle → ship and auto-ship → reveal → vo
     expect(await counts(p.page, host)).toEqual({ overall: 1, rule: 1, style: 0, chaos: 1 });
     expect(await counts(p.page, bob)).toEqual({ overall: 1, rule: 2, style: 1, chaos: 2 });
     expect(await counts(p.page, cleo)).toEqual({ overall: 1, rule: 0, style: 2, chaos: 0 });
+    // Best Build: one vote each, so the total votes decide (Bob 6, Ada 3, Cleo 3).
     expect(await awardsOf(p.page, bob)).toEqual(['chaos', 'overall', 'rule']);
-    expect(await awardsOf(p.page, host)).toEqual(['fastest_ship', 'overall', 'speedrun']);
-    expect(await awardsOf(p.page, cleo)).toEqual(['overall', 'style']);
+    expect(await awardsOf(p.page, host)).toEqual(['fastest_ship', 'speedrun']);
+    expect(await awardsOf(p.page, cleo)).toEqual(['style']);
+    await expect(p.page.locator('[data-testid=award][data-award=overall]')).toHaveCount(1);
+    await expect(row(p.page, bob).locator('[data-testid=award][data-award=overall]')).toContainText(
+      '1 vote',
+    );
     await expect(p.page.getByTestId('ranking-rule')).toContainText('Ranked by votes');
+    await expect(p.page.getByTestId('ranking-rule')).toContainText(
+      'a tie goes to more votes in all',
+    );
   }
   // The capture worker screenshots all three; the page shows them as they arrive.
   await expect(host.page.locator('[data-testid=ranked-build][data-capture=captured]')).toHaveCount(
@@ -457,6 +466,9 @@ test('a 3-player room: lobby → battle → ship and auto-ship → reveal → vo
   await expect(publicBuilds.nth(1).getByTestId('public-build-name')).toContainText('Ada Rocket');
   await expect(publicBuilds.nth(0).getByTestId('vote-tally')).toHaveAttribute('data-total', '6');
   await expect(publicBuilds.nth(0).locator('[data-testid=award][data-source=vote]')).toHaveCount(3);
+  await expect(publicBuilds.nth(0).locator('[data-award=overall]')).toBeVisible();
+  await expect(pub.locator('[data-testid=award][data-award=overall]')).toHaveCount(1);
+  await expect(publicBuilds.nth(1).locator('[data-testid=award][data-source=vote]')).toHaveCount(0);
   await expect(publicBuilds.nth(2).locator('[data-award=style]')).toBeVisible();
   const og = await pub.request.get(`/battles/${battleId}/opengraph-image`);
   expect(og.status()).toBe(200);

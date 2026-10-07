@@ -608,7 +608,7 @@ test('reveal and vote under chaos: a refresh mid-REVEAL, a vote cast offline (re
   await expect(ivo.page.getByTestId('votes-unsent')).toHaveCount(0);
   expect(votesOf(ivo.name)).toBe(`overall=${J}`);
 
-  // ─── Jun goes offline and picks; Ivo completes his ballot once Jun went silent ─────
+  // ─── Jun goes offline and picks; Ivo completes his ballot while Jun still counts ───
   await jun.context.setOffline(true);
   await jun.page
     .locator(
@@ -616,32 +616,33 @@ test('reveal and vote under chaos: a refresh mid-REVEAL, a vote cast offline (re
     )
     .click();
   await expect(jun.page.getByTestId('votes-unsent')).toBeVisible();
-  for (const cat of ['rule', 'style']) await vote(ivo.page, cat, H);
-  // Jun stops counting as present 30 s after his last heartbeat. (The server re-checks
-  // the early end on a vote, a leave or a kick, not when someone's presence lapses: see
-  // the T-021 report. So Ivo's last pick comes after that.)
+  // His last sign of life is now (as if his last heartbeat had just landed), so the 30 s
+  // presence window starts here, whatever the heartbeat timing was.
+  sql(
+    `update public.room_members m set last_seen_at = now() from public.rooms r where r.id = m.room_id and r.code = '${code}' and m.user_id = '${userOf(battleId, jun.name)}'`,
+  );
+  const junSilent = () =>
+    sql(
+      `select m.last_seen_at < now() - interval '30 seconds' from public.room_members m join public.rooms r on r.id = m.room_id where r.code = '${code}' and m.user_id = '${userOf(battleId, jun.name)}'`,
+    );
+  for (const cat of ['rule', 'style', 'chaos']) await vote(ivo.page, cat, H);
+  await expect(ivo.page.getByTestId('ballot-complete')).toBeVisible();
+  // Jun was seen within 30 s, so he is still present and his ballot is still expected.
+  expect(junSilent()).toBe('f');
+  expect(phaseOf(battleId)).toBe('voting');
+  // Nobody votes again: Jun stops counting as present 30 s after his last heartbeat, and
+  // sweep_deadlines (every 5 s) re-checks the early end then (T-022). Neither the host who
+  // left nor the silent Jun holds VOTING up, long before its 120 s timer.
   await expect
-    .poll(
-      () =>
-        sql(
-          `select m.last_seen_at < now() - interval '31 seconds' from public.room_members m join public.rooms r on r.id = m.room_id where r.code = '${code}' and m.user_id = '${userOf(battleId, jun.name)}'`,
-        ),
-      { timeout: 60_000, intervals: [1_000] },
-    )
-    .toBe('t');
-  // Ivo's last pick completes the only ballot that is still expected: neither the host
-  // who left nor the silent Jun holds VOTING up, long before its 120 s timer.
-  await ivo.page
-    .locator(
-      `[data-testid=vote-category][data-category=chaos] [data-testid=vote-option][data-build="${H}"]`,
-    )
-    .click();
-  await expect.poll(() => phaseOf(battleId), { timeout: 30_000 }).toBe('results');
+    .poll(() => phaseOf(battleId), { timeout: 60_000, intervals: [1_000] })
+    .toBe('results');
+  expect(junSilent()).toBe('t');
+  // Ended by the sweep (no actor), not by a vote, with reason all_voted.
   expect(
     sql(
-      `select payload ->> 'reason' from public.battle_events where battle_id = '${battleId}' and type = 'phase' and payload ->> 'from' = 'voting'`,
+      `select coalesce(actor_id::text, 'system') || ' ' || (payload ->> 'reason') from public.battle_events where battle_id = '${battleId}' and type = 'phase' and payload ->> 'from' = 'voting'`,
     ),
-  ).toBe('all_voted');
+  ).toBe('system all_voted');
   await expect(ivo.page.getByTestId('results')).toBeVisible({ timeout: 30_000 });
 
   // ─── Jun comes back: RESULTS tells him his pick did not count ─────────────────────

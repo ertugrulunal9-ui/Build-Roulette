@@ -459,11 +459,14 @@ function votedResultsSnapshot(): BattleSnapshot {
     const [v, total, rank] = votes[b.id] ?? [{}, 0, null];
     return { ...b, votes: v, total_votes: total, final_rank: rank };
   });
+  // One winner per category (T-022): the three-way Best Build tie (1–1–1) goes to Bob, who
+  // has the most votes in all (6 vs 3 and 3).
   snap.awards = [
+    { build_id: 'build-bob', award: 'fastest_ship', source: 'auto', votes: null },
+    { build_id: 'build-bob', award: 'chaos', source: 'vote', votes: 2 },
     { build_id: 'build-bob', award: 'overall', source: 'vote', votes: 1 },
     { build_id: 'build-bob', award: 'rule', source: 'vote', votes: 2 },
     { build_id: 'build-me', award: 'speedrun', source: 'auto', votes: null },
-    { build_id: 'build-me', award: 'overall', source: 'vote', votes: 1 },
     { build_id: 'build-cleo', award: 'style', source: 'vote', votes: 2 },
   ];
   return snap;
@@ -492,13 +495,24 @@ describe('RoomResults with votes', () => {
     expect(within(bob).getByTestId('vote-tally').dataset['total']).toBe('6');
     expect(within(bob).getAllByTestId('award')[1]?.textContent).toContain('Best Use of the Rule');
     expect(within(bob).getAllByTestId('award')[1]?.textContent).toContain('2 votes');
-    // Vote awards come before the auto-awards.
+    // Vote awards come first, in category order, then the auto-awards.
+    expect(
+      within(bob)
+        .getAllByTestId('award')
+        .map((a) => a.dataset['award']),
+    ).toEqual(['overall', 'rule', 'chaos', 'fastest_ship']);
     expect(
       within(must(rows[1]))
         .getAllByTestId('award')
         .map((a) => a.dataset['award']),
-    ).toEqual(['overall', 'speedrun']);
+    ).toEqual(['speedrun']);
+    expect(
+      screen.getAllByTestId('award').filter((a) => a.dataset['award'] === 'overall'),
+    ).toHaveLength(1);
     expect(screen.getByTestId('ranking-rule').textContent).toContain('Ranked by votes');
+    expect(screen.getByTestId('ranking-rule').textContent).toContain(
+      'one winner: a tie goes to more votes in all, then the earlier ship',
+    );
   });
 
   it('a battle without votes keeps the M3 ranking text and no tallies', () => {

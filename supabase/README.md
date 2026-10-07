@@ -25,7 +25,8 @@ supabase/
 │   ├── 20261006130300_realtime.sql                    broadcast triggers, realtime.messages policies (T-016)
 │   ├── 20261007120000_reveal_and_voting.sql           REVEAL + VOTING phases, vote RPCs, results by votes (T-019)
 │   ├── 20261007120100_reveal_storage.sql              reveal reads of final builds, get_reveal_builds (T-019)
-│   └── 20261007120200_reveal_vote_realtime.sql        reveal_index on phase events, vote_progress (T-019)
+│   ├── 20261007120200_reveal_vote_realtime.sql        reveal_index on phase events, vote_progress (T-019)
+│   └── 20261007130000_player_history.sql              get_player_history for /u/[id] (T-021)
 ├── tests/                       pgTAP tests (*.test.sql), one transaction each, rolled back
 │   ├── 00_schema.test.sql       tables/enums exist, RLS on every table, policies, table privileges
 │   ├── 01_constraints.test.sql  room codes, time limits, one build per player, vote PK, cascades
@@ -44,7 +45,9 @@ supabase/
 │   ├── 14_realtime.test.sql     broadcast payloads (one per version), realtime.messages RLS per role
 │   ├── 15_reveal_vote.test.sql  REVEAL/VOTING lifecycle, every guard, tie-breaks, secret ballots, too few builds,
 │   │                            the reveal_vote switches, solo unchanged, the reveal-slot reference table
-│   └── 16_reveal_storage.test.sql  storage reads per phase and role, get_reveal_builds, abandoned in REVEAL
+│   ├── 16_reveal_storage.test.sql  storage reads per phase and role, get_reveal_builds, abandoned in REVEAL
+│   └── 17_player_history.test.sql  get_player_history: public battles only, own build only, no ids/ballots/paths,
+│                                keyset pagination across a finished_at tie, limit clamping, the empty answer
 └── scripts/
     ├── e2e-solo.mjs             the solo loop through the real HTTP APIs (Auth, PostgREST, Storage, pg_cron)
     ├── e2e-multiplayer.mjs      a 3-player battle + late spectator through supabase-js, with Realtime reception
@@ -120,10 +123,11 @@ CI (`.github/workflows/ci.yml`, job `db`) runs the same steps on a fresh stack w
 - RLS is enabled on every `public` table. Table policies are SELECT-only and granted `to authenticated`.
 - `anon` and `authenticated` have no INSERT/UPDATE/DELETE/TRUNCATE privilege on any table.
   All writes go through `SECURITY DEFINER` RPCs.
-- `anon` (a request with no session) can read nothing and execute exactly one function,
+- `anon` (a request with no session) can read nothing and execute exactly two functions:
   `get_public_battle`, which returns the permanent results of a battle in RESULTS or
-  DESTROYED (the shareable `/battles/[id]` page renders with the anon key). Anonymous
-  sign-ins still get the `authenticated` role.
+  DESTROYED (the shareable `/battles/[id]` page renders with the anon key), and
+  `get_player_history` (T-021), a player's permanent results across those battles (the
+  `/u/[id]` page). Anonymous sign-ins still get the `authenticated` role.
 - Default privileges: tables, sequences and functions created by later migrations are *not*
   auto-exposed to `anon`/`authenticated` (functions not to `PUBLIC` either). Grant
   explicitly.
@@ -131,7 +135,8 @@ CI (`.github/workflows/ci.yml`, job `db`) runs the same steps on a fresh stack w
   references. Internal helpers live in schema `private`, on which no API role has USAGE
   and which the Data API does not expose.
 - `authenticated` can execute exactly: `server_now`, `start_solo_battle`,
-  `advance_battle`, `ship_build`, `get_battle_snapshot`, `get_public_battle`, the room RPCs
+  `advance_battle`, `ship_build`, `get_battle_snapshot`, `get_public_battle`,
+  `get_player_history`, the room RPCs
   (`create_room`, `join_room`, `leave_room`, `set_ready`, `update_room_settings`,
   `kick_member`, `heartbeat`, `get_room_snapshot`, `start_battle`), the reveal and vote RPCs
   (`reveal_next`, `skip_to_vote`, `cast_vote`, `get_my_votes`, `get_reveal_builds`), and the
@@ -296,6 +301,35 @@ like `advance_battle`, so a double click is harmless. SQLSTATEs: `not_a_voter` 4
   CI web e2e jobs insert that row until the web app has the REVEAL and VOTE stages (T-020);
   production must not.
 - The limits live in `private.reveal_vote_limits()` (drift-tested against `@br/game`).
+
+## Player history (M4, T-021)
+
+| RPC | Caller | Returns |
+|---|---|---|
+| `get_player_history(p_user_id uuid, p_before timestamptz default null, p_before_battle uuid default null, p_limit int default 20)` | anyone, including `anon` (read-only, STABLE) | `{player: {display_name} \| null, battles: [...], next: {before, before_battle} \| null}` |
+
+- **Which battles:** the player's roster battles in RESULTS or DESTROYED, newest first by
+  `(finished_at, battle id)`. Never a running or ABANDONED battle, and not one where the
+  player's build was disqualified (kicked; `get_public_battle` hides that build too).
+- **Each battle:** `battle_id`, `mode`, `phase`, `finished_at`, `destroyed_at`, the
+  player's `display_name` in it, the challenge texts and time limit, `players_count` (N
+  in "rank k of N": the builds the public results page lists), the player's own `build`
+  (`id`, `name`, `status`, `completion_ms`, `final_rank`, `total_votes`, `votes` per
+  category, `capture_status`, `screenshot_path` only once captured or fallback) and that
+  build's `awards` (`award`, `source`, `votes`).
+- **Privacy** (as `get_public_battle`): no user id (not even `p_user_id` is echoed), no
+  other player's build or name, no ephemeral storage path, no ballot, no room, settings or
+  version. `player.display_name` is the name of the newest public battle (the permanent
+  roster snapshot), not the mutable profile.
+- **Nothing to probe:** an unknown id, a null id, or a player without a public battle all
+  get `{player: null, battles: [], next: null}`.
+- **Pagination:** keyset. Pass the previous page's `next.before` and `next.before_battle`;
+  `next` is null on the last page. The battle id breaks ties because `sweep_deadlines` can
+  finish several battles in one transaction (same `now()`). `p_limit` is clamped to 1–50.
+- **Anonymous players:** the history belongs to the anonymous auth user. Clearing the
+  browser's storage loses that session and with it the "your history" link (the page stays
+  readable at its URL). Account linking (docs/06 M6, `enable_manual_linking` is already on)
+  is what will keep a history across devices; it is not implemented yet.
 
 ## Realtime (M3, T-016)
 

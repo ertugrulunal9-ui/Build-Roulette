@@ -2,10 +2,10 @@
 -- later migrations to `public` or `private` are covered automatically.
 --
 -- The rule: anon can execute exactly get_public_battle (the permanent results
--- page, T-014); authenticated can execute exactly the client RPCs plus the RLS
--- helpers that policies call; the worker and sweep
--- functions are service_role only; nothing in `private` is reachable by an
--- API role.
+-- page, T-014) and get_player_history (the player history page, T-021);
+-- authenticated can execute exactly the client RPCs plus the RLS helpers that
+-- policies call; the worker and sweep functions are service_role only; nothing
+-- in `private` is reachable by an API role.
 
 begin;
 create extension if not exists pgtap with schema extensions;
@@ -41,8 +41,9 @@ select is_empty(
 -- ─── EXECUTE (6) ──────────────────────────────────────────────────────────
 select set_eq(
   $$ select signature from our_functions where has_function_privilege('anon', oid, 'EXECUTE') $$,
-  array['public.get_public_battle(p_battle_id uuid)'],
-  'anon can execute exactly get_public_battle (public results pages)');
+  array['public.get_public_battle(p_battle_id uuid)',
+        'public.get_player_history(p_user_id uuid, p_before timestamp with time zone, p_before_battle uuid, p_limit integer)'],
+  'anon can execute exactly get_public_battle and get_player_history (public pages)');
 
 select set_eq(
   $$ select signature from our_functions where has_function_privilege('authenticated', oid, 'EXECUTE') $$,
@@ -54,6 +55,8 @@ select set_eq(
     'public.ship_build(p_battle_id uuid, p_name text, p_stats jsonb)',
     'public.get_battle_snapshot(p_battle_id uuid)',
     'public.get_public_battle(p_battle_id uuid)',
+    -- the player history page (T-021)
+    'public.get_player_history(p_user_id uuid, p_before timestamp with time zone, p_before_battle uuid, p_limit integer)',
     -- room RPCs (T-016)
     'public.create_room(p_display_name text)',
     'public.join_room(p_code text, p_display_name text)',

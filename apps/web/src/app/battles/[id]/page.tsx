@@ -1,7 +1,7 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
-import { AwardBadges, ChallengeCards } from '../../../components/results/ResultPieces';
+import { AwardBadges, ChallengeCards, VoteTally } from '../../../components/results/ResultPieces';
 import {
   CAPTURE_TEXT,
   STATUS_TEXT,
@@ -44,6 +44,7 @@ export default async function BattlePage({ params }: BattlePageProps) {
   if (!data) notFound();
   const { battle, challenge, builds, awards } = data;
   const when = battle.finished_at ?? battle.created_at;
+  const voted = builds.some((b) => b.votes !== null && b.votes !== undefined);
 
   return (
     <main className="mx-auto flex min-h-dvh max-w-4xl flex-col gap-8 px-4 py-10">
@@ -62,19 +63,37 @@ export default async function BattlePage({ params }: BattlePageProps) {
 
       <ChallengeCards challenge={challenge} />
       <p className="-mt-4 text-sm text-zinc-500">
-        Time limit: {formatTimeLimit(challenge.time_limit_seconds)}
+        Time limit: {formatTimeLimit(challenge.time_limit_seconds)} ·{' '}
+        {voted
+          ? 'ranked by the players’ votes (Best Build, then all votes, then the earlier ship)'
+          : 'ranked by completion time'}
       </p>
 
       <ol className="flex flex-col gap-6" aria-label="Builds">
         {builds.map((b) => {
           const shipped = b.status === 'shipped' || b.status === 'auto_shipped';
           const buildAwards = awards.filter((a) => a.build_id === b.id);
+          const winner = b.final_rank === 1;
           return (
             <li
               key={b.id}
               data-testid="public-build"
-              className="grid overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm md:grid-cols-[3fr_2fr] dark:border-zinc-800 dark:bg-zinc-900"
+              data-rank={b.final_rank ?? ''}
+              data-winner={winner ? 'true' : 'false'}
+              className={`relative grid overflow-hidden rounded-2xl border bg-white shadow-sm md:grid-cols-[3fr_2fr] dark:bg-zinc-900 ${
+                winner
+                  ? 'border-amber-400 ring-4 ring-amber-300/50 dark:border-amber-500'
+                  : 'border-zinc-200 dark:border-zinc-800'
+              }`}
             >
+              {winner && (
+                <span
+                  className="absolute top-3 left-3 z-10 rounded-full bg-amber-400 px-3 py-0.5 text-xs font-black tracking-widest text-amber-950 uppercase shadow"
+                  data-testid="public-winner"
+                >
+                  🏆 Winner
+                </span>
+              )}
               <div className="relative aspect-[16/10] bg-zinc-100 dark:bg-zinc-800">
                 {b.screenshot_path ? (
                   // eslint-disable-next-line @next/next/no-img-element -- a public Supabase Storage URL
@@ -112,6 +131,7 @@ export default async function BattlePage({ params }: BattlePageProps) {
                   {STATUS_TEXT[b.status]}
                 </p>
                 <AwardBadges awards={buildAwards} />
+                {voted && shipped && <VoteTally votes={b.votes} total={b.total_votes} />}
                 {b.stats.deps && b.stats.deps.length > 0 && (
                   <p className="text-sm text-zinc-500">
                     {b.stats.files ?? 0} files · {b.stats.lines ?? 0} lines · made with{' '}

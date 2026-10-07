@@ -6,8 +6,8 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 
 | ID | Task | Scope | Status | Notes |
 |---|---|---|---|---|
-| T-022 | Rules/server fixes: one winner per vote category (tie-break: total votes → earlier ship), VOTING early end re-checked in `sweep_deadlines`, UI + e2e updates | `supabase/`, `apps/web/`, `packages/game/` | in-progress | M5, task 1 |
-| T-023 | Test reliability: root-cause the flaky 8-player chaos test (1 in 5), shard the chaos suite for CI | `apps/web/` (e2e), `ci.yml` | todo | M5 |
+| T-022 | Rules/server fixes: one winner per vote category (tie-break: total votes → earlier ship), VOTING early end re-checked in `sweep_deadlines`, UI + e2e updates | `supabase/`, `apps/web/`, `packages/game/` | done | Merged |
+| T-023 | Test reliability: root-cause the flaky 8-player chaos test (1 in 5), shard the chaos suite for CI | `apps/web/` (e2e), `ci.yml` | in-progress | M5, task 2 |
 | T-024 | Abuse controls: report build, admin page (event logs + report queue + screenshot takedown), name filter, rate limits, Turnstile wiring | `supabase/`, `apps/web/` | todo | M5 |
 | T-025 | Load test (50 rooms × 8 players), Realtime/egress mapping to plan limits, cost per 1,000 battles | `tools/loadtest/`, `docs/` input | todo | M5 |
 | T-026 | Observability (Sentry/PostHog, env-gated), ISR for `/battles` + `/u`, runbooks | `apps/web/`, `apps/*`, `docs/runbooks/` | todo | M5 |
@@ -76,6 +76,7 @@ Start M5.
 - T-019 M4 DB layer: reveal + voting
 - T-020 M4 web: reveal + vote
 - T-021 M4 completion: mobile, history, chaos
+- T-022 Single-winner awards + voting sweep
 
 ## Review log
 
@@ -454,3 +455,15 @@ Start M5.
   - ISR for `/u/[id]` and `/battles/[id]`;
   - the admin event-log page;
   - real-browser testing (Firefox/Safari/real phones) once deployed.
+
+### T-022: accepted (M5 task 1)
+- Hub test-merged and re-ran on a fresh clone:
+  - pipeline green (game 125 unit tests, with new drift checks on `finalize_votes` and the sweep);
+  - `supabase test db` **985/985**;
+  - e2e scripts 44/49/34/50;
+  - capture integration 12/12;
+  - multiplayer e2e including mobile 4/4.
+- Rule: top count → total votes → earlier ship → lower build id. Vote ranks use `row_number()` (one winner banner, Best Build on rank 1). Legacy battles are never recomputed.
+- The worker found that rank ties are reachable in practice (auto-shipped builds share `shipped_at`), so the tie-break is applied to ranks as well. Accepted.
+- VOTING early end is now re-checked by the 5 s sweep (not in heartbeat, to keep it off the busiest RPC). The chaos test now covers it end to end.
+- Mutation checks: the old function fails the new pgTAP; the drift tests fail without the migration.

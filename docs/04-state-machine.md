@@ -336,7 +336,16 @@ section.
     account linking exists.
   - **Lobby settings (host only):** `reveal_vote`, the time per build (Auto or
     30–60 s) and the voting time (30 s–3 min).
-  - **Known server gap:** the early end of VOTING is only re-checked on a vote, a leave or
-    a kick. If a voter just goes silent, the battle waits for the timer. Planned fix:
-    re-check it in `sweep_deadlines` (M5).
+  - ~~Known server gap~~ **fixed in T-022:** `sweep_deadlines` also re-checks the early end
+    of VOTING, so a battle ends about 30–35 s after the last unfinished voter goes silent
+    (`reason: all_voted`, no actor).
+- **One winner per category (T-022, user decision 2026-10-07):**
+  - **Awards:** among the builds with the top count in a category (count > 0), the winner
+    has the most **total votes**, then the earlier **`shipped_at`**, then the lower build
+    id (deterministic). Zero votes in a category means no award.
+  - **Ranks:** vote ranks use the same order through `row_number()`, so there is exactly
+    one rank-1 build, and the Best Build award is on it whenever anyone voted for Best
+    Build. Ranks without votes (M3 path) still share on full ties.
+  - Battles that finished before the change keep their stored (shared) awards; results
+    are never recomputed. This supersedes "award ties are shared" in §4.9.
 

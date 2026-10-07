@@ -7,7 +7,7 @@
  * heartbeats left out). When a test fails, an automatic fixture attaches, next to
  * Playwright's own trace and screenshots:
  *
- * - `players.md`: per player, the page URL, the visible stages (lobby, reveal, vote…) with
+ * - `players.md` (and `players-full.log`): per player, the page URL, the visible stages (lobby, reveal, vote…) with
  *   their data attributes, the Realtime channels by topic (joined, closed, errored), and the
  *   last log lines; plus a labelled screenshot of every open page;
  * - `db.json`: a snapshot of every battle and room created during the test (battles, their
@@ -21,6 +21,7 @@
  */
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { writeFile } from 'node:fs/promises';
 import { test as base, expect, type Page, type TestInfo } from '@playwright/test';
 import { sql } from './stack';
 
@@ -146,7 +147,8 @@ export function trackPage(info: TestInfo, name: string, page: Page): void {
       const text = typeof f.payload === 'string' ? f.payload : f.payload.toString();
       if (text.includes('"heartbeat"') && text.includes('"phoenix"')) return;
       channelState(log, dir, text);
-      push(log, `ws ${dir === 'sent' ? '→' : '←'} ${text.slice(0, 400)}`);
+      const shown = text.replace(/"access_token":"[^"]*"/g, '"access_token":"…"');
+      push(log, `ws ${dir === 'sent' ? '→' : '←'} ${shown.slice(0, 400)}`);
     };
     ws.on('framesent', frame('sent'));
     ws.on('framereceived', frame('received'));
@@ -264,14 +266,25 @@ function servicesLog(sinceMs: number): string {
   const file = process.env['BR_SERVICES_LOG'];
   if (!file) return '(BR_SERVICES_LOG not set)';
   const text = readFileSync(file, 'utf8');
-  // Lines start with an ISO timestamp (scripts/solo-services.ts); keep the test's window.
+  // Lines start with an ISO timestamp (scripts/solo-services.ts): the test's window, from
+  // 30 s before it started.
   return text
     .split('\n')
     .filter((l) => {
       const t = Date.parse(l.slice(0, 24));
-      return Number.isNaN(t) || t >= sinceMs - 2_000;
+      return Number.isNaN(t) || t >= sinceMs - 30_000;
     })
     .join('\n');
+}
+
+/** Writes `body` next to the test's other artifacts and attaches it (by path: compact logs). */
+async function save(info: TestInfo, name: string, body: string): Promise<void> {
+  const path = info.outputPath(name);
+  await writeFile(path, body);
+  await info.attach(name, {
+    path,
+    contentType: name.endsWith('.json') ? 'application/json' : 'text/plain',
+  });
 }
 
 async function attachDiagnostics(info: TestInfo, sinceDb: string, sinceMs: number) {
@@ -287,37 +300,38 @@ async function attachDiagnostics(info: TestInfo, sinceDb: string, sinceMs: numbe
         `### Log (last 400 lines)\n\n\`\`\`\n${t.log.lines.slice(-400).join('\n')}\n\`\`\`\n`,
     );
     if (!t.page.isClosed()) {
+      const name = `screen-${String(i + 1)}-${t.log.label.replace(/[^\w-]+/g, '_')}.png`;
       try {
-        await info.attach(`screen-${String(i + 1)}-${t.log.label}`, {
-          body: await t.page.screenshot({ timeout: 5_000 }),
-          contentType: 'image/png',
-        });
+        await t.page.screenshot({ path: info.outputPath(name), timeout: 5_000 });
+        await info.attach(name, { path: info.outputPath(name), contentType: 'image/png' });
       } catch {
-        // A hung page: its state above says so.
+        // A hung page: its state in players.md says so.
       }
     }
   }
-  await info.attach('players.md', {
-    body: sections.join('\n') || '(no tracked pages)',
-    contentType: 'text/markdown',
-  });
+  await save(info, 'players.md', sections.join('\n') || '(no tracked pages)');
   // The full logs, for anything older than the last 400 lines.
-  await info.attach('players-full.log', {
-    body: pages.map((t) => `==== ${t.log.label}\n${t.log.lines.join('\n')}`).join('\n\n'),
-    contentType: 'text/plain',
-  });
-  await info.attach('db.json', {
-    body: tryRun(() => dbSnapshot(sinceDb)),
-    contentType: 'application/json',
-  });
-  await info.attach('services.log', {
-    body: tryRun(() => servicesLog(sinceMs)),
-    contentType: 'text/plain',
-  });
-  const sinceDocker = new Date(sinceMs - 2_000).toISOString();
+  await save(
+    info,
+    'players-full.log',
+    pages.map((t) => `==== ${t.log.label}\n${t.log.lines.join('\n')}`).join('\n\n'),
+  );
+  await save(
+    info,
+    'db.json',
+    tryRun(() => dbSnapshot(sinceDb)),
+  );
+  await save(
+    info,
+    'services.log',
+    tryRun(() => servicesLog(sinceMs)),
+  );
+  const sinceDocker = new Date(sinceMs - 30_000).toISOString();
   for (const svc of CONTAINERS) {
-    await info.attach(`docker-${svc}.log`, {
-      body: tryRun(() => {
+    await save(
+      info,
+      `docker-${svc}.log`,
+      tryRun(() => {
         // Containers log to stdout and stderr (Postgres: stderr); merged by timestamp.
         const r = spawnSync(
           'docker',
@@ -327,8 +341,7 @@ async function attachDiagnostics(info: TestInfo, sinceDb: string, sinceMs: numbe
         if (r.error) throw r.error;
         return [...r.stdout.split('\n'), ...r.stderr.split('\n')].filter(Boolean).sort().join('\n');
       }),
-      contentType: 'text/plain',
-    });
+    );
   }
 }
 

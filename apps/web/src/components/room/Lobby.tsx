@@ -5,16 +5,30 @@
  * (max players, kick with confirmation, Start when at least 2 players are ready), the invite
  * link, and the last battle's podium once a battle has ended (rematch = start again).
  */
-import { ROOM_LIMITS, isTerminalPhase } from '@br/game';
+import {
+  DEFAULT_VOTING_SECONDS,
+  REVEAL_SLOT_MAX_SECONDS,
+  REVEAL_SLOT_MIN_SECONDS,
+  ROOM_LIMITS,
+  VOTING_MAX_SECONDS,
+  VOTING_MIN_SECONDS,
+  isTerminalPhase,
+} from '@br/game';
 import Link from 'next/link';
 import { useState } from 'react';
+import { useTouchPrimary } from '../../lib/device';
 import {
   playerCount,
   readyCount,
   type RoomController,
   type RoomState,
 } from '../../lib/room/controller';
-import type { RoomMember, RoomSnapshot } from '../../lib/room/types';
+import type {
+  RoomMember,
+  RoomSettings,
+  RoomSettingsPatch,
+  RoomSnapshot,
+} from '../../lib/room/types';
 import { formatCompletion } from '../../lib/solo/format';
 import type { BattleSnapshot } from '../../lib/solo/types';
 import { useTicker } from '../../lib/solo/use-ticker';
@@ -43,6 +57,7 @@ export function Lobby({ controller, state, room, lastBattle }: LobbyProps) {
   const host = room.members.find((m) => m.user_id === room.room.host_id);
   const hadBattle = lastBattle !== null && isTerminalPhase(lastBattle.battle.phase);
   const canStart = me.is_host && ready >= ROOM_LIMITS.min_players && !state.pending.start;
+  const touch = useTouchPrimary();
   const serverNow = controller.serverNow();
 
   const onlineOf = (m: RoomMember) => m.user_id in presence;
@@ -204,6 +219,13 @@ export function Lobby({ controller, state, room, lastBattle }: LobbyProps) {
                     ))}
                   </select>
                 </label>
+                <RevealVoteSettings
+                  settings={room.room.settings}
+                  disabled={state.pending.settings}
+                  onChange={(patch) => {
+                    void controller.updateSettings(patch);
+                  }}
+                />
                 <button
                   type="button"
                   data-testid="start-battle"
@@ -227,15 +249,37 @@ export function Lobby({ controller, state, room, lastBattle }: LobbyProps) {
                 </p>
               </div>
             ) : (
-              <p
-                className="text-sm text-zinc-600 dark:text-zinc-400"
-                data-testid="waiting-for-host"
-              >
-                Waiting for <strong>{host?.display_name ?? 'the host'}</strong> to start
-                {hadBattle ? ' the rematch' : ' the battle'}… ({ready} ready)
-              </p>
+              <div className="flex flex-col gap-2">
+                <p
+                  className="text-sm text-zinc-600 dark:text-zinc-400"
+                  data-testid="waiting-for-host"
+                >
+                  Waiting for <strong>{host?.display_name ?? 'the host'}</strong> to start
+                  {hadBattle ? ' the rematch' : ' the battle'}… ({ready} ready)
+                </p>
+                <p className="text-xs text-zinc-500" data-testid="settings-summary">
+                  {settingsSummary(room.room.settings)}
+                </p>
+              </div>
             )}
           </div>
+          {touch && me.role === 'player' && (
+            <p
+              className="mt-4 rounded-xl bg-sky-50 px-3 py-2 text-xs text-sky-900 dark:bg-sky-950/60 dark:text-sky-100"
+              data-testid="phone-lobby-note"
+            >
+              📱 On a phone you watch the battle, then play the reveal and the vote. Building needs
+              a desktop browser: if you play from here, your build ends as DNF.
+            </p>
+          )}
+          <Link
+            href={`/u/${me.user_id}`}
+            target="_blank"
+            className="mt-4 inline-block text-sm font-semibold underline"
+            data-testid="my-history-link"
+          >
+            Your battle history ↗
+          </Link>
         </section>
 
         {hadBattle && <LastBattle battle={lastBattle} />}
@@ -325,5 +369,116 @@ function LastBattle({ battle }: { battle: BattleSnapshot }) {
         </p>
       )}
     </section>
+  );
+}
+
+// ─── Reveal and vote settings ─────────────────────────────────────────────────────────
+
+/** Choices within the server's ranges (`update_room_settings`; drift-tested in @br/game). */
+export const REVEAL_SLOT_CHOICES = [30, 40, 45, 50, 60].filter(
+  (s) => s >= REVEAL_SLOT_MIN_SECONDS && s <= REVEAL_SLOT_MAX_SECONDS,
+);
+export const VOTING_CHOICES = [30, 45, 60, 90, 120, 180].filter(
+  (s) => s >= VOTING_MIN_SECONDS && s <= VOTING_MAX_SECONDS,
+);
+
+const AUTO_SLOT = `${String(REVEAL_SLOT_MIN_SECONDS)}–${String(REVEAL_SLOT_MAX_SECONDS)} s`;
+
+/** "Reveal and vote on · 45 s per build · 90 s to vote", for everyone in the lobby. */
+export function settingsSummary(settings: RoomSettings): string {
+  if (settings.reveal_vote === false) {
+    return 'Reveal and vote off: results by completion time.';
+  }
+  const slot =
+    typeof settings.reveal_slot_s === 'number'
+      ? `${String(settings.reveal_slot_s)} s per build`
+      : `${AUTO_SLOT} per build (by the number of builds)`;
+  const voting = settings.voting_s ?? DEFAULT_VOTING_SECONDS;
+  return `Reveal and vote on · ${slot} · ${String(voting)} s to vote.`;
+}
+
+const settingSelect =
+  'min-h-9 rounded-lg border border-zinc-300 bg-white px-2 py-1 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950';
+
+/** Host only: REVEAL + VOTE on or off, the reveal slot and the voting time. */
+export function RevealVoteSettings({
+  settings,
+  disabled,
+  onChange,
+}: {
+  settings: RoomSettings;
+  disabled: boolean;
+  onChange: (patch: RoomSettingsPatch) => void;
+}) {
+  const on = settings.reveal_vote !== false;
+  return (
+    <fieldset
+      className="flex flex-col gap-2 rounded-xl border border-zinc-200 p-3 dark:border-zinc-800"
+      data-testid="reveal-vote-settings"
+      disabled={disabled}
+    >
+      <legend className="px-1 text-xs font-bold tracking-wide text-zinc-500 uppercase">
+        After the build
+      </legend>
+      <label className="flex items-center justify-between gap-3 text-sm font-semibold">
+        <span>
+          Reveal and vote
+          <span className="block text-xs font-normal text-zinc-500">
+            {on ? 'Everyone watches every build, then votes.' : 'Results by completion time.'}
+          </span>
+        </span>
+        <input
+          type="checkbox"
+          role="switch"
+          data-testid="setting-reveal-vote"
+          checked={on}
+          onChange={(e) => {
+            onChange({ reveal_vote: e.target.checked });
+          }}
+          className="h-6 w-6 accent-emerald-600"
+        />
+      </label>
+      <label className="flex items-center justify-between gap-3 text-sm font-semibold">
+        Time per build
+        <select
+          data-testid="setting-reveal-slot"
+          value={
+            typeof settings.reveal_slot_s === 'number' ? String(settings.reveal_slot_s) : 'auto'
+          }
+          disabled={!on}
+          onChange={(e) => {
+            onChange({
+              reveal_slot_s: e.target.value === 'auto' ? null : Number(e.target.value),
+            });
+          }}
+          className={settingSelect}
+        >
+          <option value="auto">Auto ({AUTO_SLOT})</option>
+          {REVEAL_SLOT_CHOICES.map((s) => (
+            <option key={s} value={s}>
+              {s} s
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="flex items-center justify-between gap-3 text-sm font-semibold">
+        Voting time
+        <select
+          data-testid="setting-voting"
+          value={String(settings.voting_s ?? DEFAULT_VOTING_SECONDS)}
+          disabled={!on}
+          onChange={(e) => {
+            onChange({ voting_s: Number(e.target.value) });
+          }}
+          className={settingSelect}
+        >
+          {VOTING_CHOICES.map((s) => (
+            <option key={s} value={s}>
+              {s % 60 === 0 ? `${String(s / 60)} min` : `${String(s)} s`}
+            </option>
+          ))}
+        </select>
+      </label>
+    </fieldset>
   );
 }

@@ -21,7 +21,14 @@ import type {
   TopicHandlers,
   TopicSubscription,
 } from './sync';
-import type { HeartbeatResult, JoinResult, RoomMember, RoomSettings, RoomSnapshot } from './types';
+import type {
+  HeartbeatResult,
+  JoinResult,
+  RoomMember,
+  RoomSettings,
+  RoomSettingsPatch,
+  RoomSnapshot,
+} from './types';
 
 export const ROOM = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 export const BATTLE_1 = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1';
@@ -271,9 +278,9 @@ export class FakeRoomApi implements RoomApi {
   setReady(roomId: string, ready: boolean): Promise<void> {
     return this.intent('setReady', roomId, ready);
   }
-  async updateSettings(roomId: string, settings: RoomSettings): Promise<RoomSettings> {
+  async updateSettings(roomId: string, settings: RoomSettingsPatch): Promise<RoomSettings> {
     await this.intent('updateSettings', roomId, settings);
-    return settings;
+    return Object.fromEntries(Object.entries(settings).filter(([, v]) => v !== null));
   }
   kickMember(roomId: string, userId: string): Promise<void> {
     return this.intent('kickMember', roomId, userId);

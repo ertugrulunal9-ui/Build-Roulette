@@ -18,11 +18,29 @@ import { BATTLE_1, BOB, CLEO, ME, battleSnapshot, revealBuilds } from '../../lib
 import { INITIAL_SOLO_STATE, type SoloController, type SoloState } from '../../lib/solo/controller';
 import { GameError } from '../../lib/solo/errors';
 import type { BattleSnapshot } from '../../lib/solo/types';
-import { RevealStage } from './RevealStage';
-import { RoomResults, votedResults } from './RoomResults';
+import { TOUCH_PRIMARY_QUERY } from '../../lib/device';
+import { RevealStage, spotlightView } from './RevealStage';
+import { RoomResults, lostVotesText, votedResults } from './RoomResults';
 import { VoteStage, ballotNote, buildImage } from './VoteStage';
 
 afterEach(cleanup);
+
+/** Makes `matchMedia(TOUCH_PRIMARY_QUERY)` match (a phone) or not; returns the restore. */
+function stubTouchDevice(touch: boolean): () => void {
+  const spy = vi.spyOn(window, 'matchMedia').mockImplementation((query: string) => ({
+    matches: query === TOUCH_PRIMARY_QUERY ? touch : false,
+    media: query,
+    onchange: null,
+    addEventListener: () => undefined,
+    removeEventListener: () => undefined,
+    addListener: () => undefined,
+    removeListener: () => undefined,
+    dispatchEvent: () => false,
+  }));
+  return () => {
+    spy.mockRestore();
+  };
+}
 
 function must<T>(x: T | null | undefined): T {
   if (x === null || x === undefined) throw new Error('missing element');
@@ -151,6 +169,104 @@ describe('RevealStage', () => {
     expect(screen.queryByTestId('reveal-live')).toBeNull();
   });
 
+  it('a build that never started says so, not that it froze', () => {
+    renderReveal(
+      battleSnapshot({ phase: 'reveal', revealIndex: 1 }),
+      showState({ failedToStart: ['build-bob'] }),
+    );
+    const note = screen.getByTestId('build-no-start');
+    expect(note.textContent).toContain('couldn’t start');
+    expect(note.textContent).not.toContain('froze');
+    expect(screen.queryByTestId('build-froze')).toBeNull();
+    expect(screen.getByTestId('watch-build')).toBeTruthy();
+  });
+
+  it('spotlightView: local stops first, then the touch still, then the bundle', () => {
+    const ready = {
+      status: 'ready' as const,
+      build: { js: 'x', css: '', importMap: { imports: {} } },
+    };
+    const base = showState({ bundles: { 'build-bob': ready } });
+    const desktop = { stillFirst: false, tapped: [] };
+    const phone = { stillFirst: true, tapped: [] };
+    expect(spotlightView(base, 'build-bob', desktop)).toBe('live');
+    expect(spotlightView(base, 'build-bob', phone)).toBe('still');
+    expect(spotlightView(base, 'build-bob', { stillFirst: true, tapped: ['build-bob'] })).toBe(
+      'live',
+    );
+    expect(spotlightView({ ...base, skipped: ['build-bob'] }, 'build-bob', phone)).toBe('skipped');
+    expect(spotlightView({ ...base, frozen: ['build-bob'] }, 'build-bob', phone)).toBe('frozen');
+    expect(spotlightView({ ...base, failedToStart: ['build-bob'] }, 'build-bob', desktop)).toBe(
+      'no_start',
+    );
+    expect(spotlightView(showState(), 'build-bob', desktop)).toBe('loading');
+    expect(
+      spotlightView(
+        showState({ bundles: { 'build-bob': { status: 'missing', build: null } } }),
+        'build-bob',
+        desktop,
+      ),
+    ).toBe('unavailable');
+    expect(spotlightView(base, null, desktop)).toBe('loading');
+  });
+
+  it('touch devices: the screenshot first; the build runs only after a tap', () => {
+    const restore = stubTouchDevice(true);
+    try {
+      renderReveal(
+        battleSnapshot({ phase: 'reveal', revealIndex: 1 }),
+        showState({
+          bundles: {
+            'build-bob': {
+              status: 'ready',
+              build: { js: 'x', css: '', importMap: { imports: {} } },
+            },
+          },
+        }),
+      );
+      expect(screen.getByTestId('reveal-stage').dataset['view']).toBe('still');
+      expect(
+        within(screen.getByTestId('reveal-still'))
+          .getByTestId('fallback-thumb')
+          .getAttribute('src'),
+      ).toBe('blob:bob');
+      expect(document.querySelectorAll('iframe')).toHaveLength(0);
+      expect(screen.queryByTestId('skip-build')).toBeNull();
+      fireEvent.click(screen.getByTestId('tap-to-run'));
+      expect(screen.getByTestId('reveal-stage').dataset['view']).toBe('live');
+      expect(document.querySelectorAll('iframe[data-testid=reveal-live-frame]')).toHaveLength(1);
+      expect(screen.getByTestId('skip-build')).toBeTruthy();
+    } finally {
+      cleanup();
+      restore();
+    }
+  });
+
+  it('desktop: the spotlight runs live at once; the host bar is fixed only below lg', () => {
+    const restore = stubTouchDevice(false);
+    try {
+      renderReveal(
+        battleSnapshot({ phase: 'reveal' }),
+        showState({
+          bundles: {
+            'build-me': {
+              status: 'ready',
+              build: { js: 'x', css: '', importMap: { imports: {} } },
+            },
+          },
+        }),
+      );
+      expect(screen.getByTestId('reveal-stage').dataset['view']).toBe('live');
+      expect(screen.queryByTestId('tap-to-run')).toBeNull();
+      const bar = screen.getByTestId('reveal-host-controls');
+      expect(bar.className).toContain('fixed');
+      expect(bar.className).toContain('lg:static');
+    } finally {
+      cleanup();
+      restore();
+    }
+  });
+
   it('a ready bundle runs in one reveal-mode iframe (no popups, modals or clipboard)', () => {
     renderReveal(
       battleSnapshot({ phase: 'reveal' }),
@@ -247,6 +363,35 @@ describe('VoteStage', () => {
     expect(option('rule', 'build-cleo').dataset['selected']).toBe('false');
     expect(option('rule', 'build-bob').textContent).toContain('Saving…');
     expect(screen.getByTestId('ballot-complete').textContent).toContain('2/3 voted');
+  });
+
+  it('offline picks say "not saved yet" (a banner and the card), not a plain error', () => {
+    renderVote(
+      battleSnapshot({ phase: 'voting' }),
+      showState({
+        ballot: ballot({
+          votes: { overall: 'build-cleo' },
+          unsent: { overall: 'build-bob' },
+          errors: { overall: new GameError('network') },
+        }),
+      }),
+    );
+    expect(screen.getByTestId('votes-unsent').textContent).toContain('Not saved yet');
+    const overall = must(
+      screen.getAllByTestId('vote-category').find((c) => c.dataset['category'] === 'overall'),
+    );
+    expect(overall.dataset['state']).toBe('unsent');
+    expect(within(overall).getByTestId('category-status').textContent).toContain('retrying');
+    const bob = must(
+      within(overall)
+        .getAllByTestId('vote-option')
+        .find((o) => o.dataset['build'] === 'build-bob'),
+    );
+    expect(bob.dataset['unsent']).toBe('true');
+    expect(bob.dataset['selected']).toBe('false');
+    expect(bob.textContent).toContain('Not saved yet');
+    // The network error itself is not repeated under the category.
+    expect(within(overall).queryByTestId('vote-error')).toBeNull();
   });
 
   it('every vote error has its own message and can be dismissed', () => {
@@ -362,5 +507,31 @@ describe('RoomResults with votes', () => {
     render(createElement(RoomResults, { state: soloState(snap), remaining: 30_000 }));
     expect(screen.queryAllByTestId('vote-tally')).toHaveLength(0);
     expect(screen.getByTestId('ranking-rule').textContent).toContain('completion time');
+  });
+
+  it('picks that never reached the server are reported, not hidden', () => {
+    const snap = votedResultsSnapshot();
+    render(
+      createElement(RoomResults, {
+        state: soloState(snap),
+        remaining: 30_000,
+        lostVotes: { overall: 'build-bob', chaos: 'build-cleo' },
+      }),
+    );
+    const note = screen.getByTestId('lost-votes').textContent;
+    expect(note).toContain('Not counted');
+    expect(note).toContain('Best Build');
+    expect(note).toContain('Most Chaotic');
+    expect(lostVotesText(snap, {})).toBeNull();
+    expect(lostVotesText(snap, undefined)).toBeNull();
+    cleanup();
+    render(createElement(RoomResults, { state: soloState(snap), remaining: 30_000 }));
+    expect(screen.queryByTestId('lost-votes')).toBeNull();
+    // Every player name links to their history (a new tab: the room keeps running).
+    const links = screen.getAllByTestId('player-history-link');
+    expect(links.map((a) => a.getAttribute('href')).sort()).toEqual(
+      [`/u/${BOB}`, `/u/${CLEO}`, `/u/${ME}`].sort(),
+    );
+    expect(links[0]?.getAttribute('target')).toBe('_blank');
   });
 });

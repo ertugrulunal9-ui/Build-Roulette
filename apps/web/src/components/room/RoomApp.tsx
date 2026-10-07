@@ -27,7 +27,9 @@ import { indexedDbWorkspaces } from '../../lib/solo/local-workspaces';
 import { randomDisplayName } from '../../lib/solo/names';
 import { useTicker } from '../../lib/solo/use-ticker';
 import { ensureSignedIn, getSupabase } from '../../lib/supabase/browser';
+import { useTouchPrimary } from '../../lib/device';
 import { BuildStage } from '../solo/BuildStage';
+import { DesktopNeeded } from './DesktopNeeded';
 import { SpinReels } from '../solo/SpinReels';
 import { Lobby } from './Lobby';
 import { ProgressSidebar } from './ProgressSidebar';
@@ -217,6 +219,9 @@ function BattleView({
   const show = state.show;
   const showState = useShowState(show);
   useTicker(1000, phase !== undefined && !isTerminalPhase(phase));
+  // Phones and tablets watch BUILD instead of building (DesktopNeeded), unless asked to.
+  const touch = useTouchPrimary();
+  const [buildHere, setBuildHere] = useState(false);
   const onActivity = useCallback(
     (a: Activity) => {
       controller.setActivity(a);
@@ -238,7 +243,8 @@ function BattleView({
           heading={`Room ${code} · everyone's challenge is…`}
         />
       ) : null;
-    if (!snapshot.me.is_player) {
+    const phonePlayer = snapshot.me.is_player && touch && !buildHere;
+    if (!snapshot.me.is_player || phonePlayer) {
       return (
         <>
           <SpectatorStage
@@ -247,6 +253,16 @@ function BattleView({
             presence={state.sync.presence}
             code={code}
             headerActions={leave}
+            playerNotice={
+              phonePlayer ? (
+                <DesktopNeeded
+                  snapshot={snapshot}
+                  onBuildHere={() => {
+                    setBuildHere(true);
+                  }}
+                />
+              ) : undefined
+            }
           />
           {spin}
         </>
@@ -293,7 +309,9 @@ function BattleView({
       />
     );
   }
-  return <RoomResults state={battleState} remaining={remaining} />;
+  return (
+    <RoomResults state={battleState} remaining={remaining} lostVotes={showState.ballot.lost} />
+  );
 }
 
 // ─── Chrome ───────────────────────────────────────────────────────────────────────────

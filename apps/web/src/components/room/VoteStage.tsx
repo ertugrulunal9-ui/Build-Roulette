@@ -14,9 +14,8 @@ import type { SoloController, SoloState } from '../../lib/solo/controller';
 import { describeVoteError } from '../../lib/solo/errors';
 import { categoryEmoji } from '../../lib/solo/format';
 import type { BattleSnapshot, SnapshotBuild, VoteCategoryInfo } from '../../lib/solo/types';
-import { screenshotUrl } from '../../lib/supabase/config';
 import { Countdown } from '../solo/Countdown';
-import { PlaceholderCard, SHORT_PHASE_LOW_MS } from './RevealStage';
+import { PlaceholderCard, SHORT_PHASE_LOW_MS, buildImage } from './RevealStage';
 
 interface VoteStageProps {
   battle: SoloController;
@@ -28,13 +27,7 @@ interface VoteStageProps {
 }
 
 /** The image of a build in the VOTE grid: its screenshot, its thumbnail, or nothing. */
-export function buildImage(build: SnapshotBuild, thumb: string | null): string | null {
-  const shot =
-    build.screenshot_path !== null &&
-    (build.capture_status === 'captured' || build.capture_status === 'fallback');
-  if (shot && build.screenshot_path) return screenshotUrl(build.screenshot_path);
-  return thumb;
-}
+export { buildImage };
 
 /** Why this viewer has no ballot, or null when they can vote. */
 export function ballotNote(snapshot: BattleSnapshot): string | null {
@@ -77,7 +70,7 @@ export function VoteStage({
       data-testid="vote-stage"
       data-can-vote={canVote ? 'true' : 'false'}
     >
-      <header className="flex flex-wrap items-center gap-3 border-b border-zinc-200 bg-white px-4 py-3 dark:border-zinc-800 dark:bg-zinc-900">
+      <header className="sticky top-0 z-10 flex flex-wrap items-center gap-3 border-b border-zinc-200 bg-white/95 px-4 py-3 backdrop-blur dark:border-zinc-800 dark:bg-zinc-900/95">
         <h1 className="text-sm font-bold tracking-tight">
           Build Roulette <span className="font-normal text-zinc-500">· Room {code}</span>
         </h1>
@@ -107,6 +100,19 @@ export function VoteStage({
           </p>
         </div>
 
+        {canVote && Object.keys(ballot.unsent).length > 0 && (
+          <p
+            role="alert"
+            data-testid="votes-unsent"
+            className="rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 font-semibold text-amber-900 dark:border-amber-800 dark:bg-amber-950/60 dark:text-amber-100"
+          >
+            ⚠ Not saved yet: the server cannot be reached. Your{' '}
+            {Object.keys(ballot.unsent).length === 1
+              ? 'pick is'
+              : `${String(Object.keys(ballot.unsent).length)} picks are`}{' '}
+            sent again as soon as the connection is back. Keep this page open.
+          </p>
+        )}
         {canVote && ballot.complete && (
           <p
             role="status"
@@ -194,12 +200,23 @@ function CategorySection({
   const ballot = showState.ballot;
   const chosen = ballot.votes[category.slug];
   const pending = ballot.pending[category.slug];
-  const error = ballot.errors[category.slug];
+  const unsent = ballot.unsent[category.slug];
+  // A pick waiting for the connection already says so (the banner and its badge).
+  const error = unsent === undefined ? ballot.errors[category.slug] : undefined;
+  const state =
+    pending !== undefined
+      ? 'saving'
+      : unsent !== undefined
+        ? 'unsent'
+        : chosen !== undefined
+          ? 'picked'
+          : 'none';
   return (
     <section
-      className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900"
+      className="rounded-2xl border border-zinc-200 bg-white p-3 shadow-sm sm:p-4 dark:border-zinc-800 dark:bg-zinc-900"
       data-testid="vote-category"
       data-category={category.slug}
+      data-state={state}
       aria-labelledby={`cat-${category.slug}`}
     >
       <header className="mb-3 flex flex-wrap items-baseline gap-x-3 gap-y-1">
@@ -209,22 +226,42 @@ function CategorySection({
         <p className="text-sm text-zinc-500">{category.description}</p>
         {canVote && (
           <span
-            className={`ml-auto text-xs font-bold ${chosen ? 'text-emerald-600 dark:text-emerald-400' : 'text-zinc-400'}`}
+            className={`ml-auto text-xs font-bold ${
+              state === 'unsent'
+                ? 'text-amber-700 dark:text-amber-300'
+                : chosen
+                  ? 'text-emerald-600 dark:text-emerald-400'
+                  : 'text-zinc-400'
+            }`}
+            data-testid="category-status"
           >
-            {pending ? 'Saving…' : chosen ? '✓ Picked' : 'Pick one'}
+            {state === 'saving'
+              ? 'Saving…'
+              : state === 'unsent'
+                ? '⚠ Not saved yet · retrying'
+                : state === 'picked'
+                  ? '✓ Picked'
+                  : 'Pick one'}
           </span>
         )}
       </header>
-      <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+      {/* Phones: one build per row (a big tap target); wider screens: a grid of cards. */}
+      <ul className="grid grid-cols-1 gap-2 sm:grid-cols-3 sm:gap-3 lg:grid-cols-4">
         {builds.map((b) => {
           const own = b.builder_id === snapshot.me.user_id;
-          const selected = (pending ?? chosen) === b.id;
-          const confirmed = chosen === b.id && pending === undefined;
+          const shown = pending ?? unsent ?? chosen;
+          const selected = shown === b.id;
+          const confirmed = chosen === b.id && pending === undefined && unsent === undefined;
           const image = buildImage(b, showState.thumbs[b.id] ?? null);
           const name = b.name ?? `${nameOf(b.builder_id)}'s build`;
+          const badge = confirmed
+            ? { text: '✓ Your pick', tone: 'bg-emerald-600' }
+            : pending === b.id
+              ? { text: 'Saving…', tone: 'bg-emerald-600' }
+              : { text: 'Not saved yet', tone: 'bg-amber-600' };
           const body = (
-            <>
-              <div className="relative aspect-[16/10] overflow-hidden rounded-lg bg-zinc-100 dark:bg-zinc-800">
+            <div className="flex items-center gap-3 sm:block">
+              <div className="relative aspect-[16/10] w-28 shrink-0 overflow-hidden rounded-lg bg-zinc-100 sm:w-auto dark:bg-zinc-800">
                 {image ? (
                   // eslint-disable-next-line @next/next/no-img-element -- a Storage URL or an object URL
                   <img
@@ -237,8 +274,10 @@ function CategorySection({
                   <PlaceholderCard name={name} />
                 )}
                 {selected && (
-                  <span className="absolute top-1.5 right-1.5 rounded-full bg-emerald-600 px-2 py-0.5 text-xs font-black text-white shadow">
-                    {confirmed ? '✓ Your pick' : 'Saving…'}
+                  <span
+                    className={`absolute top-1.5 right-1.5 hidden rounded-full px-2 py-0.5 text-xs font-black text-white shadow sm:inline ${badge.tone}`}
+                  >
+                    {badge.text}
                   </span>
                 )}
                 {own && (
@@ -250,15 +289,27 @@ function CategorySection({
                   </span>
                 )}
               </div>
-              <p className="mt-1.5 truncate text-sm font-bold">{name}</p>
-              <p className="truncate text-xs text-zinc-500">by {nameOf(b.builder_id)}</p>
-            </>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-base font-bold sm:mt-1.5 sm:text-sm">{name}</p>
+                <p className="truncate text-sm text-zinc-500 sm:text-xs">
+                  by {nameOf(b.builder_id)}
+                </p>
+                {selected && (
+                  <span
+                    className={`mt-1 inline-block rounded-full px-2 py-0.5 text-xs font-black text-white sm:hidden ${badge.tone}`}
+                  >
+                    {badge.text}
+                  </span>
+                )}
+              </div>
+            </div>
           );
           const common = {
             'data-testid': 'vote-option',
             'data-build': b.id,
             'data-own': own ? 'true' : 'false',
             'data-selected': confirmed ? 'true' : 'false',
+            'data-unsent': unsent === b.id ? 'true' : 'false',
           };
           return (
             <li key={b.id}>
@@ -279,9 +330,11 @@ function CategorySection({
                   onClick={() => {
                     onVote(b.id);
                   }}
-                  className={`w-full rounded-xl border-2 p-2 text-left transition hover:-translate-y-0.5 hover:shadow-md ${
+                  className={`min-h-16 w-full rounded-xl border-2 p-2 text-left transition hover:-translate-y-0.5 hover:shadow-md ${
                     selected
-                      ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-950/40'
+                      ? unsent === b.id
+                        ? 'border-amber-500 bg-amber-50 dark:bg-amber-950/40'
+                        : 'border-emerald-500 bg-emerald-50 dark:bg-emerald-950/40'
                       : 'border-zinc-200 hover:border-emerald-300 dark:border-zinc-800'
                   }`}
                 >

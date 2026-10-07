@@ -197,6 +197,18 @@ function without<V>(record: Readonly<Record<string, V>>, key: string): Record<st
 
 // ─── Controller ───────────────────────────────────────────────────────────────────────
 
+/**
+ * The bundles REVEAL keeps: the spotlight and the next build that a moderator did not take
+ * down (the server skips the slots of taken-down builds; T-024).
+ */
+function wantedBundles(snap: BattleSnapshot): string[] {
+  const index = snap.battle.reveal_index ?? 0;
+  const order = snap.battle.reveal_order ?? [];
+  const removed = (id: string) => snap.builds.some((b) => b.id === id && b.taken_down === true);
+  const next = order.slice(index + 1).find((id) => !removed(id));
+  return [order[index], next].filter((id): id is string => typeof id === 'string' && !removed(id));
+}
+
 export class RevealVoteController {
   private state: RevealVoteState;
   private snapshot: BattleSnapshot | null = null;
@@ -561,15 +573,7 @@ export class RevealVoteController {
     const snap = this.snapshot;
     const builds = this.state.builds;
     if (!snap || !builds) return;
-    const index = snap.battle.reveal_index ?? 0;
-    const order = snap.battle.reveal_order ?? [];
-    // The spotlight and the next build that a moderator did not take down (the server skips
-    // the slots of taken-down builds; T-024).
-    const removed = (id: string) => snap.builds.some((b) => b.id === id && b.taken_down === true);
-    const next = order.slice(index + 1).find((id) => !removed(id));
-    const wanted = [order[index], next].filter(
-      (id): id is string => typeof id === 'string' && !removed(id),
-    );
+    const wanted = wantedBundles(snap);
     const kept: Record<string, BundleState> = {};
     for (const id of wanted) {
       const have = this.state.bundles[id];
@@ -615,9 +619,7 @@ export class RevealVoteController {
   /** Keeps a download only while its build is still wanted (the spotlight may have moved). */
   private setBundle(id: string, bundle: BundleState): void {
     const snap = this.snapshot;
-    const index = snap?.battle.reveal_index ?? 0;
-    const order = snap?.battle.reveal_order ?? [];
-    const wanted = snap?.battle.phase === 'reveal' && [order[index], order[index + 1]].includes(id);
+    const wanted = snap?.battle.phase === 'reveal' && wantedBundles(snap).includes(id);
     if (!wanted) {
       if (this.state.bundles[id]) this.patch({ bundles: without(this.state.bundles, id) });
       return;

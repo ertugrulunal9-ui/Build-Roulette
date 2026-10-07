@@ -320,6 +320,39 @@ describe('battles', () => {
     c.dispose();
   });
 
+  it('a ship whose event never arrived is toasted from the refetched snapshot, once', async () => {
+    api.room = roomSnapshot({ battleId: BATTLE_1, version: 3 });
+    api.battles.set(BATTLE_1, battleSnapshot({ version: 2, phase: 'building' }));
+    const c = await joined();
+    rt.open(`battle:${BATTLE_1}`).status('SUBSCRIBED');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(c.getSnapshot().toasts).toEqual([]);
+    // Bob ships; the broadcast is lost. The next heartbeat sees version 3 and refetches.
+    const shipped = battleSnapshot({ version: 3, phase: 'building' });
+    shipped.builds = shipped.builds.map((b) =>
+      b.builder_id === BOB
+        ? { ...b, status: 'shipped', name: 'Snack Overflow', completion_ms: 192_000 }
+        : b,
+    );
+    api.battles.set(BATTLE_1, shipped);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(c.getSnapshot().toasts.map((t) => t.text)).toEqual([
+      '🚀 Bob shipped “Snack Overflow” at 3:12',
+    ]);
+    // The event arrives late after all: stale, no second toast.
+    rt.open(`battle:${BATTLE_1}`).send({
+      type: 'build',
+      version: 3,
+      build_id: 'build-bob',
+      user_id: BOB,
+      status: 'shipped',
+      name: 'Snack Overflow',
+      completion_ms: 192_000,
+    });
+    expect(c.getSnapshot().toasts).toHaveLength(1);
+    c.dispose();
+  });
+
   it('a host change makes a toast', async () => {
     const c = await joined();
     rt.open(ROOM_TOPIC).send({

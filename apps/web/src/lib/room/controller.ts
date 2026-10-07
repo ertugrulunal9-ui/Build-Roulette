@@ -412,6 +412,7 @@ export class RoomController {
   private onSync(sync: RoomSync): void {
     if (sync !== this.sync) return;
     const next = sync.getSnapshot();
+    this.shipToasts(this.state.sync.battle, next.battle);
     const prevRoom = this.state.sync.room;
     if (prevRoom && next.room && prevRoom.room.host_id !== next.room.room.host_id) {
       const host = next.room.members.find((m) => m.user_id === next.room?.room.host_id);
@@ -486,13 +487,31 @@ export class RoomController {
       }
       return;
     }
-    const ev = n.event;
-    if (ev.type === 'build') {
+    // Ships are toasted from the snapshots (shipToasts), not from `build` events: a
+    // broadcast Realtime never delivered is caught by a refetch, which has no event.
+  }
+
+  /**
+   * A toast per build that is shipped in `next` and was not in `prev` (the same battle):
+   * whether a `build` event or a refetched snapshot told. Nothing for the first snapshot (a
+   * page load shows the badges, not old news).
+   */
+  private shipToasts(prev: BattleSnapshot | null, next: BattleSnapshot | null): void {
+    if (!prev || prev.battle.id !== next?.battle.id) return;
+    for (const b of next.builds) {
+      if (b.status !== 'shipped') continue;
+      if (
+        prev.builds.find((x) => x.id === b.id || x.builder_id === b.builder_id)?.status ===
+        'shipped'
+      ) {
+        continue;
+      }
       const who =
-        ev.user_id === n.battle.me.user_id
+        b.builder_id === next.me.user_id
           ? 'You'
-          : (n.battle.players.find((p) => p.user_id === ev.user_id)?.display_name ?? 'Someone');
-      this.toast('ship', `🚀 ${who} shipped “${ev.name}” at ${formatCountdown(ev.completion_ms)}`);
+          : (next.players.find((p) => p.user_id === b.builder_id)?.display_name ?? 'Someone');
+      const at = b.completion_ms === null ? '' : ` at ${formatCountdown(b.completion_ms)}`;
+      this.toast('ship', `🚀 ${who} shipped “${b.name ?? 'Untitled'}”${at}`);
     }
   }
 

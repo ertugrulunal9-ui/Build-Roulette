@@ -88,6 +88,7 @@ native ESM fallback, or Sandpack as a stopgap, before continuing.
 
 ### M5: Hardening (retires R8, R9, R10)
 **Scope**
+- Admin page to inspect `battle_events` / `room_events` (moved from M3)
 - Load test with 50 concurrent rooms × 8 players (scripted clients). Map Realtime connections, messages and egress to plan limits and costs.
 - Self-hosted esm.sh behind Cloudflare, plus a Service Worker cache for template packages
 - Moderation: profanity filter, report queue and admin takedown, rate limits on room creation, joins and reports

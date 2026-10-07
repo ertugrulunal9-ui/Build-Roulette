@@ -265,4 +265,19 @@ section.
     on visible/online;
   - after DESTROY everyone returns to the lobby, which shows a "Last battle" podium and a
     rematch button for the host.
+- **Resilience (T-018):**
+  - **Presence rate limit:** Supabase Realtime closes a channel after more than 5
+    Presence messages per 30 s per client, so activity updates are capped at **4 per
+    30 s**, none are sent while offline, and channels the server closes are re-subscribed
+    with backoff.
+  - **Going offline:** an offline browser keeps the WebSocket "open", so the engine also
+    listens to the window's `offline`/`online` events.
+  - **Version gaps:** each new gap refetches immediately; a gap that stays open retries
+    with backoff (1 → 30 s), keeping the newest 200 events.
+  - **Local workspaces:** only battles the server reports as over, or untouched for 24 h,
+    have their IndexedDB workspace deleted.
+  - Verified by `e2e/chaos.spec.ts`: 6 players, ±5 min clock skew, a 15 s network drop,
+    refreshes, the host vanishing, all clients closed at T-0, abandonment, a full room,
+    and a minute of steady typing. Every run ends with a DB terminal-state check. It runs
+    nightly in CI.
 

@@ -2,7 +2,7 @@
 
 Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 
-## Current milestone: M3 Rooms + multiplayer state machine + realtime (M2 complete)
+## Current milestone: M3 complete (local). Next: M4 Reveal + vote + results (awaiting user go-ahead)
 
 | ID | Task | Scope | Status | Notes |
 |---|---|---|---|---|
@@ -13,7 +13,7 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 | T-015 | Fix flaky playground e2e (`playground.spec.ts:206`): a click right after "Reset to template" is lost, likely a double rebuild replacing the frame (≈1/6 runs) | `apps/web/`, `packages/runtime/` | done | Merged |
 | T-016 | M3 DB layer: rooms + members RPCs, multiplayer `start_battle`/`advance_battle` (shipping → results until M4), heartbeat, host migration, abandonment, kick, late joiners as spectators, Realtime broadcast triggers + private-channel authorization | `supabase/`, `ci.yml` | done | Merged |
 | T-017 | M3 web: create/join room (code + link), lobby with presence and ready-up, host controls, multiplayer battle flow, realtime sync loop with resync | `apps/web/`, `packages/game/` | done | Merged |
-| T-018 | M3 resilience: multi-context Playwright battles with chaos (network drops, clock skew, refresh, host leaves), admin event-log page | `apps/web/` (e2e + fixes), `supabase/` (tests), `apps/capture-worker/` (integration-test isolation) | in-progress | M3, task 3 of 3 |
+| T-018 | M3 resilience: multi-context Playwright battles with chaos (network drops, clock skew, refresh, host leaves), admin event-log page | `apps/web/` (e2e + fixes), `supabase/` (tests), `apps/capture-worker/` (integration-test isolation) | done | Merged (admin event-log page moved to M5) |
 | T-001 | Monorepo skeleton: pnpm + Turborepo, Next.js app, lint/format/strict TS, Vitest, CI | root config, `apps/web/`, `packages/game/`, `.github/` | done | Merged in b29110a |
 | T-002 | Supabase scaffold: initial schema migration, Supabase-compatible local Postgres test harness, pgTAP | `supabase/` | done | Merged |
 | T-004 | Run DB tests in CI + add a `@br/game` ↔ SQL enum drift test | `.github/workflows/ci.yml`, `packages/game/` | done | Merged |
@@ -57,6 +57,7 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 - T-015 Lost click after template reset (root-cause fix)
 - T-016 M3 DB layer: rooms, multiplayer, realtime
 - T-017 M3 multiplayer web UI
+- T-018 M3 resilience / chaos
 
 ## Review log
 
@@ -342,3 +343,26 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 - Decisions relayed to the user: Presence on the room topic only; auto-return to lobby after DESTROY with a "Last battle" podium; spectators get no last look; the ship dialog closes into a "locked" banner (solo too); only `max_players` in host settings until M4.
 - Bugs the worker found and fixed: no last look for an auto-shipped player; the ship dialog stayed open.
 - Test workaround to revisit in T-018: `bringToFront()` before clicks in background windows.
+
+### T-018: accepted (M3 task 3). **M3 complete.**
+- Hub test-merged and re-ran on a fresh clone with the real stack (Realtime on):
+  - pipeline green (web 176 unit tests);
+  - `supabase test db` 762/762;
+  - e2e scripts 44/48/33;
+  - **capture integration 12/12 after the other scripts on the same DB** (isolation fixed);
+  - **cold-start multiplayer e2e 3/3** (fresh `.next` + `db reset`);
+  - **chaos e2e 6/6 (9.3 min)**;
+  - solo 2/2, runtime 25/25, playground 14/14.
+- The cold-start flake was a test artefact. Chromium routes the first click after `showModal()` over a cross-site iframe by stale compositor hit-test data; the worker measured up to 21 of 40 clicks lost under CPU load. The fix is `clickRouted()`, which waits until the element itself receives a `pointermove`. 11 consecutive cold runs passed. `bringToFront()` is removed.
+- **Real product bugs found and fixed:**
+  1. Supabase Realtime closed the room channel of any steadily typing player (more than 5 Presence messages per 30 s), and the client never rejoined.
+  2. A network drop wasn't detected for about 50 s.
+  3. "Reconnecting" was only shown in the lobby.
+  4. Abandoned battles said "Nobody shipped".
+  5. The sync engine froze after 2 version gaps.
+  6. A room battle deleted the workspace of a solo battle running in another tab.
+- M3 exit criteria (docs/06): all met. The chaos suite runs nightly in CI (too long for every push). The admin `battle_events` page was not built; it moves to M5 (observability).
+- Open for later:
+  - "typing" activity lags because of the 4-per-30 s cap;
+  - abandoned battles lose the screenshots of shipped builds;
+  - the chaos suite uses 27 anonymous sign-ups per run.

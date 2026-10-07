@@ -1,0 +1,366 @@
+// @vitest-environment happy-dom
+/**
+ * The REVEAL, VOTE and vote-based RESULTS screens of a room battle, rendered from fixture
+ * snapshots: the spotlight and its local skip / frozen fallbacks, the host controls (only
+ * for the host), the strip; the VOTE grid (own build not selectable, picks, ballot
+ * complete, errors, spectators); the votes and awards in RESULTS. The e2e runs them for
+ * real (multiplayer.spec.ts).
+ */
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { createElement } from 'react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  initialRevealVoteState,
+  type RevealVoteController,
+  type RevealVoteState,
+} from '../../lib/room/reveal-vote';
+import { BATTLE_1, BOB, CLEO, ME, battleSnapshot, revealBuilds } from '../../lib/room/test-support';
+import { INITIAL_SOLO_STATE, type SoloController, type SoloState } from '../../lib/solo/controller';
+import { GameError } from '../../lib/solo/errors';
+import type { BattleSnapshot } from '../../lib/solo/types';
+import { RevealStage } from './RevealStage';
+import { RoomResults, votedResults } from './RoomResults';
+import { VoteStage, ballotNote, buildImage } from './VoteStage';
+
+afterEach(cleanup);
+
+function must<T>(x: T | null | undefined): T {
+  if (x === null || x === undefined) throw new Error('missing element');
+  return x;
+}
+
+function fakeShow() {
+  return {
+    skip: vi.fn(),
+    watch: vi.fn(),
+    markFrozen: vi.fn(),
+    next: vi.fn(() => Promise.resolve()),
+    skipToVote: vi.fn(() => Promise.resolve()),
+    dismissHostError: vi.fn(),
+    vote: vi.fn(),
+    dismissVoteError: vi.fn(),
+  };
+}
+
+function soloState(snapshot: BattleSnapshot): SoloState {
+  return { ...INITIAL_SOLO_STATE, stage: 'battle', battleId: BATTLE_1, snapshot };
+}
+
+const battleController = { remainingMs: () => 42_000 } as unknown as SoloController;
+
+function showState(patch: Partial<RevealVoteState> = {}): RevealVoteState {
+  return {
+    ...initialRevealVoteState(BATTLE_1),
+    builds: revealBuilds(),
+    thumbs: { 'build-me': 'blob:me', 'build-bob': 'blob:bob', 'build-cleo': null },
+    ...patch,
+  };
+}
+
+function renderReveal(snapshot: BattleSnapshot, state: RevealVoteState, show = fakeShow()) {
+  render(
+    createElement(RevealStage, {
+      battle: battleController,
+      battleState: soloState(snapshot),
+      show: show as unknown as RevealVoteController,
+      showState: state,
+      code: 'K7QXM',
+      headerActions: null,
+    }),
+  );
+  return show;
+}
+
+describe('RevealStage', () => {
+  it('the spotlight: Build k of n, name, builder; the strip hides upcoming builds', () => {
+    renderReveal(
+      battleSnapshot({ phase: 'reveal', revealIndex: 1 }),
+      showState({ bundles: { 'build-bob': { status: 'loading', build: null } } }),
+    );
+    const stage = screen.getByTestId('reveal-stage');
+    expect(stage.dataset['index']).toBe('1');
+    expect(stage.dataset['build']).toBe('build-bob');
+    expect(screen.getByTestId('reveal-position').textContent).toBe('Build 2 of 3');
+    expect(screen.getByTestId('reveal-title').textContent).toBe('build-bob app');
+    expect(screen.getByTestId('reveal-builder').textContent).toContain('Bob');
+    expect(screen.getByTestId('user-build-label')).toBeTruthy();
+    expect(screen.getByTestId('build-loading')).toBeTruthy();
+    const strip = screen.getAllByTestId('reveal-strip-item');
+    expect(strip.map((li) => li.dataset['state'])).toEqual(['revealed', 'current', 'upcoming']);
+    // A revealed build shows its thumbnail; an upcoming one does not.
+    expect(within(must(strip[0])).getByTestId('strip-thumb').getAttribute('src')).toBe('blob:me');
+    expect(within(must(strip[2])).queryByTestId('strip-thumb')).toBeNull();
+  });
+
+  it('host controls only for the host; they call reveal_next / skip_to_vote', () => {
+    const show = renderReveal(battleSnapshot({ phase: 'reveal' }), showState());
+    fireEvent.click(screen.getByTestId('reveal-next'));
+    fireEvent.click(screen.getByTestId('skip-to-vote'));
+    expect(show.next).toHaveBeenCalledTimes(1);
+    expect(show.skipToVote).toHaveBeenCalledTimes(1);
+    cleanup();
+    renderReveal(battleSnapshot({ phase: 'reveal', hostId: BOB }), showState());
+    expect(screen.queryByTestId('reveal-next')).toBeNull();
+    expect(screen.getByTestId('reveal-host-note').textContent).toContain('Bob');
+  });
+
+  it('a pending host action disables both buttons; an error can be dismissed', () => {
+    const show = renderReveal(
+      battleSnapshot({ phase: 'reveal' }),
+      showState({ host: { pending: 'next', error: null } }),
+    );
+    expect(screen.getByTestId<HTMLButtonElement>('reveal-next').disabled).toBe(true);
+    expect(screen.getByTestId<HTMLButtonElement>('skip-to-vote').disabled).toBe(true);
+    cleanup();
+    renderReveal(
+      battleSnapshot({ phase: 'reveal' }),
+      showState({ host: { pending: null, error: new GameError('network') } }),
+      show,
+    );
+    fireEvent.click(within(screen.getByTestId('host-error')).getByText('OK'));
+    expect(show.dismissHostError).toHaveBeenCalled();
+  });
+
+  it('Skip this build is outside the frame and local; a skipped build shows its thumbnail', () => {
+    const show = renderReveal(
+      battleSnapshot({ phase: 'reveal', revealIndex: 1 }),
+      showState({ bundles: { 'build-bob': { status: 'loading', build: null } } }),
+    );
+    fireEvent.click(screen.getByTestId('skip-build'));
+    expect(show.skip).toHaveBeenCalledWith('build-bob');
+    cleanup();
+    renderReveal(
+      battleSnapshot({ phase: 'reveal', revealIndex: 1 }),
+      showState({ skipped: ['build-bob'] }),
+      show,
+    );
+    expect(screen.getByTestId('build-skipped').textContent).toContain('everyone else');
+    expect(screen.getByTestId('fallback-thumb').getAttribute('src')).toBe('blob:bob');
+    expect(screen.queryByTestId('reveal-live')).toBeNull();
+    fireEvent.click(screen.getByTestId('watch-build'));
+    expect(show.watch).toHaveBeenCalledWith('build-bob');
+  });
+
+  it('a frozen build without a thumbnail: the froze message on a placeholder card', () => {
+    renderReveal(
+      battleSnapshot({ phase: 'reveal', revealIndex: 2 }),
+      showState({ frozen: ['build-cleo'] }),
+    );
+    expect(screen.getByTestId('build-froze').textContent).toContain('froze');
+    expect(within(screen.getByTestId('build-froze')).getByTestId('placeholder-card')).toBeTruthy();
+    expect(screen.queryByTestId('reveal-live')).toBeNull();
+  });
+
+  it('a ready bundle runs in one reveal-mode iframe (no popups, modals or clipboard)', () => {
+    renderReveal(
+      battleSnapshot({ phase: 'reveal' }),
+      showState({
+        bundles: {
+          'build-me': { status: 'ready', build: { js: 'x', css: '', importMap: { imports: {} } } },
+        },
+      }),
+    );
+    const frames = document.querySelectorAll('iframe[data-testid=reveal-live-frame]');
+    expect(frames).toHaveLength(1);
+    expect(frames[0]?.getAttribute('sandbox')).toBe(
+      'allow-scripts allow-same-origin allow-forms allow-pointer-lock',
+    );
+    expect(frames[0]?.getAttribute('allow')).toBe('autoplay; fullscreen; gamepad');
+    cleanup();
+    expect(document.querySelectorAll('iframe')).toHaveLength(0);
+  });
+});
+
+// ─── VOTE ─────────────────────────────────────────────────────────────────────────────
+
+function renderVote(snapshot: BattleSnapshot, state: RevealVoteState, show = fakeShow()) {
+  render(
+    createElement(VoteStage, {
+      battle: battleController,
+      battleState: soloState(snapshot),
+      show: show as unknown as RevealVoteController,
+      showState: state,
+      code: 'K7QXM',
+      headerActions: null,
+    }),
+  );
+  return show;
+}
+
+const ballot = (patch: Partial<RevealVoteState['ballot']>): RevealVoteState['ballot'] => ({
+  ...initialRevealVoteState(BATTLE_1).ballot,
+  loaded: true,
+  ...patch,
+});
+
+describe('VoteStage', () => {
+  it('a grid per category; the own build is shown but not selectable', () => {
+    const show = renderVote(battleSnapshot({ phase: 'voting' }), showState());
+    const categories = screen.getAllByTestId('vote-category');
+    expect(categories.map((c) => c.dataset['category'])).toEqual([
+      'overall',
+      'rule',
+      'style',
+      'chaos',
+    ]);
+    const overall = must(categories[0]);
+    const options = within(overall).getAllByTestId('vote-option');
+    expect(options.map((o) => [o.dataset['build'], o.tagName, o.dataset['own']])).toEqual([
+      ['build-me', 'DIV', 'true'],
+      ['build-bob', 'BUTTON', 'false'],
+      ['build-cleo', 'BUTTON', 'false'],
+    ]);
+    expect(within(overall).getByTestId('own-build-badge')).toBeTruthy();
+    fireEvent.click(must(options[1]));
+    expect(show.vote).toHaveBeenCalledWith('overall', 'build-bob');
+    expect(screen.getByTestId('vote-progress').textContent).toContain('0/3 voted');
+    expect(screen.queryByTestId('ballot-complete')).toBeNull();
+  });
+
+  it('confirmed picks, a pending pick, ballot complete', () => {
+    renderVote(
+      battleSnapshot({ phase: 'voting', voteProgress: { voted_count: 2, eligible_count: 3 } }),
+      showState({
+        ballot: ballot({
+          votes: {
+            overall: 'build-bob',
+            rule: 'build-cleo',
+            style: 'build-bob',
+            chaos: 'build-bob',
+          },
+          pending: { rule: 'build-bob' },
+          complete: true,
+        }),
+      }),
+    );
+    const option = (cat: string, id: string) =>
+      must(
+        within(
+          must(screen.getAllByTestId('vote-category').find((c) => c.dataset['category'] === cat)),
+        )
+          .getAllByTestId('vote-option')
+          .find((o) => o.dataset['build'] === id),
+      );
+    expect(option('overall', 'build-bob').dataset['selected']).toBe('true');
+    expect(option('overall', 'build-bob').getAttribute('aria-pressed')).toBe('true');
+    // The rule pick is being changed: not confirmed yet.
+    expect(option('rule', 'build-cleo').dataset['selected']).toBe('false');
+    expect(option('rule', 'build-bob').textContent).toContain('Saving…');
+    expect(screen.getByTestId('ballot-complete').textContent).toContain('2/3 voted');
+  });
+
+  it('every vote error has its own message and can be dismissed', () => {
+    const show = renderVote(
+      battleSnapshot({ phase: 'voting' }),
+      showState({ ballot: ballot({ errors: { style: new GameError('self_vote') } }) }),
+    );
+    const error = screen.getByTestId('vote-error');
+    expect(error.dataset['code']).toBe('self_vote');
+    expect(error.textContent).toContain('cannot vote for your own build');
+    fireEvent.click(within(error).getByText('OK'));
+    expect(show.dismissVoteError).toHaveBeenCalledWith('style');
+  });
+
+  it('spectators see the progress but no ballot', () => {
+    renderVote(battleSnapshot({ phase: 'voting', role: 'spectator' }), showState());
+    expect(screen.getByTestId('vote-stage').dataset['canVote']).toBe('false');
+    expect(screen.getByTestId('vote-spectator-note').textContent).toContain('only the players');
+    expect(document.querySelectorAll('button[data-testid=vote-option]')).toHaveLength(0);
+    expect(screen.getByTestId('vote-progress').dataset['eligible']).toBe('3');
+  });
+
+  it('buildImage: the screenshot first, then the thumbnail, else nothing', () => {
+    const snap = battleSnapshot({ phase: 'voting' });
+    const build = snap.builds[1];
+    if (!build) throw new Error('fixture');
+    expect(buildImage(build, 'blob:t')).toBe('blob:t');
+    expect(buildImage(build, null)).toBeNull();
+    build.capture_status = 'captured';
+    build.screenshot_path = `${BATTLE_1}/build-bob.webp`;
+    expect(buildImage(build, 'blob:t')).toMatch(/\/storage\/v1\/object\/public\/screenshots\//);
+    build.capture_status = 'failed';
+    expect(buildImage(build, 'blob:t')).toBe('blob:t');
+  });
+
+  it('ballotNote explains why there is no ballot', () => {
+    expect(ballotNote(battleSnapshot({ phase: 'voting' }))).toBeNull();
+    expect(ballotNote(battleSnapshot({ phase: 'voting', role: 'spectator' }))).toContain(
+      'only the players',
+    );
+    const left = battleSnapshot({ phase: 'voting' });
+    left.me.can_vote = false;
+    left.players = left.players.map((p) => (p.user_id === ME ? { ...p, state: 'left' } : p));
+    expect(ballotNote(left)).toContain('You left the room');
+    const notVoter = battleSnapshot({ phase: 'voting' });
+    notVoter.me.can_vote = false;
+    notVoter.me.is_voter = false;
+    expect(ballotNote(notVoter)).toBe('You cannot vote in this battle.');
+  });
+});
+
+// ─── RESULTS ──────────────────────────────────────────────────────────────────────────
+
+function votedResultsSnapshot(): BattleSnapshot {
+  const snap = battleSnapshot({
+    phase: 'results',
+    revealOrder: ['build-me', 'build-bob', 'build-cleo'],
+  });
+  const votes: Record<string, [Record<string, number>, number, number]> = {
+    'build-bob': [{ overall: 1, rule: 2, style: 1, chaos: 2 }, 6, 1],
+    'build-me': [{ overall: 1, rule: 1, style: 0, chaos: 1 }, 3, 2],
+    'build-cleo': [{ overall: 1, rule: 0, style: 2, chaos: 0 }, 3, 3],
+  };
+  snap.builds = snap.builds.map((b) => {
+    const [v, total, rank] = votes[b.id] ?? [{}, 0, null];
+    return { ...b, votes: v, total_votes: total, final_rank: rank };
+  });
+  snap.awards = [
+    { build_id: 'build-bob', award: 'overall', source: 'vote', votes: 1 },
+    { build_id: 'build-bob', award: 'rule', source: 'vote', votes: 2 },
+    { build_id: 'build-me', award: 'speedrun', source: 'auto', votes: null },
+    { build_id: 'build-me', award: 'overall', source: 'vote', votes: 1 },
+    { build_id: 'build-cleo', award: 'style', source: 'vote', votes: 2 },
+  ];
+  return snap;
+}
+
+describe('RoomResults with votes', () => {
+  it('votes per category, category awards first, the winner highlighted', () => {
+    const snap = votedResultsSnapshot();
+    expect(votedResults(snap)).toBe(true);
+    render(createElement(RoomResults, { state: soloState(snap), remaining: 30_000 }));
+    const rows = screen.getAllByTestId('ranked-build');
+    expect(rows.map((r) => r.dataset['builder'])).toEqual([BOB, ME, CLEO]);
+    expect(rows.map((r) => r.dataset['winner'])).toEqual(['true', 'false', 'false']);
+    expect(screen.getAllByTestId('winner-banner')).toHaveLength(1);
+    const bob = must(rows[0]);
+    expect(
+      within(bob)
+        .getAllByTestId('vote-count')
+        .map((c) => [c.dataset['category'], c.dataset['count']]),
+    ).toEqual([
+      ['overall', '1'],
+      ['rule', '2'],
+      ['style', '1'],
+      ['chaos', '2'],
+    ]);
+    expect(within(bob).getByTestId('vote-tally').dataset['total']).toBe('6');
+    expect(within(bob).getAllByTestId('award')[1]?.textContent).toContain('Best Use of the Rule');
+    expect(within(bob).getAllByTestId('award')[1]?.textContent).toContain('2 votes');
+    // Vote awards come before the auto-awards.
+    expect(
+      within(must(rows[1]))
+        .getAllByTestId('award')
+        .map((a) => a.dataset['award']),
+    ).toEqual(['overall', 'speedrun']);
+    expect(screen.getByTestId('ranking-rule').textContent).toContain('Ranked by votes');
+  });
+
+  it('a battle without votes keeps the M3 ranking text and no tallies', () => {
+    const snap = battleSnapshot({ phase: 'results' });
+    expect(votedResults(snap)).toBe(false);
+    render(createElement(RoomResults, { state: soloState(snap), remaining: 30_000 }));
+    expect(screen.queryAllByTestId('vote-tally')).toHaveLength(0);
+    expect(screen.getByTestId('ranking-rule').textContent).toContain('completion time');
+  });
+});

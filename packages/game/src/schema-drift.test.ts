@@ -19,6 +19,11 @@
  *   the REVEAL_* / VOTING_* constants `private.reveal_vote_limits()`, and `revealSlotSeconds`
  *   (which rounds) the reference table that `supabase/tests/15_reveal_vote.test.sql` checks
  *   `private.reveal_slot_seconds(n)` against, so the two implementations cannot drift apart.
+ *
+ * - One winner per vote category (T-022): the `order by` of the ranks and of the category
+ *   awards in `private.finalize_votes` must be the count, then `VOTE_TIE_BREAKS`; ranks use
+ *   `row_number()` (never shared), awards `distinct on` the category with a count above 0;
+ *   and `public.sweep_deadlines` re-checks the early end of VOTING.
  */
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -45,7 +50,13 @@ import {
   ROOM_LIMITS,
   ROOM_STATUSES,
 } from './rooms';
-import { VOTE_CATEGORIES, VOTING_MAX_SECONDS, VOTING_MIN_SECONDS } from './votes';
+import {
+  RANKING_CATEGORY,
+  VOTE_CATEGORIES,
+  VOTE_TIE_BREAKS,
+  VOTING_MAX_SECONDS,
+  VOTING_MIN_SECONDS,
+} from './votes';
 
 const MIGRATIONS_DIR = resolve(import.meta.dirname, '../../../supabase/migrations');
 const REVEAL_VOTE_TEST = resolve(
@@ -601,5 +612,112 @@ describe('schema drift: reveal and voting', () => {
       [0, 60],
       [7, 43],
     ]);
+  });
+});
+
+// ─── One winner per vote category, early end in the sweep (T-022) ────────────────────
+
+/** Splits a SQL list on its top-level commas (not those inside parentheses). */
+function splitTopLevel(list: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let current = '';
+  for (const ch of list) {
+    if (ch === '(') depth += 1;
+    if (ch === ')') depth -= 1;
+    if (ch === ',' && depth === 0) {
+      parts.push(current);
+      current = '';
+    } else {
+      current += ch;
+    }
+  }
+  parts.push(current);
+  return parts.map((p) => p.trim()).filter((p) => p !== '');
+}
+
+/**
+ * One `order by` term as a key: a category count (`count:overall` for the ranking category,
+ * `count:category` for the award's own category), `total_votes`, `shipped_at` or `build_id`,
+ * plus ` desc` when descending. Table aliases are dropped; any other expression is kept.
+ */
+function orderKey(term: string): string {
+  const t = term.replace(/\s+/g, ' ').trim().toLowerCase();
+  const desc = /\sdesc$/.test(t) ? ' desc' : '';
+  const expr = t.replace(/\s(asc|desc)$/, '').replace(/\b[a-z_]+\./g, '');
+  const count = /vote_counts ->> (?:'([a-z_]+)'|slug)/.exec(expr);
+  if (count) return `count:${count[1] ?? 'category'}${desc}`;
+  if (expr === 'total_votes') return `total_votes${desc}`;
+  if (expr === 'shipped_at') return `shipped_at${desc}`;
+  if (expr === 'id') return `build_id${desc}`;
+  return `${expr}${desc}`;
+}
+
+/** The ranks' and the awards' `order by` keys in the last `private.finalize_votes`. */
+function finalizeVotesOrders(files: readonly { name: string; sql: string }[]) {
+  const body = lastPrivateFunctionBody(files, 'finalize_votes', { anyArgs: true });
+  if (body === null) return null;
+  const rank =
+    /\b(row_number|rank|dense_rank)\s*\(\s*\)\s*over\s*\(\s*order\s+by\s+([\s\S]*?)\)\s+as\s+rank\b/i.exec(
+      body,
+    );
+  const awards = /\binsert\s+into\s+public\.awards\b([\s\S]*?);/i.exec(body)?.[1] ?? '';
+  const awardOrder = /\border\s+by\s+([\s\S]*)$/i.exec(awards)?.[1] ?? '';
+  return {
+    rankFunction: rank?.[1]?.toLowerCase() ?? null,
+    rank: splitTopLevel(rank?.[2] ?? '').map(orderKey),
+    distinctOn: /\bdistinct\s+on\s*\(\s*(?:[a-z_]+\.)?slug\s*\)/i.test(awards),
+    positiveOnly: /vote_counts\s*->>\s*(?:[a-z_]+\.)?slug\s*\)\s*::\s*int\s*>\s*0/i.test(awards),
+    awards: splitTopLevel(awardOrder).map(orderKey),
+  };
+}
+
+const TIE_BREAK_KEYS = VOTE_TIE_BREAKS.map((k) => (k === 'total_votes' ? 'total_votes desc' : k));
+
+describe('schema drift: vote ranks and awards (T-022)', () => {
+  it('private.finalize_votes ranks by Best Build, then VOTE_TIE_BREAKS, with no shared ranks', () => {
+    const orders = finalizeVotesOrders(readMigrations());
+    expect(orders, 'private.finalize_votes not found').not.toBeNull();
+    expect(orders?.rankFunction).toBe('row_number');
+    expect(orders?.rank).toEqual([`count:${RANKING_CATEGORY} desc`, ...TIE_BREAK_KEYS]);
+  });
+
+  it('private.finalize_votes gives one award per category (count > 0), then VOTE_TIE_BREAKS', () => {
+    const orders = finalizeVotesOrders(readMigrations());
+    expect(orders?.distinctOn, 'distinct on the category').toBe(true);
+    expect(orders?.positiveOnly, 'no award for a category nobody voted in').toBe(true);
+    // The category itself first (distinct on), then its count, then the tie-breaks.
+    expect(orders?.awards).toEqual(['slug', 'count:category desc', ...TIE_BREAK_KEYS]);
+  });
+
+  it('public.sweep_deadlines re-checks the early end of VOTING', () => {
+    const body = lastPrivateFunctionBody(readMigrations(), 'sweep_deadlines', { schema: 'public' });
+    expect(body, 'public.sweep_deadlines not found').not.toBeNull();
+    expect(body).toMatch(/phase\s*=\s*'voting'\s+and\s+private\.all_present_voted\s*\(/i);
+  });
+
+  it('parses the order by clauses', () => {
+    const files = [
+      {
+        name: '1.sql',
+        sql: `create or replace function private.finalize_votes(p uuid) returns void language plpgsql
+              as $$ begin
+                update public.builds bu set final_rank = r.rank from (
+                  select id, rank() over (order by coalesce((vote_counts ->> 'overall')::int, 0) desc,
+                                                   total_votes desc, shipped_at) as rank from public.builds) r;
+                insert into public.awards (battle_id) select distinct on (c.slug) 1
+                  from public.builds bu, public.vote_categories c
+                  where (bu.vote_counts ->> c.slug)::int > 0
+                  order by c.slug, (bu.vote_counts ->> c.slug)::int desc, bu.id;
+              end $$;`,
+      },
+    ];
+    expect(finalizeVotesOrders(files)).toEqual({
+      rankFunction: 'rank',
+      rank: ['count:overall desc', 'total_votes desc', 'shipped_at'],
+      distinctOn: true,
+      positiveOnly: true,
+      awards: ['slug', 'count:category desc', 'build_id'],
+    });
   });
 });

@@ -41,8 +41,25 @@ export function isVoteCategory(value: unknown): value is VoteCategory {
   return typeof value === 'string' && (VOTE_CATEGORY_SLUGS as readonly string[]).includes(value);
 }
 
-/** Ranking uses the votes of this category first (then total votes, then earlier ship). */
+/** Ranking uses the votes of this category first, then `VOTE_TIE_BREAKS`. */
 export const RANKING_CATEGORY: VoteCategory = 'overall';
+
+/**
+ * What decides between builds with the same vote count (`private.finalize_votes`, T-022), in
+ * order: more votes in all categories (`total_votes`), the earlier `shipped_at`, then the
+ * lower build id (rare, but two auto-shipped builds share their `shipped_at`).
+ *
+ * - **Ranks** compare the `RANKING_CATEGORY` count first, then these: every final build gets
+ *   a distinct rank 1…n.
+ * - **Category awards** compare that category's count first, then these: a category has
+ *   exactly one winner when anyone voted in it, and none when nobody did.
+ *
+ * Both use the same order, so the Best Build award always goes to the rank-1 build. Battles
+ * that finished before T-022 keep their stored (possibly shared) awards and ranks.
+ * schema-drift.test.ts checks the `order by` clauses of `private.finalize_votes`.
+ */
+export const VOTE_TIE_BREAKS = ['total_votes', 'shipped_at', 'build_id'] as const;
+export type VoteTieBreak = (typeof VOTE_TIE_BREAKS)[number];
 
 /** Range of the room setting `voting_s` (`update_room_settings`). */
 export const VOTING_MIN_SECONDS = 30;
@@ -56,7 +73,10 @@ export const REVEAL_VOTE_PHASE_REASONS = [
   'host_next',
   /** The host skipped the rest of the reveal (`skip_to_vote`). */
   'host_skip',
-  /** VOTING ended early: every eligible voter who is present voted in every category. */
+  /**
+   * VOTING ended early: every eligible voter who is present voted in every category (checked
+   * after each vote, leave and kick, and by `sweep_deadlines` when a voter's presence lapses).
+   */
   'all_voted',
   /** Fewer than 2 final builds: SHIPPING went straight to RESULTS. */
   'too_few_builds',

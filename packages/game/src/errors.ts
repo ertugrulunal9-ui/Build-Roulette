@@ -50,6 +50,13 @@ export const RPC_ERROR_CODES = [
   'invalid_category',
   'self_vote',
   'not_votable',
+  // Moderation (T-024): the name filter, rate limits and `report_build`
+  'name_not_allowed',
+  'rate_limited',
+  'invalid_reason',
+  'invalid_details',
+  'own_build',
+  'already_reported',
 ] as const;
 
 export type RpcErrorCode = (typeof RPC_ERROR_CODES)[number];
@@ -65,19 +72,35 @@ export const SERVICE_ERROR_CODES = [
   'job_not_found',
   'job_not_running',
   'not_capturable',
+  'not_taken_down',
 ] as const;
+
+/**
+ * Codes only the admin RPCs raise (T-024: `admin_*`, gated on `is_admin()`). They also
+ * raise `build_not_found`, `battle_not_found`, `room_not_found` and `invalid_details` (a
+ * note over 500 characters), listed in {@link RPC_ERROR_CODES}.
+ */
+export const ADMIN_ERROR_CODES = ['not_admin', 'already_taken_down'] as const;
+export type AdminErrorCode = (typeof ADMIN_ERROR_CODES)[number];
 
 export function isRpcErrorCode(value: unknown): value is RpcErrorCode {
   return typeof value === 'string' && (RPC_ERROR_CODES as readonly string[]).includes(value);
 }
 
-/** Every code `join_room` can raise (besides `not_authenticated`): the room page shows each. */
+/**
+ * Every code `join_room` can answer with (besides `not_authenticated`): the room page shows
+ * each. `room_not_found` and `room_closed` come back as an HTTP 404/400 error body rather
+ * than a raised exception (the failed attempt must be counted, T-024); clients see the same
+ * `error.message` either way.
+ */
 export const JOIN_ROOM_ERRORS = [
   'room_not_found',
   'room_closed',
   'kicked',
   'room_full',
   'invalid_display_name',
+  'name_not_allowed',
+  'rate_limited',
 ] as const satisfies readonly RpcErrorCode[];
 
 export type JoinRoomError = (typeof JOIN_ROOM_ERRORS)[number];
@@ -101,3 +124,19 @@ export const CAST_VOTE_ERRORS = [
 ] as const satisfies readonly RpcErrorCode[];
 
 export type CastVoteError = (typeof CAST_VOTE_ERRORS)[number];
+
+/**
+ * Every code `report_build` can raise (besides `not_authenticated`): the report dialog
+ * explains each. Checked against `public.report_build` by the drift test (`rate_limited`
+ * comes from the shared rate-limit helper).
+ */
+export const REPORT_BUILD_ERRORS = [
+  'rate_limited',
+  'invalid_reason',
+  'invalid_details',
+  'build_not_found',
+  'own_build',
+  'already_reported',
+] as const satisfies readonly RpcErrorCode[];
+
+export type ReportBuildError = (typeof REPORT_BUILD_ERRORS)[number];

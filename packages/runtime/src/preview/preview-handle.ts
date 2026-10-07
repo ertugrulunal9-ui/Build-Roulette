@@ -22,7 +22,7 @@
  *   `load`, until the shell's `ready` for it, up to `loadGraceMs` of silence is tolerated
  *   instead, because the shell evaluates the new bundle on its own main thread (one long task
  *   that can take seconds on a busy CPU). Only the app's own `load` opens the window; `ready`
- *   can only close it, so the sandbox can never extend it (README "Watchdog").
+ *   can only close it, so the sandbox can never extend it (README "Load grace").
  *
  * Trust model: everything the shell sends is untrusted display data. `ready`, `pong`,
  * `heartbeat` and `storage-reset` are hints; the app never takes an action that matters for

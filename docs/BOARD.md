@@ -10,6 +10,7 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 | T-023 | Test reliability: root-cause the flaky 8-player chaos test (1 in 5), shard the chaos suite for CI | `apps/web/` (e2e), `ci.yml` | done | Merged |
 | T-027 | Preview watchdog false "crashed" right after a rebuild under heavy CPU load (`heartbeat-timeout`, silent ~5.3 s): give a fresh `load` a longer grace, with tests | `packages/runtime/`, `apps/web/` | done | Merged |
 | T-024 | Abuse controls: report build, admin page (event logs + report queue + screenshot takedown), name filter, rate limits, Turnstile wiring | `supabase/`, `apps/web/`, `apps/capture-worker/` | done | Merged |
+| T-028 | Taken-down builds lose the Winner highlight and all awards (no re-rank, no reassignment) on results, `/battles/[id]`, `/u/[id]`, OG image, room RESULTS | `supabase/`, `apps/web/` | todo | After T-025 (one worker at a time) |
 | T-025 | Load test (50 rooms × 8 players), Realtime/egress mapping to plan limits, cost per 1,000 battles | `tools/loadtest/`, `docs/` input | in-progress | M5, task 5 |
 | T-026 | Observability (Sentry/PostHog, env-gated), ISR for `/battles` + `/u`, runbooks | `apps/web/`, `apps/*`, `docs/runbooks/` | todo | M5 |
 | T-019 | M4 DB layer: REVEAL (order, slots, host skip) + VOTING (categories, no self-vote, revotes, secret ballots) phases, vote-based ranking + category awards, reveal-phase storage read access, realtime `vote_progress` | `supabase/`, `packages/game/` (constants), `ci.yml` | done | Merged |
@@ -54,6 +55,8 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 3. A phone player keeps the current behaviour: watch and vote, build ends DNF, warned in the lobby.
 
 Start M5.
+
+**User decision (2026-10-08):** a taken-down build keeps its rank (results are permanent, nothing is re-ranked) but loses the "Winner" highlight and all awards (vote and auto) on every public surface. Awards are not reassigned to another build. → T-028.
 
 **User decisions (2026-10-06):** keep the `speedrun` award; the time limit stays server-random (5/10/15 min, like a fourth card); start M3. In M3, multiplayer battles go `shipping → results` like solo, and M4 inserts REVEAL + VOTE.
 

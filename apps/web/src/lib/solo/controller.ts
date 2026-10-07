@@ -10,11 +10,12 @@
  *   random 0–500 ms jitter (compare-and-set; pg_cron is the backstop). An overdue battle
  *   that does not move (RESULTS waiting for its screenshot) is nudged again every 5 s.
  * - **Autosave:** every 30 s and when the tab is hidden, the last good build and the
- *   workspace go to `autosave/{source.json,bundle.js,bundle.css}` (upsert). A final
+ *   workspace go to `autosave/{source.json,bundle.js,bundle.css,manifest.json}` (upsert). A final
  *   autosave runs 3 s before the deadline and once more during the SHIPPING grace, so a
  *   player who does not ship is auto-shipped with their latest work.
  * - **Ship:** thumbnail (best effort) → production build → upload `source.json`,
- *   `bundle.js`, `bundle.css`, `thumb.webp` → `ship_build` with stats.
+ *   `bundle.js`, `bundle.css`, `manifest.json` (the pinned dependencies, read by the others
+ *   during REVEAL), `thumb.webp` → `ship_build` with stats.
  * - **Results:** the shipped bundle is fetched back from storage for the "last look"
  *   preview (reveal mode) until DESTROY.
  * - **Destroy:** when the phase becomes `destroyed`, a short animation, then the battle's
@@ -36,7 +37,7 @@ import type { Workspace } from '@br/workspace';
 import type { BuildFile, SoloApi } from './api';
 import { measureClockOffset } from './clock-sync';
 import { GameError, toGameError } from './errors';
-import { buildStats, parseSourceJson, sourceJson } from './stats';
+import { buildStats, manifestJson, parseSourceJson, sourceJson } from './stats';
 import type { BattleSnapshot, BuildStats, SnapshotBuild } from './types';
 import { pruneBattleWorkspaces, type StoredBattleWorkspace } from './workspace-cleanup';
 
@@ -414,6 +415,8 @@ export class SoloController {
         this.api.upload(battleId, userId, 'source.json', sourceJson(workspace)),
         this.api.upload(battleId, userId, 'bundle.js', bundle.js),
         this.api.upload(battleId, userId, 'bundle.css', bundle.css),
+        // What the others read during REVEAL for the import map (never the source).
+        this.api.upload(battleId, userId, 'manifest.json', manifestJson(workspace)),
       ];
       if (thumb) uploads.push(this.api.upload(battleId, userId, 'thumb.webp', thumb));
       await Promise.all(uploads);
@@ -746,8 +749,8 @@ export class SoloController {
   }
 
   /**
-   * Uploads `autosave/source.json`, `autosave/bundle.js` and `autosave/bundle.css` from the
-   * last good build. Skipped when nothing changed since the last autosave (unless `force`).
+   * Uploads `autosave/source.json`, `autosave/bundle.js`, `autosave/bundle.css` and
+   * `autosave/manifest.json` from the last good build. Skipped when nothing changed since the last autosave (unless `force`).
    */
   private autosave(opts: { force?: boolean } = {}): Promise<void> {
     if (this.autosaving) {
@@ -771,6 +774,7 @@ export class SoloController {
       ['autosave/bundle.js', build.js],
       ['autosave/bundle.css', build.css],
       ['autosave/source.json', sourceJson(workspace)],
+      ['autosave/manifest.json', manifestJson(workspace)],
     ];
     this.autosaving = (async () => {
       try {

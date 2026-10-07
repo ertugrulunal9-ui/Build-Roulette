@@ -137,7 +137,13 @@ test('ship: spin → build → ship → results (screenshot, speedrun) → destr
   const uid = sql(`select builder_id from public.builds where battle_id = '${battle}'`);
   const files = ephemeralObjects(battle).map((n) => n.slice(`${battle}/${uid}/`.length));
   expect(files).toEqual(
-    expect.arrayContaining(['bundle.css', 'bundle.js', 'source.json', 'thumb.webp']),
+    expect.arrayContaining([
+      'bundle.css',
+      'bundle.js',
+      'manifest.json',
+      'source.json',
+      'thumb.webp',
+    ]),
   );
   await snap(page, 'results');
 
@@ -234,6 +240,7 @@ test('auto-ship: no ship; at the deadline the autosave (with its CSS) is shipped
   expect(ephemeralObjects(battle)).toEqual([
     `${battle}/${uid}/autosave/bundle.css`,
     `${battle}/${uid}/autosave/bundle.js`,
+    `${battle}/${uid}/autosave/manifest.json`,
     `${battle}/${uid}/autosave/source.json`,
   ]);
 

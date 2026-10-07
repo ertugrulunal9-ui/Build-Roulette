@@ -244,7 +244,59 @@ describe('battle events', () => {
     s.stop();
   });
 
-  it('every phase event refetches the battle snapshot', async () => {
+  it('REVEAL slot steps and vote progress apply without a refetch; a gap still refetches', async () => {
+    api.room = roomSnapshot({ battleId: BATTLE_1, version: 3 });
+    api.battles.set(BATTLE_1, battleSnapshot({ version: 10, phase: 'reveal', revealIndex: 0 }));
+    const s = await started();
+    api.clearCalls();
+    const topic = rt.open(B1_TOPIC);
+    const step = (version: number, revealIndex: number) => ({
+      type: 'phase',
+      version,
+      phase: 'reveal',
+      phase_started_at: new Date().toISOString(),
+      phase_ends_at: new Date(Date.now() + 60_000).toISOString(),
+      reason: 'host_next',
+      reveal_index: revealIndex,
+    });
+    topic.send(step(11, 1));
+    await flush();
+    expect(s.getSnapshot().battle?.battle).toMatchObject({ version: 11, reveal_index: 1 });
+    expect(api.count('getBattleSnapshot')).toBe(0);
+
+    // VOTING comes with a refetch (ballot rights, progress)…
+    api.battles.set(BATTLE_1, battleSnapshot({ version: 12, phase: 'voting' }));
+    topic.send({ ...step(12, 0), phase: 'voting', reveal_index: undefined });
+    await flush();
+    expect(api.count('getBattleSnapshot')).toBe(1);
+    // …then every completed ballot is a counter, not a refetch storm.
+    for (const [v, n] of [
+      [13, 1],
+      [14, 2],
+    ] as const) {
+      topic.send({ type: 'vote_progress', version: v, voted_count: n, eligible_count: 3 });
+    }
+    await flush();
+    expect(s.getSnapshot().battle?.vote_progress).toEqual({ voted_count: 2, eligible_count: 3 });
+    expect(api.count('getBattleSnapshot')).toBe(1);
+
+    // A missed vote_progress (16 after 14) is a gap: refetch.
+    api.battles.set(
+      BATTLE_1,
+      battleSnapshot({
+        version: 16,
+        phase: 'voting',
+        voteProgress: { voted_count: 3, eligible_count: 3 },
+      }),
+    );
+    topic.send({ type: 'vote_progress', version: 16, voted_count: 3, eligible_count: 3 });
+    await flush();
+    expect(api.count('getBattleSnapshot')).toBe(2);
+    expect(s.getSnapshot().battle?.vote_progress).toEqual({ voted_count: 3, eligible_count: 3 });
+    s.stop();
+  });
+
+  it('every other phase event refetches the battle snapshot', async () => {
     const { s, topic } = await inBattle();
     api.battles.set(BATTLE_1, battleSnapshot({ version: 3, phase: 'shipping' }));
     topic.send({

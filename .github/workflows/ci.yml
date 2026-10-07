@@ -226,15 +226,9 @@ jobs:
       # Several browser contexts (anonymous players) against next start, the sandbox shell,
       # the mock CDN and the capture worker (apps/web/scripts/solo-services.ts --realtime):
       # create/join, lobby presence, ready/start, ship and auto-ship, ranked results with
-      # screenshots, destroy, rematch, a late spectator, a refresh mid-BUILD, kick. Needs psql.
-      # The suite predates the REVEAL and VOTE stages (T-019), which the web app gets in
-      # T-020: until then new battles in this stack skip them (a test-only deployment
-      # default; production has no such row). T-020 removes this step.
-      - name: Keep the pre-M4 battle flow for the web e2e (until T-020)
-        run: >-
-          psql postgresql://postgres:postgres@127.0.0.1:54322/postgres -X -v ON_ERROR_STOP=1
-          -c "insert into private.app_settings (key, value) values ('reveal_vote_default', 'false')"
-
+      # screenshots, REVEAL (host controls, a frozen build skipped locally), VOTE (revote,
+      # refresh, early end) and vote-based results, destroy, rematch, a late spectator, a
+      # refresh mid-BUILD, kick. Needs psql.
       - name: Run the rooms e2e
         run: pnpm --filter @br/web test:e2e:multi
 
@@ -288,12 +282,6 @@ jobs:
       # e2e/chaos.spec.ts: 6 players under chaos, a seeded random run (the seed is in the
       # log and the report; CHAOS_SEED replays it), steady typing vs the presence limit,
       # everyone gone at T-0, an abandoned battle, a full room. Needs psql.
-      # Same as the rooms e2e: no REVEAL / VOTE in the web app before T-020.
-      - name: Keep the pre-M4 battle flow for the web e2e (until T-020)
-        run: >-
-          psql postgresql://postgres:postgres@127.0.0.1:54322/postgres -X -v ON_ERROR_STOP=1
-          -c "insert into private.app_settings (key, value) values ('reveal_vote_default', 'false')"
-
       - name: Run the rooms chaos e2e
         run: pnpm --filter @br/web test:e2e:chaos
 

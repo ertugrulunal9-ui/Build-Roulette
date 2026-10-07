@@ -7,7 +7,9 @@
  *   - applies the event with `version === current + 1`;
  *   - refetches the snapshot on a gap (`version > current + 1`).
  * Applying an event can also ask for a refetch: some changes are not fully described by the
- * small payloads (a new battle, a phase change with new ranks, a finished capture).
+ * small payloads (a new battle, a phase change with new ranks, a finished capture). Two M4
+ * events never do: a REVEAL slot step (`phase` reveal → reveal with `reveal_index`) and
+ * `vote_progress`, so a reveal or a vote does not make every client refetch at once.
  *
  * No I/O, no clock: the sync engine (sync.ts) owns ordering, buffering and fetching.
  */
@@ -154,25 +156,71 @@ function mapBuilds(
 }
 
 /**
- * Applies the battle event that directly follows `snap`. `phase` events always ask for a
- * refetch (docs/04 §4.10: builds, ranks and awards change in bulk at RESULTS).
+ * Is this `phase` event a REVEAL slot step the snapshot can take on its own? Only the
+ * spotlight (`reveal_index`) and the slot's times change between two slots, so no refetch is
+ * needed, provided the snapshot already knows the reveal (its order) and the index is in it.
+ */
+function isRevealStep(snap: BattleSnapshot, ev: Extract<BattleEvent, { type: 'phase' }>): boolean {
+  const order = snap.battle.reveal_order;
+  const index = ev.reveal_index;
+  return (
+    ev.phase === 'reveal' &&
+    snap.battle.phase === 'reveal' &&
+    Array.isArray(order) &&
+    typeof index === 'number' &&
+    Number.isInteger(index) &&
+    index >= 0 &&
+    index < order.length
+  );
+}
+
+function isCount(v: unknown): v is number {
+  return typeof v === 'number' && Number.isInteger(v) && v >= 0;
+}
+
+/**
+ * Applies the battle event that directly follows `snap`. A `phase` event asks for a refetch
+ * (docs/04 §4.10: builds, ranks, awards, the reveal order and the ballot rights change in
+ * bulk), except a REVEAL slot step, which only moves the spotlight. `vote_progress` carries
+ * everything it changes.
  */
 export function applyBattleEvent(snap: BattleSnapshot, ev: BattleEvent): Reduced<BattleSnapshot> {
   const battle = { ...snap.battle, version: ev.version };
   switch (ev.type) {
-    case 'phase':
+    case 'phase': {
+      const step = isRevealStep(snap, ev);
+      const phased = {
+        ...battle,
+        phase: ev.phase,
+        phase_started_at: ev.phase_started_at,
+        phase_ends_at: ev.phase_ends_at,
+      };
       return {
         next: {
           ...snap,
-          battle: {
-            ...battle,
-            phase: ev.phase,
-            phase_started_at: ev.phase_started_at,
-            phase_ends_at: ev.phase_ends_at,
-          },
+          battle:
+            typeof ev.reveal_index === 'number' && ev.phase === 'reveal'
+              ? { ...phased, reveal_index: ev.reveal_index }
+              : phased,
         },
-        refetch: true,
+        refetch: !step,
       };
+    }
+
+    case 'vote_progress': {
+      // Counts only. A malformed payload is not trusted: refetch the snapshot's counts.
+      const ok = isCount(ev.voted_count) && isCount(ev.eligible_count);
+      return {
+        next: ok
+          ? {
+              ...snap,
+              battle,
+              vote_progress: { voted_count: ev.voted_count, eligible_count: ev.eligible_count },
+            }
+          : { ...snap, battle },
+        refetch: !ok,
+      };
+    }
 
     case 'build':
       return {

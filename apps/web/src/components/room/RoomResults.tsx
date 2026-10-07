@@ -5,13 +5,17 @@
  * screenshot or its capture state, awards, auto-shipped / DNF badges), and the player's own
  * build in a reveal-mode preview for the last look, until DESTROY. Then the room goes back
  * to the lobby (RoomApp), where the host can start the rematch.
+ *
+ * With voting (M4) the ranking is by votes (Best Build, then all votes, then the earlier
+ * ship): each build shows its votes per category, the category awards come first, and the
+ * winner is highlighted.
  */
 import { isTerminalPhase } from '@br/game';
 import { myBuild, type SoloState } from '../../lib/solo/controller';
 import { CAPTURE_TEXT, formatCompletion, formatCountdown } from '../../lib/solo/format';
 import type { BattleSnapshot, SnapshotBuild } from '../../lib/solo/types';
 import { screenshotUrl } from '../../lib/supabase/config';
-import { AwardBadges, ChallengeCards } from '../results/ResultPieces';
+import { AwardBadges, ChallengeCards, VoteTally } from '../results/ResultPieces';
 import { RevealPane } from '../solo/RevealPane';
 
 interface RoomResultsProps {
@@ -66,6 +70,11 @@ export function RoomResults({ state, remaining }: RoomResultsProps) {
         </p>
         <h1 className="text-4xl font-black tracking-tight">{snapshot.challenge.build.text}</h1>
         <ChallengeCards challenge={snapshot.challenge} compact />
+        <p className="text-sm text-zinc-500" data-testid="ranking-rule">
+          {votedResults(snapshot)
+            ? 'Ranked by votes: Best Build first, then all votes, then the earlier ship.'
+            : 'Ranked by completion time.'}
+        </p>
       </header>
 
       <div
@@ -101,7 +110,13 @@ export function RoomResults({ state, remaining }: RoomResultsProps) {
   );
 }
 
+/** This battle was decided by votes (it had a VOTE stage and the tallies are in). */
+export function votedResults(snapshot: BattleSnapshot): boolean {
+  return snapshot.builds.some((b) => b.votes !== null && b.votes !== undefined);
+}
+
 function RankedBuilds({ snapshot }: { snapshot: BattleSnapshot }) {
+  const voted = votedResults(snapshot);
   const builds = [...snapshot.builds].sort((a, b) => {
     const ra = a.final_rank ?? Number.POSITIVE_INFINITY;
     const rb = b.final_rank ?? Number.POSITIVE_INFINITY;
@@ -119,6 +134,7 @@ function RankedBuilds({ snapshot }: { snapshot: BattleSnapshot }) {
           shipped &&
           b.screenshot_path !== null &&
           (b.capture_status === 'captured' || b.capture_status === 'fallback');
+        const winner = b.final_rank === 1;
         return (
           <li
             key={b.id}
@@ -127,10 +143,24 @@ function RankedBuilds({ snapshot }: { snapshot: BattleSnapshot }) {
             data-status={b.status}
             data-builder={b.builder_id}
             data-capture={shipped ? b.capture_status : 'none'}
-            className={`flex gap-4 rounded-2xl border bg-white p-3 shadow-sm dark:bg-zinc-900 ${
-              isMe ? 'border-sky-400 dark:border-sky-700' : 'border-zinc-200 dark:border-zinc-800'
+            data-winner={winner ? 'true' : 'false'}
+            data-total-votes={voted ? b.total_votes : ''}
+            className={`relative flex gap-4 rounded-2xl border bg-white p-3 shadow-sm dark:bg-zinc-900 ${
+              winner
+                ? 'border-amber-400 bg-gradient-to-r from-amber-50 to-white ring-4 ring-amber-300/50 dark:border-amber-500 dark:from-amber-950/60 dark:to-zinc-900'
+                : isMe
+                  ? 'border-sky-400 dark:border-sky-700'
+                  : 'border-zinc-200 dark:border-zinc-800'
             }`}
           >
+            {winner && (
+              <span
+                className="absolute -top-3 left-4 rounded-full bg-amber-400 px-3 py-0.5 text-xs font-black tracking-widest text-amber-950 uppercase shadow"
+                data-testid="winner-banner"
+              >
+                🏆 Winner
+              </span>
+            )}
             <div className="flex w-10 shrink-0 flex-col items-center justify-center text-center">
               <span className="text-2xl" aria-hidden="true">
                 {b.final_rank !== null ? (MEDALS[b.final_rank - 1] ?? '🏅') : '·'}
@@ -183,6 +213,7 @@ function RankedBuilds({ snapshot }: { snapshot: BattleSnapshot }) {
                 )}
                 <AwardBadges awards={snapshot.awards.filter((a) => a.build_id === b.id)} />
               </div>
+              {voted && shipped && <VoteTally votes={b.votes} total={b.total_votes} />}
             </div>
           </li>
         );

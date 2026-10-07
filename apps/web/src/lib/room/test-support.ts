@@ -4,7 +4,14 @@
  * which vitest's fake timers control.
  */
 import type { BattlePhase } from '@br/game';
-import type { BattleSnapshot, SnapshotBuild } from '../solo/types';
+import type {
+  BattleSnapshot,
+  CastVoteResult,
+  HostRevealResult,
+  MyVotes,
+  RevealBuild,
+  SnapshotBuild,
+} from '../solo/types';
 import { GameError } from '../solo/errors';
 import type { RoomApi } from './api';
 import type {
@@ -100,7 +107,11 @@ export function roomSnapshot(
   };
 }
 
-function build(id: string, builderId: string, extra: Partial<SnapshotBuild> = {}): SnapshotBuild {
+export function build(
+  id: string,
+  builderId: string,
+  extra: Partial<SnapshotBuild> = {},
+): SnapshotBuild {
   return {
     id,
     builder_id: builderId,
@@ -128,10 +139,24 @@ export function battleSnapshot(
     endsInMs?: number | null;
     role?: 'player' | 'spectator';
     hostId?: string;
+    /**
+     * REVEAL / VOTING / RESULTS of an M4 battle: every build is final (shipped) and revealed
+     * in this order (build ids; default me, bob, cleo).
+     */
+    revealOrder?: string[];
+    revealIndex?: number;
+    voteProgress?: { voted_count: number; eligible_count: number } | null;
   } = {},
 ): BattleSnapshot {
   const now = Date.now();
   const phase = opts.phase ?? 'building';
+  const m4 = phase === 'reveal' || phase === 'voting' || opts.revealOrder !== undefined;
+  const order = m4 ? (opts.revealOrder ?? ['build-me', 'build-bob', 'build-cleo']) : null;
+  const final = (id: string, extra: Partial<SnapshotBuild> = {}): Partial<SnapshotBuild> =>
+    order?.includes(id)
+      ? { status: 'shipped', name: `${id} app`, shipped_at: iso(now - 60_000), ...extra }
+      : extra;
+  const isPlayer = (opts.role ?? 'player') === 'player';
   const endsIn = opts.endsInMs === undefined ? 300_000 : opts.endsInMs;
   const id = opts.id ?? BATTLE_1;
   const hostId = opts.hostId ?? ME;
@@ -139,9 +164,11 @@ export function battleSnapshot(
     server_now: iso(now),
     me: {
       user_id: ME,
-      is_player: (opts.role ?? 'player') === 'player',
+      is_player: isPlayer,
       role: opts.role ?? 'player',
       is_host: hostId === ME,
+      is_voter: isPlayer,
+      can_vote: isPlayer && phase === 'voting',
     },
     battle: {
       id,
@@ -159,6 +186,10 @@ export function battleSnapshot(
       destroyed_at: null,
       is_complete: false,
       created_at: iso(now - 20_000),
+      reveal_vote: true,
+      reveal_order: order,
+      reveal_index: order ? (opts.revealIndex ?? 0) : null,
+      reveal_slot_s: order ? 60 : null,
     },
     challenge: {
       id: 'c',
@@ -172,8 +203,28 @@ export function battleSnapshot(
       { user_id: BOB, display_name: 'Bob', state: 'active' },
       { user_id: CLEO, display_name: 'Cleo', state: 'active' },
     ],
-    builds: [build('build-me', ME), build('build-bob', BOB), build('build-cleo', CLEO)],
+    builds: [
+      build('build-me', ME, final('build-me')),
+      build('build-bob', BOB, final('build-bob')),
+      build('build-cleo', CLEO, final('build-cleo')),
+    ],
     awards: [],
+    vote_categories: [
+      { slug: 'overall', label: 'Best Build', description: 'The build you would actually use.' },
+      {
+        slug: 'rule',
+        label: 'Best Use of the Rule',
+        description: 'Who turned the RULE card into a feature.',
+      },
+      { slug: 'style', label: 'Best Style', description: 'Who nailed the STYLE card.' },
+      { slug: 'chaos', label: 'Most Chaotic', description: 'Delightfully unhinged.' },
+    ],
+    vote_progress:
+      opts.voteProgress !== undefined
+        ? opts.voteProgress
+        : phase === 'voting'
+          ? { voted_count: 0, eligible_count: 3 }
+          : null,
   };
 }
 
@@ -263,11 +314,120 @@ export class FakeRoomApi implements RoomApi {
     return Promise.resolve(Date.now() + this.serverOffsetMs);
   }
 
+  // --- REVEAL and VOTING ---
+  /** Objects of `ephemeral-builds` by path. */
+  readonly objects = new Map<string, string | Blob>();
+  revealBuilds: RevealBuild[] = revealBuilds();
+  onRevealBuilds: Handler<[], RevealBuild[]> = () => structuredClone(this.revealBuilds);
+  onHost: Handler<['next' | 'skip', number], HostRevealResult> = (_kind, v) => ({
+    changed: true,
+    version: v + 1,
+    phase: 'reveal',
+    phase_ends_at: null,
+    reveal_index: 1,
+  });
+  /** The caller's ballot on the server. */
+  ballot: Record<string, string> = {};
+  categories = 4;
+  onVote: Handler<[string, string], CastVoteResult> = (category, buildId) => {
+    this.ballot[category] = buildId;
+    return {
+      category,
+      build_id: buildId,
+      ballot_complete: Object.keys(this.ballot).length >= this.categories,
+      battle: { version: 30, phase: 'voting', phase_ends_at: null },
+    };
+  };
+  onMyVotes: Handler<[], MyVotes> = () => ({
+    votes: { ...this.ballot },
+    complete: Object.keys(this.ballot).length >= this.categories,
+  });
+
+  async getRevealBuilds(battleId: string): Promise<RevealBuild[]> {
+    this.calls.push(['getRevealBuilds', battleId]);
+    return this.onRevealBuilds();
+  }
+  async revealNext(battleId: string, version: number): Promise<HostRevealResult> {
+    this.calls.push(['revealNext', battleId, version]);
+    return this.onHost('next', version);
+  }
+  async skipToVote(battleId: string, version: number): Promise<HostRevealResult> {
+    this.calls.push(['skipToVote', battleId, version]);
+    return this.onHost('skip', version);
+  }
+  async castVote(battleId: string, category: string, buildId: string): Promise<CastVoteResult> {
+    this.calls.push(['castVote', category, buildId]);
+    return this.onVote(category, buildId);
+  }
+  async getMyVotes(battleId: string): Promise<MyVotes> {
+    this.calls.push(['getMyVotes', battleId]);
+    return this.onMyVotes();
+  }
+  downloadText(path: string): Promise<string | null> {
+    this.calls.push(['downloadText', path]);
+    const body = this.objects.get(path);
+    if (body === undefined) return Promise.resolve(null);
+    return typeof body === 'string' ? Promise.resolve(body) : body.text();
+  }
+  downloadBlob(path: string): Promise<Blob | null> {
+    this.calls.push(['downloadBlob', path]);
+    const body = this.objects.get(path);
+    if (body === undefined) return Promise.resolve(null);
+    return Promise.resolve(typeof body === 'string' ? new Blob([body]) : body);
+  }
+
   count(method: string, arg?: unknown): number {
     return this.calls.filter((c) => c[0] === method && (arg === undefined || c[1] === arg)).length;
   }
   clearCalls(): void {
     this.calls.length = 0;
+  }
+}
+
+/**
+ * `get_reveal_builds` for {@link battleSnapshot}'s M4 battle (me, bob, cleo in that order),
+ * and the matching objects (bundle, css, manifest; a thumbnail for the first two).
+ */
+export function revealBuilds(
+  order: string[] = ['build-me', 'build-bob', 'build-cleo'],
+): RevealBuild[] {
+  const builders: Record<string, [string, string]> = {
+    'build-me': [ME, 'Ada'],
+    'build-bob': [BOB, 'Bob'],
+    'build-cleo': [CLEO, 'Cleo'],
+  };
+  return order.map((id, position) => {
+    const [builderId, name] = builders[id] ?? [ME, 'Ada'];
+    const dir = `${BATTLE_1}/${builderId}`;
+    return {
+      build_id: id,
+      position,
+      name: `${id} app`,
+      builder_id: builderId,
+      builder_name: name,
+      status: 'shipped',
+      files: {
+        js: `${dir}/bundle.js`,
+        css: `${dir}/bundle.css`,
+        manifest: `${dir}/manifest.json`,
+        thumb: id === 'build-cleo' ? null : `${dir}/thumb.webp`,
+      },
+    };
+  });
+}
+
+/** Puts the objects of {@link revealBuilds} into the fake storage. */
+export function storeRevealObjects(api: FakeRoomApi): void {
+  for (const b of api.revealBuilds) {
+    if (b.files.js) api.objects.set(b.files.js, `console.log(${JSON.stringify(b.build_id)})`);
+    if (b.files.css) api.objects.set(b.files.css, `.${b.build_id}{}`);
+    if (b.files.manifest) {
+      api.objects.set(
+        b.files.manifest,
+        JSON.stringify({ dependencies: { react: '19.2.0', 'react-dom': '19.2.0' } }),
+      );
+    }
+    if (b.files.thumb) api.objects.set(b.files.thumb, new Blob(['webp'], { type: 'image/webp' }));
   }
 }
 

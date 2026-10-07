@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { buildFrame } from './helpers';
+import { buildFrame, clickRouted } from './helpers';
 import {
   autosaveNow,
   battleOf,
@@ -10,8 +10,10 @@ import {
   openFile,
   phaseOf,
   progress,
+  revealLive,
   ship,
   storedFile,
+  vote,
   waitForBuild,
   writeApp,
   type Player,
@@ -27,7 +29,8 @@ import { assertUuid, ephemeralText, sql } from './stack';
  * Time is real where it matters: the battle's time limit is set (as the superuser) while
  * the battle spins, so BUILD has true deadlines that every client learns from the server.
  * Long waits that would only burn minutes (the 5 min abandonment window, the 60 s last
- * look) are shortened with SQL, as the other e2e do. Every test ends by checking, in the
+ * look, REVEAL slots and the vote where a test does not drive them) are shortened with SQL,
+ * as the other e2e do. Every battle runs with REVEAL and VOTING (the default). Every test ends by checking, in the
  * database, that the battle reached a consistent terminal state and no shipped build was
  * lost (expectTerminal).
  */
@@ -239,6 +242,44 @@ async function storedFiles(page: Page, battleId: string): Promise<Record<string,
   }, `battle:${battleId}`);
 }
 
+/**
+ * REVEAL and VOTING without their timers: whenever the battle is in one of them, its
+ * deadline (the current slot, or the vote) is moved to now, and the server (pg_cron every
+ * 5 s, or a client's nudge) moves on. Returns once the battle is past VOTING.
+ */
+async function deadlineSkip(battleId: string): Promise<void> {
+  await expect
+    .poll(
+      () => {
+        sql(`update public.battles set phase_ends_at = least(phase_ends_at, now())
+              where id = '${assertUuid(battleId)}' and phase in ('reveal', 'voting')`);
+        return phaseOf(battleId);
+      },
+      { timeout: 2 * MIN, intervals: [1_000] },
+    )
+    .not.toMatch(/^(building|shipping|reveal|voting)$/);
+}
+
+/** Every page shows the same REVEAL spotlight (index and build) and runs that build. */
+async function expectSameSpotlight(players: Player[]): Promise<void> {
+  const [first, ...rest] = players;
+  if (!first) return;
+  const stage = first.page.getByTestId('reveal-stage');
+  await expect(stage).toBeVisible({ timeout: MIN });
+  const index = (await stage.getAttribute('data-index')) ?? '';
+  const build = (await stage.getAttribute('data-build')) ?? '';
+  for (const p of rest) {
+    await expect(p.page.getByTestId('reveal-stage')).toHaveAttribute('data-index', index, {
+      timeout: 30_000,
+    });
+    await expect(p.page.getByTestId('reveal-stage')).toHaveAttribute('data-build', build);
+  }
+  // The build runs (its heading: a template that was shipped untouched has its own).
+  for (const p of players) {
+    await expect(revealLive(p.page).locator('h1').first()).toBeVisible({ timeout: 30_000 });
+  }
+}
+
 /** Ends the RESULTS last look now (pg_cron moves the battle to DESTROYED within 5 s). */
 function endLastLook(battleId: string): void {
   sql(
@@ -252,10 +293,10 @@ function expectNoPageErrors(players: Player[]): void {
 
 // ─── 6 players under chaos ────────────────────────────────────────────────────────────
 
-test('6 players under chaos: skewed clocks, a network drop, refreshes, the host vanishes; the battle completes and the new host starts the rematch', async ({
+test('6 players under chaos: skewed clocks, a network drop, refreshes, the host vanishes (in BUILD, and the next one in REVEAL); the battle completes and the new host starts the rematch', async ({
   browser,
 }, info) => {
-  test.setTimeout(9 * MIN);
+  test.setTimeout(12 * MIN);
   const ada = await newPlayer(browser, info, 'Ada Host');
   const ben = await newPlayer(browser, info, 'Ben Ahead', { clockSkewMs: 5 * MIN });
   const cy = await newPlayer(browser, info, 'Cy Behind', { clockSkewMs: -5 * MIN });
@@ -356,10 +397,63 @@ test('6 players under chaos: skewed clocks, a network drop, refreshes, the host 
     expect(serverRemainingS(battleId) < 0.5 || phaseOf(battleId) !== 'building').toBe(true);
   }
 
-  // ─── RESULTS (after the 15 s grace); Fay refreshes during it ──────────────────────
-  for (const p of [ben, cy, dee, eve, fay]) {
+  // ─── REVEAL (after the 15 s grace): Ben hosts it, on everyone's timeline ──────────
+  const present = [ben, cy, dee, eve, fay];
+  await expectSameSpotlight(present);
+  await expect(ben.page.getByTestId('reveal-host-controls')).toBeVisible();
+  for (const p of [cy, dee, eve, fay])
+    await expect(p.page.getByTestId('reveal-next')).toHaveCount(0);
+  const first = Number(await ben.page.getByTestId('reveal-stage').getAttribute('data-index'));
+  await clickRouted(ben.page.getByTestId('reveal-next'));
+  for (const p of present) {
+    await expect(p.page.getByTestId('reveal-stage')).toHaveAttribute(
+      'data-index',
+      String(first + 1),
+    );
+  }
+  await expectSameSpotlight(present);
+
+  // ─── Ben drops mid-REVEAL: the crown (and the controls) move to Cy ────────────────
+  const cyCrowned = cy.page
+    .getByTestId('toast')
+    .filter({ hasText: 'You are the host now' })
+    .waitFor({ timeout: 2 * MIN });
+  await ben.context.setOffline(true);
+  await cyCrowned;
+  await expect(cy.page.getByTestId('reveal-host-controls')).toBeVisible();
+  await ben.context.setOffline(false);
+  await expect(ben.page.getByTestId('reconnecting')).toBeHidden({ timeout: 30_000 });
+  await expect(ben.page.getByTestId('reveal-host-controls')).toHaveCount(0);
+  await expect(ben.page.getByTestId('reveal-host-note')).toContainText(cy.name);
+  expect(sql(`select host_id from public.battles where id = '${battleId}'`)).toBe(
+    userOf(battleId, cy.name),
+  );
+  // The slots kept running meanwhile; everyone still sees the same one.
+  await expectSameSpotlight(present);
+  await clickRouted(cy.page.getByTestId('skip-to-vote'));
+
+  // ─── VOTE: Cy and Dee vote for Ben's build everywhere; the timer ends the rest ─────
+  for (const p of present) {
+    await expect(p.page.getByTestId('vote-stage')).toBeVisible({ timeout: 30_000 });
+  }
+  const benBuild = sql(
+    `select id from public.builds where battle_id = '${battleId}' and builder_id = '${userOf(battleId, ben.name)}'`,
+  );
+  for (const p of [cy, dee]) {
+    for (const cat of ['overall', 'rule', 'style', 'chaos']) await vote(p.page, cat, benBuild);
+    await expect(p.page.getByTestId('ballot-complete')).toBeVisible();
+  }
+  await expect(fay.page.getByTestId('vote-progress')).toHaveText(/2\/6 voted/);
+  await deadlineSkip(battleId);
+
+  // ─── RESULTS; Fay refreshes during it ─────────────────────────────────────────────
+  for (const p of present) {
     await expect(p.page.getByTestId('results')).toBeVisible({ timeout: MIN });
   }
+  // Ranked by votes: Ben's build won Best Build (2 votes).
+  await expect(
+    fay.page.locator(`[data-testid=ranked-build][data-builder="${userOf(battleId, ben.name)}"]`),
+  ).toHaveAttribute('data-rank', '1');
   await fay.page.reload();
   await expect(fay.page.getByTestId('results')).toBeVisible({ timeout: 30_000 });
   // Every final build gets its screenshot from the capture worker.
@@ -384,12 +478,12 @@ test('6 players under chaos: skewed clocks, a network drop, refreshes, the host 
   expect(['auto_shipped', 'dnf']).toContain(statuses[fay.name]);
   await expect(fay.page.locator('[data-testid=ranked-build][data-status=shipped]')).toHaveCount(3);
 
-  // ─── DESTROY, back in the lobby; Ben hosts the rematch ────────────────────────────
+  // ─── DESTROY, back in the lobby; Cy hosts the rematch ─────────────────────────────
   endLastLook(battleId);
   for (const p of [ben, cy, dee, eve, fay]) {
     await expect(p.page.getByTestId('lobby')).toBeVisible({ timeout: MIN });
     await expect(p.page.getByTestId('last-battle')).toContainText('Ben Early');
-    await expect(member(p.page, ben.name)).toHaveAttribute('data-host', 'true');
+    await expect(member(p.page, cy.name)).toHaveAttribute('data-host', 'true');
   }
   await expectTerminal(battleId, {
     phase: 'destroyed',
@@ -397,9 +491,9 @@ test('6 players under chaos: skewed clocks, a network drop, refreshes, the host 
   });
 
   for (const p of [ben, cy]) await p.page.getByTestId('ready-toggle').click();
-  await expect(ben.page.getByTestId('start-battle')).toHaveText('Start the rematch');
-  await expect(ben.page.getByTestId('start-battle')).toBeEnabled();
-  await ben.page.getByTestId('start-battle').click();
+  await expect(cy.page.getByTestId('start-battle')).toHaveText('Start the rematch');
+  await expect(cy.page.getByTestId('start-battle')).toBeEnabled();
+  await cy.page.getByTestId('start-battle').click();
   await expect.poll(() => battleOf(code)).not.toBe(battleId);
   const rematch = assertUuid(battleOf(code));
   for (const p of [ben, cy]) await waitForBuild(p.page);
@@ -448,9 +542,10 @@ test('random chaos (seeded): drops, refreshes, edits and ships at random on skew
   const shipped: Record<string, string> = {};
   const log: string[] = [];
 
-  // Chaos until 25 s before the deadline.
+  // Chaos until 25 s before the deadline, or until everyone shipped (BUILD then ends at
+  // once: a refresh or a ship would no longer land on the BUILD screen).
   let step = 0;
-  while (serverRemainingS(battleId) > 25) {
+  while (phaseOf(battleId) === 'building' && serverRemainingS(battleId) > 25) {
     step++;
     const p = pick(players);
     const action = shipped[p.name]
@@ -479,7 +574,7 @@ test('random chaos (seeded): drops, refreshes, edits and ships at random on skew
       await writeApp(p.page, `${p.name} edit ${String(step)}`, 'rgb(200, 90, 90)');
     } else {
       const name = `${p.name.split(' ')[0] ?? 'X'} ship ${String(step)}`;
-      await ship(p.page, name);
+      await ship(p.page, name, { last: Object.keys(shipped).length === players.length - 1 });
       shipped[p.name] = name;
     }
     // Whatever happened, every countdown shows the server's time.
@@ -488,7 +583,14 @@ test('random chaos (seeded): drops, refreshes, edits and ships at random on skew
   console.log(`random chaos steps: ${log.join('; ')}`);
   for (const p of players) await expectCountdownInSync(p, battleId);
 
-  // The rest is up to the server: deadline, auto-ship, captures, RESULTS, DESTROY.
+  // The rest is up to the server: deadline, auto-ship, REVEAL (everyone on the same
+  // spotlight), VOTING, captures, RESULTS, DESTROY. The slots and the vote are not driven:
+  // their deadlines are moved to now.
+  await expect
+    .poll(() => phaseOf(battleId), { timeout: 2 * MIN, intervals: [1_000] })
+    .toMatch(/^(reveal|voting|results)$/);
+  if (phaseOf(battleId) === 'reveal') await expectSameSpotlight(players);
+  await deadlineSkip(battleId);
   for (const p of players) {
     await expect(p.page.getByTestId('results')).toBeVisible({ timeout: 2 * MIN });
   }
@@ -516,7 +618,7 @@ test('random chaos (seeded): drops, refreshes, edits and ships at random on skew
 
 // ─── Everyone gone at T-0 ─────────────────────────────────────────────────────────────
 
-test('all clients closed at T-0: pg_cron alone ends BUILD, auto-ships the autosaves, captures and reaches RESULTS', async ({
+test('all clients closed at T-0: pg_cron alone ends BUILD, auto-ships the autosaves, runs REVEAL and VOTING, captures and reaches RESULTS', async ({
   browser,
 }, info) => {
   test.setTimeout(6 * MIN);
@@ -548,19 +650,28 @@ test('all clients closed at T-0: pg_cron alone ends BUILD, auto-ships the autosa
   expect(savedAtRemainingS).toBeGreaterThan(0.5);
   expect(savedAtRemainingS).toBeLessThan(3.5);
 
-  // Close every client before T-0: nobody can nudge the battle any more.
+  // Every client goes before T-0: nobody can nudge the battle any more. The network goes
+  // first (instant), then the contexts close: a graceful close of three pages takes
+  // 2.5–3 s here, more than the ~2.7 s the final autosave leaves (measured with and without
+  // T-020), so closing alone raced T-0.
   expectNoPageErrors(all);
+  await Promise.all(all.map((p) => p.context.setOffline(true)));
+  expect(serverRemainingS(battleId), 'every client was cut off before T-0').toBeGreaterThan(0);
   await Promise.all(all.map((p) => p.context.close()));
-  expect(serverRemainingS(battleId), 'every client was gone before T-0').toBeGreaterThan(0);
 
-  // pg_cron (sweep_deadlines every 5 s): BUILDING → SHIPPING → (15 s grace) → RESULTS.
-  await expect.poll(() => phaseOf(battleId), { timeout: MIN, intervals: [1_000] }).toBe('results');
-  // Both transitions had no actor: nobody but the sweeper was there.
+  // pg_cron (sweep_deadlines every 5 s): BUILDING → SHIPPING → (15 s grace) → REVEAL, one
+  // slot per build → VOTING → RESULTS. Nobody votes (nobody is there), so no early end:
+  // the slots' and the vote's deadlines are moved to now instead of waiting 4 minutes.
+  await expect.poll(() => phaseOf(battleId), { timeout: MIN, intervals: [1_000] }).toBe('reveal');
+  await deadlineSkip(battleId);
+  expect(phaseOf(battleId)).toBe('results');
+  // Every transition had no actor: nobody but the sweeper was there.
   expect(
     sql(`select string_agg((payload ->> 'to') || ':' || coalesce(actor_id::text, 'system'), ',' order by version)
            from public.battle_events
-          where battle_id = '${battleId}' and type = 'phase' and payload ->> 'from' in ('building', 'shipping')`),
-  ).toBe('shipping:system,results:system');
+          where battle_id = '${battleId}' and type = 'phase'
+            and payload ->> 'from' in ('building', 'shipping', 'reveal', 'voting')`),
+  ).toBe('shipping:system,reveal:system,reveal:system,reveal:system,voting:system,results:system');
   const builds = battleRow(battleId).builds;
   expect(builds.find((b) => b.builder === gus.name)?.status).toBe('auto_shipped');
   expect(builds.find((b) => b.builder === hal.name)?.status).toBe('auto_shipped');

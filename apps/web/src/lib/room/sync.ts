@@ -7,7 +7,8 @@
  * - **Apply events:** an event with `version <= current` is ignored (stale or duplicate),
  *   `current + 1` is applied (reducer.ts), a gap refetches the snapshot. Events that arrive
  *   while a snapshot is being fetched are buffered and replayed on top of it. Every `phase`
- *   event, every `sync` event and every (re)subscribe refetches.
+ *   event (except a REVEAL slot step, which only moves the spotlight), every `sync` event
+ *   and every (re)subscribe refetches; `vote_progress` never does.
  * - **Never stuck:** a gap refetches at once; while the same hole stays open (the fresh
  *   snapshot is still behind the buffered events) or a wanted snapshot cannot be fetched
  *   (offline), the topic asks again with backoff (1 s, 2 s, 4 s… at most 30 s). Events are

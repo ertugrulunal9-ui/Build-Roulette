@@ -19,7 +19,7 @@ import {
 } from '../../lib/room/controller';
 import { browserEnvironment, type EndReason } from '../../lib/room/sync';
 import type { Activity } from '../../lib/room/types';
-import { useBattleState, useRoom } from '../../lib/room/use-room';
+import { useBattleState, useRoom, useShowState } from '../../lib/room/use-room';
 import { SupabaseSoloApi } from '../../lib/solo/api';
 import type { SoloController, SoloState } from '../../lib/solo/controller';
 import { describeError, type GameError } from '../../lib/solo/errors';
@@ -31,8 +31,10 @@ import { BuildStage } from '../solo/BuildStage';
 import { SpinReels } from '../solo/SpinReels';
 import { Lobby } from './Lobby';
 import { ProgressSidebar } from './ProgressSidebar';
+import { RevealStage } from './RevealStage';
 import { RoomResults } from './RoomResults';
 import { SpectatorStage } from './SpectatorStage';
+import { VoteStage } from './VoteStage';
 import { Centered, ConfirmDialog, ErrorBanner, Toasts } from './pieces';
 
 const smallButton =
@@ -144,7 +146,15 @@ export default function RoomApp({ code }: { code: string }) {
 
   const running =
     battleState.snapshot !== null && !isTerminalPhase(battleState.snapshot.battle.phase);
-  const leave = <LeaveButton controller={controller} state={state} confirm={running} />;
+  const phase = battleState.snapshot?.battle.phase;
+  const leave = (
+    <LeaveButton
+      controller={controller}
+      state={state}
+      confirm={running}
+      afterShipping={phase === 'reveal' || phase === 'voting' || phase === 'results'}
+    />
+  );
 
   if (view === 'battle' && state.battle && battleState.snapshot) {
     return (
@@ -204,6 +214,8 @@ function BattleView({
 }) {
   const snapshot = battleState.snapshot;
   const phase = snapshot?.battle.phase;
+  const show = state.show;
+  const showState = useShowState(show);
   useTicker(1000, phase !== undefined && !isTerminalPhase(phase));
   const onActivity = useCallback(
     (a: Activity) => {
@@ -266,6 +278,19 @@ function BattleView({
           />
         )}
       </>
+    );
+  }
+  if ((phase === 'reveal' || phase === 'voting') && show) {
+    const Stage = phase === 'reveal' ? RevealStage : VoteStage;
+    return (
+      <Stage
+        battle={battle}
+        battleState={battleState}
+        show={show}
+        showState={showState}
+        code={code}
+        headerActions={leave}
+      />
     );
   }
   return <RoomResults state={battleState} remaining={remaining} />;
@@ -350,10 +375,13 @@ function LeaveButton({
   controller,
   state,
   confirm,
+  afterShipping,
 }: {
   controller: RoomController;
   state: RoomState;
   confirm: boolean;
+  /** The builds are final (REVEAL, VOTING, RESULTS). */
+  afterShipping: boolean;
 }) {
   const [asking, setAsking] = useState(false);
   return (
@@ -374,7 +402,11 @@ function LeaveButton({
         open={asking}
         testId="leave-confirm"
         title="Leave the room?"
-        body="The battle goes on without you. If you do not come back, your last autosave ships for you at the deadline."
+        body={
+          afterShipping
+            ? 'The battle goes on without you: your build stays in the reveal and the results. You cannot vote unless you come back before the vote ends.'
+            : 'The battle goes on without you. If you do not come back, your last autosave ships for you at the deadline.'
+        }
         confirm="Leave"
         busy={state.pending.leave}
         onCancel={() => {

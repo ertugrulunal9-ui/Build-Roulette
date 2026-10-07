@@ -215,7 +215,17 @@ describe('autosave', () => {
       'autosave/bundle.js',
       'autosave/bundle.css',
       'autosave/source.json',
+      'autosave/manifest.json',
     ]);
+    // The manifest has the pinned dependencies only (others read it during REVEAL).
+    expect(JSON.parse(api.files.get(`${BATTLE}/${USER}/autosave/manifest.json`) as string)).toEqual(
+      {
+        dependencies: {
+          react: expect.any(String) as string,
+          'react-dom': expect.any(String) as string,
+        },
+      },
+    );
     expect(api.files.get(`${BATTLE}/${USER}/autosave/bundle.js`)).toBe('dev-js');
     expect(api.files.get(`${BATTLE}/${USER}/autosave/bundle.css`)).toBe('dev-css');
     const source = JSON.parse(
@@ -231,11 +241,26 @@ describe('autosave', () => {
     // Nothing changed: no upload.
     await vi.advanceTimersByTimeAsync(30_000);
     expect(api.uploadsOf('autosave/bundle.js')).toBe(1);
-    // An edit that built: the next tick uploads it.
+    // An edit that built: the next tick uploads it (the manifest only when the
+    // dependencies changed).
     bridge.edit('edited-js');
     await vi.advanceTimersByTimeAsync(30_000);
     expect(api.uploadsOf('autosave/bundle.js')).toBe(2);
     expect(api.files.get(`${BATTLE}/${USER}/autosave/bundle.js`)).toBe('edited-js');
+    expect(api.uploadsOf('autosave/manifest.json')).toBe(1);
+    bridge.ws = {
+      ...bridge.ws,
+      manifest: {
+        ...bridge.ws.manifest,
+        dependencies: { ...bridge.ws.manifest.dependencies, zustand: '4.5.2' },
+      },
+    };
+    bridge.edit('with-zustand');
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(api.uploadsOf('autosave/manifest.json')).toBe(2);
+    expect(
+      JSON.parse(api.files.get(`${BATTLE}/${USER}/autosave/manifest.json`) as string),
+    ).toMatchObject({ dependencies: { zustand: '4.5.2' } });
     c.dispose();
   });
 
@@ -333,7 +358,16 @@ describe('ship', () => {
     expect(seen).toEqual(['thumbnail', 'building', 'uploading', 'shipping', 'done']);
     expect(bridge.thumbnailCalls).toBe(1);
     const uploaded = api.calls.filter((x) => x[0] === 'upload').map((x) => x[1]);
-    expect(uploaded.sort()).toEqual(['bundle.css', 'bundle.js', 'source.json', 'thumb.webp']);
+    expect(uploaded.sort()).toEqual([
+      'bundle.css',
+      'bundle.js',
+      'manifest.json',
+      'source.json',
+      'thumb.webp',
+    ]);
+    expect(
+      Object.keys(JSON.parse(api.files.get(`${BATTLE}/${USER}/manifest.json`) as string) as object),
+    ).toEqual(['dependencies']);
     expect(api.files.get(`${BATTLE}/${USER}/bundle.js`)).toBe('prod-js');
     expect(api.files.get(`${BATTLE}/${USER}/bundle.css`)).toBe('prod-css');
     const ship = api.calls.find((x) => x[0] === 'shipBuild');

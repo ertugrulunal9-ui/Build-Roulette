@@ -4,12 +4,20 @@
  * Every method throws a `GameError`.
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { EPHEMERAL_BUCKET } from '../supabase/config';
 import { toGameError } from '../solo/errors';
-import type { BattleSnapshot } from '../solo/types';
+import type {
+  BattleSnapshot,
+  CastVoteResult,
+  HostRevealResult,
+  MyVotes,
+  RevealBuild,
+} from '../solo/types';
+import type { RevealVoteApi } from './reveal-vote';
 import type { ChannelStatus, RealtimePort, RoomSyncApi, TopicSubscription } from './sync';
 import type { HeartbeatResult, JoinResult, RoomSettings, RoomSnapshot } from './types';
 
-export interface RoomApi extends RoomSyncApi {
+export interface RoomApi extends RoomSyncApi, RevealVoteApi {
   /** Signs in anonymously if needed; returns the user id. */
   ensureSession(): Promise<string>;
   /** The profile's display name, or null when the user has none yet. */
@@ -111,6 +119,64 @@ export class SupabaseRoomApi implements RoomApi {
 
   getBattleSnapshot(battleId: string): Promise<BattleSnapshot> {
     return this.rpc<BattleSnapshot>('get_battle_snapshot', { p_battle_id: battleId });
+  }
+
+  // --- REVEAL and VOTING (supabase/README.md "Reveal and voting") ----------------------
+
+  getRevealBuilds(battleId: string): Promise<RevealBuild[]> {
+    return this.rpc<RevealBuild[]>('get_reveal_builds', { p_battle_id: battleId });
+  }
+
+  revealNext(battleId: string, expectedVersion: number): Promise<HostRevealResult> {
+    return this.rpc<HostRevealResult>('reveal_next', {
+      p_battle_id: battleId,
+      p_expected_version: expectedVersion,
+    });
+  }
+
+  skipToVote(battleId: string, expectedVersion: number): Promise<HostRevealResult> {
+    return this.rpc<HostRevealResult>('skip_to_vote', {
+      p_battle_id: battleId,
+      p_expected_version: expectedVersion,
+    });
+  }
+
+  castVote(battleId: string, category: string, buildId: string): Promise<CastVoteResult> {
+    return this.rpc<CastVoteResult>('cast_vote', {
+      p_battle_id: battleId,
+      p_category: category,
+      p_build_id: buildId,
+    });
+  }
+
+  getMyVotes(battleId: string): Promise<MyVotes> {
+    return this.rpc<MyVotes>('get_my_votes', { p_battle_id: battleId });
+  }
+
+  /**
+   * A revealed object of another player (storage RLS: battle members, REVEAL to RESULTS).
+   * Null when it does not exist; any other failure throws.
+   */
+  async downloadBlob(path: string): Promise<Blob | null> {
+    let res;
+    try {
+      res = await this.supabase.storage.from(EPHEMERAL_BUCKET).download(path);
+    } catch (e) {
+      throw toGameError(e);
+    }
+    if (res.error) {
+      // supabase-js reports a missing (or unreadable) object as a 400/404 StorageError.
+      const err = res.error as { message: string; statusCode?: string; status?: number };
+      const status = String(err.statusCode ?? err.status ?? '');
+      if (status === '404' || status === '400' || /not found/i.test(err.message)) return null;
+      throw toGameError(res.error);
+    }
+    return res.data;
+  }
+
+  async downloadText(path: string): Promise<string | null> {
+    const blob = await this.downloadBlob(path);
+    return blob === null ? null : blob.text();
   }
 }
 

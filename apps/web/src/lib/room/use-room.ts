@@ -13,6 +13,11 @@ import {
   type RoomControllerDeps,
   type RoomState,
 } from './controller';
+import {
+  initialRevealVoteState,
+  type RevealVoteController,
+  type RevealVoteState,
+} from './reveal-vote';
 
 const noopSubscribe = () => () => undefined;
 
@@ -49,6 +54,17 @@ export function useRoom(code: string, createDeps: () => RoomControllerDeps): Roo
 }
 
 const initialSolo = () => INITIAL_SOLO_STATE;
+const noShow = initialRevealVoteState('');
+const initialShow = () => noShow;
+
+/** The state of the battle's REVEAL / VOTING controller (or an empty one). */
+export function useShowState(show: RevealVoteController | null): RevealVoteState {
+  return useSyncExternalStore(
+    show?.subscribe ?? noopSubscribe,
+    show?.getSnapshot ?? initialShow,
+    initialShow,
+  );
+}
 
 /** The state of the room's current battle controller (or the initial state). */
 export function useBattleState(battle: SoloController | null): SoloState {

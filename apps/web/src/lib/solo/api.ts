@@ -15,19 +15,23 @@ export type BuildFile =
   | 'source.json'
   | 'bundle.js'
   | 'bundle.css'
+  | 'manifest.json'
   | 'thumb.webp'
   | 'autosave/source.json'
   | 'autosave/bundle.js'
-  | 'autosave/bundle.css';
+  | 'autosave/bundle.css'
+  | 'autosave/manifest.json';
 
 export const CONTENT_TYPES: Record<BuildFile, string> = {
   'source.json': 'application/json',
   'bundle.js': 'text/javascript',
   'bundle.css': 'text/css',
+  'manifest.json': 'application/json',
   'thumb.webp': 'image/webp',
   'autosave/source.json': 'application/json',
   'autosave/bundle.js': 'text/javascript',
   'autosave/bundle.css': 'text/css',
+  'autosave/manifest.json': 'application/json',
 };
 
 export interface SoloApi {

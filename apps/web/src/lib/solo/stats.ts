@@ -42,6 +42,15 @@ export function sourceJson(workspace: Workspace): string {
   return JSON.stringify({ files: workspace.files, manifest: workspace.manifest });
 }
 
+/**
+ * `manifest.json`: only the pinned dependencies (`{dependencies: {name: version}}`). Other
+ * members read it during REVEAL to build the import map, so it carries no source code
+ * (supabase/README.md "Reveal and voting").
+ */
+export function manifestJson(workspace: Workspace): string {
+  return JSON.stringify({ dependencies: { ...workspace.manifest.dependencies } });
+}
+
 /** Parses an uploaded `source.json` back into a valid workspace, or null. */
 export function parseSourceJson(text: string): Workspace | null {
   let parsed: unknown;

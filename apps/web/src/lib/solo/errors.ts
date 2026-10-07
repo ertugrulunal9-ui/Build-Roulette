@@ -8,8 +8,10 @@
  * against every code the SQL migrations raise.
  */
 import {
+  CAST_VOTE_ERRORS,
   RPC_ERROR_CODES as GAME_RPC_ERROR_CODES,
   isRpcErrorCode,
+  type CastVoteError,
   type RpcErrorCode,
 } from '@br/game';
 
@@ -119,6 +121,11 @@ const MESSAGES: Record<ErrorCode, string> = {
   not_enough_players: 'At least 2 players must be ready (and online) to start.',
   cannot_kick_self: 'You cannot kick yourself. Leave the room instead.',
   not_implemented: 'That is not available yet.',
+  not_a_voter: 'You cannot vote in this battle.',
+  build_not_found: 'That build is not part of this battle.',
+  invalid_category: 'That vote category does not exist.',
+  self_vote: 'You cannot vote for your own build.',
+  not_votable: 'That build cannot get votes: it was not shipped.',
   upload_refused: 'The server refused the upload: the deadline may have passed.',
   file_too_large: 'Your build is over the 5 MB limit. Remove large files or images.',
   build_failed: 'Your code does not build. Fix the errors under Problems first.',
@@ -130,4 +137,30 @@ const MESSAGES: Record<ErrorCode, string> = {
 
 export function describeError(e: GameError | ErrorCode): string {
   return MESSAGES[typeof e === 'string' ? e : e.code];
+}
+
+/**
+ * What the VOTE stage says when `cast_vote` refuses (every code it can raise, typed against
+ * `@br/game`'s list so a new one cannot be forgotten). Other failures (network…) use
+ * {@link describeError}.
+ */
+const VOTE_MESSAGES: Record<CastVoteError, string> = {
+  battle_not_found: 'This battle is gone. Reload the page.',
+  not_on_roster: 'Only the players of this battle vote. Spectators watch the results.',
+  kicked: 'The host removed you from this room, so you cannot vote.',
+  not_a_member: 'You left the room. Join it again to vote before the time is up.',
+  not_a_voter: 'You cannot vote in this battle.',
+  wrong_phase: 'Voting is over: the results are in.',
+  deadline_passed: 'Too late: voting just closed.',
+  invalid_category: 'That vote category does not exist any more. Reload the page.',
+  build_not_found: 'That build is not part of this battle.',
+  self_vote: 'Nice try: you cannot vote for your own build.',
+  not_votable: 'That build cannot get votes: it was not shipped.',
+};
+
+export function describeVoteError(e: GameError | ErrorCode): string {
+  const code = typeof e === 'string' ? e : e.code;
+  return (CAST_VOTE_ERRORS as readonly string[]).includes(code)
+    ? VOTE_MESSAGES[code as CastVoteError]
+    : describeError(code);
 }

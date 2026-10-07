@@ -43,22 +43,8 @@ export const RPC_ERROR_CODES = [
   'not_enough_players',
   'cannot_kick_self',
   'not_implemented',
-] as const;
-
-export type RpcErrorCode = (typeof RPC_ERROR_CODES)[number];
-
-/**
- * Codes added by the REVEAL and VOTING RPCs (M4: `cast_vote`, `reveal_next`,
- * `skip_to_vote`, `get_reveal_builds`, `get_my_votes`). Those RPCs also raise codes of
- * {@link RPC_ERROR_CODES} (`not_authenticated`, `battle_not_found`, `not_on_roster`,
- * `kicked`, `not_a_member`, `not_host`, `wrong_phase`, `deadline_passed`,
- * `invalid_version`).
- *
- * Kept apart from `RPC_ERROR_CODES` only because the web app maps every `RpcErrorCode` to a
- * message (`Record<ErrorCode, string>`); the web task that adds the VOTE stage should add
- * the messages and merge this list into `RPC_ERROR_CODES`.
- */
-export const VOTE_ERROR_CODES = [
+  // REVEAL and VOTING (M4: `cast_vote`, `reveal_next`, `skip_to_vote`, `get_reveal_builds`,
+  // `get_my_votes`)
   'not_a_voter',
   'build_not_found',
   'invalid_category',
@@ -66,11 +52,11 @@ export const VOTE_ERROR_CODES = [
   'not_votable',
 ] as const;
 
-export type VoteErrorCode = (typeof VOTE_ERROR_CODES)[number];
+export type RpcErrorCode = (typeof RPC_ERROR_CODES)[number];
 
 /**
  * Codes only the service-role functions raise (capture/destroy workers). `complete_capture`
- * also raises `build_not_found`, which is listed in {@link VOTE_ERROR_CODES} since
+ * also raises `build_not_found`, which is listed in {@link RPC_ERROR_CODES} since
  * `cast_vote` raises it too.
  */
 export const SERVICE_ERROR_CODES = [
@@ -95,3 +81,23 @@ export const JOIN_ROOM_ERRORS = [
 ] as const satisfies readonly RpcErrorCode[];
 
 export type JoinRoomError = (typeof JOIN_ROOM_ERRORS)[number];
+
+/**
+ * Every code `cast_vote` can raise (besides `not_authenticated`): the VOTE stage explains
+ * each one. Checked against `public.cast_vote` by the drift test.
+ */
+export const CAST_VOTE_ERRORS = [
+  'battle_not_found',
+  'not_on_roster',
+  'kicked',
+  'not_a_member',
+  'not_a_voter',
+  'wrong_phase',
+  'deadline_passed',
+  'invalid_category',
+  'build_not_found',
+  'self_vote',
+  'not_votable',
+] as const satisfies readonly RpcErrorCode[];
+
+export type CastVoteError = (typeof CAST_VOTE_ERRORS)[number];

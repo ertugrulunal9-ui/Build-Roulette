@@ -10,11 +10,11 @@ export const CRITICAL_TIME_MS = 10_000;
 
 export type TimeLevel = 'normal' | 'low' | 'critical' | 'up';
 
-export function timeLevel(remaining: number | null): TimeLevel {
+export function timeLevel(remaining: number | null, lowMs = LOW_TIME_MS): TimeLevel {
   if (remaining === null) return 'normal';
   if (remaining <= 0) return 'up';
   if (remaining <= CRITICAL_TIME_MS) return 'critical';
-  if (remaining <= LOW_TIME_MS) return 'low';
+  if (remaining <= lowMs) return 'low';
   return 'normal';
 }
 
@@ -32,13 +32,16 @@ const LEVEL_CLASS: Record<TimeLevel, string> = {
 export function Countdown({
   getRemaining,
   label,
+  lowMs = LOW_TIME_MS,
 }: {
   getRemaining: () => number | null;
   label: string;
+  /** Amber from this much time left (short phases such as a reveal slot use less). */
+  lowMs?: number;
 }) {
   useTicker(250);
   const remaining = getRemaining();
-  const level = timeLevel(remaining);
+  const level = timeLevel(remaining, lowMs);
   return (
     <div
       className={`flex items-baseline gap-2 rounded-lg px-3 py-1.5 font-mono tabular-nums ${LEVEL_CLASS[level]}`}

@@ -40,7 +40,6 @@ export type { ClockSample } from './clock';
 
 export {
   AUTO_AWARDS,
-  BATTLE_BROADCAST_TYPES,
   BATTLE_EVENT_TYPES,
   BATTLE_ROLES,
   BUILD_STATUSES,
@@ -66,7 +65,6 @@ export {
 } from './rooms';
 export type {
   AutoAward,
-  BattleBroadcastType,
   BattleEventType,
   BattleRole,
   BuildStatus,
@@ -81,10 +79,10 @@ export type {
 } from './rooms';
 
 export {
+  CAST_VOTE_ERRORS,
   JOIN_ROOM_ERRORS,
   RPC_ERROR_CODES,
   SERVICE_ERROR_CODES,
-  VOTE_ERROR_CODES,
   isRpcErrorCode,
 } from './errors';
-export type { JoinRoomError, RpcErrorCode, VoteErrorCode } from './errors';
+export type { CastVoteError, JoinRoomError, RpcErrorCode } from './errors';

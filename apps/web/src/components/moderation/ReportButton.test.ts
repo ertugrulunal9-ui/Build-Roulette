@@ -26,7 +26,7 @@ function open(submit: (input: ReportInput) => Promise<void>, onHide?: () => void
 
 describe('ReportButton', () => {
   it('needs a reason, sends reason + details, then thanks', async () => {
-    const submit = vi.fn((_input: ReportInput) => Promise.resolve());
+    const submit = vi.fn<(input: ReportInput) => Promise<void>>(() => Promise.resolve());
     open(submit);
     expect(screen.getByTestId('report-dialog').textContent).toContain('“Snack Overflow” by Ana');
     expect(screen.getByTestId<HTMLButtonElement>('report-submit').disabled).toBe(true);

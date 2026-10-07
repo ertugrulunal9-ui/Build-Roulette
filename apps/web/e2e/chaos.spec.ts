@@ -648,10 +648,14 @@ test('all clients closed at T-0: pg_cron alone ends BUILD, auto-ships the autosa
   expect(savedAtRemainingS).toBeGreaterThan(0.5);
   expect(savedAtRemainingS).toBeLessThan(3.5);
 
-  // Close every client before T-0: nobody can nudge the battle any more.
+  // Every client goes before T-0: nobody can nudge the battle any more. The network goes
+  // first (instant), then the contexts close: a graceful close of three pages takes
+  // 2.5–3 s here, more than the ~2.7 s the final autosave leaves (measured with and without
+  // T-020), so closing alone raced T-0.
   expectNoPageErrors(all);
+  await Promise.all(all.map((p) => p.context.setOffline(true)));
+  expect(serverRemainingS(battleId), 'every client was cut off before T-0').toBeGreaterThan(0);
   await Promise.all(all.map((p) => p.context.close()));
-  expect(serverRemainingS(battleId), 'every client was gone before T-0').toBeGreaterThan(0);
 
   // pg_cron (sweep_deadlines every 5 s): BUILDING → SHIPPING → (15 s grace) → REVEAL, one
   // slot per build → VOTING → RESULTS. Nobody votes (nobody is there), so no early end:

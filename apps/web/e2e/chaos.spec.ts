@@ -801,6 +801,11 @@ test('all clients closed at T-0: pg_cron alone ends BUILD, auto-ships the autosa
   await ship(ivy.page, 'Ivy Shipped');
   await writeApp(gus.page, 'Gus Autosaved', 'rgb(63, 81, 181)');
   await autosaveNow(gus.page);
+  // Ivy and Gus are done (shipped, autosaved): their network goes now, well before T-0.
+  // (T-021: cutting all three only after Hal's final autosave left too little margin once:
+  // Gus's deadline nudge, sent a few ms before the cut on a client clock estimate a hair
+  // early, reached the server 72 ms after T-0 and was logged as his action.)
+  await Promise.all([gus, ivy].map((p) => p.context.setOffline(true)));
   // Hal edits once the 30 s autosave loop has run: only the final autosave (3 s before
   // the deadline, timed by the client from the server clock) can carry this edit.
   await expect

@@ -228,7 +228,10 @@ jobs:
       # create/join, lobby presence, ready/start, ship and auto-ship, ranked results with
       # screenshots, REVEAL (host controls, a frozen build skipped locally), VOTE (revote,
       # refresh, early end) and vote-based results, destroy, rematch, a late spectator, a
-      # refresh mid-BUILD, kick. Needs psql.
+      # refresh mid-BUILD, kick. Plus phones (e2e/multiplayer-mobile.spec.ts, iPhone 13
+      # emulation in Chromium): a phone hosts, the desktop-needed notice in BUILD, the
+      # still-first REVEAL with "Tap to run live", VOTE with taps (latest tap wins), RESULTS,
+      # the /u/[id] history page, and no sideways scrolling. Needs psql.
       - name: Run the rooms e2e
         run: pnpm --filter @br/web test:e2e:multi
 
@@ -245,7 +248,7 @@ jobs:
         if: always()
         run: npx -y "$SUPABASE_CLI" stop --no-backup
 
-  # The chaos e2e takes about 10 minutes (real, shortened deadlines; up to 10 browser
+  # The chaos e2e takes about 13 minutes (real, shortened deadlines; up to 10 browser
   # contexts), over the ~8 min budget for every push: nightly and on demand.
   chaos:
     name: Rooms chaos e2e (network drops, skewed clocks, refreshes, host leaves, T-0, abandoned, full room)
@@ -279,9 +282,11 @@ jobs:
           npx -y "$SUPABASE_CLI" start
           -x studio,imgproxy,vector,logflare,edge-runtime,supavisor,mailpit,postgres-meta
 
-      # e2e/chaos.spec.ts: 6 players under chaos, a seeded random run (the seed is in the
-      # log and the report; CHAOS_SEED replays it), steady typing vs the presence limit,
-      # everyone gone at T-0, an abandoned battle, a full room. Needs psql.
+      # e2e/chaos.spec.ts: 6 players under chaos, REVEAL and VOTE under chaos (a refresh
+      # mid-REVEAL, a vote cast offline and retried, a player offline until the vote
+      # closes, the host leaving mid-VOTE), a seeded random run (the seed is in the log and
+      # the report; CHAOS_SEED replays it), steady typing vs the presence limit, everyone
+      # gone at T-0, an abandoned battle, an 8-player battle, a full room. Needs psql.
       - name: Run the rooms chaos e2e
         run: pnpm --filter @br/web test:e2e:chaos
 

@@ -8,7 +8,8 @@ The Next.js app (App Router). Routes:
 | `/play` | The solo game: name → SPIN → BUILD → SHIP → RESULTS → DESTROY. `?battle={id}` resumes a battle after a refresh. |
 | `/battles/[id]` | The permanent, shareable results page (server-rendered), plus `/battles/[id]/opengraph-image`. |
 | `/playground` | Single-player editor and live preview, no game. |
-| `/r/[code]` | A room (M3): join → lobby → SPIN → BUILD → SHIP → RESULTS → DESTROY → lobby (rematch). |
+| `/r/[code]` | A room (M3): join → lobby → SPIN → BUILD → SHIP → REVEAL → VOTE → RESULTS → DESTROY → lobby (rematch). |
+| `/u/[id]` | A player's history (M4): their finished battles, newest first, server-rendered from `get_player_history` with the anon key, paginated (`?before=…&before_battle=…`). |
 
 ## Play the solo game locally
 
@@ -96,6 +97,42 @@ player):
 8. A window that joins during a battle is a spectator (countdown and progress, no editor;
    watches the reveal, cannot vote); the host can kick from the lobby; **Leave room**
    leaves (rejoin with the link).
+9. **Host settings** (lobby, host only): max players, **Reveal and vote** on/off, the time
+   per build in the reveal (Auto = 30–60 s by the number of builds, or 30–60 s) and the
+   voting time (30 s–3 min). Everyone else sees a one-line summary.
+10. **History:** every player name in RESULTS opens `/u/{id}` in a new tab; the lobby has
+    "Your battle history", the solo results and `/battles/[id]` too (for a viewer with a
+    session).
+
+### Phones and tablets (M4: reveal and vote, not build)
+
+A touch-primary device (`(hover: none) and (pointer: coarse)`, `src/lib/device.ts`) can
+join, host, watch and vote; building needs a desktop browser (docs/02 R7):
+
+- **Lobby:** a note under "Ready up" says so before the battle.
+- **BUILD:** a roster player on a phone gets the spectator view (countdown, everyone's
+  progress) with a "Building needs a desktop browser" notice and their battle state. The
+  editor never mounts, so nothing is built or autosaved and the build ends **DNF** at the
+  deadline (the server has nothing to auto-ship). The notice explains that opening the room
+  on a computer does not move the seat (each browser is its own anonymous player) and
+  offers "Build on this device anyway" (a tablet with a keyboard can). A phone that joins
+  mid-battle is a spectator, as on desktop.
+- **REVEAL:** each build shows its screenshot (or the ship-time thumbnail) first, with a
+  big "Tap to run live" (docs/02 R2: mobile browsers do not always isolate cross-site
+  frames, so running someone's build stays the viewer's choice); the host's Next / Skip
+  to the vote sit in a bar fixed to the bottom of the screen.
+- **VOTE:** one build per row (64 px+ tap targets), a sticky timer and progress.
+- **RESULTS, lobby, `/u/[id]`, `/battles/[id]`:** single column, no sideways scrolling at
+  390 px (checked by the mobile e2e).
+
+### Votes are never silently lost
+
+A pick the server cannot be reached for (offline, a dropped connection) stays on screen as
+"Not saved yet · retrying", with a banner, and is sent again every 2 s and with every fresh
+snapshot until it lands (`cast_vote` is an upsert, so a repeat is harmless). Picks that
+never landed before VOTING ended, or arrived just after, are listed in RESULTS as "Not
+counted". Rapid clicks in one category send one request at a time and end with the last
+click.
 
 If you started the stack yourself with `-x …,realtime,…` (as the capture CI job does), solo
 still works but rooms do not: restart it without `realtime` in `-x`.
@@ -187,6 +224,8 @@ CDN (T-006) replaces it.
 | React binding | `src/lib/solo/use-solo-game.ts` |
 | Screens | `src/components/solo/*` |
 | Results page + OG image | `src/app/battles/[id]/*`, `src/lib/solo/public-battle.ts` |
+| Player history page | `src/app/u/[id]/*`, `src/lib/history/player-history.ts`, `src/components/results/MyHistoryLink.tsx` |
+| Phones and tablets (touch-primary check) | `src/lib/device.ts`, `src/components/room/DesktopNeeded.tsx` |
 
 ## Tests
 
@@ -194,8 +233,9 @@ CDN (T-006) replaces it.
 pnpm --filter @br/web test             # unit (Vitest): solo + room controllers, sync engine, reducer, …
 pnpm --filter @br/web test:e2e         # /playground (Playwright), no Supabase needed
 pnpm --filter @br/web test:e2e:solo    # /play against the REAL local Supabase stack
-pnpm --filter @br/web test:e2e:multi   # rooms: 3+ browser contexts, REAL stack WITH Realtime
-pnpm --filter @br/web test:e2e:chaos   # rooms under chaos (~10 min), same stack
+pnpm --filter @br/web test:e2e:multi   # rooms: 3+ browser contexts (and phones), REAL stack WITH Realtime
+pnpm --filter @br/web test:e2e:mobile  # only the phone spec of the above
+pnpm --filter @br/web test:e2e:chaos   # rooms under chaos (~13 min), same stack
 ```
 
 - `test:e2e` runs `next build`, then Playwright starts `next start -p 3100` and
@@ -241,8 +281,23 @@ pnpm --filter @br/web test:e2e:chaos   # rooms under chaos (~10 min), same stack
     screen and cannot rejoin;
   - **join errors:** an unknown code and a malformed one.
 
+  - **phones** (`e2e/multiplayer-mobile.spec.ts`, Playwright's iPhone 13 profile in
+    Chromium: 390×664, touch): a phone creates and hosts the room, changes the reveal/vote
+    settings and starts; it gets the desktop-needed notice in BUILD and ends DNF with no
+    file uploaded; a second phone joins mid-BUILD as a spectator; REVEAL is still-first on
+    the phones (no iframe until "Tap to run live") and live at once on the desktops; the
+    host bar is fixed and in view; VOTE with taps, including rapid alternating taps on two
+    builds while `cast_vote` is slowed to 800 ms (the last tap wins, in the UI and in the
+    database, with fewer requests than taps); RESULTS; a result name opens `/u/[id]` in a
+    new tab; the history on desktop and phone; an unknown player's not-found page. Every
+    phone page is checked for sideways scrolling (`expectNoHorizontalScroll`, which
+    measures against the device width: Chromium widens `innerWidth` with the content).
+    Phones get viewport screenshots only: a full-page screenshot makes Playwright's
+    Chromium drop the touch emulation for good.
+
   `MULTI_SCREENSHOT_DIR=/dir` saves
-  `t020-{lobby,build-sidebar,spectator,reveal,vote,results,battle-page}.png`.
+  `t020-{lobby,build-sidebar,spectator,reveal,vote,results,battle-page}.png` and
+  `t021-{lobby-settings,mobile-reveal,mobile-vote,mobile-results,history}.png`.
   Clicks on the ship dialog go through `clickRouted` (`e2e/helpers.ts`): Chromium routes a
   mouse event from the compositor's hit-test data, which right after the dialog opens can
   still show the cross-site preview iframe there (measured: 16–21 of 40 first clicks under
@@ -271,9 +326,17 @@ pnpm --filter @br/web test:e2e:chaos   # rooms under chaos (~10 min), same stack
     autosaves (including the final one at T-3 s), runs every REVEAL slot and VOTING (their
     deadlines moved to now), captures, RESULTS;
   - **abandoned:** a returning player sees the abandoned battle in the lobby;
+  - **reveal and vote under chaos** (T-021): a refresh mid-REVEAL lands on the current
+    `reveal_index` running the right build, with the countdown in sync; the host votes
+    once and leaves mid-VOTE (the crown moves, nothing waits for her, her partial ballot
+    counts); a vote cast offline is kept ("Not saved yet"), retried and lands once back
+    online; a player offline until VOTING ends early (`all_voted`) is told in RESULTS
+    that his pick was not counted;
+  - **8 players** (the largest party): everyone ships, a reveal of 8 builds (38 s slots),
+    everyone votes in every category, ranked results with the tallies, destroy, lobby;
   - **a full room:** the 9th player spectates; with 20 spectators, `room_full`.
 
-  A full run signs up 27 anonymous users (mind the 300/hour local Auth limit above). CI runs
+  A full run signs up 38 anonymous users (mind the 300/hour local Auth limit above). CI runs
   it nightly and on demand (job `chaos`).
 - `test:e2e:cf` runs the playground suite against the Cloudflare Workers build
   (`cf:build`, then `opennextjs-cloudflare preview`, which is `wrangler dev` on workerd)
@@ -294,8 +357,14 @@ deploys, secrets, custom domain and caching.
   Cloudflare image transformations in production.
 - **The solo game polls** `get_battle_snapshot` (every 2–10 s depending on the phase, and
   right after each deadline); rooms use Realtime.
-- **Rooms:** presence is tracked on the room topic only. REVEAL and VOTE are built for
-  desktop first (mobile layouts are T-021). A viewer's "Skip this build" and the frozen
-  state are per build and per tab (not remembered across a refresh).
+- **Rooms:** presence is tracked on the room topic only. A viewer's "Skip this build", the
+  frozen state and a phone's "Tap to run live" are per build and per tab (not remembered
+  across a refresh).
+- **History is per browser:** `/u/[id]` is keyed by the anonymous auth user. Clearing the
+  browser's data loses the way back to it (the page itself stays at its URL); account
+  linking (docs/06 M6) is what will keep it across devices. `/battles/[id]` names players
+  without ids (`get_public_battle`), so it links only the viewer's own history.
+- **Phones only tested in Chromium's mobile emulation** (no real iOS Safari / Android device
+  in CI).
 - `/battles/[id]` is rendered per request; ISR on the R2 incremental cache is a follow-up
   (DEPLOY.md, "Caching").

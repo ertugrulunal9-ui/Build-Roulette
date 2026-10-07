@@ -3,8 +3,8 @@
  * "Reveal and voting"), as plain TypeScript next to the battle's SoloController, so it can
  * be unit tested with fakes:
  *
- * - **Reveal builds:** `get_reveal_builds` once the battle is in REVEAL, VOTING or RESULTS
- *   (the object names of every final build, in reveal order). Retried while it fails.
+ * - **Reveal builds:** `get_reveal_builds` once the battle is in REVEAL or VOTING (the
+ *   object names of every final build, in reveal order). Retried while it fails.
  * - **Spotlight:** the snapshot's `reveal_index` (advanced by `phase` events) picks the
  *   build. Its `bundle.js`, `bundle.css` and `manifest.json` are downloaded from Storage and
  *   turned into a validated preview input (reveal-files.ts); the **next** build's files are
@@ -146,7 +146,8 @@ const QUIET_HOST_ERRORS = new Set(['not_host', 'wrong_phase', 'invalid_version']
 /** Vote errors after which the snapshot is surely stale. */
 const STALE_VOTE_ERRORS = new Set(['wrong_phase', 'deadline_passed', 'not_a_member', 'kicked']);
 
-const REVEALED_PHASES = new Set(['reveal', 'voting', 'results']);
+/** The phases that use the reveal list (RESULTS shows the screenshots instead). */
+const SHOW_PHASES = new Set(['reveal', 'voting']);
 
 /** A copy of `record` without `key`. */
 function without<V>(record: Readonly<Record<string, V>>, key: string): Record<string, V> {
@@ -204,7 +205,11 @@ export class RevealVoteController {
       this.release();
       return;
     }
-    if (!REVEALED_PHASES.has(phase) || !snapshot.battle.reveal_order?.length) return;
+    if (!SHOW_PHASES.has(phase) || !snapshot.battle.reveal_order?.length) {
+      // RESULTS (or a battle without a reveal): no build runs any more.
+      if (Object.keys(this.state.bundles).length > 0) this.patch({ bundles: {} });
+      return;
+    }
 
     if (this.state.builds === null) void this.loadBuilds();
     if (phase === 'reveal') {

@@ -146,7 +146,15 @@ export default function RoomApp({ code }: { code: string }) {
 
   const running =
     battleState.snapshot !== null && !isTerminalPhase(battleState.snapshot.battle.phase);
-  const leave = <LeaveButton controller={controller} state={state} confirm={running} />;
+  const phase = battleState.snapshot?.battle.phase;
+  const leave = (
+    <LeaveButton
+      controller={controller}
+      state={state}
+      confirm={running}
+      afterShipping={phase === 'reveal' || phase === 'voting' || phase === 'results'}
+    />
+  );
 
   if (view === 'battle' && state.battle && battleState.snapshot) {
     return (
@@ -367,10 +375,13 @@ function LeaveButton({
   controller,
   state,
   confirm,
+  afterShipping,
 }: {
   controller: RoomController;
   state: RoomState;
   confirm: boolean;
+  /** The builds are final (REVEAL, VOTING, RESULTS). */
+  afterShipping: boolean;
 }) {
   const [asking, setAsking] = useState(false);
   return (
@@ -391,7 +402,11 @@ function LeaveButton({
         open={asking}
         testId="leave-confirm"
         title="Leave the room?"
-        body="The battle goes on without you. If you do not come back, your last autosave ships for you at the deadline."
+        body={
+          afterShipping
+            ? 'The battle goes on without you: your build stays in the reveal and the results. You cannot vote unless you come back before the vote ends.'
+            : 'The battle goes on without you. If you do not come back, your last autosave ships for you at the deadline.'
+        }
         confirm="Leave"
         busy={state.pending.leave}
         onCancel={() => {

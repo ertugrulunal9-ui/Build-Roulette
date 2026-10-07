@@ -246,7 +246,9 @@ export function Lobby({ controller, state, room, lastBattle }: LobbyProps) {
             <li>The reels pick a BUILD, a RULE, a STYLE and a time limit (5, 10 or 15 min).</li>
             <li>Everyone builds the same challenge in the browser.</li>
             <li>Ship before the clock runs out. Fast ships earn awards.</li>
-            <li>Results, a last look, and then every build is destroyed.</li>
+            <li>The reveal: everyone watches every build, one at a time.</li>
+            <li>Everyone votes in four categories (never for their own build).</li>
+            <li>Results by votes, a last look, and then every build is destroyed.</li>
           </ol>
         </section>
       </aside>

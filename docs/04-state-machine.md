@@ -281,3 +281,37 @@ section.
     and a minute of steady typing. Every run ends with a DB terminal-state check. It runs
     nightly in CI.
 
+## 4.11 Reveal and voting as implemented (T-019, M4)
+
+- **Flow:** SHIPPING → REVEAL → VOTING → RESULTS for multiplayer rooms with
+  `reveal_vote = true` (the default; a room setting can turn it off). If fewer than 2
+  builds are final (shipped or auto-shipped), the battle goes straight to RESULTS with
+  `reason: too_few_builds`.
+- **REVEAL:**
+  - `reveal_order` is a random shuffle of the final builds;
+  - the slot is the room's `reveal_slot_s`, otherwise `round(clamp(300/n, 30, 60))` with
+    n = the number of final builds (the TS helper rounds the same way);
+  - each slot runs its full length;
+  - the host can `reveal_next` (on the last slot it starts VOTING) or `skip_to_vote`.
+    Both use a version CAS, so a stale call is a no-op;
+  - `phase` events carry `reveal_index`.
+- **VOTING:**
+  - eligible voters are roster players who aren't kicked (DNF included); spectators
+    can't vote;
+  - one vote per category, revotes allowed, no self-votes, no votes for DNF or
+    disqualified builds;
+  - voting ends early when at least one eligible voter is present and every present
+    eligible voter has completed their ballot ("present" = seen within 30 s);
+  - `vote_progress {voted_count, eligible_count}` is sent only when a ballot is completed.
+- **Secrecy:** who voted for what is never exposed; `voted_at` isn't set. Tallies are
+  frozen at RESULTS into `builds.vote_counts`.
+- **Ranking:** overall votes → total votes → earlier `shipped_at`. Each category's top
+  build gets an award (ties share; no award with zero votes), and the auto-awards stay.
+- **Reveal storage:** from REVEAL to RESULTS, members and spectators can read the final
+  builds' `bundle.js`, `bundle.css` and `manifest.json` (not `source.json`). The new
+  `manifest.json` holds only the pinned deps. `get_reveal_builds` returns the paths per
+  build.
+- **Test-only switch (temporary):** CI's web e2e jobs insert
+  `private.app_settings('reveal_vote_default', false)` until T-020 adds the UI. Production
+  has no such row. T-020 removes the CI step.
+

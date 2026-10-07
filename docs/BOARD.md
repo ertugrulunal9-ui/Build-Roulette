@@ -6,8 +6,8 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 
 | ID | Task | Scope | Status | Notes |
 |---|---|---|---|---|
-| T-019 | M4 DB layer: REVEAL (order, slots, host skip) + VOTING (categories, no self-vote, revotes, secret ballots) phases, vote-based ranking + category awards, reveal-phase storage read access, realtime `vote_progress` | `supabase/`, `packages/game/` (constants), `ci.yml` | in-progress | M4, task 1 of 3 |
-| T-020 | M4 web: synchronized REVEAL spotlight (one live build, thumbnails, prefetch, host skip), VOTE stage, vote-based results + permanent page | `apps/web/` | todo | M4, task 2 of 3 |
+| T-019 | M4 DB layer: REVEAL (order, slots, host skip) + VOTING (categories, no self-vote, revotes, secret ballots) phases, vote-based ranking + category awards, reveal-phase storage read access, realtime `vote_progress` | `supabase/`, `packages/game/` (constants), `ci.yml` | done | Merged |
+| T-020 | M4 web: synchronized REVEAL spotlight (one live build, thumbnails, prefetch, host skip), VOTE stage, vote-based results + permanent page | `apps/web/` (+ remove the CI pre-M4 switch) | in-progress | M4, task 2 of 3 |
 | T-021 | M4 completion: mobile reveal/vote layout, player history `/u/[id]`, chaos coverage for reveal/vote, M4 exit criteria | `apps/web/`, `supabase/` (tests) | todo | M4, task 3 of 3 |
 | T-011 | DB layer for the solo loop: RPCs (start, advance, ship, snapshot), storage buckets + policies, jobs, deadline sweep, card deck seed; tests on the real local Supabase stack | `supabase/`, `.github/workflows/ci.yml` (db job only) | done | Merged |
 | T-012 | Spike: Next.js 16 on Cloudflare Workers via OpenNext (local preview, no account) | `apps/web/` (deploy config only) | done | Merged: GO with caveats |
@@ -61,6 +61,7 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 - T-016 M3 DB layer: rooms, multiplayer, realtime
 - T-017 M3 multiplayer web UI
 - T-018 M3 resilience / chaos
+- T-019 M4 DB layer: reveal + voting
 
 ## Review log
 
@@ -369,3 +370,20 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
   - "typing" activity lags because of the 4-per-30 s cap;
   - abandoned battles lose the screenshots of shipped builds;
   - the chaos suite uses 27 anonymous sign-ups per run.
+
+### T-019: accepted (M4 task 1)
+- Hub test-merged and re-ran on a fresh clone (Realtime on):
+  - pipeline green (game 120 unit tests, with new drift checks);
+  - `supabase test db` **926/926**;
+  - `e2e-solo` 44, `e2e-multiplayer` 49, `e2e-realtime` 34, **`e2e-reveal-vote` 50**;
+  - capture integration 12/12 after the scripts;
+  - web multiplayer e2e 3/3 with the temporary pre-M4 switch.
+- Hub checked the switch: `private.app_settings` is a private table with no API access, and production has no row, so the default stays reveal+vote ON. **T-020 must remove both CI steps.**
+- Decisions recorded in docs/04 §4.11:
+  - the slot is based on the number of final builds, and `revealSlotSeconds` now rounds;
+  - early end of voting is based on presence;
+  - tallies are frozen in `builds.vote_counts`;
+  - spectators can watch the reveal;
+  - `manifest.json` instead of exposing `source.json`;
+  - fewer than 2 final builds skip to RESULTS.
+- The web e2e that break without the switch: multiplayer main test, chaos 6-player, seeded random, and all-closed-at-T-0. Fixing them is part of T-020.

@@ -136,6 +136,13 @@ export function ResultsStage({ controller, state, remaining }: ResultsStageProps
                 >
                   View the permanent results
                 </Link>
+                <Link
+                  href={`/u/${snapshot.me.user_id}`}
+                  data-testid="my-history-link"
+                  className="rounded-lg border border-zinc-300 px-4 py-2 text-sm font-semibold dark:border-zinc-700"
+                >
+                  Your battle history
+                </Link>
                 <button
                   type="button"
                   data-testid="play-again"

@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
+import { MyHistoryLink } from '../../../components/results/MyHistoryLink';
 import { AwardBadges, ChallengeCards, VoteTally } from '../../../components/results/ResultPieces';
 import {
   CAPTURE_TEXT,
@@ -156,6 +157,7 @@ export default async function BattlePage({ params }: BattlePageProps) {
         >
           Play solo
         </Link>
+        <MyHistoryLink className="text-sm font-semibold underline" />
       </footer>
     </main>
   );

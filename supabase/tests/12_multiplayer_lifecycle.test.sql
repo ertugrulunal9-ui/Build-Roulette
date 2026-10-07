@@ -1,6 +1,9 @@
 -- Multiplayer battles in a room (T-016), through the RPCs:
 --   start_battle → spinning → building → shipping → results → destroyed
 -- and back to an open room, then a rematch in the same room.
+-- The room opts out of REVEAL and VOTING (room setting reveal_vote = false,
+-- T-019), so this file keeps covering the M3 path and its completion-time
+-- ranking; 15_reveal_vote.test.sql covers the M4 path.
 --
 -- Battle 1 (3 players): ana ships by hand (speedrun), ben auto-ships from his
 --   autosave, cy has nothing (DNF). gus is in the room but not ready (not on
@@ -43,6 +46,8 @@ reset role;
 select (:'created'::jsonb) ->> 'room_id' as room, (:'created'::jsonb) ->> 'code' as code \gset
 
 set local role authenticated;
+select set_config('request.jwt.claims', :'ana', true);
+select public.update_room_settings(:'room', '{"reveal_vote": false}');
 select set_config('request.jwt.claims', :'ben', true);
 select public.join_room(:'code', 'ben');
 select set_config('request.jwt.claims', :'cy', true);
@@ -95,7 +100,7 @@ select results_eq(
 select is((select settings from public.battles where id = :'b1'),
   '{"mode": "multiplayer", "reveal_vote": false, "spinning_s": 6, "shipping_s": 15, "voting_s": 60,
     "results_s": 60, "capture_deadline_s": 600}'::jsonb,
-  'settings: multiplayer, no reveal/vote (M3), default durations');
+  'settings: multiplayer, no reveal/vote (the room opted out), default durations');
 select ok((select c.time_limit_seconds in (300, 600, 900) from public.battles b
            join public.challenges c on c.id = b.challenge_id where b.id = :'b1'),
   'the time limit is drawn by the server (5, 10 or 15 min)');
@@ -135,7 +140,8 @@ set local role authenticated;
 select set_config('request.jwt.claims', :'eli', true);
 select is(public.join_room(:'code', 'eli') ->> 'role', 'spectator', 'a late joiner becomes a spectator');
 select is(public.get_battle_snapshot(:'b1') -> 'me',
-  jsonb_build_object('user_id', :'eli_id', 'is_player', false, 'role', 'spectator', 'is_host', false),
+  jsonb_build_object('user_id', :'eli_id', 'is_player', false, 'role', 'spectator', 'is_host', false,
+                     'is_voter', false, 'can_vote', false),
   'the spectator reads the running battle');
 select throws_ok(format($$ select public.ship_build(%L, 'x', '{}') $$, :'b1'), '42501', 'not_on_roster',
   'a spectator cannot ship');
@@ -152,7 +158,8 @@ select throws_ok(format($$ select public.start_battle(%L) $$, :'room'), 'P0001',
 select throws_ok(format($$ select public.update_room_settings(%L, '{"max_players": 5}') $$, :'room'), 'P0001',
   'wrong_room_state', 'settings are frozen during a battle');
 select is(public.get_battle_snapshot(:'b1') -> 'me',
-  jsonb_build_object('user_id', :'ana_id', 'is_player', true, 'role', 'player', 'is_host', true),
+  jsonb_build_object('user_id', :'ana_id', 'is_player', true, 'role', 'player', 'is_host', true,
+                     'is_voter', true, 'can_vote', false),
   'the host reads the battle as a player and host');
 select set_config('request.jwt.claims', :'fay', true);
 select throws_ok(format($$ select public.get_battle_snapshot(%L) $$, :'b1'), 'P0002', 'battle_not_found',
@@ -278,7 +285,8 @@ select is((select status::text from public.rooms where id = :'room'), 'in_battle
 set local role authenticated;
 select set_config('request.jwt.claims', :'fay', true);
 select is(public.get_battle_snapshot(:'b1') -> 'me',
-  jsonb_build_object('user_id', :'fay_id', 'is_player', false, 'role', 'viewer', 'is_host', false),
+  jsonb_build_object('user_id', :'fay_id', 'is_player', false, 'role', 'viewer', 'is_host', false,
+                     'is_voter', false, 'can_vote', false),
   'RESULTS are public: a stranger reads them as a viewer');
 select ok(not (public.get_battle_snapshot(:'b1')::text like '%' || :'code' || '%'),
   'the battle snapshot never contains the room code');

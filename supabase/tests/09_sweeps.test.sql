@@ -21,7 +21,7 @@ select results_eq(
 -- ─── Fixtures ─────────────────────────────────────────────────────────────
 -- s1  solo, SPINNING, overdue                    → BUILDING
 -- s2  solo, SPINNING, not due                    → unchanged
--- s3  multiplayer SHIPPING, overdue              → not_implemented, skipped with a warning
+-- s3  solo SHIPPING, overdue, a broken setting  → raises, skipped with a warning
 -- s4  solo, BUILDING, overdue, draft, no files   → SHIPPING (then dnf on a later sweep)
 -- t1  solo, BUILDING, created 25 h ago           → ABANDONED (TTL)
 -- t2  solo, RESULTS, created 25 h ago            → DESTROYED (TTL), pending capture failed
@@ -40,7 +40,7 @@ insert into public.battles (id, challenge_id, host_id, phase, version, settings,
   ('9b000000-0000-0000-0000-000000000002', '9c000000-0000-0000-0000-000000000002', '9a000000-0000-0000-0000-000000000001',
    'spinning', 1, '{"mode":"solo"}', now() + interval '3 seconds', null, null, null, now()),
   ('9b000000-0000-0000-0000-000000000003', '9c000000-0000-0000-0000-000000000003', '9a000000-0000-0000-0000-000000000001',
-   'shipping', 3, '{}', now() - interval '30 seconds', now() - interval '400 seconds', now() - interval '100 seconds', null, now()),
+   'shipping', 3, '{"mode":"solo","results_s":"broken"}', now() - interval '30 seconds', now() - interval '400 seconds', now() - interval '100 seconds', null, now()),
   ('9b000000-0000-0000-0000-000000000004', '9c000000-0000-0000-0000-000000000004', '9a000000-0000-0000-0000-000000000001',
    'building', 2, '{"mode":"solo"}', now() - interval '2 seconds', now() - interval '302 seconds', now() - interval '2 seconds', null, now()),
   ('9b000000-0000-0000-0000-000000000011', '9c000000-0000-0000-0000-000000000011', '9a000000-0000-0000-0000-000000000001',
@@ -73,7 +73,7 @@ select is((select phase::text from public.battles where id = '9b000000-0000-0000
 select results_eq(
   $$ select phase::text, version from public.battles where id = '9b000000-0000-0000-0000-000000000003' $$,
   $$ values ('shipping', 3) $$,
-  'a battle that raises (multiplayer, M3) is skipped and unchanged; the sweep does not fail');
+  'a battle that raises (here a broken results_s setting) is skipped and unchanged; the sweep does not fail');
 select results_eq(
   $$ select phase::text, phase_ends_at from public.battles where id = '9b000000-0000-0000-0000-000000000004' $$,
   $$ values ('shipping', now() + interval '15 seconds') $$,

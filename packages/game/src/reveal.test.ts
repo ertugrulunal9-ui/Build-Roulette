@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { revealSlotSeconds } from './reveal';
+import { battleRevealSlotSeconds, revealSlotSeconds } from './reveal';
 
 describe('revealSlotSeconds', () => {
   it.each([
@@ -12,14 +12,15 @@ describe('revealSlotSeconds', () => {
     [11, 30],
     [50, 30],
     [1000, 30],
-  ])('%d players → %d s', (players, seconds) => {
+  ])('%d builds → %d s', (players, seconds) => {
     expect(revealSlotSeconds(players)).toBe(seconds);
   });
 
-  it('does not round between the bounds', () => {
-    expect(revealSlotSeconds(7)).toBeCloseTo(300 / 7, 10);
-    expect(revealSlotSeconds(8)).toBe(37.5);
-    expect(revealSlotSeconds(9)).toBeCloseTo(33.333, 3);
+  it('rounds to whole seconds between the bounds (half up, like SQL round())', () => {
+    expect(revealSlotSeconds(7)).toBe(43); // 42.857…
+    expect(revealSlotSeconds(8)).toBe(38); // 37.5
+    expect(revealSlotSeconds(9)).toBe(33); // 33.333…
+    for (let n = 1; n <= 50; n++) expect(Number.isInteger(revealSlotSeconds(n))).toBe(true);
   });
 
   it('always stays within [30, 60] for realistic counts', () => {
@@ -46,4 +47,16 @@ describe('revealSlotSeconds', () => {
       expect(() => revealSlotSeconds(players)).toThrow(RangeError);
     },
   );
+});
+
+describe('battleRevealSlotSeconds', () => {
+  it('uses the room setting when the battle has one', () => {
+    expect(battleRevealSlotSeconds({ reveal_slot_s: 45 }, 8)).toBe(45);
+  });
+
+  it('falls back to the build-count rule', () => {
+    expect(battleRevealSlotSeconds({}, 8)).toBe(38);
+    expect(battleRevealSlotSeconds(null, 3)).toBe(60);
+    expect(battleRevealSlotSeconds({ reveal_slot_s: '45' }, 10)).toBe(30);
+  });
 });

@@ -10,7 +10,7 @@
 begin;
 create extension if not exists pgtap with schema extensions;
 
-select plan(50);
+select plan(51);
 
 \set ava '{"sub":"14a00000-0000-0000-0000-000000000001","role":"authenticated"}'
 \set bo  '{"sub":"14a00000-0000-0000-0000-000000000002","role":"authenticated"}'
@@ -99,8 +99,15 @@ select is(
 select is(
   (select string_agg(coalesce(payload ->> 'phase', payload ->> 'status', event), ' ' order by version)
    from msgs where topic = :'battle_topic'),
-  'spinning building kicked shipped shipped shipping results capture',
-  'battle topic: spinning, building, the kick, two ships, early SHIPPING and RESULTS, the capture');
+  'spinning building kicked shipped shipped shipping reveal capture',
+  'battle topic: spinning, building, the kick, two ships, early SHIPPING and REVEAL (2 final builds), the capture');
+select is(
+  (select payload - 'id' from msgs where topic = :'battle_topic' and payload ->> 'phase' = 'reveal'),
+  (select jsonb_build_object('type', 'phase', 'version', 7, 'phase', 'reveal',
+                             'phase_started_at', b.phase_started_at,
+                             'phase_ends_at', b.phase_ends_at, 'reveal_index', 0)
+   from public.battles b where b.id = :'battle'),
+  'phase REVEAL: the payload carries reveal_index');
 select ok((select bool_and(event = payload ->> 'type') from msgs), 'the event name is the payload type');
 select ok((select bool_and(private) from msgs), 'every message is for private channels only');
 select ok((select bool_and(extension = 'broadcast') from msgs), 'every message is a broadcast');

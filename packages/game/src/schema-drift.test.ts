@@ -15,7 +15,10 @@
  *   (`private.battle_broadcast`, `private.room_broadcast`) and the RPC error codes (every
  *   `message = '...'` the migrations raise) must match `rooms.ts` and `errors.ts` (T-017).
  *
- * Vote categories are not checked here: `@br/game` does not expose them (yet).
+ * - REVEAL and VOTING (T-019): `VOTE_CATEGORIES` must match the `public.vote_categories` seed,
+ *   the REVEAL_* / VOTING_* constants `private.reveal_vote_limits()`, and `revealSlotSeconds`
+ *   (which rounds) the reference table that `supabase/tests/15_reveal_vote.test.sql` checks
+ *   `private.reveal_slot_seconds(n)` against, so the two implementations cannot drift apart.
  */
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -23,9 +26,16 @@ import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { BUILD_TIME_LIMITS_MINUTES, DEFAULT_PHASE_DURATIONS } from './durations';
-import { JOIN_ROOM_ERRORS, RPC_ERROR_CODES, SERVICE_ERROR_CODES } from './errors';
+import { JOIN_ROOM_ERRORS, RPC_ERROR_CODES, SERVICE_ERROR_CODES, VOTE_ERROR_CODES } from './errors';
 import { BATTLE_PHASES, isBattlePhase } from './phases';
 import {
+  REVEAL_SLOT_MAX_SECONDS,
+  REVEAL_SLOT_MIN_SECONDS,
+  REVEAL_TOTAL_SECONDS,
+  revealSlotSeconds,
+} from './reveal';
+import {
+  BATTLE_BROADCAST_TYPES,
   BATTLE_EVENT_TYPES,
   BUILD_STATUSES,
   CAPTURE_STATUSES,
@@ -36,8 +46,13 @@ import {
   ROOM_LIMITS,
   ROOM_STATUSES,
 } from './rooms';
+import { VOTE_CATEGORIES, VOTING_MAX_SECONDS, VOTING_MIN_SECONDS } from './votes';
 
 const MIGRATIONS_DIR = resolve(import.meta.dirname, '../../../supabase/migrations');
+const REVEAL_VOTE_TEST = resolve(
+  import.meta.dirname,
+  '../../../supabase/tests/15_reveal_vote.test.sql',
+);
 const ENUM_NAME = 'battle_phase';
 const DOLLAR_TAG = /^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/;
 
@@ -399,10 +414,14 @@ describe('schema drift: rooms and Realtime', () => {
     expect(roomLimitsFromMigrations(readMigrations())).toEqual({ ...ROOM_LIMITS });
   });
 
-  it('BATTLE_EVENT_TYPES matches private.battle_broadcast()', () => {
+  it('BATTLE_BROADCAST_TYPES matches private.battle_broadcast()', () => {
     const body = lastPrivateFunctionBody(readMigrations(), 'battle_broadcast', { anyArgs: true });
     expect(body, 'private.battle_broadcast not found').not.toBeNull();
-    expect(assignedTypes(body ?? '').sort()).toEqual([...BATTLE_EVENT_TYPES].sort());
+    expect(assignedTypes(body ?? '').sort()).toEqual([...BATTLE_BROADCAST_TYPES].sort());
+  });
+
+  it('BATTLE_EVENT_TYPES (what the client applies) is a subset of BATTLE_BROADCAST_TYPES', () => {
+    for (const type of BATTLE_EVENT_TYPES) expect(BATTLE_BROADCAST_TYPES).toContain(type);
   });
 
   it('ROOM_EVENT_TYPES, MEMBER_CHANGES and ROOM_CHANGES match private.room_broadcast()', () => {
@@ -420,7 +439,7 @@ describe('schema drift: rooms and Realtime', () => {
         raised.add(m[1] ?? '');
       }
     }
-    const known = [...RPC_ERROR_CODES, ...SERVICE_ERROR_CODES];
+    const known = [...RPC_ERROR_CODES, ...VOTE_ERROR_CODES, ...SERVICE_ERROR_CODES];
     expect(new Set(known).size, 'a code is listed twice').toBe(known.length);
     expect([...raised].sort()).toEqual([...known].sort());
   });
@@ -457,5 +476,122 @@ describe('schema drift: rooms and Realtime', () => {
     expect(assignedTypes(body)).toEqual(['member', 'room', 'sync']);
     expect(inList(body, /\bif\s+p_event\.type\b/i)).toEqual(['a', 'b']);
     expect(inList(body, /\belsif\s+p_event\.type\b/i)).toEqual(['c']);
+  });
+});
+
+// ─── REVEAL and VOTING (T-019) ────────────────────────────────────────────────────────
+
+/**
+ * The rows of the last `insert into public.vote_categories (...) values ...` across the
+ * migrations, as objects keyed by the column list.
+ */
+function voteCategorySeed(files: readonly { name: string; sql: string }[]) {
+  const pattern =
+    /\binsert\s+into\s+(?:public\.)?vote_categories\s*\(([^)]*)\)\s*values\s*([\s\S]*?)(?:\bon\s+conflict\b|;)/gi;
+  const item = String.raw`(?:${LITERAL}|\d+)`;
+  const tuple = new RegExp(String.raw`\(\s*(${item}(?:\s*,\s*${item})*)\s*\)`, 'g');
+  const value = new RegExp(item, 'g');
+  let rows: Record<string, string | number>[] | null = null;
+  for (const { sql } of files) {
+    for (const match of stripSqlComments(sql).matchAll(pattern)) {
+      const columns = (match[1] ?? '').split(',').map((c) => c.trim());
+      rows = [...(match[2] ?? '').matchAll(tuple)].map((t) => {
+        const values = [...(t[1] ?? '').matchAll(value)].map((v) =>
+          v[0].startsWith("'") ? unquote(v[0]) : Number(v[0]),
+        );
+        return Object.fromEntries(columns.map((c, i) => [c, values[i] ?? '']));
+      });
+    }
+  }
+  return rows;
+}
+
+/** `private.reveal_vote_limits()`: every `'<key>', <integer>` pair. */
+function revealVoteLimitsFromMigrations(files: readonly { name: string; sql: string }[]) {
+  const body = lastPrivateFunctionBody(files, 'reveal_vote_limits');
+  if (body === null) return null;
+  const limits: Record<string, number> = {};
+  for (const match of body.matchAll(/'([a-z_]+)'\s*,\s*(\d+)/g)) {
+    limits[match[1] ?? ''] = Number(match[2]);
+  }
+  return limits;
+}
+
+/**
+ * The `(n, seconds)` pairs of the reference table in the pgTAP test: the first
+ * `$$ values (...) $$` after the marker comment `-- reveal-slot reference table`.
+ */
+function revealSlotTable(sql: string): [number, number][] {
+  const at = sql.indexOf('-- reveal-slot reference table');
+  if (at === -1) return [];
+  const values = /\$\$\s*values\s*([^$]*)\$\$/i.exec(sql.slice(at))?.[1] ?? '';
+  return [...values.matchAll(/\(\s*(\d+)\s*,\s*(\d+)\s*\)/g)].map((m) => [
+    Number(m[1]),
+    Number(m[2]),
+  ]);
+}
+
+describe('schema drift: reveal and voting', () => {
+  it('VOTE_CATEGORIES matches the public.vote_categories seed', () => {
+    const seed = voteCategorySeed(readMigrations());
+    expect(seed, 'no insert into public.vote_categories found').not.toBeNull();
+    expect(seed).toEqual(
+      VOTE_CATEGORIES.map((c) => ({
+        slug: c.slug,
+        label: c.label,
+        description: c.description,
+        sort_order: c.sortOrder,
+      })),
+    );
+  });
+
+  it('the REVEAL and VOTING limits match private.reveal_vote_limits()', () => {
+    expect(revealVoteLimitsFromMigrations(readMigrations())).toEqual({
+      reveal_total_s: REVEAL_TOTAL_SECONDS,
+      reveal_slot_min_s: REVEAL_SLOT_MIN_SECONDS,
+      reveal_slot_max_s: REVEAL_SLOT_MAX_SECONDS,
+      voting_min_s: VOTING_MIN_SECONDS,
+      voting_max_s: VOTING_MAX_SECONDS,
+    });
+  });
+
+  it('revealSlotSeconds matches the table private.reveal_slot_seconds is tested against', () => {
+    const table = revealSlotTable(readFileSync(REVEAL_VOTE_TEST, 'utf8'));
+    expect(table.length, `no reveal-slot reference table in ${REVEAL_VOTE_TEST}`).toBeGreaterThan(
+      8,
+    );
+    for (const [n, seconds] of table) expect(revealSlotSeconds(n), `n = ${n}`).toBe(seconds);
+  });
+
+  it('private.reveal_slot_seconds rounds (and neither floors nor truncates)', () => {
+    const body = lastPrivateFunctionBody(readMigrations(), 'reveal_slot_seconds', {
+      anyArgs: true,
+    });
+    expect(body, 'private.reveal_slot_seconds not found').not.toBeNull();
+    expect(body).toMatch(/\bround\s*\(/i);
+    expect(body).not.toMatch(/\b(floor|ceil|ceiling|trunc)\s*\(/i);
+  });
+
+  it('parses the category seed and the slot table', () => {
+    const files = [
+      {
+        name: '1.sql',
+        sql: `insert into public.vote_categories (slug, label, sort_order) values
+                ('a', 'It''s A', 10), -- first
+                ('b', 'B', 20)
+              on conflict (slug) do nothing;`,
+      },
+    ];
+    expect(voteCategorySeed(files)).toEqual([
+      { slug: 'a', label: "It's A", sort_order: 10 },
+      { slug: 'b', label: 'B', sort_order: 20 },
+    ]);
+    expect(
+      revealSlotTable(`-- reveal-slot reference table
+        select results_eq($$ select 1 $$, $$ values (0, 60), (7, 43) $$, 'x');`),
+    ).toEqual([
+      [0, 60],
+      [7, 43],
+    ]);
   });
 });

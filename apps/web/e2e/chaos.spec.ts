@@ -274,8 +274,9 @@ async function expectSameSpotlight(players: Player[]): Promise<void> {
     });
     await expect(p.page.getByTestId('reveal-stage')).toHaveAttribute('data-build', build);
   }
+  // The build runs (its heading: a template that was shipped untouched has its own).
   for (const p of players) {
-    await expect(revealLive(p.page).locator('h1.e2e-title')).toBeVisible({ timeout: 30_000 });
+    await expect(revealLive(p.page).locator('h1').first()).toBeVisible({ timeout: 30_000 });
   }
 }
 
@@ -541,9 +542,10 @@ test('random chaos (seeded): drops, refreshes, edits and ships at random on skew
   const shipped: Record<string, string> = {};
   const log: string[] = [];
 
-  // Chaos until 25 s before the deadline.
+  // Chaos until 25 s before the deadline, or until everyone shipped (BUILD then ends at
+  // once: a refresh or a ship would no longer land on the BUILD screen).
   let step = 0;
-  while (serverRemainingS(battleId) > 25) {
+  while (phaseOf(battleId) === 'building' && serverRemainingS(battleId) > 25) {
     step++;
     const p = pick(players);
     const action = shipped[p.name]
@@ -572,7 +574,7 @@ test('random chaos (seeded): drops, refreshes, edits and ships at random on skew
       await writeApp(p.page, `${p.name} edit ${String(step)}`, 'rgb(200, 90, 90)');
     } else {
       const name = `${p.name.split(' ')[0] ?? 'X'} ship ${String(step)}`;
-      await ship(p.page, name);
+      await ship(p.page, name, { last: Object.keys(shipped).length === players.length - 1 });
       shipped[p.name] = name;
     }
     // Whatever happened, every countdown shows the server's time.

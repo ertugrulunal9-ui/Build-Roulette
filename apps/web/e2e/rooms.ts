@@ -144,11 +144,26 @@ export async function writeApp(
   }
 }
 
-export async function ship(page: Page, name: string): Promise<void> {
+/**
+ * Ships from the BUILD screen. `last`: this is the last roster player to ship, so BUILD ends
+ * at once (everyone shipped) and the page may go straight to the REVEAL instead of showing
+ * the shipped banner.
+ */
+export async function ship(
+  page: Page,
+  name: string,
+  { last = false }: { last?: boolean } = {},
+): Promise<void> {
   await page.getByTestId('ship-button').click();
   await page.getByTestId('build-name').fill(name);
   // The dialog is drawn over the cross-site preview iframe (see clickRouted).
   await clickRouted(page.getByTestId('confirm-ship'));
+  if (last) {
+    await expect(
+      page.getByTestId('shipped-banner').or(page.getByTestId('reveal-stage')),
+    ).toBeVisible();
+    return;
+  }
   // Shipped: the dialog closes; a banner says the build is locked.
   await expect(page.getByTestId('shipped-banner')).toContainText(`Shipped “${name}”`);
   await expect(page.getByTestId('ship-dialog')).toBeHidden();

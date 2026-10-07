@@ -30,7 +30,7 @@ select enum_has_labels('public', 'build_status',
   array['draft', 'shipped', 'auto_shipped', 'dnf', 'disqualified'], 'build_status labels');
 select enum_has_labels('public', 'capture_status',
   array['pending', 'captured', 'fallback', 'failed'], 'capture_status labels');
-select enum_has_labels('public', 'job_kind',       array['capture', 'destroy'], 'job_kind labels');
+select enum_has_labels('public', 'job_kind',       array['capture', 'destroy', 'takedown'], 'job_kind labels');
 select enum_has_labels('public', 'job_status',     array['queued', 'running', 'done', 'failed'], 'job_status labels');
 
 -- ─── Indexes from the draft (5) ───────────────────────────────────────────

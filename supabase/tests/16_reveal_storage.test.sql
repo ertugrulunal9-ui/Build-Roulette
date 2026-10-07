@@ -182,10 +182,10 @@ select is(
   (select jsonb_object_agg(e ->> 'builder_name', (e - 'build_id' - 'position' - 'builder_id'))
    from jsonb_array_elements(:'rb'::jsonb) e),
   jsonb_build_object(
-    'pia', jsonb_build_object('name', 'Pia Pad', 'builder_name', 'pia', 'status', 'shipped', 'files', jsonb_build_object(
+    'pia', jsonb_build_object('name', 'Pia Pad', 'builder_name', 'pia', 'status', 'shipped', 'taken_down', false, 'files', jsonb_build_object(
       'js', :'b' || '/' || :'pia_id' || '/bundle.js', 'css', :'b' || '/' || :'pia_id' || '/bundle.css',
       'manifest', :'b' || '/' || :'pia_id' || '/manifest.json', 'thumb', :'b' || '/' || :'pia_id' || '/thumb.webp')),
-    'quin', jsonb_build_object('name', null, 'builder_name', 'quin', 'status', 'auto_shipped', 'files', jsonb_build_object(
+    'quin', jsonb_build_object('name', null, 'builder_name', 'quin', 'status', 'auto_shipped', 'taken_down', false, 'files', jsonb_build_object(
       'js', :'b' || '/' || :'quin_id' || '/autosave/bundle.js', 'css', :'b' || '/' || :'quin_id' || '/autosave/bundle.css',
       'manifest', :'b' || '/' || :'quin_id' || '/autosave/manifest.json', 'thumb', null))),
   'get_reveal_builds: names, builders and the paths to fetch (autosave/ for the auto-shipped build)');

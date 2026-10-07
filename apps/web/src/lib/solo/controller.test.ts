@@ -241,11 +241,26 @@ describe('autosave', () => {
     // Nothing changed: no upload.
     await vi.advanceTimersByTimeAsync(30_000);
     expect(api.uploadsOf('autosave/bundle.js')).toBe(1);
-    // An edit that built: the next tick uploads it.
+    // An edit that built: the next tick uploads it (the manifest only when the
+    // dependencies changed).
     bridge.edit('edited-js');
     await vi.advanceTimersByTimeAsync(30_000);
     expect(api.uploadsOf('autosave/bundle.js')).toBe(2);
     expect(api.files.get(`${BATTLE}/${USER}/autosave/bundle.js`)).toBe('edited-js');
+    expect(api.uploadsOf('autosave/manifest.json')).toBe(1);
+    bridge.ws = {
+      ...bridge.ws,
+      manifest: {
+        ...bridge.ws.manifest,
+        dependencies: { ...bridge.ws.manifest.dependencies, zustand: '4.5.2' },
+      },
+    };
+    bridge.edit('with-zustand');
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(api.uploadsOf('autosave/manifest.json')).toBe(2);
+    expect(
+      JSON.parse(api.files.get(`${BATTLE}/${USER}/autosave/manifest.json`) as string),
+    ).toMatchObject({ dependencies: { zustand: '4.5.2' } });
     c.dispose();
   });
 

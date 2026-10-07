@@ -237,6 +237,8 @@ export class SoloController {
   private shippingAutosaveDone = false;
   private autosaving: Promise<void> | null = null;
   private lastAutosaved: { build: BuildArtifacts; workspace: Workspace } | null = null;
+  /** The `autosave/manifest.json` on the server (it only changes with the dependencies). */
+  private autosavedManifest: string | null = null;
   private destroyedSeenAt: number | null = null;
   /** The last-look bundle was requested (it is fetched once per battle). */
   private revealAttempted = false;
@@ -561,6 +563,7 @@ export class SoloController {
     this.finalAutosaveDone = false;
     this.shippingAutosaveDone = false;
     this.lastAutosaved = null;
+    this.autosavedManifest = null;
     this.destroyedSeenAt = null;
     this.revealAttempted = false;
   }
@@ -749,8 +752,10 @@ export class SoloController {
   }
 
   /**
-   * Uploads `autosave/source.json`, `autosave/bundle.js`, `autosave/bundle.css` and
-   * `autosave/manifest.json` from the last good build. Skipped when nothing changed since the last autosave (unless `force`).
+   * Uploads `autosave/source.json`, `autosave/bundle.js` and `autosave/bundle.css` from the
+   * last good build, plus `autosave/manifest.json` when the dependencies changed since it was
+   * last uploaded (one write less per autosave, which matters for the final one just before
+   * the deadline). Skipped when nothing changed since the last autosave (unless `force`).
    */
   private autosave(opts: { force?: boolean } = {}): Promise<void> {
     if (this.autosaving) {
@@ -770,17 +775,19 @@ export class SoloController {
     const userId = snap.me.user_id;
     const epoch = this.epoch;
     this.patch({ autosave: { ...this.state.autosave, status: 'saving', error: null } });
+    const manifest = manifestJson(workspace);
     const files: [BuildFile, string][] = [
       ['autosave/bundle.js', build.js],
       ['autosave/bundle.css', build.css],
       ['autosave/source.json', sourceJson(workspace)],
-      ['autosave/manifest.json', manifestJson(workspace)],
     ];
+    if (manifest !== this.autosavedManifest) files.push(['autosave/manifest.json', manifest]);
     this.autosaving = (async () => {
       try {
         await Promise.all(files.map(([f, body]) => this.api.upload(battleId, userId, f, body)));
         if (epoch !== this.epoch) return;
         this.lastAutosaved = { build, workspace };
+        this.autosavedManifest = manifest;
         this.patch({
           autosave: { status: 'saved', lastSavedAt: this.clock.now(), error: null },
         });

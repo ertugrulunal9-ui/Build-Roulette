@@ -26,7 +26,9 @@ supabase/
 │   ├── 20261007120000_reveal_and_voting.sql           REVEAL + VOTING phases, vote RPCs, results by votes (T-019)
 │   ├── 20261007120100_reveal_storage.sql              reveal reads of final builds, get_reveal_builds (T-019)
 │   ├── 20261007120200_reveal_vote_realtime.sql        reveal_index on phase events, vote_progress (T-019)
-│   └── 20261007130000_player_history.sql              get_player_history for /u/[id] (T-021)
+│   ├── 20261007130000_player_history.sql              get_player_history for /u/[id] (T-021)
+│   └── 20261007140000_single_winner_awards_and_voting_sweep.sql  one winner per vote category, VOTING
+│                                                        early end re-checked by sweep_deadlines (T-022)
 ├── tests/                       pgTAP tests (*.test.sql), one transaction each, rolled back
 │   ├── 00_schema.test.sql       tables/enums exist, RLS on every table, policies, table privileges
 │   ├── 01_constraints.test.sql  room codes, time limits, one build per player, vote PK, cascades
@@ -46,8 +48,10 @@ supabase/
 │   ├── 15_reveal_vote.test.sql  REVEAL/VOTING lifecycle, every guard, tie-breaks, secret ballots, too few builds,
 │   │                            the reveal_vote switches, solo unchanged, the reveal-slot reference table
 │   ├── 16_reveal_storage.test.sql  storage reads per phase and role, get_reveal_builds, abandoned in REVEAL
-│   └── 17_player_history.test.sql  get_player_history: public battles only, own build only, no ids/ballots/paths,
-│                                keyset pagination across a finished_at tie, limit clamping, the empty answer
+│   ├── 17_player_history.test.sql  get_player_history: public battles only, own build only, no ids/ballots/paths,
+│   │                            keyset pagination across a finished_at tie, limit clamping, the empty answer
+│   └── 18_vote_awards_and_sweep.test.sql  one winner per category (build-id level), distinct ranks, legacy shared
+│                                awards kept, the VOTING early end in sweep_deadlines (silent voter, nobody present)
 └── scripts/
     ├── e2e-solo.mjs             the solo loop through the real HTTP APIs (Auth, PostgREST, Storage, pg_cron)
     ├── e2e-multiplayer.mjs      a 3-player battle + late spectator through supabase-js, with Realtime reception
@@ -259,20 +263,33 @@ like `advance_battle`, so a double click is harmless. SQLSTATEs: `not_a_voter` 4
   `is_voter` (DNF included) who were not kicked; a player who left votes again after
   rejoining before the deadline; spectators never vote. One vote per active category
   (`overall`, `rule`, `style`, `chaos`), upserted, so revotes replace the earlier choice. No
-  self-votes; only builds in `reveal_order`. **Early end:** after a vote, a leave or a kick,
-  VOTING ends at once when at least one eligible voter is *present* (active and seen within
-  30 s) and every present eligible voter has voted in every category (`reason: all_voted`).
-  Voters who left or went silent do not hold the battle up, and their partial ballots count.
+  self-votes; only builds in `reveal_order`. **Early end:** VOTING ends when at least one
+  eligible voter is *present* (active and seen within 30 s) and every present eligible voter
+  has voted in every category (`reason: all_voted`). It is checked after every vote, leave
+  and kick, and by `sweep_deadlines` every 5 s (T-022), so a voter who just goes silent stops
+  holding the battle up about 30–35 s after their last heartbeat (the sweep's event has no
+  actor). With nobody present the deadline decides. Voters who left or went silent do not
+  hold the battle up, and their partial ballots count.
 - **Secrecy:** `votes` is readable by its voter only (RLS); `get_my_votes` returns only the
   caller's ballot; `battle_players.voted_at` is never set; the `vote_progress` event and the
   snapshot carry counts only, and only change when a voter completes a ballot (partial
   ballots and revotes are invisible). Tallies appear at RESULTS.
 - **RESULTS** (`private.finalize_votes`, votes of voters still eligible in active
   categories): `builds.vote_counts` `{category: n}` for each final build (frozen; null for
-  others and before RESULTS) and `total_votes`; ranks by Best Build votes, then total votes,
-  then earlier `shipped_at` (`rank()`: full ties share); one `awards` row per category for
-  the top build(s) (`source: vote`, `votes` = count; ties share, no award for a category
-  nobody voted in); auto-awards as in M3.
+  others and before RESULTS) and `total_votes`; auto-awards as in M3. Since T-022 (user
+  decision: **one winner per category**), ties are broken by the same order everywhere,
+  after the relevant count: **more total votes, then the earlier `shipped_at`, then the
+  lower build id** (`VOTE_TIE_BREAKS` in `@br/game`, drift-tested). The last level is rare
+  but real: auto-shipped builds all have `shipped_at = building_ends_at`.
+  - **Ranks:** Best Build votes, then the tie-breaks: every final build gets a distinct rank
+    1…n (`row_number()`), so RESULTS has one winner.
+  - **Category awards:** at most one `awards` row per active category (`source: vote`,
+    `votes` = count): the build with the top count, then the tie-breaks. A category nobody
+    voted in gives no award. The Best Build award, when there is one, is always on the rank-1
+    build.
+  - Battles that reached RESULTS before T-022 keep their stored awards and ranks (shared on
+    ties): results are permanent and the migration does not recompute them. The `awards`
+    shape of `get_battle_snapshot`, `get_public_battle` and `get_player_history` is unchanged.
 - **Snapshot (multiplayer):** `battle.reveal_vote`, `battle.reveal_order`,
   `battle.reveal_index`, `battle.reveal_slot_s` (null without a reveal); during REVEAL
   `phase_started_at` / `phase_ends_at` are the current slot. `me.is_voter`, `me.can_vote`,

@@ -345,10 +345,13 @@ CHAOS_SHARD=2 pnpm --filter @br/web test:e2e:chaos   # one of its 3 shards (~5 m
   A full run signs up 41 anonymous users (mind the 300/hour local Auth limit above).
   **Shards:** `CHAOS_SHARD=1|2|3` runs a third of the suite: a test joins shard 1 or 2 with
   `@chaos-1` / `@chaos-2` at the end of its title, shard 3 runs every test without either
-  tag (so a new test always runs somewhere). Each shard has its own output directory
-  (`test-results/chaos-shard-N/`) and report (`playwright-report/chaos-shard-N/`). CI runs
-  the three shards as parallel jobs, each with its own stack, on every push, nightly and on
-  demand (job `chaos`).
+  tag (so a new test always runs somewhere). About 5 minutes each (measured: 4.8, 4.4 and
+  4.8 min). Each shard has its own output directory (`test-results/chaos-shard-N/`) and
+  report (`playwright-report/chaos-shard-N/`), so shards 1 and 2 can also run side by side
+  on one stack (servers started once, `E2E_REUSE_SERVERS=1`); shard 3 needs the stack to
+  itself (its lost-feed test cuts Realtime's database feed for every client of the stack).
+  CI runs the three shards as parallel jobs, each with its own stack, on every push, nightly
+  and on demand (job `chaos`).
 - **Failure diagnostics** (rooms and chaos e2e, `e2e/diagnostics.ts`): the specs import
   `test` from there, and every failed test gets, next to Playwright's trace and
   screenshots: `players.md` (per player: URL, the visible stages with their data

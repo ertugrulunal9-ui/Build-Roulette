@@ -15,11 +15,13 @@ import { defineConfig } from '@playwright/test';
  * **Shards.** `CHAOS_SHARD=1|2|3` runs one third of the suite (CI runs the three as parallel
  * jobs, each with its own stack, about 5 minutes of tests each). A test joins shard 1 or 2
  * with `@chaos-1` / `@chaos-2` at the end of its title; shard 3 runs every test without
- * either tag, so a new test always runs somewhere. Measured locally (T-023): shard 1
- * (6 players, abandoned, full room) ≈ 4.7 min, shard 2 (random chaos, T-0) ≈ 4.4 min,
- * shard 3 (REVEAL/VOTE chaos, typing, 8 players) ≈ 3.5 min. Each shard has its own output
- * directory and report, so two shards can run side by side on one stack
- * (`E2E_REUSE_SERVERS=1`, servers started once).
+ * either tag, so a new test always runs somewhere. Measured locally (T-023, 4 CPUs, servers
+ * included): shard 1 (6 players, abandoned, full room) 4.8 min, shard 2 (random chaos, T-0)
+ * 4.4 min, shard 3 (REVEAL/VOTE chaos, typing, the lost Realtime feed, 8 players) 4.8 min.
+ * Each shard has its own output directory and report, so shards 1 and 2 can run side by
+ * side on one stack (`E2E_REUSE_SERVERS=1`, servers started once: green twice, 4.9 min).
+ * Shard 3 needs the stack to itself: its lost-feed test cuts Realtime's database feed for
+ * the whole stack, and another shard's channel joins reconnect it.
  *
  * Same servers as the solo e2e (scripts/solo-services.ts, here with `--realtime`, which
  * fails fast when Realtime is not running) and `next start`. `E2E_REUSE_SERVERS=1` reuses

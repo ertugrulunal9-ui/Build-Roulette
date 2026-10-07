@@ -970,6 +970,111 @@ test('a minute of steady typing keeps the room channel (Realtime closes channels
   await expectTerminal(battleId, { phase: 'abandoned', shipped: {} });
 });
 
+// ─── 8 players: the largest party ─────────────────────────────────────────────────────
+
+test('8 players, a full party battle: everyone ships, the reveal of 8 builds, everyone votes, ranked results, destroy, back in the lobby', async ({
+  browser,
+}, info) => {
+  test.setTimeout(8 * MIN);
+  const players: Player[] = [];
+  for (let i = 1; i <= 8; i++) players.push(await newPlayer(browser, info, `Octo ${String(i)}`));
+  const [host] = players;
+  if (!host) throw new Error('no host');
+  const code = await gather(players);
+  await expect(host.page.getByTestId('player-count')).toHaveText('8/8 players');
+  const battleId = await startBattle(code, players, 240);
+
+  // Everyone ships the template as it is (the editor and the bundler run in 8 tabs).
+  for (const [i, p] of players.entries()) {
+    await ship(p.page, `${p.name} build`, { last: i === players.length - 1 });
+  }
+  await expect.poll(() => phaseOf(battleId), { timeout: MIN }).toBe('reveal');
+  const order = sql(
+    `select array_to_string(reveal_order, ',') from public.battles where id = '${battleId}'`,
+  ).split(',');
+  expect(order).toHaveLength(8);
+  // 8 builds: round(clamp(300 / 8, 30, 60)) = 38 s per slot.
+  expect(
+    Number(
+      sql(
+        `select extract(epoch from phase_ends_at - phase_started_at)::int from public.battles where id = '${battleId}'`,
+      ),
+    ),
+  ).toBe(38);
+  await expectSameSpotlight(players);
+  await clickRouted(host.page.getByTestId('reveal-next'));
+  for (const p of players) {
+    await expect(p.page.getByTestId('reveal-stage')).toHaveAttribute('data-index', '1');
+    await expect(p.page.getByTestId('reveal-position')).toHaveText('Build 2 of 8');
+  }
+  await expectSameSpotlight(players);
+  await clickRouted(host.page.getByTestId('skip-to-vote'));
+
+  // Everyone votes in every category; Best Build: everyone picks the first build in the
+  // reveal order (its builder picks the second one).
+  for (const p of players) {
+    await expect(p.page.getByTestId('vote-stage')).toBeVisible({ timeout: 30_000 });
+  }
+  const builderOf = (buildId: string) =>
+    sql(
+      `select p.display_name from public.builds b join public.battle_players p on p.battle_id = b.battle_id and p.user_id = b.builder_id where b.id = '${buildId}'`,
+    );
+  const first = order[0] ?? '';
+  const second = order[1] ?? '';
+  for (const [i, p] of players.entries()) {
+    const pick = builderOf(first) === p.name ? second : first;
+    for (const cat of ['overall', 'rule', 'style', 'chaos']) {
+      const last = i === players.length - 1 && cat === 'chaos';
+      if (last) {
+        // The last pick of the last ballot ends VOTING at once.
+        await p.page
+          .locator(
+            `[data-testid=vote-category][data-category=${cat}] [data-testid=vote-option][data-build="${pick}"]`,
+          )
+          .click();
+      } else {
+        await vote(p.page, cat, pick);
+      }
+    }
+  }
+  for (const p of players) {
+    await expect(p.page.getByTestId('results')).toBeVisible({ timeout: MIN });
+    await expect(p.page.getByTestId('ranked-build')).toHaveCount(8);
+  }
+  expect(
+    sql(
+      `select payload ->> 'reason' from public.battle_events where battle_id = '${battleId}' and type = 'phase' and payload ->> 'from' = 'voting'`,
+    ),
+  ).toBe('all_voted');
+  await expect(host.page.locator(`[data-testid=ranked-build][data-winner=true]`)).toHaveAttribute(
+    'data-total-votes',
+    '28',
+  ); // 7 voters × 4 categories
+  expect(
+    JSON.parse(sql(`select vote_counts::text from public.builds where id = '${first}'`)),
+  ).toEqual({ overall: 7, rule: 7, style: 7, chaos: 7 });
+
+  await expect
+    .poll(
+      () =>
+        sql(
+          `select count(*) from public.builds where battle_id = '${battleId}' and capture_status = 'pending'`,
+        ),
+      { timeout: 3 * MIN, intervals: [1_000] },
+    )
+    .toBe('0');
+  endLastLook(battleId);
+  for (const p of players) {
+    await expect(p.page.getByTestId('lobby')).toBeVisible({ timeout: MIN });
+  }
+  await expectTerminal(battleId, {
+    phase: 'destroyed',
+    shipped: Object.fromEntries(players.map((p) => [p.name, `${p.name} build`])),
+  });
+  expectNoPageErrors(players);
+  for (const p of players) await p.context.close();
+});
+
 // ─── A full room ──────────────────────────────────────────────────────────────────────
 
 test('a full room: the 9th player spectates; with every spectator slot taken, room_full', async ({

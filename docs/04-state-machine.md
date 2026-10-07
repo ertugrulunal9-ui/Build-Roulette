@@ -311,7 +311,15 @@ section.
   builds' `bundle.js`, `bundle.css` and `manifest.json` (not `source.json`). The new
   `manifest.json` holds only the pinned deps. `get_reveal_builds` returns the paths per
   build.
-- **Test-only switch (temporary):** CI's web e2e jobs insert
-  `private.app_settings('reveal_vote_default', false)` until T-020 adds the UI. Production
-  has no such row. T-020 removes the CI step.
+- **Test-only switch:** `private.app_settings('reveal_vote_default', false)` can turn the
+  phases off for a whole stack. It was used in CI only until T-020; it is now unused, and
+  production has no such row.
+- **Client (T-020):**
+  - the REVEAL spotlight is synchronized from `reveal_index`, with one live build in
+    reveal mode in a fresh iframe with storage wiped first, and the next build prefetched;
+  - upcoming builds stay hidden as "? Coming up";
+  - "Skip this build" and the frozen state only affect the viewer's tab;
+  - the vote grid can't offer the player's own build, and `get_my_votes` restores the
+    ballot after a refresh;
+  - results are ranked by votes, with category award badges and a winner banner.
 

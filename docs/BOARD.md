@@ -7,8 +7,8 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 | ID | Task | Scope | Status | Notes |
 |---|---|---|---|---|
 | T-019 | M4 DB layer: REVEAL (order, slots, host skip) + VOTING (categories, no self-vote, revotes, secret ballots) phases, vote-based ranking + category awards, reveal-phase storage read access, realtime `vote_progress` | `supabase/`, `packages/game/` (constants), `ci.yml` | done | Merged |
-| T-020 | M4 web: synchronized REVEAL spotlight (one live build, thumbnails, prefetch, host skip), VOTE stage, vote-based results + permanent page | `apps/web/` (+ remove the CI pre-M4 switch) | in-progress | M4, task 2 of 3 |
-| T-021 | M4 completion: mobile reveal/vote layout, player history `/u/[id]`, chaos coverage for reveal/vote, M4 exit criteria | `apps/web/`, `supabase/` (tests) | todo | M4, task 3 of 3 |
+| T-020 | M4 web: synchronized REVEAL spotlight (one live build, thumbnails, prefetch, host skip), VOTE stage, vote-based results + permanent page | `apps/web/` (+ remove the CI pre-M4 switch) | done | Merged |
+| T-021 | M4 completion: mobile reveal/vote layout, player history `/u/[id]`, chaos coverage for reveal/vote, M4 exit criteria | `apps/web/`, `supabase/` (tests) | in-progress | M4, task 3 of 3 |
 | T-011 | DB layer for the solo loop: RPCs (start, advance, ship, snapshot), storage buckets + policies, jobs, deadline sweep, card deck seed; tests on the real local Supabase stack | `supabase/`, `.github/workflows/ci.yml` (db job only) | done | Merged |
 | T-012 | Spike: Next.js 16 on Cloudflare Workers via OpenNext (local preview, no account) | `apps/web/` (deploy config only) | done | Merged: GO with caveats |
 | T-013 | Capture mode in the shell + local capture/destroy workers (Playwright stands in for Browser Rendering) | `apps/sandbox-shell/`, `apps/capture-worker/` | done | Merged |
@@ -62,6 +62,7 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 - T-017 M3 multiplayer web UI
 - T-018 M3 resilience / chaos
 - T-019 M4 DB layer: reveal + voting
+- T-020 M4 web: reveal + vote
 
 ## Review log
 
@@ -387,3 +388,22 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
   - `manifest.json` instead of exposing `source.json`;
   - fewer than 2 final builds skip to RESULTS.
 - The web e2e that break without the switch: multiplayer main test, chaos 6-player, seeded random, and all-closed-at-T-0. Fixing them is part of T-020.
+
+### T-020: accepted (M4 task 2)
+- Hub test-merged and re-ran on a fresh clone. The pre-M4 CI steps are gone (0 left) and `private.app_settings` has 0 rows, so REVEAL/VOTE are ON everywhere:
+  - pipeline green (web 222 unit tests);
+  - `supabase test db` 926/926;
+  - **multiplayer e2e 3/3 on a cold start** (fresh `.next` + `db reset`);
+  - **chaos 6/6 (10.6 min)**, including the host vanishing mid-REVEAL and pg_cron alone running REVEAL + VOTING;
+  - solo 2/2, playground 14/14, runtime 25/25.
+- Hub viewed the reveal, vote and results screenshots. Good.
+- Two chaos failures during development were test races and were fixed and explained: closing contexts took longer than the final-autosave margin, and the random loop shipped everyone, ending BUILD early.
+- Product question for the user: with tie-sharing, a 3-way tie in a category gives everyone that award (seen in the screenshot: three "Best Build" badges with 1 vote each).
+- Gaps (→ T-021):
+  - mobile REVEAL/VOTE;
+  - `/u/[id]` history page;
+  - chaos: a drop mid-VOTE and a refresh mid-REVEAL;
+  - lobby UI for `reveal_slot_s` / `voting_s` / `reveal_vote`;
+  - `handshake-timeout` shown as "froze";
+  - the RESULTS last-look pane doesn't wipe storage first;
+  - the latest-click vote queue is covered by unit tests only.

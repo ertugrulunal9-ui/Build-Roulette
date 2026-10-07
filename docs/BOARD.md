@@ -2,10 +2,15 @@
 
 Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 
-## Current milestone: M4 complete (local). Next: M5 Hardening (awaiting user go-ahead and decisions)
+## Current milestone: M5 Hardening (M4 complete)
 
 | ID | Task | Scope | Status | Notes |
 |---|---|---|---|---|
+| T-022 | Rules/server fixes: one winner per vote category (tie-break: total votes → earlier ship), VOTING early end re-checked in `sweep_deadlines`, UI + e2e updates | `supabase/`, `apps/web/`, `packages/game/` | in-progress | M5, task 1 |
+| T-023 | Test reliability: root-cause the flaky 8-player chaos test (1 in 5), shard the chaos suite for CI | `apps/web/` (e2e), `ci.yml` | todo | M5 |
+| T-024 | Abuse controls: report build, admin page (event logs + report queue + screenshot takedown), name filter, rate limits, Turnstile wiring | `supabase/`, `apps/web/` | todo | M5 |
+| T-025 | Load test (50 rooms × 8 players), Realtime/egress mapping to plan limits, cost per 1,000 battles | `tools/loadtest/`, `docs/` input | todo | M5 |
+| T-026 | Observability (Sentry/PostHog, env-gated), ISR for `/battles` + `/u`, runbooks | `apps/web/`, `apps/*`, `docs/runbooks/` | todo | M5 |
 | T-019 | M4 DB layer: REVEAL (order, slots, host skip) + VOTING (categories, no self-vote, revotes, secret ballots) phases, vote-based ranking + category awards, reveal-phase storage read access, realtime `vote_progress` | `supabase/`, `packages/game/` (constants), `ci.yml` | done | Merged |
 | T-020 | M4 web: synchronized REVEAL spotlight (one live build, thumbnails, prefetch, host skip), VOTE stage, vote-based results + permanent page | `apps/web/` (+ remove the CI pre-M4 switch) | done | Merged |
 | T-021 | M4 completion: mobile reveal/vote layout, player history `/u/[id]`, chaos coverage for reveal/vote, M4 exit criteria | `apps/web/`, `supabase/` (tests) | done | Merged |
@@ -38,6 +43,13 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 | Later: second (usercontent) domain + Public Suffix List entry (F1) | Per-build isolation as the game grows |
 
 **User decisions (2026-10-04):** option A, so everything is hosted on Cloudflare and Vercel is dropped. The sandbox starts on `*.pages.dev` (already on the PSL), so there is no second domain at launch. Package CDN runs on Cloudflare Containers. Continue M2 locally.
+
+**User decisions (2026-10-07):**
+1. Category awards get one winner. Ties are broken by total votes, then by the earlier ship, instead of sharing.
+2. `/battles/[id]` doesn't link names to histories for now; public profile handles come with account linking.
+3. A phone player keeps the current behaviour: watch and vote, build ends DNF, warned in the lobby.
+
+Start M5.
 
 **User decisions (2026-10-06):** keep the `speedrun` award; the time limit stays server-random (5/10/15 min, like a fourth card); start M3. In M3, multiplayer battles go `shipping → results` like solo, and M4 inserts REVEAL + VOTE.
 

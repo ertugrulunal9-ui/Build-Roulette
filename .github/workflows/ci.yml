@@ -266,8 +266,8 @@ jobs:
       fail-fast: false
       matrix:
         # 1: 6 players under chaos, abandoned, full room. 2: random chaos, everyone gone at
-        # T-0. 3: every other test (REVEAL/VOTE chaos, steady typing, 8 players, and any new
-        # test without a @chaos-1/@chaos-2 tag).
+        # T-0. 3: every other test (REVEAL/VOTE chaos, steady typing, the lost Realtime feed,
+        # 8 players, and any new test without a @chaos-1/@chaos-2 tag).
         shard: [1, 2, 3]
     env:
       SUPABASE_CLI: supabase@2.119.0
@@ -302,7 +302,8 @@ jobs:
       # offline until the vote closes, the host leaving mid-VOTE), a seeded random run (the
       # seed is in the log and the report; CHAOS_SEED replays it), steady typing vs the
       # presence limit, everyone gone at T-0, an abandoned battle, an 8-player battle, a full
-      # room. Needs psql (and docker, for the container logs of a failed test).
+      # room, Realtime losing its database feed mid-REVEAL. Needs psql and docker (the
+      # lost-feed test, and the container logs of a failed test).
       - name: Run the rooms chaos e2e (shard ${{ matrix.shard }}/3)
         run: pnpm --filter @br/web test:e2e:chaos
 

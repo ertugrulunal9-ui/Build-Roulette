@@ -15,6 +15,7 @@ import type { RuntimeErrorMessage } from '@br/protocol';
 import type {
   BuildResult,
   ConsoleEntry,
+  CrashPhase,
   CrashReason,
   Diagnostic,
   PreviewHandle,
@@ -51,7 +52,8 @@ export interface SandboxSnapshot {
   building: boolean;
   lastBuild: BuildSummary | null;
   preview: PreviewStatus;
-  crash: { reason: CrashReason; silentForMs: number } | null;
+  /** Why the watchdog stopped the preview, and whether the latest load had finished (`phase`). */
+  crash: { reason: CrashReason; silentForMs: number; phase: CrashPhase } | null;
   /** Runtime errors since the last load (newest last, at most MAX_RUNTIME_ERRORS). */
   runtimeErrors: readonly RuntimeErrorMessage[];
   /** The preview's retained console (rate-limited and size-capped by the PreviewHandle). */

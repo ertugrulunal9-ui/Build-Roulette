@@ -14,7 +14,9 @@
  * stays valid and no re-handshake is needed per rebuild. Same-origin frames share one event
  * loop, so an infinite loop in user code also stops the shell's main thread: `ping`s are
  * answered with `pong` from a `setTimeout(0)` task, so a frozen build means no pongs and the
- * app's watchdog fires.
+ * app's watchdog fires. A `load` blocks this thread too (frame swap, then the new module
+ * graph compiles and evaluates in one task), for seconds on a busy CPU: the app allows up to
+ * 15 s of silence until this load's `ready` (the load grace, packages/runtime README).
  *
  * `load` and `reset-storage` run one at a time, in arrival order (`SerialQueue`): a load
  * that arrives during a reset starts only after the wipe finished, so a build never sees a

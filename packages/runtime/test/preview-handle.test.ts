@@ -400,6 +400,205 @@ describe('watchdog: ping round trips', () => {
   });
 });
 
+describe('watchdog: load grace (T-027)', () => {
+  type Shell = ReturnType<ReturnType<typeof setup>['connect']>;
+  /** The shell's main thread is free again: the pong for the newest ping arrives. */
+  const unblock = (shell: Shell) => {
+    shell.autoPong = true;
+    shell.send({ type: 'pong', seq: shell.received('ping').at(-1)?.['seq'] });
+  };
+  const crashLog = (handle: PreviewHandle) => {
+    const crashes: { reason: string; silentForMs: number; phase: string; at: number }[] = [];
+    handle.on('crash', (c) => crashes.push({ ...c, at: Date.now() }));
+    return crashes;
+  };
+
+  it('applies only after a load: with no load the limit stays 5 s', () => {
+    const { handle, connect } = setup();
+    const shell = connect();
+    const crashes = crashLog(handle);
+    vi.advanceTimersByTime(2000);
+    shell.autoPong = false;
+    vi.advanceTimersByTime(5300);
+    expect(handle.state).toBe('crashed');
+    expect(crashes[0]?.phase).toBe('running');
+    expect(crashes[0]?.silentForMs).toBeLessThanOrEqual(5250);
+    expect(handle.stats.loadGraceUntil).toBe(0);
+  });
+
+  it('tolerates a slow load that finishes (12 s of silence), then reverts to 5 s', () => {
+    const { handle, connect } = setup();
+    const shell = connect();
+    const crashes = crashLog(handle);
+    vi.advanceTimersByTime(1500);
+    const loadId = handle.load(BUILD);
+    shell.autoPong = false; // the shell evaluates the new bundle: one long main-thread task
+    vi.advanceTimersByTime(12_000);
+    expect(handle.state).toBe('connected');
+    shell.send({ type: 'ready', loadId });
+    unblock(shell);
+    vi.advanceTimersByTime(10_000);
+    expect(handle.state).toBe('connected');
+    expect(crashes).toEqual([]);
+    // Back to normal: a loop now is detected about 5 s after the last pong.
+    shell.autoPong = false;
+    const frozeAt = Date.now();
+    vi.advanceTimersByTime(5300);
+    expect(handle.state).toBe('crashed');
+    expect(crashes[0]?.phase).toBe('running');
+    expect((crashes[0]?.at ?? NaN) - frozeAt).toBeGreaterThanOrEqual(4000);
+    expect((crashes[0]?.at ?? NaN) - frozeAt).toBeLessThanOrEqual(5250);
+  });
+
+  it('a loop right after ready is still detected at about 5 s', () => {
+    for (const freezeAfterReady of [0, 300, 999, 2500]) {
+      const { handle, connect } = setup();
+      const shell = connect();
+      const crashes = crashLog(handle);
+      vi.advanceTimersByTime(700);
+      const loadId = handle.load(BUILD);
+      vi.advanceTimersByTime(150);
+      shell.send({ type: 'ready', loadId });
+      vi.advanceTimersByTime(freezeAfterReady);
+      shell.autoPong = false;
+      const frozeAt = Date.now();
+      vi.advanceTimersByTime(6000);
+      const label = `freeze ${String(freezeAfterReady)} ms after ready`;
+      expect(crashes, label).toHaveLength(1);
+      expect((crashes[0]?.at ?? NaN) - frozeAt, label).toBeGreaterThanOrEqual(4000);
+      expect((crashes[0]?.at ?? NaN) - frozeAt, label).toBeLessThanOrEqual(5250);
+      handle.dispose();
+    }
+  });
+
+  it('ready right after a long silent load does not crash before the queued pongs arrive', () => {
+    const { handle, connect } = setup();
+    const shell = connect();
+    const loadId = handle.load(BUILD);
+    shell.autoPong = false;
+    vi.advanceTimersByTime(9000);
+    shell.send({ type: 'ready', loadId }); // posted at the end of the long task
+    vi.advanceTimersByTime(4900); // the pongs are late: ready still gives 5 s, not more
+    expect(handle.state).toBe('connected');
+    vi.advanceTimersByTime(400);
+    expect(handle.state).toBe('crashed');
+  });
+
+  it('a loop during the load (no ready) is detected within the 15 s grace bound', () => {
+    for (const lastPongBeforeLoad of [0, 500, 999]) {
+      const { handle, connect } = setup();
+      const shell = connect();
+      const crashes = crashLog(handle);
+      vi.advanceTimersByTime(1000 + lastPongBeforeLoad);
+      shell.autoPong = false;
+      const sentAt = Date.now();
+      handle.load(BUILD);
+      vi.advanceTimersByTime(14_000 - lastPongBeforeLoad);
+      expect(handle.state).toBe('connected');
+      vi.advanceTimersByTime(1500);
+      expect(handle.state).toBe('crashed');
+      expect(crashes[0]?.reason).toBe('heartbeat-timeout');
+      expect(crashes[0]?.phase).toBe('loading');
+      expect((crashes[0]?.at ?? NaN) - sentAt).toBeLessThanOrEqual(15_250);
+      expect(crashes[0]?.silentForMs).toBeGreaterThan(5000);
+      expect(crashes[0]?.silentForMs).toBeLessThanOrEqual(15_250);
+      handle.dispose();
+    }
+  });
+
+  it('is bounded: the sandbox cannot extend it, and new loads never allow more than 15 s of silence', () => {
+    const { handle, connect } = setup();
+    const shell = connect();
+    const crashes = crashLog(handle);
+    vi.advanceTimersByTime(1000);
+    const first = handle.load(BUILD);
+    shell.autoPong = false;
+    const lastPongAt = handle.stats.lastPongAt;
+    // Everything the sandbox can send: heartbeats, stale/duplicate/unknown readys, bogus pongs.
+    const spam = setInterval(() => {
+      shell.send({ type: 'heartbeat', t: Date.now() });
+      shell.send({ type: 'ready', loadId: first + 100 });
+      shell.send({ type: 'pong', seq: 99_999 });
+    }, 200);
+    // Meanwhile the app keeps sending loads (the player keeps typing): each one is a new load,
+    // but the silence since the last pong still may not exceed 15 s.
+    const typing = setInterval(() => {
+      if (handle.state === 'connected') handle.load(BUILD);
+    }, 2000);
+    vi.advanceTimersByTime(16_000);
+    clearInterval(spam);
+    clearInterval(typing);
+    expect(handle.state).toBe('crashed');
+    expect(crashes[0]?.phase).toBe('loading');
+    expect((crashes[0]?.at ?? NaN) - lastPongAt).toBeGreaterThan(15_000);
+    expect((crashes[0]?.at ?? NaN) - lastPongAt).toBeLessThanOrEqual(15_250);
+  });
+
+  it('the window closes 15 s after the load even when ready never comes', () => {
+    const { handle, connect } = setup();
+    const shell = connect();
+    const crashes = crashLog(handle);
+    handle.load(BUILD); // e.g. a module that awaits forever: pongs keep coming, no ready
+    vi.advanceTimersByTime(20_000);
+    expect(handle.state).toBe('connected');
+    shell.autoPong = false;
+    const frozeAt = Date.now();
+    vi.advanceTimersByTime(5300);
+    expect(handle.state).toBe('crashed');
+    expect(crashes[0]?.phase).toBe('loading');
+    expect((crashes[0]?.at ?? NaN) - frozeAt).toBeLessThanOrEqual(5250);
+  });
+
+  it('an early ready (a hostile build answering for the shell) only shortens the window', () => {
+    const { handle, connect } = setup();
+    const shell = connect();
+    const loadId = handle.load(BUILD);
+    shell.send({ type: 'ready', loadId });
+    shell.autoPong = false;
+    const frozeAt = Date.now();
+    vi.advanceTimersByTime(5300);
+    expect(handle.state).toBe('crashed');
+    expect(Date.now() - frozeAt).toBeLessThanOrEqual(5300);
+  });
+
+  it('a load sent on connect (pending load) opens the window; a new shell drops an old one', () => {
+    const { handle, connect } = setup();
+    handle.load(BUILD); // before the handshake: sent on connect
+    const shell = connect();
+    expect(shell.received('load')).toHaveLength(1);
+    shell.autoPong = false;
+    vi.advanceTimersByTime(12_000);
+    expect(handle.state).toBe('connected');
+    // restart(): a new shell with no load. The old load's window does not carry over.
+    handle.restart();
+    const next = connect();
+    expect(handle.stats.loadGraceUntil).toBe(0);
+    const crashes = crashLog(handle);
+    next.autoPong = false;
+    vi.advanceTimersByTime(5300);
+    expect(handle.state).toBe('crashed');
+    expect(crashes[0]?.phase).toBe('running');
+  });
+
+  it('a handshake timeout reports the connecting phase', () => {
+    const { handle } = setup();
+    const crashes = crashLog(handle);
+    vi.advanceTimersByTime(10_300);
+    expect(crashes[0]).toMatchObject({ reason: 'handshake-timeout', phase: 'connecting' });
+  });
+
+  it('loadGraceMs is configurable and never below heartbeatTimeoutMs', () => {
+    const { handle, connect } = setup({ loadGraceMs: 1000 });
+    const shell = connect();
+    handle.load(BUILD);
+    shell.autoPong = false;
+    vi.advanceTimersByTime(4900);
+    expect(handle.state).toBe('connected');
+    vi.advanceTimersByTime(400);
+    expect(handle.state).toBe('crashed');
+  });
+});
+
 describe('app-side message budgets', () => {
   it('rate-limits console messages per second, drops and counts the excess', () => {
     const { handle, connect } = setup();

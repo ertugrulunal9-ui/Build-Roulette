@@ -240,7 +240,7 @@ describe('SandboxController output batching', () => {
   it('restartPreview restarts the same handle and loads the last good build', async () => {
     const { controller, runtime, preview } = await setup();
     preview.state = 'crashed';
-    preview.emit('crash', { reason: 'heartbeat-timeout', silentForMs: 5100 });
+    preview.emit('crash', { reason: 'heartbeat-timeout', silentForMs: 5100, phase: 'running' });
     expect(controller.getSnapshot().preview).toBe('crashed');
     preview.state = 'crashed';
     controller.restartPreview();

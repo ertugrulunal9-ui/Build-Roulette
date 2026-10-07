@@ -32,6 +32,9 @@ import { ChallengeCards } from '../results/ResultPieces';
 import { Countdown } from '../solo/Countdown';
 import { Avatar } from './pieces';
 
+/** Reveal slots and the vote are short: amber only in their last 15 s. */
+export const SHORT_PHASE_LOW_MS = 15_000;
+
 interface RevealStageProps {
   battle: SoloController;
   battleState: SoloState;
@@ -62,7 +65,9 @@ export function RevealStage({
     spot?.builder_name ??
     snapshot.players.find((p) => p.user_id === builderId)?.display_name ??
     'Someone';
-  const name = spot?.name ?? fallback?.name ?? 'Untitled build';
+  // An auto-shipped autosave has no name.
+  const name = spot?.name ?? fallback?.name ?? `${builderName}'s build`;
+  const autoShipped = (spot?.status ?? fallback?.status) === 'auto_shipped';
   const mine = builderId === snapshot.me.user_id;
   const bundle = buildId ? showState.bundles[buildId] : undefined;
   const skipped = buildId !== null && showState.skipped.includes(buildId);
@@ -94,7 +99,11 @@ export function RevealStage({
         )}
         {headerActions}
         <div className="ml-auto">
-          <Countdown getRemaining={() => battle.remainingMs()} label="This build" />
+          <Countdown
+            getRemaining={() => battle.remainingMs()}
+            label="This build"
+            lowMs={SHORT_PHASE_LOW_MS}
+          />
         </div>
       </header>
 
@@ -121,6 +130,14 @@ export function RevealStage({
                 {builderId && <Avatar userId={builderId} name={builderName} size="sm" />}
                 by <strong className="text-zinc-100">{builderName}</strong>
                 {mine && <span className="text-fuchsia-300">(that is you!)</span>}
+                {autoShipped && (
+                  <span
+                    className="rounded-full bg-amber-900/70 px-2 py-0.5 text-xs font-bold text-amber-200"
+                    title="Not shipped by hand: the last autosave shipped at the deadline"
+                  >
+                    Auto-shipped
+                  </span>
+                )}
               </p>
             </div>
           </div>
@@ -441,7 +458,7 @@ function RevealStrip({
           const b = byId.get(id);
           const state = i < index ? 'revealed' : i === index ? 'current' : 'upcoming';
           const thumb = showState.thumbs[id] ?? null;
-          const label = b?.name ?? 'Untitled build';
+          const label = b?.name ?? `${b?.builder_name ?? 'Someone'}'s build`;
           return (
             <li
               key={id}

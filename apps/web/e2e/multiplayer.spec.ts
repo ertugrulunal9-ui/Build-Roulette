@@ -1,15 +1,18 @@
 import { expect, test, type Page } from '@playwright/test';
-import { buildFrame } from './helpers';
+import { buildFrame, clickRouted } from './helpers';
 import {
+  FREEZE_BUTTON,
   battleOf,
   joinByLink,
   member,
   newPlayer,
   phaseOf,
   progress,
+  revealLive,
   setVisibility,
   ship,
   storedFile,
+  vote,
   waitForBuild,
   writeApp,
   type Player,
@@ -21,16 +24,16 @@ import { sql } from './stack';
  * anonymous player, against the real local Supabase stack with Realtime and the capture
  * worker. Deadlines are forced with psql as the superuser, like the solo e2e.
  *
- * MULTI_SCREENSHOT_DIR=/some/dir also saves UI screenshots (t017-*.png).
+ * MULTI_SCREENSHOT_DIR=/some/dir also saves UI screenshots (t020-*.png).
  */
 
 const SHOTS = process.env['MULTI_SCREENSHOT_DIR'];
 
-async function snap(page: Page, name: string): Promise<void> {
-  if (SHOTS) await page.screenshot({ path: `${SHOTS}/t017-${name}.png` });
+async function snap(page: Page, name: string, fullPage = false): Promise<void> {
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/t020-${name}.png`, fullPage });
 }
 
-test('a 3-player room: lobby → battle → ship and auto-ship → ranked results → destroy → rematch', async ({
+test('a 3-player room: lobby → battle → ship and auto-ship → reveal → vote → results by votes → destroy → rematch', async ({
   browser,
 }, info) => {
   const host = await newPlayer(browser, info, 'Ada Host');
@@ -148,7 +151,8 @@ test('a 3-player room: lobby → battle → ship and auto-ship → ranked result
   await setVisibility(cleo.page, 'visible');
 
   // ─── Bob builds on; the others see his live activity; he ships late (no speedrun) ─
-  await writeApp(bob.page, 'Bob Turtle', 'rgb(30, 64, 175)');
+  // (His build has a button that hangs it: the REVEAL below skips it when it freezes.)
+  await writeApp(bob.page, 'Bob Turtle', 'rgb(30, 64, 175)', { extra: FREEZE_BUTTON });
   await expect(progress(host.page, bob.name)).toHaveAttribute('data-online', 'true');
   await expect(progress(host.page, bob.name).getByTestId('activity')).toContainText('lines');
   await snap(bob.page, 'build-sidebar');
@@ -178,33 +182,219 @@ test('a 3-player room: lobby → battle → ship and auto-ship → ranked result
     `update public.battles set phase_ends_at = now() - interval '1 second' where id = '${battleId}' and phase = 'shipping'`,
   );
 
-  // ─── RESULTS: three ranked builds with real screenshots and the right awards ──────
-  for (const p of [host, bob, cleo, dave]) {
+  // ─── REVEAL: everyone watches the same build, one at a time ───────────────────────
+  await expect.poll(() => phaseOf(battleId), { timeout: 30_000 }).toBe('reveal');
+  const everyone = [host, bob, cleo, dave];
+  // name → [builder id, build id]
+  const ids = Object.fromEntries(
+    sql(
+      `select string_agg(p.display_name || '=' || b.builder_id || '=' || b.id, ',') from public.builds b join public.battle_players p on p.battle_id = b.battle_id and p.user_id = b.builder_id where b.battle_id = '${battleId}'`,
+    )
+      .split(',')
+      .map((t) => t.split('='))
+      .map(([name, uid, build]) => [name ?? '', { uid: uid ?? '', build: build ?? '' }]),
+  ) as Record<string, { uid: string; build: string }>;
+  const buildOf = (p: Player) => ids[p.name]?.build ?? 'missing';
+  const userOf = (p: Player) => ids[p.name]?.uid ?? 'missing';
+  const revealOrder = sql(
+    `select array_to_string(reveal_order, ',') from public.battles where id = '${battleId}'`,
+  ).split(',');
+  expect([...revealOrder].sort()).toEqual([host, bob, cleo].map(buildOf).sort());
+  const titleOf: Record<string, string> = {
+    [buildOf(host)]: 'Ada Rocket',
+    [buildOf(bob)]: 'Bob Turtle',
+    [buildOf(cleo)]: 'Cleo Autosave',
+  };
+  for (let i = 0; i < revealOrder.length; i++) {
+    const id = revealOrder[i] ?? '';
+    for (const p of everyone) {
+      const stage = p.page.getByTestId('reveal-stage');
+      await expect(stage).toHaveAttribute('data-index', String(i), { timeout: 30_000 });
+      await expect(stage).toHaveAttribute('data-build', id);
+      await expect(p.page.getByTestId('reveal-position')).toHaveText(`Build ${String(i + 1)} of 3`);
+      // The same build runs live for everyone (one live frame per page).
+      await expect(p.page.locator('[data-testid=reveal-live-frame]')).toHaveCount(1);
+      await expect(revealLive(p.page).locator('h1.e2e-title')).toHaveText(titleOf[id] ?? '?', {
+        timeout: 30_000,
+      });
+      await expect(p.page.getByTestId('user-build-label')).toBeVisible();
+    }
+    if (i === 0) {
+      // Reveal mode: no popups, no modals, no clipboard.
+      for (const p of everyone) {
+        const frame = p.page.locator('[data-testid=reveal-live-frame]');
+        await expect(frame).toHaveAttribute(
+          'sandbox',
+          'allow-scripts allow-same-origin allow-forms allow-pointer-lock',
+        );
+        await expect(frame).toHaveAttribute('allow', 'autoplay; fullscreen; gamepad');
+      }
+      // Only the host has the controls; the slot counts down from the server's time.
+      await expect(host.page.getByTestId('reveal-host-controls')).toBeVisible();
+      for (const p of [bob, cleo, dave]) {
+        await expect(p.page.getByTestId('reveal-next')).toHaveCount(0);
+        await expect(p.page.getByTestId('reveal-host-note')).toContainText(host.name);
+      }
+      await expect(host.page.getByTestId('countdown')).toContainText(/0:[0-5]\d|1:00/);
+      await expect(host.page.locator('[data-testid=reveal-strip-item]')).toHaveCount(3);
+      await snap(host.page, 'reveal');
+    }
+    if (id === buildOf(bob)) {
+      // Cleo freezes Bob's build in her tab, then skips it: the button is outside the
+      // frozen iframe, and only her screen changes.
+      await revealLive(cleo.page).locator('button.e2e-freeze').click();
+      await cleo.page.getByTestId('skip-build').click();
+      await expect(cleo.page.getByTestId('build-skipped')).toBeVisible();
+      await expect(cleo.page.getByTestId('fallback-thumb')).toBeVisible(); // Bob shipped by hand
+      await expect(cleo.page.locator('[data-testid=reveal-live-frame]')).toHaveCount(0);
+      // Dave freezes it too and waits: the watchdog stops it ("this build froze").
+      await revealLive(dave.page).locator('button.e2e-freeze').click();
+      await expect(dave.page.getByTestId('build-froze')).toBeVisible({ timeout: 20_000 });
+      await expect(dave.page.locator('[data-testid=reveal-live-frame]')).toHaveCount(0);
+      // Everyone else still watches it live, on the same slot.
+      for (const p of [host, bob]) {
+        await expect(revealLive(p.page).locator('h1.e2e-title')).toHaveText('Bob Turtle');
+        await expect(p.page.getByTestId('reveal-stage')).toHaveAttribute('data-index', String(i));
+      }
+      expect(phaseOf(battleId)).toBe('reveal');
+    }
+    // The host moves on: the next build, or (from the last one) to the vote.
+    await clickRouted(
+      host.page.getByTestId(i < revealOrder.length - 1 ? 'reveal-next' : 'skip-to-vote'),
+    );
+  }
+
+  // ─── VOTE: one pick per category, never your own build ────────────────────────────
+  for (const p of everyone) {
+    await expect(p.page.getByTestId('vote-stage')).toBeVisible({ timeout: 30_000 });
+    await expect(p.page.getByTestId('vote-progress')).toHaveText(/0\/3 voted/);
+    await expect(p.page.locator('[data-testid=vote-category]')).toHaveCount(4);
+  }
+  // The spectator watches but has no ballot.
+  await expect(dave.page.getByTestId('vote-stage')).toHaveAttribute('data-can-vote', 'false');
+  await expect(dave.page.getByTestId('vote-spectator-note')).toBeVisible();
+  await expect(dave.page.locator('button[data-testid=vote-option]')).toHaveCount(0);
+  // A player's own build is shown in every category but cannot be picked.
+  for (const p of [host, bob, cleo]) {
+    const own = buildOf(p);
+    await expect(p.page.locator('[data-testid=vote-option][data-own=true]')).toHaveCount(4);
+    await expect(
+      p.page.locator(`[data-testid=vote-option][data-own=true][data-build="${own}"]`),
+    ).toHaveCount(4);
+    await expect(
+      p.page.locator(`button[data-testid=vote-option][data-build="${own}"]`),
+    ).toHaveCount(0);
+    await expect(p.page.locator('button[data-testid=vote-option]')).toHaveCount(8);
+  }
+  const [A, B, C] = [buildOf(host), buildOf(bob), buildOf(cleo)];
+  // The scripted ballots (A = Ada's build, B = Bob's, C = Cleo's):
+  //   Ada:  overall B, rule B, style C, chaos B
+  //   Bob:  overall C, rule A (a revote; C first), style C, chaos A
+  //   Cleo: overall A, rule B, style B, chaos B
+  // Tallies: overall A1 B1 C1 (a three-way tie), rule A1 B2, style B1 C2, chaos A1 B2;
+  // totals A 3, B 6, C 3. Ranking: Best Build is tied, so all votes decide: B first; A and
+  // C are tied on both, so the earlier ship wins: A (Ada shipped by hand) before C (Cleo's
+  // autosave, shipped at the deadline). Awards: overall shared by all three (ties share),
+  // rule B, style C, chaos B; plus Ada's speedrun and fastest ship.
+  for (const [cat, id] of [
+    ['overall', B],
+    ['rule', B],
+    ['style', C],
+    ['chaos', B],
+  ] as const) {
+    await vote(host.page, cat, id);
+  }
+  await expect(host.page.getByTestId('ballot-complete')).toBeVisible();
+  for (const p of everyone) {
+    await expect(p.page.getByTestId('vote-progress')).toHaveText(/1\/3 voted/);
+  }
+  await snap(host.page, 'vote', true);
+
+  await vote(bob.page, 'rule', C);
+  await vote(bob.page, 'rule', A); // a revote replaces the earlier pick
+  await expect(
+    bob.page.locator('[data-testid=vote-category][data-category=rule] [data-selected=true]'),
+  ).toHaveCount(1);
+  expect(
+    sql(
+      `select build_id from public.votes where battle_id = '${battleId}' and voter_id = '${userOf(bob)}' and category = 'rule'`,
+    ),
+  ).toBe(A);
+  for (const [cat, id] of [
+    ['overall', C],
+    ['style', C],
+    ['chaos', A],
+  ] as const) {
+    await vote(bob.page, cat, id);
+  }
+  await expect(bob.page.getByTestId('ballot-complete')).toBeVisible();
+  await expect(dave.page.getByTestId('vote-progress')).toHaveText(/2\/3 voted/);
+
+  // Cleo picks two, refreshes, and finds her ballot as she left it.
+  await vote(cleo.page, 'overall', A);
+  await vote(cleo.page, 'rule', B);
+  await cleo.page.reload();
+  await expect(cleo.page.getByTestId('vote-stage')).toBeVisible({ timeout: 30_000 });
+  const option = (cat: string, id: string) =>
+    cleo.page.locator(
+      `[data-testid=vote-category][data-category=${cat}] [data-testid=vote-option][data-build="${id}"]`,
+    );
+  await expect(option('overall', A)).toHaveAttribute('data-selected', 'true');
+  await expect(option('rule', B)).toHaveAttribute('data-selected', 'true');
+  await expect(cleo.page.locator('[data-testid=vote-option][data-selected=true]')).toHaveCount(2);
+  await expect(cleo.page.getByTestId('ballot-complete')).toHaveCount(0);
+  expect(phaseOf(battleId)).toBe('voting');
+  // Her last pick completes every ballot: voting ends at once (no waiting for the timer).
+  await vote(cleo.page, 'style', B);
+  await option('chaos', B).click();
+  await expect.poll(() => phaseOf(battleId), { timeout: 15_000 }).toBe('results');
+  expect(
+    sql(
+      `select payload ->> 'reason' from public.battle_events where battle_id = '${battleId}' and type = 'phase' and payload ->> 'to' = 'results'`,
+    ),
+  ).toBe('all_voted');
+
+  // ─── RESULTS: ranked by votes, category awards, the winner highlighted ────────────
+  for (const p of everyone) {
     await expect(p.page.getByTestId('results')).toBeVisible({ timeout: 30_000 });
     await expect(p.page.getByTestId('ranked-build')).toHaveCount(3);
   }
-  const ids = Object.fromEntries(
-    sql(
-      `select string_agg(builder_id || '=' || p.display_name, ',') from public.builds b join public.battle_players p using (battle_id) where b.battle_id = '${battleId}' and p.user_id = b.builder_id`,
-    )
-      .split(',')
-      .map((pair) => pair.split('=').reverse()),
-  ) as Record<string, string>;
   const row = (page: Page, who: Player) =>
-    page.locator(`[data-testid=ranked-build][data-builder="${ids[who.name] ?? 'missing'}"]`);
+    page.locator(`[data-testid=ranked-build][data-builder="${userOf(who)}"]`);
+  const counts = (page: Page, who: Player) =>
+    row(page, who)
+      .locator('[data-testid=vote-count]')
+      .evaluateAll((els): Record<string, number> =>
+        Object.fromEntries(
+          els.map((e) => [
+            e.getAttribute('data-category') ?? '',
+            Number(e.getAttribute('data-count')),
+          ]),
+        ),
+      );
+  const awardsOf = (page: Page, who: Player) =>
+    row(page, who)
+      .locator('[data-testid=award]')
+      .evaluateAll((els) => els.map((e) => e.getAttribute('data-award')).sort());
   for (const p of [host, dave]) {
-    await expect(row(p.page, host)).toHaveAttribute('data-rank', '1');
-    await expect(row(p.page, host)).toHaveAttribute('data-status', 'shipped');
-    await expect(row(p.page, bob)).toHaveAttribute('data-rank', '2');
-    await expect(row(p.page, bob)).toHaveAttribute('data-status', 'shipped');
+    await expect(row(p.page, bob)).toHaveAttribute('data-rank', '1');
+    await expect(row(p.page, host)).toHaveAttribute('data-rank', '2');
     await expect(row(p.page, cleo)).toHaveAttribute('data-rank', '3');
     await expect(row(p.page, cleo)).toHaveAttribute('data-status', 'auto_shipped');
     await expect(row(p.page, cleo).getByTestId('status-badge')).toHaveText('Auto-shipped');
-    await expect(row(p.page, host).getByTestId('award')).toHaveCount(2);
-    await expect(row(p.page, host).locator('[data-award=speedrun]')).toBeVisible();
-    await expect(row(p.page, host).locator('[data-award=fastest_ship]')).toBeVisible();
-    await expect(row(p.page, bob).getByTestId('award')).toHaveCount(0);
-    await expect(row(p.page, cleo).getByTestId('award')).toHaveCount(0);
+    await expect(row(p.page, bob)).toHaveAttribute('data-winner', 'true');
+    await expect(row(p.page, bob).getByTestId('winner-banner')).toBeVisible();
+    await expect(p.page.getByTestId('winner-banner')).toHaveCount(1);
+    await expect(row(p.page, bob)).toHaveAttribute('data-total-votes', '6');
+    await expect(row(p.page, host)).toHaveAttribute('data-total-votes', '3');
+    await expect(row(p.page, cleo)).toHaveAttribute('data-total-votes', '3');
+    expect(await counts(p.page, host)).toEqual({ overall: 1, rule: 1, style: 0, chaos: 1 });
+    expect(await counts(p.page, bob)).toEqual({ overall: 1, rule: 2, style: 1, chaos: 2 });
+    expect(await counts(p.page, cleo)).toEqual({ overall: 1, rule: 0, style: 2, chaos: 0 });
+    expect(await awardsOf(p.page, bob)).toEqual(['chaos', 'overall', 'rule']);
+    expect(await awardsOf(p.page, host)).toEqual(['fastest_ship', 'overall', 'speedrun']);
+    expect(await awardsOf(p.page, cleo)).toEqual(['overall', 'style']);
+    await expect(p.page.getByTestId('ranking-rule')).toContainText('Ranked by votes');
   }
   // The capture worker screenshots all three; the page shows them as they arrive.
   await expect(host.page.locator('[data-testid=ranked-build][data-capture=captured]')).toHaveCount(
@@ -221,12 +411,12 @@ test('a 3-player room: lobby → battle → ship and auto-ship → ranked result
       .toBe(1280);
   }
   // Each player's own build in the last look (reveal mode); the spectator has none.
-  const reveal = (page: Page) =>
+  const lastLook = (page: Page) =>
     page.frameLocator('[data-testid=reveal-frame]').frameLocator('iframe').locator('h1.e2e-title');
-  await expect(reveal(host.page)).toHaveText('Ada Rocket');
-  await expect(reveal(cleo.page)).toHaveText('Cleo Autosave');
+  await expect(lastLook(host.page)).toHaveText('Ada Rocket');
+  await expect(lastLook(cleo.page)).toHaveText('Cleo Autosave');
   await expect(dave.page.locator('[data-testid=reveal-frame]')).toHaveCount(0);
-  await snap(host.page, 'results');
+  await snap(host.page, 'results', true);
 
   // ─── DESTROY for everyone, back in the lobby ──────────────────────────────────────
   sql(
@@ -234,6 +424,10 @@ test('a 3-player room: lobby → battle → ship and auto-ship → ranked result
   );
   for (const p of [host, bob, cleo, dave]) {
     await expect(p.page.getByTestId('lobby')).toBeVisible({ timeout: 30_000 });
+    // The podium: Bob's build won the vote.
+    await expect(p.page.getByTestId('last-battle').locator('li').first()).toContainText(
+      'Bob Turtle',
+    );
     await expect(p.page.getByTestId('last-battle')).toContainText('Ada Rocket');
   }
   expect(phaseOf(battleId)).toBe('destroyed');
@@ -251,6 +445,24 @@ test('a 3-player room: lobby → battle → ship and auto-ship → ranked result
   for (const p of [host, dave]) await expect(p.page.getByTestId('spin')).toBeVisible();
   // Bob and Cleo did not ready up: they watch this one.
   await expect(bob.page.getByTestId('spectator-stage')).toBeVisible();
+
+  // ─── The permanent page: votes, category awards, the winner ───────────────────────
+  const pub = await cleo.context.newPage();
+  pub.on('pageerror', (e) => cleo.errors.push(e.message));
+  await pub.goto(`/battles/${battleId}`);
+  const publicBuilds = pub.getByTestId('public-build');
+  await expect(publicBuilds).toHaveCount(3);
+  await expect(publicBuilds.nth(0)).toHaveAttribute('data-winner', 'true');
+  await expect(publicBuilds.nth(0).getByTestId('public-build-name')).toContainText('Bob Turtle');
+  await expect(publicBuilds.nth(1).getByTestId('public-build-name')).toContainText('Ada Rocket');
+  await expect(publicBuilds.nth(0).getByTestId('vote-tally')).toHaveAttribute('data-total', '6');
+  await expect(publicBuilds.nth(0).locator('[data-testid=award][data-source=vote]')).toHaveCount(3);
+  await expect(publicBuilds.nth(2).locator('[data-award=style]')).toBeVisible();
+  const og = await pub.request.get(`/battles/${battleId}/opengraph-image`);
+  expect(og.status()).toBe(200);
+  expect(og.headers()['content-type']).toBe('image/png');
+  await snap(pub, 'battle-page', true);
+  await pub.close();
 
   for (const p of [host, bob, cleo, dave]) {
     expect(p.errors, `${p.name}: page errors`).toEqual([]);

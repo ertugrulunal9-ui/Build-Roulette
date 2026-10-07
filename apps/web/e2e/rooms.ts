@@ -6,6 +6,7 @@ import {
   expect,
   type Browser,
   type BrowserContext,
+  type FrameLocator,
   type Page,
   type TestInfo,
 } from '@playwright/test';
@@ -110,26 +111,34 @@ export async function waitForBuild(page: Page): Promise<void> {
   });
 }
 
-export function appSource(title: string, background: string): string {
+/** `extra`: more JSX inside the page (e.g. {@link FREEZE_BUTTON}). */
+export function appSource(title: string, background: string, extra = ''): string {
   return `export function App() {
   return (
     <main style={{ minHeight: '100vh', display: 'grid', placeContent: 'center', background: '${background}', color: 'white' }}>
-      <h1 className="e2e-title">${title}</h1>
+      <h1 className="e2e-title">${title}</h1>${extra}
     </main>
   );
 }
 `;
 }
 
+/**
+ * A button that hangs the build's main thread for good, shortly after the click (so the
+ * click itself is acknowledged first and the test driver does not wait on a hung frame).
+ */
+export const FREEZE_BUTTON = `
+      <button className="e2e-freeze" onClick={() => { setTimeout(() => { for (;;) {} }, 300); }}>Freeze</button>`;
+
 /** Writes src/App.tsx through the editor; `waitForPreview` waits for the new preview. */
 export async function writeApp(
   page: Page,
   title: string,
   background: string,
-  { waitForPreview = true }: { waitForPreview?: boolean } = {},
+  { waitForPreview = true, extra = '' }: { waitForPreview?: boolean; extra?: string } = {},
 ): Promise<void> {
   await openFile(page, 'src/App.tsx');
-  await replaceEditorText(page, appSource(title, background));
+  await replaceEditorText(page, appSource(title, background, extra));
   if (waitForPreview) {
     await expect(buildFrame(page).locator('h1.e2e-title')).toHaveText(title);
   }
@@ -189,6 +198,20 @@ export async function storedFile(
     },
     { key: `battle:${battleId}`, path },
   );
+}
+
+/** The live REVEAL build in this page: preview iframe → shell → the build's document. */
+export function revealLive(page: Page): FrameLocator {
+  return page.frameLocator('[data-testid=reveal-live-frame]').frameLocator('iframe');
+}
+
+/** Clicks a vote card (`category`, build id) and waits until the server confirmed it. */
+export async function vote(page: Page, category: string, buildId: string): Promise<void> {
+  const option = page.locator(
+    `[data-testid=vote-category][data-category=${category}] [data-testid=vote-option][data-build="${buildId}"]`,
+  );
+  await option.click();
+  await expect(option).toHaveAttribute('data-selected', 'true');
 }
 
 export const battleOf = (code: string) =>

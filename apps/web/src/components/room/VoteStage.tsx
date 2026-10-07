@@ -16,7 +16,7 @@ import { categoryEmoji } from '../../lib/solo/format';
 import type { BattleSnapshot, SnapshotBuild, VoteCategoryInfo } from '../../lib/solo/types';
 import { screenshotUrl } from '../../lib/supabase/config';
 import { Countdown } from '../solo/Countdown';
-import { PlaceholderCard } from './RevealStage';
+import { PlaceholderCard, SHORT_PHASE_LOW_MS } from './RevealStage';
 
 interface VoteStageProps {
   battle: SoloController;
@@ -89,7 +89,11 @@ export function VoteStage({
           {progress && (
             <VoteProgressBadge voted={progress.voted_count} eligible={progress.eligible_count} />
           )}
-          <Countdown getRemaining={() => battle.remainingMs()} label="Voting" />
+          <Countdown
+            getRemaining={() => battle.remainingMs()}
+            label="Voting"
+            lowMs={SHORT_PHASE_LOW_MS}
+          />
         </div>
       </header>
 

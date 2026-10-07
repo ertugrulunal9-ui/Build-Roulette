@@ -18,6 +18,8 @@ export interface RoomSettings {
   max_players?: number;
   reveal_slot_s?: number;
   voting_s?: number;
+  /** M4: REVEAL and VOTING after SHIPPING (default true). */
+  reveal_vote?: boolean;
 }
 
 /** A member in `get_room_snapshot.members` (kicked members are not listed). */
@@ -129,6 +131,8 @@ export type BattleEvent =
       phase_started_at: string | null;
       phase_ends_at: string | null;
       reason?: string;
+      /** Only when `phase` is `reveal`: the spotlighted position (M4). */
+      reveal_index?: number;
     })
   | (Versioned & {
       type: 'build';
@@ -146,6 +150,8 @@ export type BattleEvent =
     })
   | (Versioned & { type: 'host'; host_id: string })
   | (Versioned & { type: 'capture'; build_id: string; capture_status: CaptureStatus })
+  /** M4: a voter completed their ballot (counts only, never who or what). */
+  | (Versioned & { type: 'vote_progress'; voted_count: number; eligible_count: number })
   | (Versioned & { type: 'destroyed' })
   | (Versioned & { type: 'sync' });
 

@@ -26,7 +26,12 @@ import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { BUILD_TIME_LIMITS_MINUTES, DEFAULT_PHASE_DURATIONS } from './durations';
-import { JOIN_ROOM_ERRORS, RPC_ERROR_CODES, SERVICE_ERROR_CODES, VOTE_ERROR_CODES } from './errors';
+import {
+  CAST_VOTE_ERRORS,
+  JOIN_ROOM_ERRORS,
+  RPC_ERROR_CODES,
+  SERVICE_ERROR_CODES,
+} from './errors';
 import { BATTLE_PHASES, isBattlePhase } from './phases';
 import {
   REVEAL_SLOT_MAX_SECONDS,
@@ -35,7 +40,6 @@ import {
   revealSlotSeconds,
 } from './reveal';
 import {
-  BATTLE_BROADCAST_TYPES,
   BATTLE_EVENT_TYPES,
   BUILD_STATUSES,
   CAPTURE_STATUSES,
@@ -414,14 +418,10 @@ describe('schema drift: rooms and Realtime', () => {
     expect(roomLimitsFromMigrations(readMigrations())).toEqual({ ...ROOM_LIMITS });
   });
 
-  it('BATTLE_BROADCAST_TYPES matches private.battle_broadcast()', () => {
+  it('BATTLE_EVENT_TYPES (what the client applies) matches private.battle_broadcast()', () => {
     const body = lastPrivateFunctionBody(readMigrations(), 'battle_broadcast', { anyArgs: true });
     expect(body, 'private.battle_broadcast not found').not.toBeNull();
-    expect(assignedTypes(body ?? '').sort()).toEqual([...BATTLE_BROADCAST_TYPES].sort());
-  });
-
-  it('BATTLE_EVENT_TYPES (what the client applies) is a subset of BATTLE_BROADCAST_TYPES', () => {
-    for (const type of BATTLE_EVENT_TYPES) expect(BATTLE_BROADCAST_TYPES).toContain(type);
+    expect(assignedTypes(body ?? '').sort()).toEqual([...BATTLE_EVENT_TYPES].sort());
   });
 
   it('ROOM_EVENT_TYPES, MEMBER_CHANGES and ROOM_CHANGES match private.room_broadcast()', () => {
@@ -439,9 +439,22 @@ describe('schema drift: rooms and Realtime', () => {
         raised.add(m[1] ?? '');
       }
     }
-    const known = [...RPC_ERROR_CODES, ...VOTE_ERROR_CODES, ...SERVICE_ERROR_CODES];
+    const known = [...RPC_ERROR_CODES, ...SERVICE_ERROR_CODES];
     expect(new Set(known).size, 'a code is listed twice').toBe(known.length);
     expect([...raised].sort()).toEqual([...known].sort());
+  });
+
+  it('CAST_VOTE_ERRORS lists what public.cast_vote raises (besides not_authenticated)', () => {
+    const body = lastPrivateFunctionBody(readMigrations(), 'cast_vote', {
+      anyArgs: true,
+      schema: 'public',
+    });
+    expect(body, 'public.cast_vote not found').not.toBeNull();
+    const raised = new Set(
+      [...(body ?? '').matchAll(/\bmessage\s*=\s*'([a-z_]+)'/g)].map((m) => m[1] ?? ''),
+    );
+    expect(body).toMatch(/private\.require_auth\(\)/);
+    expect([...raised].sort()).toEqual([...CAST_VOTE_ERRORS].sort());
   });
 
   it('JOIN_ROOM_ERRORS lists what public.join_room raises (plus the display name check)', () => {

@@ -33,7 +33,10 @@ describe('parse events', () => {
       type: 'sync',
       version: 4,
     });
-    expect(parseBattleEvent({ type: 'vote_progress', version: 9 })).toEqual({
+    expect(
+      parseBattleEvent({ type: 'vote_progress', version: 9, voted_count: 1, eligible_count: 3 }),
+    ).toEqual({ type: 'vote_progress', version: 9, voted_count: 1, eligible_count: 3 });
+    expect(parseBattleEvent({ type: 'something_new', version: 9 })).toEqual({
       type: 'sync',
       version: 9,
     });
@@ -220,6 +223,77 @@ describe('applyBattleEvent', () => {
       phase: 'building',
       phase_ends_at: '2026-10-06T12:05:06.000Z',
     });
+  });
+
+  it('a REVEAL slot step moves the spotlight without a refetch', () => {
+    const snap = battleSnapshot({ phase: 'reveal', version: 10, revealIndex: 0 });
+    const { next, refetch } = applyBattleEvent(snap, {
+      type: 'phase',
+      version: 11,
+      phase: 'reveal',
+      phase_started_at: '2026-10-07T12:01:00.000Z',
+      phase_ends_at: '2026-10-07T12:02:00.000Z',
+      reason: 'host_next',
+      reveal_index: 1,
+    });
+    expect(refetch).toBe(false);
+    expect(next.battle).toMatchObject({
+      version: 11,
+      phase: 'reveal',
+      reveal_index: 1,
+      phase_started_at: '2026-10-07T12:01:00.000Z',
+      phase_ends_at: '2026-10-07T12:02:00.000Z',
+    });
+    expect(next.builds).toBe(snap.builds);
+    expect(snap.battle.reveal_index).toBe(0);
+  });
+
+  it('entering REVEAL, leaving it, or a step the snapshot cannot place refetches', () => {
+    const phase = (p: 'reveal' | 'voting', revealIndex?: number) => ({
+      type: 'phase' as const,
+      version: 11,
+      phase: p,
+      phase_started_at: null,
+      phase_ends_at: null,
+      ...(revealIndex === undefined ? {} : { reveal_index: revealIndex }),
+    });
+    // SHIPPING → REVEAL: the reveal order comes with the snapshot.
+    const shipping = applyBattleEvent(
+      battleSnapshot({ phase: 'shipping', version: 10 }),
+      phase('reveal', 0),
+    );
+    expect(shipping.refetch).toBe(true);
+    expect(shipping.next.battle).toMatchObject({ phase: 'reveal', reveal_index: 0 });
+    const reveal = battleSnapshot({ phase: 'reveal', version: 10 });
+    // REVEAL → VOTING: ballot rights and the progress come with the snapshot.
+    expect(applyBattleEvent(reveal, phase('voting')).refetch).toBe(true);
+    // Out of range, missing or malformed indexes.
+    expect(applyBattleEvent(reveal, phase('reveal', 3)).refetch).toBe(true);
+    expect(applyBattleEvent(reveal, phase('reveal')).refetch).toBe(true);
+    expect(applyBattleEvent(reveal, phase('reveal', 1.5)).refetch).toBe(true);
+    expect(applyBattleEvent(reveal, phase('reveal', -1)).refetch).toBe(true);
+  });
+
+  it('vote_progress updates the counts without a refetch; a malformed one refetches', () => {
+    const snap = battleSnapshot({ phase: 'voting', version: 20 });
+    const { next, refetch } = applyBattleEvent(snap, {
+      type: 'vote_progress',
+      version: 21,
+      voted_count: 2,
+      eligible_count: 3,
+    });
+    expect(refetch).toBe(false);
+    expect(next.vote_progress).toEqual({ voted_count: 2, eligible_count: 3 });
+    expect(next.battle.version).toBe(21);
+    const bad = applyBattleEvent(snap, {
+      type: 'vote_progress',
+      version: 21,
+      voted_count: -1,
+      eligible_count: 3,
+    });
+    expect(bad.refetch).toBe(true);
+    expect(bad.next.vote_progress).toEqual({ voted_count: 0, eligible_count: 3 });
+    expect(bad.next.battle.version).toBe(21);
   });
 
   it('build marks the builder shipped with the name and completion time', () => {

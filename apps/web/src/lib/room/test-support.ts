@@ -100,7 +100,11 @@ export function roomSnapshot(
   };
 }
 
-function build(id: string, builderId: string, extra: Partial<SnapshotBuild> = {}): SnapshotBuild {
+export function build(
+  id: string,
+  builderId: string,
+  extra: Partial<SnapshotBuild> = {},
+): SnapshotBuild {
   return {
     id,
     builder_id: builderId,
@@ -128,10 +132,24 @@ export function battleSnapshot(
     endsInMs?: number | null;
     role?: 'player' | 'spectator';
     hostId?: string;
+    /**
+     * REVEAL / VOTING / RESULTS of an M4 battle: every build is final (shipped) and revealed
+     * in this order (build ids; default me, bob, cleo).
+     */
+    revealOrder?: string[];
+    revealIndex?: number;
+    voteProgress?: { voted_count: number; eligible_count: number } | null;
   } = {},
 ): BattleSnapshot {
   const now = Date.now();
   const phase = opts.phase ?? 'building';
+  const m4 = phase === 'reveal' || phase === 'voting' || opts.revealOrder !== undefined;
+  const order = m4 ? (opts.revealOrder ?? ['build-me', 'build-bob', 'build-cleo']) : null;
+  const final = (id: string, extra: Partial<SnapshotBuild> = {}): Partial<SnapshotBuild> =>
+    order?.includes(id)
+      ? { status: 'shipped', name: `${id} app`, shipped_at: iso(now - 60_000), ...extra }
+      : extra;
+  const isPlayer = (opts.role ?? 'player') === 'player';
   const endsIn = opts.endsInMs === undefined ? 300_000 : opts.endsInMs;
   const id = opts.id ?? BATTLE_1;
   const hostId = opts.hostId ?? ME;
@@ -139,9 +157,11 @@ export function battleSnapshot(
     server_now: iso(now),
     me: {
       user_id: ME,
-      is_player: (opts.role ?? 'player') === 'player',
+      is_player: isPlayer,
       role: opts.role ?? 'player',
       is_host: hostId === ME,
+      is_voter: isPlayer,
+      can_vote: isPlayer && phase === 'voting',
     },
     battle: {
       id,
@@ -159,6 +179,10 @@ export function battleSnapshot(
       destroyed_at: null,
       is_complete: false,
       created_at: iso(now - 20_000),
+      reveal_vote: true,
+      reveal_order: order,
+      reveal_index: order ? (opts.revealIndex ?? 0) : null,
+      reveal_slot_s: order ? 60 : null,
     },
     challenge: {
       id: 'c',
@@ -172,8 +196,28 @@ export function battleSnapshot(
       { user_id: BOB, display_name: 'Bob', state: 'active' },
       { user_id: CLEO, display_name: 'Cleo', state: 'active' },
     ],
-    builds: [build('build-me', ME), build('build-bob', BOB), build('build-cleo', CLEO)],
+    builds: [
+      build('build-me', ME, final('build-me')),
+      build('build-bob', BOB, final('build-bob')),
+      build('build-cleo', CLEO, final('build-cleo')),
+    ],
     awards: [],
+    vote_categories: [
+      { slug: 'overall', label: 'Best Build', description: 'The build you would actually use.' },
+      {
+        slug: 'rule',
+        label: 'Best Use of the Rule',
+        description: 'Who turned the RULE card into a feature.',
+      },
+      { slug: 'style', label: 'Best Style', description: 'Who nailed the STYLE card.' },
+      { slug: 'chaos', label: 'Most Chaotic', description: 'Delightfully unhinged.' },
+    ],
+    vote_progress:
+      opts.voteProgress !== undefined
+        ? opts.voteProgress
+        : phase === 'voting'
+          ? { voted_count: 0, eligible_count: 3 }
+          : null,
   };
 }
 

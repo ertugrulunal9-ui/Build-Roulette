@@ -322,4 +322,21 @@ section.
   - the vote grid can't offer the player's own build, and `get_my_votes` restores the
     ballot after a refresh;
   - results are ranked by votes, with category award badges and a winner banner.
+- **M4 completion (T-021):**
+  - **Phones** (`hover: none` and `pointer: coarse`): REVEAL shows the screenshot first with
+    "Tap to run live" (the R2 mitigation), and the host controls sit in a bar fixed to the
+    bottom. VOTE uses a single column.
+  - **A phone player** can watch and vote but doesn't build: the editor never mounts, so
+    their build ends DNF, unless they choose "Build on this device anyway".
+  - **Unsent votes:** picks that fail on the network are retried every 2 s and with every
+    fresh snapshot. Picks that never land are shown as "Not counted" in RESULTS, so a vote
+    is never lost silently.
+  - **History:** `/u/[id]` is backed by `get_player_history`, which `anon` can call and
+    which returns only permanent data. History belongs to the anonymous auth user until
+    account linking exists.
+  - **Lobby settings (host only):** `reveal_vote`, the time per build (Auto or
+    30–60 s) and the voting time (30 s–3 min).
+  - **Known server gap:** the early end of VOTING is only re-checked on a vote, a leave or
+    a kick. If a voter just goes silent, the battle waits for the timer. Planned fix:
+    re-check it in `sweep_deadlines` (M5).
 

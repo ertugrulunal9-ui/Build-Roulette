@@ -2,13 +2,13 @@
 
 Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 
-## Current milestone: M4 Reveal + vote + results (M3 complete)
+## Current milestone: M4 complete (local). Next: M5 Hardening (awaiting user go-ahead and decisions)
 
 | ID | Task | Scope | Status | Notes |
 |---|---|---|---|---|
 | T-019 | M4 DB layer: REVEAL (order, slots, host skip) + VOTING (categories, no self-vote, revotes, secret ballots) phases, vote-based ranking + category awards, reveal-phase storage read access, realtime `vote_progress` | `supabase/`, `packages/game/` (constants), `ci.yml` | done | Merged |
 | T-020 | M4 web: synchronized REVEAL spotlight (one live build, thumbnails, prefetch, host skip), VOTE stage, vote-based results + permanent page | `apps/web/` (+ remove the CI pre-M4 switch) | done | Merged |
-| T-021 | M4 completion: mobile reveal/vote layout, player history `/u/[id]`, chaos coverage for reveal/vote, M4 exit criteria | `apps/web/`, `supabase/` (tests) | in-progress | M4, task 3 of 3 |
+| T-021 | M4 completion: mobile reveal/vote layout, player history `/u/[id]`, chaos coverage for reveal/vote, M4 exit criteria | `apps/web/`, `supabase/` (tests) | done | Merged |
 | T-011 | DB layer for the solo loop: RPCs (start, advance, ship, snapshot), storage buckets + policies, jobs, deadline sweep, card deck seed; tests on the real local Supabase stack | `supabase/`, `.github/workflows/ci.yml` (db job only) | done | Merged |
 | T-012 | Spike: Next.js 16 on Cloudflare Workers via OpenNext (local preview, no account) | `apps/web/` (deploy config only) | done | Merged: GO with caveats |
 | T-013 | Capture mode in the shell + local capture/destroy workers (Playwright stands in for Browser Rendering) | `apps/sandbox-shell/`, `apps/capture-worker/` | done | Merged |
@@ -63,6 +63,7 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 - T-018 M3 resilience / chaos
 - T-019 M4 DB layer: reveal + voting
 - T-020 M4 web: reveal + vote
+- T-021 M4 completion: mobile, history, chaos
 
 ## Review log
 
@@ -407,3 +408,37 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
   - `handshake-timeout` shown as "froze";
   - the RESULTS last-look pane doesn't wipe storage first;
   - the latest-click vote queue is covered by unit tests only.
+
+### T-021: accepted (M4 task 3). **M4 complete.**
+- Hub test-merged and re-ran on a fresh clone:
+  - pipeline green (web 243 unit tests);
+  - `supabase test db` **962/962**;
+  - multiplayer e2e including mobile **4/4**;
+  - solo 2/2, runtime 25/25, playground 14/14.
+- **Chaos:**
+  - 1st full run: **7/8**, with the new 8-player test failing (the error wasn't captured);
+  - the same test alone: 3/3;
+  - 2nd full run: **8/8 (12.8 min)**.
+  - So the 8-player test failed 1 in 5. It needs a root cause in M5 (it would produce noise in nightly CI). The product path itself (an 8-player battle) completed 4 times.
+- Hub viewed the mobile reveal/vote, lobby settings and history screenshots. Good.
+- Bugs the worker found and fixed: one-column grids overflowing at 390 px (a 510 px page); the vote queue dropping the next click after a refused one.
+- Decisions relayed to the user:
+  - a phone player watches and votes, and their build is DNF;
+  - REVEAL on touch devices is screenshot-first;
+  - history belongs to the anonymous user;
+  - unsent votes are shown as "Not counted".
+- **Open product questions for the user:**
+  - shared awards on ties;
+  - whether `/battles/[id]` should link names to histories (that would need public ids or handles).
+- M4 exit criteria:
+  - met in Chromium, desktop and phone emulation (2/4/6/8-player battles);
+  - tie-breaks covered by tests;
+  - ballot secrecy covered by tests;
+  - Firefox, Safari and real phones not verified (only Chromium is available here).
+- Into M5:
+  - root-cause the flaky 8-player chaos test;
+  - VOTING early end in the sweep;
+  - shard the chaos suite (12–13 min);
+  - ISR for `/u/[id]` and `/battles/[id]`;
+  - the admin event-log page;
+  - real-browser testing (Firefox/Safari/real phones) once deployed.

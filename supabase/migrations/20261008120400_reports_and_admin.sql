@@ -64,14 +64,15 @@
 -- ─── Schema ───────────────────────────────────────────────────────────────
 
 -- Reports by anonymous viewers of a public page: the reporter may have no profile (they
--- never played), so the reporter is an auth user, not a profile.
+-- never played), so the reporter is an auth user, not a profile. resolved_at says when a
+-- moderator dismissed or actioned it; WHO did it is in private.admin_actions only (reporters
+-- read their own rows through RLS, and admin ids are not theirs to see).
 alter table public.reports drop constraint reports_reporter_id_fkey;
 alter table public.reports
   add constraint reports_reporter_id_fkey
     foreign key (reporter_id) references auth.users (id) on delete cascade,
   add constraint reports_details_check check (char_length(details) between 1 and 500),
-  add column resolved_at timestamptz,
-  add column resolved_by uuid references auth.users (id) on delete set null;
+  add column resolved_at timestamptz;
 create index reports_open_build_idx on public.reports (build_id, created_at) where status = 'open';
 create index reports_reporter_idx on public.reports (reporter_id);
 create index reports_build_idx on public.reports (build_id);
@@ -359,7 +360,7 @@ begin
   end if;
 
   update public.reports
-     set status = 'dismissed', resolved_at = now(), resolved_by = v_admin
+     set status = 'dismissed', resolved_at = now()
    where build_id = p_build_id and status = 'open';
   get diagnostics v_count = row_count;
 
@@ -446,7 +447,7 @@ begin
   returning * into j;
 
   update public.reports
-     set status = 'actioned', resolved_at = v_now, resolved_by = v_admin
+     set status = 'actioned', resolved_at = v_now
    where build_id = bu.id and status = 'open';
   get diagnostics v_actioned = row_count;
 

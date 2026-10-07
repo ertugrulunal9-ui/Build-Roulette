@@ -237,8 +237,8 @@ select is((select status::text from public.jobs where kind = 'takedown' and ref_
   'a takedown job is queued (the worker deletes the screenshot)');
 select is((select array_agg(status order by status) from public.reports where build_id = :'pa'),
   array['actioned', 'actioned'], 'the reports are actioned');
-select is((select resolved_by from public.reports where build_id = :'pa' limit 1), :'mod_id'::uuid,
-  'and say who resolved them');
+select ok((select bool_and(resolved_at is not null) from public.reports where build_id = :'pa'),
+  'and say when (who is in the admin log only)');
 select is((select jsonb_build_object('type', type, 'actor', actor_id, 'payload', payload)
            from public.battle_events where battle_id = :'P' order by id desc limit 1),
   jsonb_build_object('type', 'takedown', 'actor', :'mod_id', 'payload', jsonb_build_object('build_id', :'pa')),

@@ -8,7 +8,7 @@
 begin;
 create extension if not exists pgtap with schema extensions;
 
-select plan(33);
+select plan(34);
 
 \set ana '{"sub":"19a00000-0000-0000-0000-000000000001","role":"authenticated"}'
 \set ben '{"sub":"19a00000-0000-0000-0000-000000000002","role":"authenticated"}'
@@ -53,6 +53,10 @@ select is(
    where private.blocked_term(n) is not null),
   null,
   'none of 40 innocent names is blocked (the list shows any that was)');
+
+-- The app suggests build names from the BUILD card text: none may be blocked.
+select is_empty($$ select text from public.prompt_cards where private.blocked_term(text) is not null $$,
+  'no prompt card text is blocked (suggested build names are made from them)');
 
 -- ─── The list (5) ─────────────────────────────────────────────────────────
 select ok((select count(*) from private.blocked_terms where lang = 'en') >= 20

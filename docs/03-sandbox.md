@@ -326,3 +326,21 @@ depend on them. In particular:
   shares one capture origin. Isolation then relies on the storage wipe before each run.
   Per-build origins come with the stage-2 domain.
 
+### Watchdog load grace (T-027)
+
+A `load` blocks the shell's main thread for two long tasks: swapping the frame, then
+evaluating the whole module graph. The build's frame shares that thread with the shell,
+because they're same-origin. Under CPU contention these tasks can exceed the 5 s pong
+limit, so the old watchdog reported a crash for a slow but finite load.
+
+- **The grace window:** when the app sends `load`, `PreviewHandle` opens a 15 s window in
+  which up to 15 s of silence is tolerated. `ready` for that load can only *shorten* the
+  window, to 5 s after `ready`.
+- **Why the sandbox can't abuse it:** only the app's own sends open or move the window, so
+  the sandbox can't extend it. Total silence never exceeds 15 s.
+- **Detection bounds:**
+  - a loop after `ready` is still caught in about 4–5.25 s;
+  - a loop during the load (at a module's top level) is caught within about 15.25 s of the
+    load. That's the accepted trade-off.
+- `crash` events now carry `phase` (`connecting` | `loading` | `running`).
+

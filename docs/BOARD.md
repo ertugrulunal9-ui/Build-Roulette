@@ -8,8 +8,8 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 |---|---|---|---|---|
 | T-022 | Rules/server fixes: one winner per vote category (tie-break: total votes → earlier ship), VOTING early end re-checked in `sweep_deadlines`, UI + e2e updates | `supabase/`, `apps/web/`, `packages/game/` | done | Merged |
 | T-023 | Test reliability: root-cause the flaky 8-player chaos test (1 in 5), shard the chaos suite for CI | `apps/web/` (e2e), `ci.yml` | done | Merged |
-| T-027 | Preview watchdog false "crashed" right after a rebuild under heavy CPU load (`heartbeat-timeout`, silent ~5.3 s): give a fresh `load` a longer grace, with tests | `packages/runtime/`, `apps/web/` | in-progress | M5, task 3 (before T-024: chaos now runs on every push) |
-| T-024 | Abuse controls: report build, admin page (event logs + report queue + screenshot takedown), name filter, rate limits, Turnstile wiring | `supabase/`, `apps/web/` | todo | M5 |
+| T-027 | Preview watchdog false "crashed" right after a rebuild under heavy CPU load (`heartbeat-timeout`, silent ~5.3 s): give a fresh `load` a longer grace, with tests | `packages/runtime/`, `apps/web/` | done | Merged |
+| T-024 | Abuse controls: report build, admin page (event logs + report queue + screenshot takedown), name filter, rate limits, Turnstile wiring | `supabase/`, `apps/web/`, `apps/capture-worker/` | in-progress | M5, task 4 |
 | T-025 | Load test (50 rooms × 8 players), Realtime/egress mapping to plan limits, cost per 1,000 battles | `tools/loadtest/`, `docs/` input | todo | M5 |
 | T-026 | Observability (Sentry/PostHog, env-gated), ISR for `/battles` + `/u`, runbooks | `apps/web/`, `apps/*`, `docs/runbooks/` | todo | M5 |
 | T-019 | M4 DB layer: REVEAL (order, slots, host skip) + VOTING (categories, no self-vote, revotes, secret ballots) phases, vote-based ranking + category awards, reveal-phase storage read access, realtime `vote_progress` | `supabase/`, `packages/game/` (constants), `ci.yml` | done | Merged |
@@ -79,6 +79,7 @@ Start M5.
 - T-021 M4 completion: mobile, history, chaos
 - T-022 Single-winner awards + voting sweep
 - T-023 Chaos reliability + sharding
+- T-027 Watchdog load grace
 
 ## Review log
 
@@ -480,3 +481,10 @@ Start M5.
 - Hub re-ran on a fresh clone: pipeline green (web 247 unit tests); multiplayer e2e 4/4; **full chaos 9/9 (12.4 min)**.
 - A third flake was found but is out of scope: a false preview watchdog crash under heavy CPU load. It's now **T-027**.
 - A full chaos run signs up 41 anonymous users.
+
+### T-027: accepted (M5 task 3)
+- Root cause measured: a `load` = two long shell tasks (frame swap, then module evaluation). With x20 CPU throttling the longest pong gap was 2980 ms and ended right at `ready`. The 5.3 s chaos silence is the same effect at a higher slowdown.
+- Fix: a 15 s load grace in `PreviewHandle`. It's opened only by the app's own `load` send, `ready` can only shorten it, it's bounded, and it's cleared on a new shell. A loop after `ready` is still caught in about 5 s; a loop during the load within about 15.25 s (the trade-off).
+- The new throttled e2e fails on the old code with `heartbeat-timeout silentForMs 5121`.
+- Hub re-ran on a fresh clone: pipeline green (runtime 112, web 250); runtime e2e 26/26; playground 14/14; multiplayer 4/4; solo 2/2. The worker also ran chaos shard 1: 3/3.
+- docs/03 updated with the load-grace section.

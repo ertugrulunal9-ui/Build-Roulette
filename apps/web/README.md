@@ -80,11 +80,22 @@ player):
    then BUILD with a sidebar of everyone's progress (lines, build status, typing, and
    "Ada shipped 'Snack Overflow' at 3:12" badges).
 4. Ship, or wait for the deadline (5, 10 or 15 min, drawn by the server; force it with
-   psql as in `e2e/multiplayer.spec.ts` if you are impatient). RESULTS ranks every build
-   with its screenshot and awards, shows your own build for the last look, then DESTROY
-   and everyone is back in the lobby. **Start the rematch** for the next battle.
-5. A window that joins during a battle is a spectator (countdown and progress, no editor);
-   the host can kick from the lobby; **Leave room** leaves (rejoin with the link).
+   psql as in `e2e/multiplayer.spec.ts` if you are impatient).
+5. **REVEAL.** Everyone (spectators too) watches the final builds one at a time, on the
+   server's timeline: "Build 2 of 3", the name, the builder, the slot countdown, and the
+   build running live in a labelled, reveal-mode frame. **Skip this build** stops it on
+   your screen only (its thumbnail shows instead); a build that hangs is stopped by the
+   watchdog the same way. The host has **Next build** and **Skip to the vote**.
+6. **VOTE.** One pick per category (Best Build, Best Use of the Rule, Best Style, Most
+   Chaotic), never your own build; change picks until the timer ends. "2/3 voted" for
+   everyone; voting ends early once every present player has a full ballot.
+7. **RESULTS** ranks every build by votes (Best Build, then all votes, then the earlier
+   ship) with its votes per category, the category awards, the auto-awards and the winner
+   highlighted; your own build for the last look; then DESTROY and everyone is back in the
+   lobby. **Start the rematch** for the next battle.
+8. A window that joins during a battle is a spectator (countdown and progress, no editor;
+   watches the reveal, cannot vote); the host can kick from the lobby; **Leave room**
+   leaves (rejoin with the link).
 
 If you started the stack yourself with `-x …,realtime,…` (as the capture CI job does), solo
 still works but rooms do not: restart it without `realtime` in `-x`.
@@ -169,7 +180,8 @@ CDN (T-006) replaces it.
 | Solo game loop (plain TS, unit tested with fakes); also runs a room's battle in external mode | `src/lib/solo/controller.ts` (`SoloController`) |
 | Room sync engine: private topics, versions/gaps, heartbeat, resync, clock, presence | `src/lib/room/sync.ts` (`RoomSync`), `src/lib/room/reducer.ts` |
 | Room page logic: join, lobby intents, battles, toasts, leave/kick | `src/lib/room/controller.ts` (`RoomController`), `src/lib/room/api.ts` |
-| Room screens (lobby, progress sidebar, spectator, ranked results) | `src/components/room/*` |
+| REVEAL and VOTING: reveal files (untrusted manifest), prefetch, thumbnails, skip/frozen, host controls, ballot | `src/lib/room/reveal-vote.ts` (`RevealVoteController`), `src/lib/room/reveal-files.ts` |
+| Room screens (lobby, progress sidebar, spectator, reveal, vote, ranked results) | `src/components/room/*` |
 | Backend calls (RPCs, storage) | `src/lib/solo/api.ts` (`SupabaseSoloApi`), `src/lib/supabase/*` |
 | Error contract → messages | `src/lib/solo/errors.ts` |
 | React binding | `src/lib/solo/use-solo-game.ts` |
@@ -215,15 +227,22 @@ pnpm --filter @br/web test:e2e:chaos   # rooms under chaos (~10 min), same stack
     everyone online, ready, start, the same challenge for all; a late joiner is a spectator
     (countdown and progress, no editor); the host ships fast, a player refreshes mid-BUILD
     and gets the same battle with the work restored, then autosaves; another ships late;
-    the deadline is forced → auto-shipped; RESULTS ranks 3 builds with real screenshots and
-    the awards (`speedrun` + `fastest_ship` for the host only); each player's last look; the
-    last look is forced → DESTROY for everyone → lobby (the spectator was promoted) →
-    rematch;
+    the deadline is forced → auto-shipped; REVEAL: every page (spectator included) shows the
+    same `reveal_index` and runs the same build in a reveal-mode frame, the host's Next and
+    Skip to vote, one player skips a build she froze (locally; the others keep watching)
+    and another waits for the watchdog's "this build froze"; VOTE: no self-vote in the UI,
+    a revote (checked in the database), a refresh restores a half ballot, the last ballot
+    ends voting early (`all_voted`); RESULTS ranked by votes for a scripted ballot
+    (Best Build three-way tie → total votes → earlier ship), votes per category, category
+    awards plus `speedrun` + `fastest_ship`, the winner, real screenshots; each player's
+    last look; the last look is forced → DESTROY for everyone → lobby (the spectator was
+    promoted) → rematch → `/battles/[id]` and its OG image with the votes;
   - **kick:** the host kicks a member in the lobby (with confirmation); they see the kicked
     screen and cannot rejoin;
   - **join errors:** an unknown code and a malformed one.
 
-  `MULTI_SCREENSHOT_DIR=/dir` saves `t017-{lobby,build-sidebar,spectator,results}.png`.
+  `MULTI_SCREENSHOT_DIR=/dir` saves
+  `t020-{lobby,build-sidebar,spectator,reveal,vote,results,battle-page}.png`.
   Clicks on the ship dialog go through `clickRouted` (`e2e/helpers.ts`): Chromium routes a
   mouse event from the compositor's hit-test data, which right after the dialog opens can
   still show the cross-site preview iframe there (measured: 16–21 of 40 first clicks under
@@ -232,21 +251,25 @@ pnpm --filter @br/web test:e2e:chaos   # rooms under chaos (~10 min), same stack
   then clicks once. A person cannot click a button before it is drawn, so this is a test
   artefact, not a product bug.
 - `test:e2e:chaos` (`playwright.chaos.config.ts`, `e2e/chaos.spec.ts`; docs/04 §4.8 and the
-  M3 exit criteria) runs on the same servers. The battle's time limit is set while it spins,
-  so BUILD runs on real server deadlines; the 5 min abandonment window and the 60 s last
-  look are shortened with psql. Every battle ends with a database check of its terminal
+  M3 exit criteria) runs on the same servers, with REVEAL and VOTING on (the default). The
+  battle's time limit is set while it spins, so BUILD runs on real server deadlines; the
+  5 min abandonment window, the 60 s last look, and the REVEAL slots and the vote where a
+  test does not drive them (`deadlineSkip`) are shortened with psql. Every battle ends with a database check of its terminal
   state (one event per version, one build per roster player, every hand-shipped build kept,
   no draft after DESTROY, captures settled, ranks 1…n, files destroyed):
   - **6 players under chaos:** clocks at ±5 min (`newPlayer(…, { clockSkewMs })`), a 15 s
     network drop mid-BUILD with an edit made offline, refreshes mid-BUILD and mid-RESULTS,
-    the host's context closes (host migration, toasts and crown; her autosave ships), the
-    new host starts the rematch;
+    the host's context closes (host migration, toasts and crown; her autosave ships); in
+    REVEAL the new host drives Next, then drops offline and the controls move to the next
+    host, who skips to the vote; two players vote, the timer ends the rest; that host
+    starts the rematch;
   - **random chaos (seeded):** drops, refreshes, edits and ships picked by a PRNG on skewed
     clocks; `CHAOS_SEED=n` replays a run (the seed is logged and in the report);
   - **steady typing:** a new line every ~1.5 s for a minute must not trip Realtime's
     presence limit (5 messages per 30 s per client, or the server closes the channel);
   - **all clients closed at T-0:** pg_cron alone ends BUILD and SHIPPING, auto-ships the
-    autosaves (including the final one at T-3 s), captures, RESULTS;
+    autosaves (including the final one at T-3 s), runs every REVEAL slot and VOTING (their
+    deadlines moved to now), captures, RESULTS;
   - **abandoned:** a returning player sees the abandoned battle in the lobby;
   - **a full room:** the 9th player spectates; with 20 spectators, `room_full`.
 
@@ -271,7 +294,8 @@ deploys, secrets, custom domain and caching.
   Cloudflare image transformations in production.
 - **The solo game polls** `get_battle_snapshot` (every 2–10 s depending on the phase, and
   right after each deadline); rooms use Realtime.
-- **Rooms (M3):** no REVEAL or VOTE yet (M4); presence is tracked on the room topic only;
-  chaos testing (network drops, clock skew, host leaving mid-battle) is T-018.
+- **Rooms:** presence is tracked on the room topic only. REVEAL and VOTE are built for
+  desktop first (mobile layouts are T-021). A viewer's "Skip this build" and the frozen
+  state are per build and per tab (not remembered across a refresh).
 - `/battles/[id]` is rendered per request; ISR on the R2 incremental cache is a follow-up
   (DEPLOY.md, "Caching").

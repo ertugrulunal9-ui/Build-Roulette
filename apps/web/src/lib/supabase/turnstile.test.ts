@@ -10,7 +10,7 @@ import { getCaptchaToken, type TurnstileApi } from './turnstile';
 
 function fakeTurnstile(outcome: { token?: string; error?: string; never?: boolean }) {
   const removed: string[] = [];
-  const rendered: { sitekey: string; appearance?: string }[] = [];
+  const rendered: { sitekey: string; appearance: string | undefined }[] = [];
   const api: TurnstileApi = {
     render(container, options) {
       expect(container.isConnected).toBe(true);
@@ -68,8 +68,8 @@ describe('getCaptchaToken', () => {
 
 describe('ensureSignedIn', () => {
   function fakeClient(session: { user: { id: string } } | null) {
-    const signInAnonymously = vi.fn((_opts?: unknown) =>
-      Promise.resolve({ data: { user: { id: 'new-user' } }, error: null }),
+    const signInAnonymously = vi.fn((opts?: unknown) =>
+      Promise.resolve({ data: { user: { id: 'new-user' } }, error: null, opts }),
     );
     const client = {
       auth: { getSession: () => Promise.resolve({ data: { session } }), signInAnonymously },

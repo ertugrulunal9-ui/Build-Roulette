@@ -32,8 +32,9 @@ export interface TurnstileApi {
 }
 
 export function turnstileSiteKey(): string | null {
-  const key = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY?.trim();
-  return key ? key : null;
+  // An empty value (e.g. `NEXT_PUBLIC_TURNSTILE_SITE_KEY=` in an env file) means off.
+  const key = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY?.trim() ?? '';
+  return key === '' ? null : key;
 }
 
 let scriptPromise: Promise<TurnstileApi> | null = null;

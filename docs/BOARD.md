@@ -7,7 +7,8 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 | ID | Task | Scope | Status | Notes |
 |---|---|---|---|---|
 | T-022 | Rules/server fixes: one winner per vote category (tie-break: total votes → earlier ship), VOTING early end re-checked in `sweep_deadlines`, UI + e2e updates | `supabase/`, `apps/web/`, `packages/game/` | done | Merged |
-| T-023 | Test reliability: root-cause the flaky 8-player chaos test (1 in 5), shard the chaos suite for CI | `apps/web/` (e2e), `ci.yml` | in-progress | M5, task 2 |
+| T-023 | Test reliability: root-cause the flaky 8-player chaos test (1 in 5), shard the chaos suite for CI | `apps/web/` (e2e), `ci.yml` | done | Merged |
+| T-027 | Preview watchdog false "crashed" right after a rebuild under heavy CPU load (`heartbeat-timeout`, silent ~5.3 s): give a fresh `load` a longer grace, with tests | `packages/runtime/`, `apps/web/` | in-progress | M5, task 3 (before T-024: chaos now runs on every push) |
 | T-024 | Abuse controls: report build, admin page (event logs + report queue + screenshot takedown), name filter, rate limits, Turnstile wiring | `supabase/`, `apps/web/` | todo | M5 |
 | T-025 | Load test (50 rooms × 8 players), Realtime/egress mapping to plan limits, cost per 1,000 battles | `tools/loadtest/`, `docs/` input | todo | M5 |
 | T-026 | Observability (Sentry/PostHog, env-gated), ISR for `/battles` + `/u`, runbooks | `apps/web/`, `apps/*`, `docs/runbooks/` | todo | M5 |
@@ -77,6 +78,7 @@ Start M5.
 - T-020 M4 web: reveal + vote
 - T-021 M4 completion: mobile, history, chaos
 - T-022 Single-winner awards + voting sweep
+- T-023 Chaos reliability + sharding
 
 ## Review log
 
@@ -467,3 +469,14 @@ Start M5.
 - The worker found that rank ties are reachable in practice (auto-shipped builds share `shipped_at`), so the tie-break is applied to ranks as well. Accepted.
 - VOTING early end is now re-checked by the 5 s sweep (not in heartbeat, to keep it off the busiest RPC). The chaos test now covers it end to end.
 - Mutation checks: the old function fails the new pgTAP; the drift tests fail without the migration.
+
+### T-023: accepted (M5 task 2)
+- **The flaky 8-player test was reproduced and root-caused, with evidence. There were two causes:**
+  - **(A) Lost broadcasts.** Local Realtime v2.140 terminates its tenant DB connection every 10 min ("rebalancing": local region ≠ tenant region). Broadcasts are lost until a client joins a channel, and channels stay SUBSCRIBED meanwhile. Fix: the heartbeat checks the battle version and refetches.
+  - **(B) A real product bug.** The host's Next lost a version race to the capture burst at the start of REVEAL, and was silently dropped. Fix: a bounded resend while it's still the same spotlight.
+  - Both fixes have tests that fail without them, including a new chaos test that cuts the Realtime feed mid-REVEAL.
+- New failure diagnostics on every rooms/chaos test: per-page state, logs and Realtime frames, a DB snapshot, service logs, and container logs.
+- **CI:** chaos is now a 3-shard matrix on every push (about 5 min of tests per shard, each with its own stack), plus nightly. A CI bug was also fixed: a push cancelled the nightly run, because they shared a concurrency group.
+- Hub re-ran on a fresh clone: pipeline green (web 247 unit tests); multiplayer e2e 4/4; **full chaos 9/9 (12.4 min)**.
+- A third flake was found but is out of scope: a false preview watchdog crash under heavy CPU load. It's now **T-027**.
+- A full chaos run signs up 41 anonymous users.

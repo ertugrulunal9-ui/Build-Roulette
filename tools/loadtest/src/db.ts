@@ -166,34 +166,34 @@ export async function rowsPerBattle(
     battles: battleIds.length,
     challenges: battleIds.length,
     battle_players: await q(
-      `select count(*) from public.battle_players where battle_id = any($1::uuid[])`,
+      `select count(*) as n from public.battle_players where battle_id = any($1::uuid[])`,
       b,
     ),
-    builds: await q(`select count(*) from public.builds where battle_id = any($1::uuid[])`, b),
+    builds: await q(`select count(*) as n from public.builds where battle_id = any($1::uuid[])`, b),
     battle_events: await q(
-      `select count(*) from public.battle_events where battle_id = any($1::uuid[])`,
+      `select count(*) as n from public.battle_events where battle_id = any($1::uuid[])`,
       b,
     ),
-    votes: await q(`select count(*) from public.votes where battle_id = any($1::uuid[])`, b),
+    votes: await q(`select count(*) as n from public.votes where battle_id = any($1::uuid[])`, b),
     awards: await q(
-      `select count(*) from public.awards a join public.builds bu on bu.id = a.build_id where bu.battle_id = any($1::uuid[])`,
+      `select count(*) as n from public.awards a join public.builds bu on bu.id = a.build_id where bu.battle_id = any($1::uuid[])`,
       b,
     ),
     jobs: await q(
-      `select count(*) from public.jobs j where (j.kind = 'capture' and j.ref_id in (select id from public.builds where battle_id = any($1::uuid[])))
+      `select count(*) as n from public.jobs j where (j.kind = 'capture' and j.ref_id in (select id from public.builds where battle_id = any($1::uuid[])))
           or (j.kind = 'destroy' and j.ref_id = any($1::uuid[]))`,
       b,
     ),
     room_events: await q(
-      `select count(*) from public.room_events where room_id = any($1::uuid[])`,
+      `select count(*) as n from public.room_events where room_id = any($1::uuid[])`,
       [roomIds],
     ),
     'storage.objects (screenshots)': await q(
-      `select count(*) from storage.objects where bucket_id = 'screenshots' and split_part(name, '/', 1) = any($1::text[])`,
+      `select count(*) as n from storage.objects where bucket_id = 'screenshots' and split_part(name, '/', 1) = any($1::text[])`,
       [battleIds],
     ),
     'storage.objects (ephemeral, left)': await q(
-      `select count(*) from storage.objects where bucket_id = 'ephemeral-builds' and split_part(name, '/', 1) = any($1::text[])`,
+      `select count(*) as n from storage.objects where bucket_id = 'ephemeral-builds' and split_part(name, '/', 1) = any($1::text[])`,
       [battleIds],
     ),
   };

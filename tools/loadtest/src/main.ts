@@ -172,8 +172,9 @@ async function main(): Promise<number> {
   log(`all rooms finished after ${String(Math.round((roomsDoneAt - startedAt) / 1000))} s`);
 
   // Drain: the capture and destroy jobs of the run.
+  // Without the worker nothing drains them.
   const drainUntil = Date.now() + cfg.drainTimeoutS * 1000;
-  for (;;) {
+  while (cfg.capture) {
     const s = await sampleDb(adminDb, since);
     const pending = Object.entries(s.jobs)
       .filter(([k]) => k.endsWith(':queued') || k.endsWith(':running'))

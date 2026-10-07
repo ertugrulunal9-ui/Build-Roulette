@@ -18,6 +18,10 @@ on:
         description: Run the rooms chaos e2e (network drops, skewed clocks, refreshes; 3 shards of ~5 min)
         type: boolean
         default: true
+      loadtest:
+        description: Run the load test smoke profile (3 rooms × 4 players, ~5 min) on a fresh stack and upload its report
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -426,3 +430,57 @@ jobs:
           if-no-files-found: ignore
           include-hidden-files: true
           retention-days: 30
+
+  # T-025: the load generator (tools/loadtest) on a fresh stack, smoke profile only (manual
+  # runs with the `loadtest` input). Scripted supabase-js clients (no browsers) play full
+  # battles with compressed phases while the capture worker renders the screenshots; the
+  # report (phase-change propagation, RPC latency, errors, Realtime, storage, capture
+  # backlog, DB and container stats) is uploaded. Fails when a battle does not reach
+  # DESTROYED. The full profile (50 rooms × 8 players) needs more than a hosted runner.
+  loadtest:
+    name: Load test (smoke profile, local Supabase stack + capture worker)
+    if: github.event_name == 'workflow_dispatch' && inputs.loadtest
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SUPABASE_CLI: supabase@2.119.0
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # The capture worker's Chromium (Playwright 1.56.1), as in the capture job.
+      - name: Install Playwright Chromium
+        run: pnpm --filter @br/capture-worker exec playwright-core install --with-deps chromium
+
+      - name: Start the local Supabase stack (with Realtime)
+        run: >-
+          npx -y "$SUPABASE_CLI" start
+          -x studio,imgproxy,vector,logflare,edge-runtime,supavisor,mailpit,postgres-meta
+
+      - name: Run the load test (smoke profile)
+        run: pnpm --filter @br/loadtest smoke --out-dir "$RUNNER_TEMP/loadtest"
+
+      - name: Upload the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: loadtest-smoke-report
+          path: ${{ runner.temp }}/loadtest/
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Stop the stack
+        if: always()
+        run: npx -y "$SUPABASE_CLI" stop --no-backup

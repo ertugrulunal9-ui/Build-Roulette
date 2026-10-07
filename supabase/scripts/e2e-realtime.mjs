@@ -207,8 +207,9 @@ check(
   });
   check('SPINNING → BUILDING', adv.data?.phase === 'building', adv);
 
-  // Both players ship; the second ship ends the battle early (SHIPPING without grace, then
-  // RESULTS), all in one transaction: two versions arrive back to back.
+  // Both players ship; the second ship ends the building early (SHIPPING without grace, then
+  // REVEAL with the two final builds), all in one transaction: two versions arrive back to
+  // back.
   for (const who of [alice, bob]) {
     for (const [file, body, type] of [
       ['source.json', '{"files":{}}', 'application/json'],
@@ -227,8 +228,8 @@ check(
   });
   const s2 = await rpc(bob, 'ship_build', { p_battle_id: battleId, p_name: 'Bravo', p_stats: {} });
   check(
-    'both ship; the last ship ends the battle early',
-    s1.data?.build?.status === 'shipped' && s2.data?.battle?.phase === 'results',
+    'both ship; the last ship ends the building early and the REVEAL starts',
+    s1.data?.build?.status === 'shipped' && s2.data?.battle?.phase === 'reveal',
     { s1, s2 },
   );
   const to = battleVersion(battleId);
@@ -254,9 +255,15 @@ check(
     .filter((p) => p.version >= from)
     .map((p) => (p.type === 'phase' ? `phase:${p.phase}` : `${p.type}:${p.name ?? ''}`));
   check(
-    'the sequence is building, Alpha shipped, Bravo shipped, shipping, results',
-    seq.join(' ') === 'phase:building build:Alpha build:Bravo phase:shipping phase:results',
+    'the sequence is building, Alpha shipped, Bravo shipped, shipping, reveal',
+    seq.join(' ') === 'phase:building build:Alpha build:Bravo phase:shipping phase:reveal',
     seq,
+  );
+  const reveal = payloads(dBattle).find((p) => p.type === 'phase' && p.phase === 'reveal');
+  check(
+    'the REVEAL phase event carries reveal_index 0',
+    reveal?.reveal_index === 0 && typeof reveal?.phase_ends_at === 'string',
+    reveal,
   );
   const ship = payloads(aBattle).find((p) => p.type === 'build');
   check(

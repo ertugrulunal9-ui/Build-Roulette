@@ -120,6 +120,11 @@ jobs:
       - name: Run the Realtime check
         run: node supabase/scripts/e2e-realtime.mjs
 
+      # REVEAL and VOTING (T-019): storage reads of revealed builds, host controls, secret
+      # ballots, vote_progress, tallies and awards.
+      - name: Run the reveal and vote check
+        run: node supabase/scripts/e2e-reveal-vote.mjs
+
       - name: Stop the stack
         if: always()
         run: npx -y "$SUPABASE_CLI" stop --no-backup

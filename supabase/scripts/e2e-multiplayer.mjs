@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// End-to-end check of an M3 multiplayer battle against a running local Supabase stack,
+// End-to-end check of an M3 multiplayer battle (a room with reveal_vote = false; REVEAL and
+// VOTING are in e2e-reveal-vote.mjs) against a running local Supabase stack,
 // through the APIs the web app uses (supabase-js: Auth, PostgREST RPCs, Storage, Realtime),
 // with pg_cron driving the deadlines:
 //
@@ -70,6 +71,19 @@ check(
 );
 const roomId = created.data.room_id;
 const code = created.data.code;
+{
+  // This script covers the quick M3 flow (SHIPPING → RESULTS); e2e-reveal-vote.mjs covers
+  // REVEAL and VOTING, which new battles run by default.
+  const quick = await rpc(alice, 'update_room_settings', {
+    p_room_id: roomId,
+    p_settings: { reveal_vote: false },
+  });
+  check(
+    'the host turns reveal and vote off for this room',
+    quick.data?.reveal_vote === false,
+    quick,
+  );
+}
 for (const who of [bob, cleo]) {
   const j = await rpc(who, 'join_room', { p_code: code.toLowerCase(), p_display_name: who.label });
   check(`${who.label} joins with the code`, j.data?.role === 'player', j);

@@ -127,6 +127,11 @@ jobs:
       - name: Run the reveal and vote check
         run: node supabase/scripts/e2e-reveal-vote.mjs
 
+      # Moderation (T-024): failed join codes committed and rate-limited (HTTP 429), the
+      # name filter, report → email admin (seed-admin.mjs) → takedown, not_admin.
+      - name: Run the moderation check
+        run: node supabase/scripts/e2e-moderation.mjs
+
       - name: Stop the stack
         if: always()
         run: npx -y "$SUPABASE_CLI" stop --no-backup
@@ -178,6 +183,15 @@ jobs:
       - name: Run the solo game e2e
         if: ${{ !cancelled() && steps.capture-integration.outcome != 'skipped' }}
         run: pnpm --filter @br/web test:e2e:solo
+
+      # Moderation (T-024): a player reports a build on /battles/[id], the admin (seeded with
+      # supabase/scripts/seed-admin.mjs) signs in at /admin, sees the report and takes the
+      # build down; the page shows "Removed by moderators" and the capture worker's takedown
+      # job deletes the screenshot object. Also: /admin is a 404 for a player, and a blocked
+      # display name shows the friendly error. Needs psql.
+      - name: Run the moderation e2e
+        if: ${{ !cancelled() && steps.capture-integration.outcome != 'skipped' }}
+        run: pnpm --filter @br/web test:e2e:moderation
 
       - name: Upload Playwright output
         if: failure()

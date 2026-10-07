@@ -62,4 +62,6 @@ anonymous_users = 300
 #   enabled = true
 #   provider = "turnstile"
 #   secret = "env(SUPABASE_AUTH_CAPTCHA_SECRET)"
-# The client then passes the Turnstile token to signInAnonymously({ options: { captchaToken } }).
+# The client then passes the Turnstile token to signInAnonymously({ options: { captchaToken } }):
+# the web app does so when it is built with NEXT_PUBLIC_TURNSTILE_SITE_KEY (the matching site
+# key; T-024). Turn both on together, or every anonymous sign-up fails.

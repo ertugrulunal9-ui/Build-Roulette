@@ -5,6 +5,7 @@ import { defineConfig, globalIgnores } from 'eslint/config';
 export default defineConfig(
   nextVitals,
   createBaseConfig({ tsconfigRootDir: import.meta.dirname }),
-  // Cloudflare build output (`pnpm cf:build`) and Wrangler local state.
-  globalIgnores(['.open-next/', '.wrangler/']),
+  // Cloudflare build output (`pnpm cf:build`) and Wrangler local state; Playwright output
+  // (a failed e2e run leaves the trace viewer's bundled JS in playwright-report/).
+  globalIgnores(['.open-next/', '.wrangler/', 'playwright-report/', 'test-results/']),
 );

@@ -27,8 +27,14 @@ supabase/
 │   ├── 20261007120100_reveal_storage.sql              reveal reads of final builds, get_reveal_builds (T-019)
 │   ├── 20261007120200_reveal_vote_realtime.sql        reveal_index on phase events, vote_progress (T-019)
 │   ├── 20261007130000_player_history.sql              get_player_history for /u/[id] (T-021)
-│   └── 20261007140000_single_winner_awards_and_voting_sweep.sql  one winner per vote category, VOTING
-│                                                        early end re-checked by sweep_deadlines (T-022)
+│   ├── 20261007140000_single_winner_awards_and_voting_sweep.sql  one winner per vote category, VOTING
+│   │                                                    early end re-checked by sweep_deadlines (T-022)
+│   ├── 20261008120000_takedown_job_kind.sql           job kind `takedown` (T-024)
+│   ├── 20261008120100_rate_limits.sql                 per-user rate limits: table, helpers, prune cron (T-024)
+│   ├── 20261008120200_name_filter.sql                 blocked terms, normalisation, check_display_name (T-024)
+│   ├── 20261008120300_rpc_limits_and_names.sql        the filter and the limits in the client RPCs (T-024)
+│   ├── 20261008120400_reports_and_admin.sql           report_build, admins, admin RPCs, takedown (T-024)
+│   └── 20261008120500_takedown.sql                    takedown job, taken-down builds in every read (T-024)
 ├── tests/                       pgTAP tests (*.test.sql), one transaction each, rolled back
 │   ├── 00_schema.test.sql       tables/enums exist, RLS on every table, policies, table privileges
 │   ├── 01_constraints.test.sql  room codes, time limits, one build per player, vote PK, cascades
@@ -50,13 +56,22 @@ supabase/
 │   ├── 16_reveal_storage.test.sql  storage reads per phase and role, get_reveal_builds, abandoned in REVEAL
 │   ├── 17_player_history.test.sql  get_player_history: public battles only, own build only, no ids/ballots/paths,
 │   │                            keyset pagination across a finished_at tie, limit clamping, the empty answer
-│   └── 18_vote_awards_and_sweep.test.sql  one winner per category (build-id level), distinct ranks, legacy shared
-│                                awards kept, the VOTING early end in sweep_deadlines (silent voter, nobody present)
+│   ├── 18_vote_awards_and_sweep.test.sql  one winner per category (build-id level), distinct ranks, legacy shared
+│   │                            awards kept, the VOTING early end in sweep_deadlines (silent voter, nobody present)
+│   ├── 19_name_filter.test.sql  normalisation, blocked spellings, innocent words (Scunthorpe), name_not_allowed
+│   ├── 20_rate_limits.test.sql  the sliding window, retry_after, every limited RPC, failed join codes only
+│   ├── 21_reports_and_admin.test.sql  every report_build guard, admin gating (non-admin, anonymous, admin),
+│   │                            queue, dismiss, take down, retry, battle and room logs, admin log
+│   └── 22_takedown.test.sql     REVEAL slot skipped, on-screen takedown, VOTING votes deleted, finished results
+│                                keep the rank, the takedown job's ordering with the capture job
 └── scripts/
     ├── e2e-solo.mjs             the solo loop through the real HTTP APIs (Auth, PostgREST, Storage, pg_cron)
     ├── e2e-multiplayer.mjs      a 3-player battle + late spectator through supabase-js, with Realtime reception
     ├── e2e-realtime.mjs         private topics, gap-free versions, presence, refused subscriptions
     ├── e2e-reveal-vote.mjs      REVEAL + VOTING: storage reads, host controls, ballots, tallies, events
+    ├── e2e-moderation.mjs       failed join codes committed + rate-limited (HTTP 429), name filter, report →
+    │                            email admin → takedown, not_admin (T-024)
+    ├── seed-admin.mjs           creates or resets a LOCAL email/password admin (T-024)
     └── lib.mjs                  shared helpers of the supabase-js scripts above (supabase-js from apps/web)
 ```
 
@@ -81,6 +96,8 @@ node supabase/scripts/e2e-solo.mjs           # solo API end-to-end check (needs 
 node supabase/scripts/e2e-multiplayer.mjs    # multiplayer + Realtime (needs psql and pnpm install)
 node supabase/scripts/e2e-realtime.mjs       # Realtime authorization and ordering (same needs)
 node supabase/scripts/e2e-reveal-vote.mjs    # REVEAL and VOTING through the real APIs (same needs)
+node supabase/scripts/e2e-moderation.mjs     # rate limits, name filter, reports, admin (same needs)
+node supabase/scripts/seed-admin.mjs [email] [password]   # a local admin for /admin
 
 npx -y supabase@2.119.0 stop --no-backup
 ```
@@ -143,7 +160,10 @@ CI (`.github/workflows/ci.yml`, job `db`) runs the same steps on a fresh stack w
   `get_player_history`, the room RPCs
   (`create_room`, `join_room`, `leave_room`, `set_ready`, `update_room_settings`,
   `kick_member`, `heartbeat`, `get_room_snapshot`, `start_battle`), the reveal and vote RPCs
-  (`reveal_next`, `skip_to_vote`, `cast_vote`, `get_my_votes`, `get_reveal_builds`), and the
+  (`reveal_next`, `skip_to_vote`, `cast_vote`, `get_my_votes`, `get_reveal_builds`),
+  `report_build`, `is_admin` and the admin RPCs (`admin_report_queue`,
+  `admin_dismiss_reports`, `admin_take_down_build`, `admin_battle_log`, `admin_room_log`,
+  `admin_action_log`, each of which refuses non-admins itself), and the
   RLS helpers `is_room_member`, `is_battle_member`, `can_view_battle`, `can_write_build_object`,
   `can_read_revealed_object`, `can_use_realtime_topic`. Worker and sweep functions are
   `service_role` only.
@@ -157,7 +177,8 @@ CI (`.github/workflows/ci.yml`, job `db`) runs the same steps on a fresh stack w
 
 Errors use a stable snake_case `message` (supabase-js `error.message`) and a human `details`.
 SQLSTATEs: 42501 auth/roster/membership, P0002 not found, 22023 bad input, P0001 guard
-failures, 0A000 not implemented (`not_implemented`, raised by no current function since T-019).
+failures, 0A000 not implemented (`not_implemented`, raised by no current function since T-019),
+PT429 `rate_limited` (T-024; PostgREST answers HTTP 429, `hint` = `{"retry_after_s": n}`).
 
 | RPC | Caller | Returns |
 |---|---|---|
@@ -171,14 +192,15 @@ failures, 0A000 not implemented (`not_implemented`, raised by no current functio
 | `complete_capture(p_build_id uuid, p_status capture_status, p_path text)` | service role | void |
 | `fail_job(p_job_id bigint, p_error text)` | service role | `jobs` row |
 | `complete_destroy(p_battle_id uuid)` | service role | void |
+| `complete_takedown(p_build_id uuid)` | service role (T-024) | void; `not_taken_down` for a build that was not taken down |
 | `sweep_deadlines()`, `sweep_ttl()` | pg_cron, service role | `int` |
 
 ## Rooms and multiplayer (M3, T-016)
 
 | RPC | Caller | Returns | Errors (besides `not_authenticated`) |
 |---|---|---|---|
-| `create_room(p_display_name text)` | authenticated | `{room_id, code}` | `invalid_display_name`, `too_many_rooms` (3 hosted, not closed) |
-| `join_room(p_code text, p_display_name text)` | authenticated | `{room_id, code, role}` | `room_not_found`, `room_closed`, `kicked`, `room_full`, `invalid_display_name` |
+| `create_room(p_display_name text)` | authenticated | `{room_id, code}` | `invalid_display_name`, `name_not_allowed`, `rate_limited`, `too_many_rooms` (3 hosted, not closed) |
+| `join_room(p_code text, p_display_name text)` | authenticated | `{room_id, code, role}` | `room_not_found`, `room_closed` (both returned as an HTTP 404/400 error body since T-024, see "Abuse controls"), `kicked`, `room_full`, `invalid_display_name`, `name_not_allowed`, `rate_limited` |
 | `leave_room(p_room_id uuid)` | member | void | `room_not_found`, `not_a_member` |
 | `set_ready(p_room_id uuid, p_ready boolean)` | active player, room open | void | `invalid_ready`, `room_not_found`, `not_a_member`, `kicked`, `not_a_player`, `wrong_room_state` |
 | `update_room_settings(p_room_id uuid, p_settings jsonb)` | host, room open | the new settings | `room_not_found`, `not_a_member`, `not_host`, `wrong_room_state`, `invalid_settings` |
@@ -348,6 +370,165 @@ like `advance_battle`, so a double click is harmless. SQLSTATEs: `not_a_voter` 4
   readable at its URL). Account linking (docs/06 M6, `enable_manual_linking` is already on)
   is what will keep a history across devices; it is not implemented yet.
 
+## Abuse controls (M5, T-024)
+
+### Reports
+
+| RPC | Caller | Returns | Errors (besides `not_authenticated`) |
+|---|---|---|---|
+| `report_build(p_build_id uuid, p_reason text, p_details text default null)` | authenticated (anonymous sign-ins too; never `anon`) | `{report_id, build_id, reason, created_at}` | `rate_limited`, `invalid_reason` (22023), `invalid_details` (22023), `build_not_found` (P0002), `own_build` (P0001), `already_reported` (P0001) |
+
+- **Reasons:** `offensive`, `phishing`, `malware`, `spam`, `other` (the `reports` check;
+  `REPORT_REASONS` in `@br/game`, drift-tested). **Details:** optional, trimmed, at most 500
+  characters, no control characters except newlines and tabs.
+- **Who can report what:** anyone who can see the build. A final build (shipped or
+  auto-shipped, never DNF or disqualified) of a battle in RESULTS or DESTROYED, for anyone
+  signed in (the public page), or a build in the reveal of a battle in REVEAL or VOTING,
+  for its battle members (roster and spectators, not kicked). Anything else, and a build
+  already taken down, is `build_not_found`. Not your own build. One report per user per
+  build (the unique constraint).
+- `reports.reporter_id` now references `auth.users` (a visitor of a public page may have no
+  profile). Reporters read their own reports only (RLS, unchanged).
+
+### Admins and the admin RPCs
+
+- **Role:** `private.admins (user_id)`, managed with SQL only (no API role reaches schema
+  `private`). `public.is_admin()` is true for a signed-in user listed there whose token is
+  not anonymous and whose auth user is not anonymous; a trigger refuses anonymous users in
+  the table. Every admin RPC calls `private.require_admin()` (`not_admin`, 42501).
+- **Production:** create the moderator in the dashboard (Authentication → Users → Add user,
+  email + password, auto-confirm), then in the SQL editor:
+  ```sql
+  insert into private.admins (user_id, note)
+  select id, 'moderator' from auth.users where email = 'mod@example.com';
+  -- remove: delete from private.admins where user_id = (select id from auth.users where email = '…');
+  ```
+  **Locally:** `node supabase/scripts/seed-admin.mjs [email] [password]` (default
+  `admin@buildroulette.local` / `local-admin-pw`; refuses any non-local `API_URL`).
+- **Log:** every admin action (dismiss, take down, retry, and the battle and room lookups)
+  is a row of `private.admin_actions` (who, what, which build/battle/room, note, when),
+  readable through `admin_action_log`.
+
+| RPC | Returns | Errors (besides `not_authenticated`, `not_admin`) |
+|---|---|---|
+| `is_admin()` | boolean (any signed-in user may ask) | – |
+| `admin_report_queue(p_resolved boolean default false, p_limit int default 50)` | `{builds: [...]}`: reports grouped by build (open ones first by count, or the resolved ones), with the build's (original) name, builder, battle, phase, screenshot, takedown state, `reasons` counts and the reports (newest 50) | – |
+| `admin_dismiss_reports(p_build_id uuid, p_note text default null)` | `{build_id, dismissed}` | `build_not_found`, `invalid_details` (note over 500) |
+| `admin_take_down_build(p_build_id uuid, p_note text default null)` | `{build_id, battle_id, taken_down_at, disqualified, actioned_reports, retried, job_id}` | `build_not_found`, `already_taken_down`, `invalid_details` |
+| `admin_battle_log(p_battle_id uuid)` | the battle row, challenge, room, roster, builds (original names), `battle_events` (oldest first, latest 2000) with actor names, jobs | `battle_not_found` |
+| `admin_room_log(p_code text)` | the room, members, battles, `room_events` (oldest first, latest 2000) | `room_not_found` (closed rooms are purged after 7 days) |
+| `admin_action_log(p_limit int default 50)` | the latest admin actions, newest first, with the admin's email | – |
+
+### Takedown
+
+- **At once** (`admin_take_down_build`): `builds.taken_down_at` is stamped, `builds.name`
+  and `builds.screenshot_path` are cleared (the table is readable through RLS, so hiding
+  them in the RPCs alone would not do; the originals go to `private.build_takedowns` for the
+  admins), a queued capture job is cancelled and a pending `capture_status` becomes
+  `failed`, the open reports become `actioned`, a `takedown` battle event is logged (its
+  broadcast is a `sync`, so clients in the battle refetch), and a `takedown` job is queued.
+- **The file:** the capture-worker's takedown job deletes `screenshots/{battle}/{build}.*`
+  through the Storage API (SQL cannot), checks nothing is left, then
+  `complete_takedown(build)` stamps `storage_deleted_at`. `claim_job('takedown')` waits while
+  the build's capture job is running with a live lease, `claim_job('capture')` never hands
+  out a taken-down build, and `complete_capture` of a taken-down build records nothing. A
+  takedown job that failed for good is queued again by `admin_take_down_build` on the same
+  build (`retried: true`).
+- **What a taken-down build shows** (`get_public_battle`, `get_player_history`,
+  `get_battle_snapshot`, `get_reveal_builds`): `taken_down: true`, `name: null`,
+  `screenshot_path: null`; the app writes "Removed by moderators". **Still visible:** the
+  builder's display name, the rank, the status, the completion time, the stats, the vote
+  counts and the awards, so a finished battle's results stay consistent. Its revealed files
+  are no longer readable (`can_read_revealed_object`), and `get_reveal_builds` keeps its
+  position with no file names.
+- **In a running battle** (any phase before RESULTS) the build is also `disqualified`,
+  like a kicked player's: its REVEAL slot is skipped (`reveal_move`; if it is on screen the
+  reveal moves on at once, reason `takedown`), it cannot receive votes (`not_votable`),
+  votes already cast for it are deleted (those voters vote again in that category; the
+  `vote_progress` drops and is broadcast), it gets no tally, rank or award, and the public
+  results and histories leave it out, as for every disqualified build. In a finished battle
+  (RESULTS, DESTROYED) nothing about the results changes.
+- A takedown cannot be undone from the admin page.
+
+### Name filter
+
+`private.check_display_name` (create_room, join_room, start_solo_battle) and ship_build's
+build-name check raise `name_not_allowed` (22023) when `private.blocked_term(name)` finds a
+term of `private.blocked_terms`, a **small starting list** (English and Turkish basics)
+meant to be edited with SQL:
+
+```sql
+insert into private.blocked_terms (term, match, lang) values ('zorblax', 'word', 'en');  -- folded, a–z only
+```
+
+- **Normalisation** (`private.fold_name`): lowercase with Turkish İ/I/ı → i; diacritics
+  removed (NFD); ß, æ, œ, ø, ł, đ; leetspeak 0→o 1→i 3→e 4→a 5→s 7→t @→a $→s; anything else
+  that is not a–z or 0–9 separates words.
+- **Repeats:** each term becomes a regex in which a run of k equal letters must appear at
+  least k times (`ass` → `a{1,}s{2,}`), so "fuuuck" matches while "as" does not match `ass`
+  (collapsing repeats on both sides would turn "as" into "ass" and "Niger" into a slur).
+- **The Scunthorpe problem: word vs substring.** `word` terms (short or ambiguous: ass,
+  cunt, cock, dick, rape, rapist, spic, retard, shit…) must be a whole token (a plural s is
+  allowed), a run of single letters ("a s s"), or the whole name without separators;
+  `substring` terms (long, distinctive: fuck, faggot, nigger, bitch, orospu, siktir…) match
+  anywhere in the name without separators ("xXfuckXx", "f.u.c.k"). Known trade-offs: a word
+  term glued to other letters ("myass") passes, and terms whose folded form is an innocent
+  word are left out (Turkish "piç" → "pic", "göt" → "got", "sık" (often) → "sik").
+  `19_name_filter.test.sql` keeps 40 innocent names (Scunthorpe, class, assassin, Dickens,
+  cockpit, therapist, grape, spice, Nigeria, niggardly, Sıkı, Göteborg…) allowed.
+
+### Rate limits
+
+Per user (`auth.uid()`), sliding windows, in Postgres (`20261008120100_rate_limits.sql`):
+
+| Action | Default | Counted |
+|---|---|---|
+| `create_room` | 10 per hour | rooms created |
+| `join_room_failed` | 20 per 10 min | wrong or closed room codes (code guessing); while at the limit every `join_room` is refused, a right code too |
+| `report_build` | 20 per hour | reports filed |
+| `start_solo_battle` | 30 per hour | solo battles started |
+| `cast_vote` | 120 per minute | votes (revotes too): floods only |
+
+- One helper: `private.rate_limit(action, user)` = `rate_limit_check` (raises
+  `rate_limited`, PT429 → HTTP 429, `details` "… Try again in 9 minutes.", `hint`
+  `{"retry_after_s": n}`) + `rate_limit_record`. An event is recorded in the call's own
+  transaction, so a call that fails later is not counted. The limits are rows of
+  `private.rate_limits` (an operator changes them with SQL; `RATE_LIMITS` in `@br/game`
+  mirrors the defaults, drift-tested). Events older than the longest window are pruned
+  hourly (`br-rate-events-prune`).
+- **Counting a failure that must not roll back:** `join_room` catches its own
+  `room_not_found` / `room_closed`, records the failure and RETURNS the error instead of
+  raising it: it sets PostgREST's `response.status` (404 / 400, what PostgREST would have
+  answered) and returns `{code, message, details, hint}`, the body PostgREST builds for a
+  raised error. PostgREST commits a function that returns normally, and supabase-js reports a
+  non-2xx answer as `error` with that body, so clients see what they saw before
+  (`e2e-moderation.mjs` checks both through the real API). Called from SQL, those two
+  failures are a returned jsonb, not an exception.
+
+### What the edge and Auth must add (production)
+
+The Postgres limits are per user, and an anonymous user is one request away, so the outer
+layers matter:
+
+- **Turnstile on anonymous sign-up:** Supabase dashboard → Authentication → Bot and Abuse
+  Protection → CAPTCHA, provider Turnstile, with the Turnstile **secret** key; the web app's
+  `NEXT_PUBLIC_TURNSTILE_SITE_KEY` is the matching **site** key (the client then sends a token
+  with `signInAnonymously`; without the key nothing is sent, as locally). Keep the Auth rate
+  limit for anonymous sign-ups per IP (dashboard → Auth → Rate limits) at its default (30
+  per hour) or lower.
+- **Cloudflare (per IP):** rate limiting rules on the Supabase API hostname (or a Worker in
+  front of it), counted per client IP. Starting points, to tune with the load test (T-025):
+  - `POST /auth/v1/signup` and `/auth/v1/token`: about 10 per minute;
+  - `POST /rest/v1/rpc/join_room`: about 30 per minute (code guessing from many accounts);
+  - `POST /rest/v1/rpc/create_room`, `start_solo_battle`, `report_build`: about 20 per
+    minute each;
+  - `POST /rest/v1/rpc/*` overall: about 600 per minute (an 8-player battle's heartbeats,
+    snapshots and votes stay far below);
+  - Storage uploads (`/storage/v1/object/ephemeral-builds/*`): about 120 per minute
+    (autosaves every 30 s, ship);
+  - `/admin*` on the app: a managed challenge (or Cloudflare Access) in front of the
+    sign-in, which players never need.
+
 ## Realtime (M3, T-016)
 
 Private channels only (`supabase.channel(topic, { config: { private: true } })`):
@@ -376,7 +557,7 @@ Every `battle_events` / `room_events` row (exactly one per `battles.version` /
 | battle | `destroyed` | nothing (the destroy-worker finished) |
 | room | `room` | `change, status, host_id, settings, current_battle_id, reason?` |
 | room | `member` | `change, user_id, display_name, role, is_ready, state` |
-| both | `sync` | nothing (an event type the client does not know: refetch) |
+| both | `sync` | nothing (an event type the client does not know, e.g. a battle `takedown` since T-024: refetch) |
 
 Clients keep the snapshot `version`, ignore `version <= current`, refetch on a gap, and
 refetch the battle snapshot after `phase` events (builds, ranks and awards change in bulk
@@ -393,7 +574,8 @@ client rejoins or refreshes its token; every RPC re-checks.
 `config.toml` enables `enable_manual_linking` (an anonymous player links GitHub or Google
 later with `linkIdentity`). CAPTCHA is off locally; production turns on Cloudflare
 Turnstile (dashboard → Auth → Bot and Abuse Protection, or `[auth.captcha]` as described in
-`config.toml`).
+`config.toml`). Since T-024 the web client sends the token when
+`NEXT_PUBLIC_TURNSTILE_SITE_KEY` is set (see "Abuse controls").
 
 ## Prompt deck tags
 
@@ -409,6 +591,7 @@ compatible RULE cards and every compatible BUILD + RULE pair at least 15 STYLE c
 `20261004120500_sweeps_and_cron.sql` creates `pg_cron` (in `pg_catalog`, as Supabase does)
 when the extension is available and schedules `br-sweep-deadlines` (every 5 s),
 `br-sweep-ttl` (every 10 min) and `br-cron-history-cleanup` (daily, keeps 2 days of
-`cron.job_run_details`). Without `pg_cron` the block is skipped with a NOTICE. Hosted
+`cron.job_run_details`); `20261008120100_rate_limits.sql` adds `br-rate-events-prune` (hourly,
+T-024). Without `pg_cron` the block is skipped with a NOTICE. Hosted
 Supabase ships pg_cron; this has only been verified on the local stack so far, so check the
 schedule (`select * from cron.job`) after the first `supabase db push`.

@@ -10,6 +10,36 @@ The Next.js app (App Router). Routes:
 | `/playground` | Single-player editor and live preview, no game. |
 | `/r/[code]` | A room (M3): join → lobby → SPIN → BUILD → SHIP → REVEAL → VOTE → RESULTS → DESTROY → lobby (rematch). |
 | `/u/[id]` | A player's history (M4): their finished battles, newest first, server-rendered from `get_player_history` with the anon key, paginated (`?before=…&before_battle=…`). |
+| `/admin` | Moderation (M5, T-024), server-rendered: the report queue (dismiss, take down), the battle / room event logs (`?q={battle id or room code}`) and the admin log. **A plain 404 for everyone who is not a signed-in admin.** |
+| `/admin/sign-in` | The moderators' email/password sign-in (not linked, not indexed). |
+
+## Moderation (T-024)
+
+- **Report:** a "⚑ Report" button on the REVEAL spotlight chrome (next to "Skip this
+  build"; the dialog's "hide it for me" is that skip), on other players' RESULTS cards and
+  on `/battles/[id]` (`src/components/moderation/ReportButton.tsx`). A small dialog: the
+  five reasons, optional details (500 characters), a thank-you state. A visitor without a
+  session is signed in anonymously first (`report_build` needs a user).
+- **Removed by moderators:** a taken-down build shows that label instead of its name and
+  screenshot everywhere (`/battles/[id]`, RESULTS, the REVEAL spotlight and strip, where it
+  never runs, `/u/[id]`, the OG card). The rank, time, votes and awards stay.
+- **Admin:** `/admin/sign-in` signs in with Supabase Auth (email + password) in a server
+  action; only an account that `is_admin()` accepts gets the session, kept in httpOnly,
+  SameSite=Strict cookies scoped to `/admin` (`src/lib/admin/session.ts`). The admin RPCs
+  run with that user's own token: the app has no service key, and Postgres decides
+  (`is_admin()` in every admin RPC). Players' anonymous sessions live in localStorage, so
+  they never reach `/admin`, which renders `notFound()` for them. An expired access token is
+  refreshed through `/admin/session` (a page render cannot set cookies). Locally:
+  `node supabase/scripts/seed-admin.mjs [email] [password]` (default
+  `admin@buildroulette.local` / `local-admin-pw`), then open `/admin/sign-in`.
+- **Name filter and rate limits:** `name_not_allowed` sends a room join back to the name
+  prompt and shows "That name is not allowed here. Pick another one." on Create room, `/play`
+  and the ship dialog; `rate_limited` shows the server's "Try again in …" sentence
+  (`describeError`), and too many wrong room codes get their own join screen.
+- **Turnstile:** with `NEXT_PUBLIC_TURNSTILE_SITE_KEY` set, `ensureSignedIn` gets a
+  Turnstile token (an on-demand, interaction-only widget, `src/lib/supabase/turnstile.ts`)
+  and passes it to `signInAnonymously({ options: { captchaToken } })`. Without it (local,
+  tests) nothing loads.
 
 ## Play the solo game locally
 
@@ -149,10 +179,12 @@ after changing them. The defaults are the local setup above.
 | `NEXT_PUBLIC_SANDBOX_SHELL_URL` | `http://127.0.0.1:4321/v1/` | Sandbox shell |
 | `NEXT_PUBLIC_PKG_CDN_URL` | `http://localhost:4322` | esm.sh-compatible package CDN |
 | `NEXT_PUBLIC_SITE_URL` | `http://localhost:3000` | The app's public origin (`metadataBase`, absolute OG image URLs) |
+| `NEXT_PUBLIC_TURNSTILE_SITE_KEY` | unset (no Turnstile) | Cloudflare Turnstile site key for anonymous sign-ups. Set it only together with Turnstile in Supabase Auth (the matching secret), or every sign-up fails. |
 
 The web app never holds the service-role key: players sign in anonymously
 (`signInAnonymously`), every write goes through RPCs and storage RLS, and the results page
-reads `get_public_battle`, which the anon key may call.
+reads `get_public_battle`, which the anon key may call. `/admin` calls the admin RPCs with
+the moderator's own access token.
 
 `scripts/solo-services.ts` reads: `BR_APP_ORIGINS` (app origins the shell accepts, default
 `http://localhost:3000`), `APP_PORT` (3000), `SHELL_PORT` (4321), `CDN_PORT` (4322),
@@ -226,6 +258,9 @@ CDN (T-006) replaces it.
 | Results page + OG image | `src/app/battles/[id]/*`, `src/lib/solo/public-battle.ts` |
 | Player history page | `src/app/u/[id]/*`, `src/lib/history/player-history.ts`, `src/components/results/MyHistoryLink.tsx` |
 | Phones and tablets (touch-primary check) | `src/lib/device.ts`, `src/components/room/DesktopNeeded.tsx` |
+| Moderation: report dialog, "Removed by moderators" | `src/components/moderation/*`, `src/lib/moderation/report.ts` |
+| Admin page, sign-in, session cookies, server actions | `src/app/admin/*`, `src/lib/admin/*` |
+| Turnstile on anonymous sign-up | `src/lib/supabase/turnstile.ts`, `src/lib/supabase/browser.ts` |
 
 ## Tests
 
@@ -233,6 +268,7 @@ CDN (T-006) replaces it.
 pnpm --filter @br/web test             # unit (Vitest): solo + room controllers, sync engine, reducer, …
 pnpm --filter @br/web test:e2e         # /playground (Playwright), no Supabase needed
 pnpm --filter @br/web test:e2e:solo    # /play against the REAL local Supabase stack
+pnpm --filter @br/web test:e2e:moderation  # report → /admin takedown → removed (REAL stack)
 pnpm --filter @br/web test:e2e:multi   # rooms: 3+ browser contexts (and phones), REAL stack WITH Realtime
 pnpm --filter @br/web test:e2e:mobile  # only the phone spec of the above
 pnpm --filter @br/web test:e2e:chaos   # rooms under chaos (~14 min), same stack
@@ -261,6 +297,16 @@ CHAOS_SHARD=2 pnpm --filter @br/web test:e2e:chaos   # one of its 3 shards (~5 m
   (`[auth.rate_limit] anonymous_users` in `supabase/config.toml`); many runs in a row (each
   solo test signs up one user, the rooms e2e seven, the capture integration four) can hit
   it, and the UI then says "Too many requests". Restarting the stack resets it.
+- `test:e2e:moderation` (`playwright.moderation.config.ts`, `e2e/moderation.spec.ts`; T-024)
+  uses the solo servers (the capture worker's takedown loop matters here). It inserts a
+  finished battle with psql (two builds, real PNG screenshots in the public bucket), then:
+  a player reports one build on `/battles/[id]`; `/admin` is a 404 for that player, for a
+  visitor without a session and after a wrong password; an email admin (seeded with
+  `supabase/scripts/seed-admin.mjs`) signs in, sees the report with its reason and details,
+  takes the build down and opens the battle's event log; the public page shows "Removed by
+  moderators" without the screenshot (rank kept), and the worker deletes the object. A
+  second test: a blocked display name on Create room and `/play` shows the friendly error.
+  `MODERATION_SCREENSHOT_DIR=/dir` saves the UI screenshots.
 - `test:e2e:multi` (`playwright.multi.config.ts`) needs the local stack running **with
   Realtime**; same servers as the solo e2e (`solo-services.ts --realtime`). Each player is
   its own browser context, i.e. its own anonymous user (`e2e/multiplayer.spec.ts`):

@@ -8,11 +8,15 @@
 --   Every guard of reveal_next and cast_vote, revotes, a player who leaves
 --   and comes back, and the early end once every PRESENT voter is done (dee
 --   voted half and went silent). Ranking tie on overall and total votes →
---   earlier shipped_at; shared category awards.
+--   earlier shipped_at; one winner per category (T-022): a top-count tie goes
+--   to more total votes, then the earlier ship.
 -- Battle B (3, reveal_slot_s 30): everyone ships → REVEAL at once; the host
 --   vanishes and ben's reveal_next makes him host; skip_to_vote; a voter is
 --   kicked during VOTING (their vote is not counted); the deadline ends
---   VOTING; overall tie → total votes; a category nobody voted in has no award.
+--   VOTING; overall tie → total votes (ranks and awards); a category nobody
+--   voted in has no award.
+-- (The build-id level of the tie-break and the early end in the sweep are in
+-- 18_vote_awards_and_sweep.test.sql.)
 -- Battle C (2): one final build → straight to RESULTS (too_few_builds).
 -- Then the reveal_vote default switch, room settings, solo, and the
 -- table of reveal slot lengths (also read by the @br/game drift test).
@@ -423,10 +427,11 @@ select results_eq(
             join public.builds bu on bu.id = a.build_id
             join public.battle_players bp on bp.battle_id = bu.battle_id and bp.user_id = bu.builder_id
             where a.battle_id = %L order by a.source desc, a.award, bp.display_name $$, :'a'),
-  $$ values ('chaos', 'cy', 'vote', 2), ('overall', 'ana', 'vote', 2), ('overall', 'ben', 'vote', 2),
-            ('rule', 'ana', 'vote', 2), ('rule', 'cy', 'vote', 2), ('style', 'ben', 'vote', 2),
+  $$ values ('chaos', 'cy', 'vote', 2), ('overall', 'ana', 'vote', 2), ('rule', 'ana', 'vote', 2),
+            ('style', 'ben', 'vote', 2),
             ('fastest_ship', 'ana', 'auto', null::int), ('speedrun', 'ana', 'auto', null), ('speedrun', 'ben', 'auto', null) $$,
-  'category awards to the top build (ties share) with their vote counts, plus the auto-awards');
+  'one winner per category with its vote count: overall ana–ben 2–2, total 5–5 → ana shipped earlier; '
+  'rule ana–cy 2–2 → ana has more total votes (5 vs 4); plus the auto-awards');
 select is((select count(*)::int from public.battle_players where battle_id = :'a' and voted_at is not null), 0,
   'who voted is never recorded where members could read it (voted_at stays null)');
 
@@ -580,8 +585,9 @@ select results_eq(
             join public.builds bu on bu.id = a.build_id
             join public.battle_players bp on bp.battle_id = bu.battle_id and bp.user_id = bu.builder_id
             where a.battle_id = %L and a.source = 'vote' order by a.award, bp.display_name $$, :'b'),
-  $$ values ('overall', 'ben', 1), ('overall', 'cy', 1), ('rule', 'cy', 1), ('style', 'ben', 1), ('style', 'cy', 1) $$,
-  'shared category awards on ties; nobody voted chaos, so no chaos award');
+  $$ values ('overall', 'cy', 1), ('rule', 'cy', 1), ('style', 'cy', 1) $$,
+  'one winner per category: the overall and style ties (1–1, same shipped_at) go to cy, who has more total votes (3 vs 2); '
+  'nobody voted chaos, so no chaos award');
 
 -- ═══ Battle C: fewer than 2 final builds ══════════════════════════════════
 update public.battles set phase_ends_at = now() - interval '1 second',

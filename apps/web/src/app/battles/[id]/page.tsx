@@ -66,7 +66,7 @@ export default async function BattlePage({ params }: BattlePageProps) {
       <p className="-mt-4 text-sm text-zinc-500">
         Time limit: {formatTimeLimit(challenge.time_limit_seconds)} ·{' '}
         {voted
-          ? 'ranked by the players’ votes (Best Build, then all votes, then the earlier ship)'
+          ? 'ranked by the players’ votes (Best Build, then all votes, then the earlier ship); one winner per award category (a tie goes to more votes in all, then the earlier ship)'
           : 'ranked by completion time'}
       </p>
 

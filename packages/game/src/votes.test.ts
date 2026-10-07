@@ -6,6 +6,7 @@ import {
   RANKING_CATEGORY,
   VOTE_CATEGORIES,
   VOTE_CATEGORY_SLUGS,
+  VOTE_TIE_BREAKS,
   VOTING_MAX_SECONDS,
   VOTING_MIN_SECONDS,
   isVoteCategory,
@@ -20,6 +21,10 @@ describe('vote categories', () => {
 
   it('rank by the overall category', () => {
     expect(RANKING_CATEGORY).toBe('overall');
+  });
+
+  it('break ties by total votes, then the earlier ship, then the build id (one winner)', () => {
+    expect(VOTE_TIE_BREAKS).toEqual(['total_votes', 'shipped_at', 'build_id']);
   });
 
   it('isVoteCategory accepts the slugs only', () => {

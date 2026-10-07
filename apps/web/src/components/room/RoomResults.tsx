@@ -8,7 +8,8 @@
  *
  * With voting (M4) the ranking is by votes (Best Build, then all votes, then the earlier
  * ship): each build shows its votes per category, the category awards come first, and the
- * winner is highlighted.
+ * winner is highlighted. Every category award has one winner, ties broken the same way
+ * (T-022), so the Best Build award sits on the rank-1 build.
  */
 import { VOTE_CATEGORIES, isTerminalPhase } from '@br/game';
 import Link from 'next/link';
@@ -105,7 +106,7 @@ export function RoomResults({ state, remaining, lostVotes }: RoomResultsProps) {
         <ChallengeCards challenge={snapshot.challenge} compact />
         <p className="text-sm text-zinc-500" data-testid="ranking-rule">
           {votedResults(snapshot)
-            ? 'Ranked by votes: Best Build first, then all votes, then the earlier ship.'
+            ? 'Ranked by votes: Best Build first, then all votes, then the earlier ship. Each category award has one winner: a tie goes to more votes in all, then the earlier ship.'
             : 'Ranked by completion time.'}
         </p>
         {lost && (

@@ -29,11 +29,12 @@ export {
   REVEAL_VOTE_PHASE_REASONS,
   VOTE_CATEGORIES,
   VOTE_CATEGORY_SLUGS,
+  VOTE_TIE_BREAKS,
   VOTING_MAX_SECONDS,
   VOTING_MIN_SECONDS,
   isVoteCategory,
 } from './votes';
-export type { RevealVotePhaseReason, VoteCategory } from './votes';
+export type { RevealVotePhaseReason, VoteCategory, VoteTieBreak } from './votes';
 
 export { estimateClockOffset, remainingMs } from './clock';
 export type { ClockSample } from './clock';

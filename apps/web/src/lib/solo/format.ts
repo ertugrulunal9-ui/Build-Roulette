@@ -38,7 +38,8 @@ export const AWARD_INFO: Record<string, { emoji: string; title: string; text: st
   speedrun: { emoji: '⚡', title: 'Speedrun', text: 'Shipped using at most half the time.' },
   clutch_ship: { emoji: '⏱️', title: 'Clutch ship', text: 'Shipped in the last 10 seconds.' },
   fastest_ship: { emoji: '🏁', title: 'Fastest ship', text: 'The first build shipped.' },
-  // One per vote category: the most votes in it (ties share).
+  // One per vote category: the most votes in it. One winner (T-022): a tie goes to more votes
+  // in all categories, then the earlier ship (VOTE_TIE_BREAKS in @br/game).
   ...Object.fromEntries(
     VOTE_CATEGORIES.map((c) => [
       c.slug,

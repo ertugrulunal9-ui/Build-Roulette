@@ -256,6 +256,7 @@ export class RevealVoteController {
     }
 
     if (this.state.builds === null) void this.loadBuilds();
+    this.dropRemoved(snapshot);
     if (phase === 'reveal') {
       this.ensureBundles();
     } else if (Object.keys(this.state.bundles).length > 0) {
@@ -267,6 +268,40 @@ export class RevealVoteController {
     }
     // A fresh snapshot means the server answers again: send what is waiting at once.
     if (phase === 'voting') this.flushUnsent();
+  }
+
+  /**
+   * A moderator took builds down (T-024, `taken_down` in the snapshot): their bundles go,
+   * and the votes for them are gone on the server (deleted with the takedown), so they
+   * leave the ballot too and the voter picks again in those categories.
+   */
+  private dropRemoved(snapshot: BattleSnapshot): void {
+    const removed = new Set(snapshot.builds.filter((b) => b.taken_down === true).map((b) => b.id));
+    if (removed.size === 0) return;
+    const bundles = Object.fromEntries(
+      Object.entries(this.state.bundles).filter(([id]) => !removed.has(id)),
+    );
+    if (Object.keys(bundles).length !== Object.keys(this.state.bundles).length) {
+      this.patch({ bundles });
+    }
+    const keep = (r: Readonly<Record<string, string>>) =>
+      Object.fromEntries(Object.entries(r).filter(([, id]) => !removed.has(id)));
+    const { ballot } = this.state;
+    const votes = keep(ballot.votes);
+    const pending = keep(ballot.pending);
+    const unsent = keep(ballot.unsent);
+    const changed =
+      Object.keys(votes).length !== Object.keys(ballot.votes).length ||
+      Object.keys(pending).length !== Object.keys(ballot.pending).length ||
+      Object.keys(unsent).length !== Object.keys(ballot.unsent).length;
+    if (changed) {
+      this.patchBallot({
+        votes,
+        pending,
+        unsent,
+        complete: ballot.complete && Object.keys(votes).length === Object.keys(ballot.votes).length,
+      });
+    }
   }
 
   // --- Viewer intents (local only) ----------------------------------------------------
@@ -527,9 +562,14 @@ export class RevealVoteController {
     const builds = this.state.builds;
     if (!snap || !builds) return;
     const index = snap.battle.reveal_index ?? 0;
-    const wanted = [index, index + 1]
-      .map((i) => snap.battle.reveal_order?.[i])
-      .filter((id): id is string => typeof id === 'string');
+    const order = snap.battle.reveal_order ?? [];
+    // The spotlight and the next build that a moderator did not take down (the server skips
+    // the slots of taken-down builds; T-024).
+    const removed = (id: string) => snap.builds.some((b) => b.id === id && b.taken_down === true);
+    const next = order.slice(index + 1).find((id) => !removed(id));
+    const wanted = [order[index], next].filter(
+      (id): id is string => typeof id === 'string' && !removed(id),
+    );
     const kept: Record<string, BundleState> = {};
     for (const id of wanted) {
       const have = this.state.bundles[id];

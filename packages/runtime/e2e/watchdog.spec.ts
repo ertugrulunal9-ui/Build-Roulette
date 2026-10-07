@@ -100,7 +100,9 @@ test('c. an infinite loop triggers the watchdog crash within 6 s and the parent 
   await expect(buildFrame(page).getByTestId('title')).toHaveText('recovered');
 });
 
-test('c. a loop that runs on load (before ready) is also caught', async ({ page }) => {
+test('c. a loop that runs on load (before ready) is caught within the 15 s load grace', async ({
+  page,
+}) => {
   await openPlayground(page);
   const t0 = await page.evaluate(
     async ({ files, manifest }) => {
@@ -114,12 +116,26 @@ test('c. a loop that runs on load (before ready) is also caught', async ({ page 
   const crash = await page.waitForFunction(
     () => window.__playground.events.find((e) => e.type === 'crash'),
     null,
-    { timeout: 10_000 },
+    { timeout: 20_000 },
   );
-  const crashEvent = (await crash.jsonValue()) as { t: number };
+  const crashEvent = (await crash.jsonValue()) as {
+    t: number;
+    data: { reason: string; silentForMs: number; phase: string };
+  };
+  // The build result is logged right before the playground calls preview.load() (the send).
+  const loadSentAt = await page.evaluate(
+    (since) =>
+      window.__playground.events.findLast((e) => e.type === 'build' && e.t >= since)?.t ?? NaN,
+    t0,
+  );
   console.log(
-    `[metrics] watchdog detection for a loop at module top level (build start -> crash): ${fmt(crashEvent.t - t0)}`,
+    `[metrics] watchdog detection for a loop at module top level: build start -> crash ${fmt(crashEvent.t - t0)}, load sent -> crash ${fmt(crashEvent.t - loadSentAt)}, silence ${fmt(crashEvent.data.silentForMs)}`,
   );
-  expect(crashEvent.t - t0).toBeLessThan(7000);
+  // T-027: until the load grace ends, a loop during the load can't be told apart from a slow
+  // load on a busy CPU. The grace ends 15 s after the load was sent (and the last pong is at
+  // most 1 s older than the send, so not before 14 s).
+  expect(crashEvent.data).toMatchObject({ reason: 'heartbeat-timeout', phase: 'loading' });
+  expect(crashEvent.t - loadSentAt).toBeGreaterThanOrEqual(13_900);
+  expect(crashEvent.t - loadSentAt).toBeLessThanOrEqual(15_600);
   await expect(page.locator('#preview')).toHaveCount(0);
 });

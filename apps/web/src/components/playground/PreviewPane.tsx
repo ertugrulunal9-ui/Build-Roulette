@@ -118,6 +118,7 @@ export function PreviewPane({
             data-testid="preview-crashed"
             data-reason={snapshot.crash?.reason}
             data-silent-ms={snapshot.crash ? Math.round(snapshot.crash.silentForMs) : undefined}
+            data-phase={snapshot.crash?.phase}
             className="absolute inset-0 grid place-items-center bg-zinc-100 p-6 text-center dark:bg-zinc-900"
           >
             <div className="flex max-w-sm flex-col items-center gap-3">
@@ -131,6 +132,14 @@ export function PreviewPane({
                   <>
                     The sandbox shell at <code className="break-all">{shellUrl}</code> did not
                     answer. Is <code>pnpm --filter @br/web dev:sandbox</code> running?
+                  </>
+                ) : snapshot.crash?.phase === 'loading' ? (
+                  // The watchdog allows a slow start (up to 15 s, T-027) before it gives up.
+                  <>
+                    Your build didn’t finish starting: it stopped responding for{' '}
+                    {Math.round(snapshot.crash.silentForMs / 1000)} s while it loaded, probably an
+                    infinite loop in code that runs at startup. Fix the code, then restart the
+                    preview.
                   </>
                 ) : (
                   <>

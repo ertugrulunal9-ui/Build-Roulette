@@ -156,7 +156,7 @@ function createPreviewFrame(): PreviewHandle {
     log('crash', c);
     const msg = document.createElement('div');
     msg.id = 'crashed';
-    msg.textContent = `Build froze (${c.reason}, silent for ${Math.round(c.silentForMs).toString()} ms). Use "Restart preview".`;
+    msg.textContent = `Build froze (${c.reason} while ${c.phase}, silent for ${Math.round(c.silentForMs).toString()} ms). Use "Restart preview".`;
     container.append(msg);
     setStatus('preview crashed');
   });

@@ -122,6 +122,35 @@ a preview in a cross-site sandboxed iframe. It works together with:
   the check pauses, and when the tab becomes visible again the grace period restarts, so
   timer throttling cannot cause a false crash. `setTimeout` rather than
   `requestAnimationFrame`: an iframe scrolled out of view gets no animation frames.
+- **Load grace (T-027)**: a `load` blocks the shell's main thread while it runs. The shell
+  tears down the previous build's realm, writes the new document, then compiles and evaluates
+  the whole module graph in **one task**, so no pong can be sent until it finishes. On a
+  contended CPU this took over 5 s (the chaos suite, load average 13–24 on 4 CPUs:
+  `heartbeat-timeout` with about 5.3 s of silence right after a rebuild, while the app page
+  kept rendering). Measured with CDP CPU throttling of the shell's renderer: the longest
+  shell task and the longest pong gap both span the frame swap plus the evaluation of the
+  new bundle. At x20, a ~600 KB bundle that evaluates in 45 ms unthrottled gave a 2.7 s task
+  and a 3.0 s pong gap. So, for **`loadGraceMs` (15 s) after the handle sends a `load`**, and
+  until the shell's `ready` for that load, up to 15 s of silence is tolerated instead of 5 s:
+  - Only the handle opens the window, when it sends a `load` (or flushes a pending one on
+    connect). Nothing the sandbox sends can open or extend it. `ready` is untrusted, so it can
+    only shorten it, to `heartbeatTimeoutMs` from its arrival. That way the queued pongs that
+    arrive just after a long evaluation are not raced by a tick. A `ready` for an older load,
+    a duplicate one or one over the rate budget is rejected as before. A new shell (restart,
+    reset, mode switch) starts with no window.
+  - Silence is capped at `loadGraceMs`, however many loads the app sends meanwhile (a player
+    typing into a frozen preview): the crash comes at the latest `loadGraceMs` after the
+    last pong.
+  - So a loop **after** `ready` (a game loop, a click handler) is still caught 4.0–5.25 s
+    after it starts. A loop **during** the load (at a module's top level, before `ready`)
+    can't be told apart from a slow evaluation until the window ends, so it is caught
+    14–15.25 s after the load was sent. Detection is always within
+    `max(freeze + 5.25 s, load sent + 15.25 s)`.
+  - `crash` carries `phase` (`connecting`, `loading`: the latest load had not reported
+    `ready`, or `running`), so the UI can say "didn't finish starting" rather than "froze".
+  - Why not loading progress messages from the shell? The blocking part is a single task:
+    the shell can't report anything from inside it, and an untrusted milestone could only
+    ever shorten the grace anyway.
 - **`PreviewHandle` takes its iframe out of the DOM on `crash`** (a comment node keeps its
   place), and `dispose()` removes it. Callers must therefore put the iframe in a container
   that React (or any other view library) does not manage. Create the iframe imperatively in
@@ -279,7 +308,8 @@ last two full e2e runs.
 | Rebuild, bundler only, 10-file project, n=20 | p50 **105–115 ms**, p95 **147–159 ms** | |
 | Rebuild + preview refresh (build → `ready`), 10 files, n=20 | p50 **125–135 ms**, p95 **175–183 ms** | < 300 ms p50, < 800 ms p95 |
 | Watchdog: loop start → `crash` | **4.1 s** (silence at crash: 5.17 s; T-009, ping/pong) | ≤ 6 s |
-| Watchdog: loop at module top level, build start → `crash` | 4.5 s (T-009) | |
+| Watchdog: loop at module top level (before `ready`), load sent → `crash` | **14.3 s** (silence 15.2 s; T-027 load grace, was 4.5 s) | ≤ 15.25 s |
+| Watchdog: slow but finite load, shell CPU throttled x6 (e2e `watchdog-load`) | 8.0–10.1 s evaluation, longest pong gap 8.7–10.7 s, **no crash**; a loop after it: 4.2–5.0 s | no crash below 15 s |
 | App page during the loop (site-isolated) | evaluate RTT ≤ 9 ms, worst 50 ms timer gap ≤ 68 ms | responsive |
 | `resetStorage()` (new iframe + handshake + full wipe incl. Clear-Site-Data + ack) | 100–250 ms | |
 | `shell.js` (minified) | **39.1 KB raw, 13.0 KB gzip** (T-009) | "~5 KB" |
@@ -287,7 +317,8 @@ last two full e2e runs.
 | Bundler worker JS (minified, excl. wasm) | 76.6 KB raw, 22.4 KB gzip | |
 
 The watchdog fires 5 s after the *last pong*. Pings are 1 s apart and the check runs every
-250 ms, so detection after a loop starts falls between about 4.0 s and 5.25 s.
+250 ms, so detection after a loop starts falls between about 4.0 s and 5.25 s. A loop during
+a load, before its `ready`, is caught when the 15 s load grace ends (see "Load grace").
 
 ## Design decisions and deviations from docs/03
 

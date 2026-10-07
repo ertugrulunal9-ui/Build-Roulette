@@ -18,7 +18,11 @@
  *   per second.
  * - Watchdog: pings the shell every second; the shell answers `pong {seq}` from a
  *   main-thread task. No pong for `heartbeatTimeoutMs` (5 s) -> `crash` event and the iframe
- *   is taken out of the DOM.
+ *   is taken out of the DOM. Load grace: for `loadGraceMs` (15 s) after the handle sends a
+ *   `load`, until the shell's `ready` for it, up to `loadGraceMs` of silence is tolerated
+ *   instead, because the shell evaluates the new bundle on its own main thread (one long task
+ *   that can take seconds on a busy CPU). Only the app's own `load` opens the window; `ready`
+ *   can only close it, so the sandbox can never extend it (README "Watchdog").
  *
  * Trust model: everything the shell sends is untrusted display data. `ready`, `pong`,
  * `heartbeat` and `storage-reset` are hints; the app never takes an action that matters for
@@ -102,6 +106,12 @@ export interface PreviewOptions {
   mode?: RunMode;
   /** No `pong` for this long -> crash. Default 5000 ms. */
   heartbeatTimeoutMs?: number;
+  /**
+   * Load grace: the longest silence tolerated while a `load` the handle sent is still
+   * evaluating (no `ready` for it yet), and at most this long after it was sent. Never less
+   * than `heartbeatTimeoutMs`. Default 15000 ms.
+   */
+  loadGraceMs?: number;
   /** Ping interval while connected. Default 1000 ms. */
   pingIntervalMs?: number;
   /** No completed handshake for this long after a navigation -> crash. Default 10000 ms. */
@@ -123,6 +133,13 @@ export interface PreviewBuild {
 /** `heartbeat-timeout`: no `pong` within `heartbeatTimeoutMs` (name kept for compatibility). */
 export type CrashReason = 'heartbeat-timeout' | 'handshake-timeout';
 
+/**
+ * What the preview was doing when it crashed: `connecting` (no handshake yet), `loading` (a
+ * load was sent and its `ready` had not arrived: the build froze or never finished starting)
+ * or `running` (after `ready`, or with no load at all).
+ */
+export type CrashPhase = 'connecting' | 'loading' | 'running';
+
 /** Why the handle replaced its iframe element. */
 export type FrameReason = 'mode-change' | 'reset' | 'restart';
 
@@ -142,7 +159,7 @@ export interface PreviewEventMap {
   error: RuntimeErrorMessage;
   /** At most once per second: messages dropped by the budgets since the last notice. */
   dropped: { count: number; byType: Record<BudgetedType, number> };
-  crash: { reason: CrashReason; silentForMs: number };
+  crash: { reason: CrashReason; silentForMs: number; phase: CrashPhase };
 }
 
 export type PreviewState = 'connecting' | 'connected' | 'crashed' | 'disposed';
@@ -165,6 +182,11 @@ export interface PreviewStats {
   lastPongAt: number;
   /** Round trip of the last accepted ping, in ms. */
   lastRttMs: number | null;
+  /**
+   * End of the load grace window (clock time): set when a `load` is sent, shortened by its
+   * `ready`. 0 = none so far.
+   */
+  loadGraceUntil: number;
   /** `heartbeat` messages received (informational only). */
   heartbeats: number;
   lastHeartbeatAt: number;
@@ -212,6 +234,7 @@ export class PreviewHandle {
   private readonly shellUrl: string;
   private readonly shellOrigin: string;
   private readonly heartbeatTimeoutMs: number;
+  private readonly loadGraceMs: number;
   private readonly pingIntervalMs: number;
   private readonly handshakeTimeoutMs: number;
   private readonly watchdogIntervalMs: number;
@@ -246,6 +269,7 @@ export class PreviewHandle {
     pongs: 0,
     lastPongAt: 0,
     lastRttMs: null,
+    loadGraceUntil: 0,
     heartbeats: 0,
     lastHeartbeatAt: 0,
   };
@@ -254,6 +278,8 @@ export class PreviewHandle {
   private pendingLoad: LoadMessage | null = null;
   private latestLoadId = 0;
   private readyAccepted = false;
+  /** A `load` was sent to the current shell and its `ready` has not been accepted yet. */
+  private loadInFlight = false;
   private nextLoadId = 1;
   private nextRequestId = 1;
   private readonly storageRequests = new Map<number, StorageRequest>();
@@ -277,6 +303,7 @@ export class PreviewHandle {
     this.shellUrl = opts.shellUrl;
     this.shellOrigin = opts.shellOrigin ?? new URL(opts.shellUrl).origin;
     this.heartbeatTimeoutMs = opts.heartbeatTimeoutMs ?? 5000;
+    this.loadGraceMs = Math.max(this.heartbeatTimeoutMs, opts.loadGraceMs ?? 15000);
     this.pingIntervalMs = opts.pingIntervalMs ?? 1000;
     this.handshakeTimeoutMs = opts.handshakeTimeoutMs ?? 10000;
     this.watchdogIntervalMs = opts.watchdogIntervalMs ?? 250;
@@ -361,7 +388,7 @@ export class PreviewHandle {
     if (mode !== this._mode) {
       this.pendingLoad = msg;
       this.replaceFrame(mode, 'mode-change');
-    } else if (this._state === 'connected') this.send(msg);
+    } else if (this._state === 'connected') this.sendLoad(msg);
     else this.pendingLoad = msg; // only the latest load matters
     return loadId;
   }
@@ -466,6 +493,16 @@ export class PreviewHandle {
 
   private send(msg: AppToShell): void {
     this.port?.postMessage(msg);
+  }
+
+  /**
+   * Sends a `load` and opens the load grace window. This is the only place that opens or
+   * extends it: the app decides when a load starts, the sandbox can't.
+   */
+  private sendLoad(msg: LoadMessage): void {
+    this.send(msg);
+    this.loadInFlight = true;
+    this._stats.loadGraceUntil = this.now() + this.loadGraceMs;
   }
 
   private listen(): void {
@@ -620,6 +657,15 @@ export class PreviewHandle {
           return;
         }
         this.readyAccepted = true;
+        this.loadInFlight = false;
+        // The load has finished evaluating: back to the normal limit. `ready` is untrusted, so
+        // it can only shorten the window. It keeps `heartbeatTimeoutMs` from now, not 0: the
+        // pongs queued behind the evaluation arrive just after it, and a tick in between must
+        // not count the evaluation's silence against the 5 s limit.
+        this._stats.loadGraceUntil = Math.min(
+          this._stats.loadGraceUntil,
+          now + this.heartbeatTimeoutMs,
+        );
         this.emit('ready', { loadId: msg.loadId });
         return;
       case 'console':
@@ -679,8 +725,11 @@ export class PreviewHandle {
         this.send(r.msg);
       }
     }
+    // A new shell: no load of the old one carries over (a pending one is sent just below).
+    this.loadInFlight = false;
+    this._stats.loadGraceUntil = 0;
     if (this.pendingLoad) {
-      this.send(this.pendingLoad);
+      this.sendLoad(this.pendingLoad);
       this.pendingLoad = null;
     }
     this.sendPing();
@@ -742,15 +791,22 @@ export class PreviewHandle {
     const now = this.now();
     if (this._state === 'connecting') {
       if (now - this.navigatedAt > this.handshakeTimeoutMs)
-        this.crash('handshake-timeout', now - this.navigatedAt);
+        this.crash('handshake-timeout', now - this.navigatedAt, 'connecting');
       return;
     }
     if (this._state !== 'connected') return;
-    const silent = now - this._stats.lastPongAt;
-    if (silent > this.heartbeatTimeoutMs) this.crash('heartbeat-timeout', silent);
+    const lastPongAt = this._stats.lastPongAt;
+    const silent = now - lastPongAt;
+    if (silent <= this.heartbeatTimeoutMs) return;
+    // Load grace: a load the app sent may block the shell's main thread for a while (module
+    // compile + evaluation is one task). Tolerated until the window ends, and never more than
+    // `loadGraceMs` of silence in total, however many loads the app sends meanwhile.
+    const graceEnd = Math.min(this._stats.loadGraceUntil, lastPongAt + this.loadGraceMs);
+    if (now <= graceEnd) return;
+    this.crash('heartbeat-timeout', silent, this.loadInFlight ? 'loading' : 'running');
   };
 
-  private crash(reason: CrashReason, silentForMs: number): void {
+  private crash(reason: CrashReason, silentForMs: number, phase: CrashPhase): void {
     this.teardown();
     this._state = 'crashed';
     // Taking the iframe out of the document discards its documents; with site isolation the
@@ -761,7 +817,7 @@ export class PreviewHandle {
       this._iframe.replaceWith(placeholder);
       this.placeholder = placeholder;
     }
-    this.emit('crash', { reason, silentForMs });
+    this.emit('crash', { reason, silentForMs, phase });
   }
 
   private teardown(): void {

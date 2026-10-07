@@ -25,6 +25,7 @@ export {
   checkHello,
   createPreview,
   type BudgetedType,
+  type CrashPhase,
   type CrashReason,
   type FrameReason,
   type PreviewBuild,

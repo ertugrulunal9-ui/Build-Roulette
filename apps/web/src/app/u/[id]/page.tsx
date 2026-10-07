@@ -10,6 +10,7 @@ import {
   type HistoryBattle,
 } from '../../../lib/history/player-history';
 import { formatCompletion, formatTimeLimit } from '../../../lib/solo/format';
+import { REMOVED_TEXT, RemovedCard } from '../../../components/moderation/Removed';
 import { screenshotUrl } from '../../../lib/supabase/config';
 
 /**
@@ -144,8 +145,10 @@ function HistoryItem({ battle: b }: { battle: HistoryBattle }) {
   const shipped = b.build.status === 'shipped' || b.build.status === 'auto_shipped';
   const voted = b.build.votes !== null;
   const winner = b.build.final_rank === 1 && b.players_count > 1;
-  const name =
-    b.build.name ?? (b.build.status === 'dnf' ? 'Did not finish' : `${b.display_name}'s build`);
+  const removed = b.build.taken_down === true;
+  const name = removed
+    ? REMOVED_TEXT
+    : (b.build.name ?? (b.build.status === 'dnf' ? 'Did not finish' : `${b.display_name}'s build`));
   return (
     <li
       className={`grid grid-cols-1 overflow-hidden rounded-2xl border bg-white shadow-sm sm:grid-cols-[14rem_minmax(0,1fr)] dark:bg-zinc-900 ${
@@ -157,9 +160,12 @@ function HistoryItem({ battle: b }: { battle: HistoryBattle }) {
       data-battle={b.battle_id}
       data-rank={b.build.final_rank ?? ''}
       data-status={b.build.status}
+      data-removed={removed ? 'true' : 'false'}
     >
       <div className="relative aspect-[16/10] bg-zinc-100 sm:aspect-auto dark:bg-zinc-800">
-        {b.build.screenshot_path ? (
+        {removed ? (
+          <RemovedCard />
+        ) : b.build.screenshot_path ? (
           // eslint-disable-next-line @next/next/no-img-element -- a public Supabase Storage URL
           <img
             src={screenshotUrl(b.build.screenshot_path)}

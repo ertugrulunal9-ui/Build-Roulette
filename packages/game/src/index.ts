@@ -80,10 +80,29 @@ export type {
 } from './rooms';
 
 export {
+  ADMIN_ERROR_CODES,
   CAST_VOTE_ERRORS,
   JOIN_ROOM_ERRORS,
+  REPORT_BUILD_ERRORS,
   RPC_ERROR_CODES,
   SERVICE_ERROR_CODES,
   isRpcErrorCode,
 } from './errors';
-export type { CastVoteError, JoinRoomError, RpcErrorCode } from './errors';
+export type {
+  AdminErrorCode,
+  CastVoteError,
+  JoinRoomError,
+  ReportBuildError,
+  RpcErrorCode,
+} from './errors';
+
+export {
+  RATE_LIMITS,
+  RATE_LIMIT_ACTIONS,
+  REPORT_DETAILS_MAX,
+  REPORT_REASONS,
+  REPORT_REASON_LABELS,
+  isReportReason,
+  retryAfterSeconds,
+} from './moderation';
+export type { RateLimitAction, ReportReason } from './moderation';

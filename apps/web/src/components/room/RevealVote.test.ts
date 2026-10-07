@@ -210,6 +210,46 @@ describe('RevealStage', () => {
     expect(spotlightView(base, null, desktop)).toBe('loading');
   });
 
+  it('a build removed by a moderator (T-024): the label, never runs, no Skip or Report', () => {
+    const snap = battleSnapshot({ phase: 'reveal', revealIndex: 1 });
+    snap.builds = snap.builds.map((b) =>
+      b.id === 'build-bob' ? { ...b, name: null, taken_down: true, status: 'disqualified' } : b,
+    );
+    const ready = {
+      status: 'ready' as const,
+      build: { js: 'x', css: '', importMap: { imports: {} } },
+    };
+    renderReveal(snap, showState({ bundles: { 'build-bob': ready } }));
+    expect(screen.getByTestId('reveal-stage').dataset['view']).toBe('removed');
+    expect(screen.getByTestId('reveal-title').textContent).toBe('Removed by moderators');
+    // In the spotlight and in the strip.
+    expect(screen.getAllByTestId('removed-build')).toHaveLength(2);
+    expect(screen.queryByTestId('reveal-live')).toBeNull();
+    expect(screen.queryByTestId('skip-build')).toBeNull();
+    expect(screen.queryByTestId('report-build')).toBeNull();
+    const strip = screen.getAllByTestId('reveal-strip-item');
+    expect(within(must(strip[1])).getByTestId('removed-build')).toBeTruthy();
+    expect(
+      spotlightView(showState(), 'build-bob', { stillFirst: false, tapped: [], removed: true }),
+    ).toBe('removed');
+  });
+
+  it('Report sits next to Skip for other players’ builds (not your own); hiding = Skip', () => {
+    const show = renderReveal(
+      battleSnapshot({ phase: 'reveal', revealIndex: 1 }),
+      showState({ bundles: { 'build-bob': { status: 'loading', build: null } } }),
+    );
+    const report = screen.getByTestId('report-build');
+    expect(report.dataset['build']).toBe('build-bob');
+    fireEvent.click(report);
+    fireEvent.click(screen.getByTestId('report-hide'));
+    expect(show.skip).toHaveBeenCalledWith('build-bob');
+    cleanup();
+    renderReveal(battleSnapshot({ phase: 'reveal', revealIndex: 0 }), showState());
+    expect(screen.getByTestId('reveal-stage').dataset['build']).toBe('build-me');
+    expect(screen.queryByTestId('report-build')).toBeNull();
+  });
+
   it('touch devices: the screenshot first; the build runs only after a tap', () => {
     const restore = stubTouchDevice(true);
     try {
@@ -513,6 +553,27 @@ describe('RoomResults with votes', () => {
     expect(screen.getByTestId('ranking-rule').textContent).toContain(
       'one winner: a tie goes to more votes in all, then the earlier ship',
     );
+  });
+
+  it('a removed build (T-024): rank kept, "Removed by moderators", no screenshot, no report', () => {
+    const snap = votedResultsSnapshot();
+    snap.builds = snap.builds.map((b) =>
+      b.builder_id === BOB ? { ...b, name: null, screenshot_path: null, taken_down: true } : b,
+    );
+    render(createElement(RoomResults, { state: soloState(snap), remaining: 30_000 }));
+    const rows = screen.getAllByTestId('ranked-build');
+    const bob = must(rows.find((r) => r.dataset['builder'] === BOB));
+    expect(bob.dataset['removed']).toBe('true');
+    expect(bob.dataset['rank']).toBe('1');
+    expect(within(bob).getByTestId('ranked-build-name').textContent).toBe('Removed by moderators');
+    expect(within(bob).getByTestId('removed-build')).toBeTruthy();
+    expect(within(bob).queryByTestId('build-screenshot')).toBeNull();
+    expect(within(bob).queryByTestId('report-build')).toBeNull();
+    // Other players' builds can be reported; your own cannot.
+    const cleo = must(rows.find((r) => r.dataset['builder'] === CLEO));
+    expect(within(cleo).getByTestId('report-build')).toBeTruthy();
+    const me = must(rows.find((r) => r.dataset['builder'] === ME));
+    expect(within(me).queryByTestId('report-build')).toBeNull();
   });
 
   it('a battle without votes keeps the M3 ranking text and no tallies', () => {

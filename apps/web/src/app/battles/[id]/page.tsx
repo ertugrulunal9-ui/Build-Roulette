@@ -1,6 +1,8 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
+import { REMOVED_TEXT, RemovedCard } from '../../../components/moderation/Removed';
+import { ReportButton } from '../../../components/moderation/ReportButton';
 import { MyHistoryLink } from '../../../components/results/MyHistoryLink';
 import { AwardBadges, ChallengeCards, VoteTally } from '../../../components/results/ResultPieces';
 import {
@@ -73,12 +75,15 @@ export default async function BattlePage({ params }: BattlePageProps) {
       <ol className="flex flex-col gap-6" aria-label="Builds">
         {builds.map((b) => {
           const shipped = b.status === 'shipped' || b.status === 'auto_shipped';
+          const removed = b.taken_down === true;
           const buildAwards = awards.filter((a) => a.build_id === b.id);
           const winner = b.final_rank === 1;
           return (
             <li
               key={b.id}
               data-testid="public-build"
+              data-build={b.id}
+              data-removed={removed ? 'true' : 'false'}
               data-rank={b.final_rank ?? ''}
               data-winner={winner ? 'true' : 'false'}
               className={`relative grid grid-cols-1 overflow-hidden rounded-2xl border bg-white shadow-sm md:grid-cols-[3fr_2fr] dark:bg-zinc-900 ${
@@ -96,7 +101,9 @@ export default async function BattlePage({ params }: BattlePageProps) {
                 </span>
               )}
               <div className="relative aspect-[16/10] bg-zinc-100 dark:bg-zinc-800">
-                {b.screenshot_path ? (
+                {removed ? (
+                  <RemovedCard />
+                ) : b.screenshot_path ? (
                   // eslint-disable-next-line @next/next/no-img-element -- a public Supabase Storage URL
                   <img
                     src={screenshotUrl(b.screenshot_path)}
@@ -119,7 +126,9 @@ export default async function BattlePage({ params }: BattlePageProps) {
                     {b.final_rank !== null && (
                       <span className="mr-2 text-zinc-400">#{b.final_rank}</span>
                     )}
-                    {b.name ?? (b.status === 'dnf' ? 'Did not finish' : 'Untitled build')}
+                    {removed
+                      ? REMOVED_TEXT
+                      : (b.name ?? (b.status === 'dnf' ? 'Did not finish' : 'Untitled build'))}
                   </h2>
                   {shipped && b.completion_ms !== null && (
                     <p className="font-mono text-lg font-bold" data-testid="public-completion">
@@ -138,6 +147,14 @@ export default async function BattlePage({ params }: BattlePageProps) {
                     {b.stats.files ?? 0} files · {b.stats.lines ?? 0} lines · made with{' '}
                     {b.stats.deps.join(', ')}
                   </p>
+                )}
+                {shipped && !removed && (
+                  <div className="flex justify-end">
+                    <ReportButton
+                      buildId={b.id}
+                      buildLabel={`${b.name ? `“${b.name}”` : 'A build'} by ${b.builder_name}`}
+                    />
+                  </div>
                 )}
               </div>
             </li>

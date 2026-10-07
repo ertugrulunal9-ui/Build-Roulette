@@ -120,7 +120,7 @@ select is((:'n_pub'::jsonb) -> 'players', '["Nora"]'::jsonb, 'players are displa
 select is(
   (select array_agg(k order by k) from jsonb_object_keys((:'n_pub'::jsonb) -> 'builds' -> 0) k),
   array['builder_name', 'capture_status', 'completion_ms', 'final_rank', 'id', 'name',
-        'screenshot_path', 'shipped_at', 'stats', 'status', 'total_votes', 'votes'],
+        'screenshot_path', 'shipped_at', 'stats', 'status', 'taken_down', 'total_votes', 'votes'],
   'builds: the permanent fields only (no builder id, no source_destroyed_at; votes = per-category counts)');
 select results_eq(
   format($$ select b ->> 'builder_name', b ->> 'name', b ->> 'status', (b ->> 'completion_ms')::int,

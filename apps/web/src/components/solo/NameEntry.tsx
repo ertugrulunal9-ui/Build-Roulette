@@ -91,9 +91,10 @@ export function NameEntry({ busy, error, onSpin }: NameEntryProps) {
         {error && (
           <p role="alert" className="text-sm text-red-700 dark:text-red-300">
             {describeError(error)}
-            {error.details && error.code !== 'battle_in_progress' && (
-              <span className="block text-xs opacity-75">{error.details}</span>
-            )}
+            {error.details &&
+              !['battle_in_progress', 'name_not_allowed', 'rate_limited'].includes(error.code) && (
+                <span className="block text-xs opacity-75">{error.details}</span>
+              )}
           </p>
         )}
       </form>

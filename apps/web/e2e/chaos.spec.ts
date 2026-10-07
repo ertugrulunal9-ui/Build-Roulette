@@ -22,6 +22,7 @@ import {
 import {
   assertUuid,
   dropRealtimeDatabaseFeed,
+  keepRealtimeDatabaseFeedDown,
   ephemeralText,
   realtimeDatabaseFeedUp,
   sql,
@@ -1019,6 +1020,12 @@ test('Realtime stops delivering the battle events mid-REVEAL (channels still sub
   // itself every 10 minutes; it made the 6- and 8-player tests fail now and then).
   dropRealtimeDatabaseFeed();
   expect(realtimeDatabaseFeedUp()).toBe(false);
+  // A broadcast already on its way when the connection went down can still arrive (seen: a
+  // capture event 0.6 s after the drop, T-024). Let it land before counting.
+  await una.page.waitForTimeout(1_500);
+  // And Realtime's own 5-minute timer must not bring the feed back mid-test (it did, 22 s
+  // after the drop, whenever the test happened to run across that tick).
+  const feedGuard = keepRealtimeDatabaseFeedDown();
   counting = true;
   // The capture worker screenshots the builds meanwhile: more versions nobody hears of, so
   // the host's Next is likely to go out with a stale version (resent by the controller).
@@ -1080,6 +1087,8 @@ test('Realtime stops delivering the battle events mid-REVEAL (channels still sub
     await expect(p.page.getByTestId('results')).toBeVisible({ timeout: 25_000 });
   }
   // Still no feed: the pages kept up without a single battle event.
+  const restarts = await feedGuard.stop();
+  info.annotations.push({ type: 'Realtime feed restarts undone', description: String(restarts) });
   expect(realtimeDatabaseFeedUp()).toBe(false);
   expect(battleFrames).toEqual([0, 0, 0]);
   expect(

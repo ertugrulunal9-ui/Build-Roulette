@@ -3,7 +3,8 @@
  * each loop calls `claim_job` and, when there is nothing to do, sleeps with exponential
  * backoff (idleMinMs → idleMaxMs, reset by the next job).
  *
- * - `captureConcurrency` capture loops (default 1) and one destroy loop.
+ * - `captureConcurrency` capture loops (default 1), one destroy loop and one takedown loop
+ *   (T-024: moderation takedowns delete a build's screenshot).
  * - Each job runs under its own AbortSignal that fires at `jobTimeoutMs`, well inside the
  *   2-minute lease, so a stuck job is given back (`fail_job`) before another worker could
  *   claim it.
@@ -14,6 +15,7 @@
 import type { Backend, Job, JobKind } from './backend';
 import { processCaptureJob, type CaptureConfig, type CaptureOutcome } from './capture-job';
 import { processDestroyJob, type DestroyOutcome } from './destroy-job';
+import { processTakedownJob, type TakedownOutcome } from './takedown-job';
 import { errorMessage, type Logger } from './log';
 import type { Renderer } from './renderer';
 
@@ -23,7 +25,7 @@ export interface RunnerOptions {
   idleMaxMs: number;
   jobTimeoutMs: number;
   shutdownGraceMs: number;
-  /** Which loops `start()` runs. Default both. */
+  /** Which loops `start()` runs. Default all three. */
   kinds?: readonly JobKind[];
 }
 
@@ -42,7 +44,7 @@ export interface RunnerDeps {
   log: Logger;
 }
 
-export type JobOutcome = CaptureOutcome | DestroyOutcome;
+export type JobOutcome = CaptureOutcome | DestroyOutcome | TakedownOutcome;
 
 interface InFlight {
   job: Job;
@@ -67,13 +69,14 @@ export class WorkerRunner {
   /** Starts the polling loops. */
   start(): void {
     if (this.loops.length > 0) throw new Error('already started');
-    const kinds = this.opts.kinds ?? ['capture', 'destroy'];
+    const kinds = this.opts.kinds ?? ['capture', 'destroy', 'takedown'];
     if (kinds.includes('capture')) {
       for (let i = 0; i < this.opts.captureConcurrency; i++) {
         this.loops.push(this.loop('capture', i));
       }
     }
     if (kinds.includes('destroy')) this.loops.push(this.loop('destroy', 0));
+    if (kinds.includes('takedown')) this.loops.push(this.loop('takedown', 0));
   }
 
   /**
@@ -143,11 +146,17 @@ export class WorkerRunner {
               job,
               ctrl.signal,
             )
-          : await processDestroyJob(
-              { backend: this.deps.backend, log: this.deps.log },
-              job,
-              ctrl.signal,
-            );
+          : job.kind === 'destroy'
+            ? await processDestroyJob(
+                { backend: this.deps.backend, log: this.deps.log },
+                job,
+                ctrl.signal,
+              )
+            : await processTakedownJob(
+                { backend: this.deps.backend, log: this.deps.log },
+                job,
+                ctrl.signal,
+              );
       log.info('job.end', { result: outcome.result, ms: Date.now() - started });
       return outcome;
     } catch (e) {

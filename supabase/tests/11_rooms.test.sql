@@ -88,8 +88,9 @@ reset role;
 -- ═══ join_room ═══════════════════════════════════════════════════════
 set local role authenticated;
 select set_config('request.jwt.claims', :'ivan', true);
-select throws_ok($$ select public.join_room('ZZZZZ', 'ivan') $$, 'P0002', 'room_not_found', 'unknown code');
-select throws_ok($$ select public.join_room('I0O1x', 'ivan') $$, 'P0002', 'room_not_found', 'malformed code');
+select is(public.join_room('ZZZZZ', 'ivan') - 'details' - 'hint', '{"code":"P0002","message":"room_not_found"}'::jsonb,
+  'unknown code (returned with HTTP 404, not raised, so the failure is counted: 19_moderation)');
+select is(public.join_room('I0O1x', 'ivan') ->> 'message', 'room_not_found', 'malformed code');
 select throws_ok(format($$ select public.join_room(%L, '') $$, :'code_a'), '22023', 'invalid_display_name',
   'join needs a display name');
 select is(public.join_room(' ' || lower(:'code_a') || ' ', 'ivan') - 'room_id',
@@ -145,8 +146,9 @@ reset role;
 update public.rooms set status = 'closed', closed_at = now() where id = ((:'l3'::jsonb) ->> 'room_id')::uuid;
 set local role authenticated;
 select set_config('request.jwt.claims', :'ivan', true);
-select throws_ok(format($$ select public.join_room(%L, 'ivan') $$, (:'l3'::jsonb) ->> 'code'), 'P0001', 'room_closed',
-  'a closed room cannot be joined');
+select is(public.join_room((:'l3'::jsonb) ->> 'code', 'ivan') - 'details' - 'hint',
+  '{"code":"P0001","message":"room_closed"}'::jsonb,
+  'a closed room cannot be joined (returned with HTTP 400, not raised)');
 reset role;
 select results_eq(
   format($$ select count(*)::int from public.room_members where room_id = %L $$, (:'l3'::jsonb) ->> 'room_id'),

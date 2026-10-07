@@ -80,5 +80,10 @@ export const REVEAL_VOTE_PHASE_REASONS = [
   'all_voted',
   /** Fewer than 2 final builds: SHIPPING went straight to RESULTS. */
   'too_few_builds',
+  /**
+   * A moderator took down the build on screen during REVEAL (T-024): the reveal moved on to
+   * the next build that was not taken down (or to VOTING).
+   */
+  'takedown',
 ] as const;
 export type RevealVotePhaseReason = (typeof REVEAL_VOTE_PHASE_REASONS)[number];

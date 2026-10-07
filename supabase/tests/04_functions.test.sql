@@ -73,6 +73,16 @@ select set_eq(
     'public.cast_vote(p_battle_id uuid, p_category text, p_build_id uuid)',
     'public.get_my_votes(p_battle_id uuid)',
     'public.get_reveal_builds(p_battle_id uuid)',
+    -- moderation (T-024): reporting for everyone signed in; the admin RPCs check
+    -- is_admin() themselves (21_admin.test.sql)
+    'public.report_build(p_build_id uuid, p_reason text, p_details text)',
+    'public.is_admin()',
+    'public.admin_report_queue(p_resolved boolean, p_limit integer)',
+    'public.admin_dismiss_reports(p_build_id uuid, p_note text)',
+    'public.admin_take_down_build(p_build_id uuid, p_note text)',
+    'public.admin_battle_log(p_battle_id uuid)',
+    'public.admin_room_log(p_code text)',
+    'public.admin_action_log(p_limit integer)',
     -- RLS helpers called by table, storage and realtime.messages policies
     'public.is_room_member(p_room_id uuid)',
     'public.is_battle_member(p_battle_id uuid)',
@@ -91,6 +101,7 @@ from unnest(array[
   'public.complete_capture(uuid, public.capture_status, text)',
   'public.fail_job(bigint, text)',
   'public.complete_destroy(uuid)',
+  'public.complete_takedown(uuid)',
   'public.sweep_deadlines()',
   'public.sweep_ttl()',
   'public.advance_battle(uuid, integer)']) as f;

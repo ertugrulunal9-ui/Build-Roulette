@@ -77,10 +77,14 @@ export class SupabaseBackend implements Backend {
     await this.rpc('complete_destroy', { p_battle_id: battleId });
   }
 
+  async completeTakedown(buildId: string): Promise<void> {
+    await this.rpc('complete_takedown', { p_build_id: buildId });
+  }
+
   async getBuild(buildId: string): Promise<BuildRow | null> {
     const q = new URLSearchParams({
       id: `eq.${buildId}`,
-      select: 'id,battle_id,builder_id,status,capture_status',
+      select: 'id,battle_id,builder_id,status,capture_status,taken_down_at',
     });
     const res = await this.request('GET', `/rest/v1/builds?${q.toString()}`);
     const rows = (await this.json(res)) as BuildRow[];

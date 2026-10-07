@@ -203,14 +203,14 @@ select is(
 select is(
   (select array_agg(k order by k) from jsonb_object_keys((:'h'::jsonb) -> 'battles' -> 0 -> 'build') k),
   array['capture_status', 'completion_ms', 'final_rank', 'id', 'name', 'screenshot_path',
-        'status', 'total_votes', 'votes'],
+        'status', 'taken_down', 'total_votes', 'votes'],
   'build: permanent fields only (no builder id, no source paths, no stats)');
 select is((:'h'::jsonb) -> 'battles' -> 0 -> 'challenge',
   '{"build":{"text":"Build 1"},"rule":{"text":"Rule 1"},"style":{"text":"Style 1"},"time_limit_seconds":300}'::jsonb,
   'the challenge texts and the time limit');
 select is(
   ((:'h'::jsonb) -> 'battles' -> 0 -> 'build') - 'id',
-  '{"name":"Snack Overflow","status":"shipped","completion_ms":180000,"final_rank":2,"total_votes":3,"votes":{"overall":1,"rule":2,"style":0,"chaos":0},"capture_status":"captured","screenshot_path":"b1000000-0000-0000-0000-000000000001/d1000000-0000-0000-0000-0000000000a1.webp"}'::jsonb,
+  '{"name":"Snack Overflow","status":"shipped","completion_ms":180000,"final_rank":2,"total_votes":3,"votes":{"overall":1,"rule":2,"style":0,"chaos":0},"capture_status":"captured","taken_down":false,"screenshot_path":"b1000000-0000-0000-0000-000000000001/d1000000-0000-0000-0000-0000000000a1.webp"}'::jsonb,
   'the build: name, status, time, rank, vote counts per category, public screenshot');
 select is((:'h'::jsonb) -> 'battles' -> 0 ->> 'players_count', '3', 'rank 2 of 3 (N = the builds the results page lists)');
 select is((:'h'::jsonb) -> 'battles' -> 0 -> 'awards', '[{"award":"rule","source":"vote","votes":2}]'::jsonb,
@@ -225,7 +225,7 @@ select is(
 select is(
   (select x -> 'build' from jsonb_array_elements((:'h'::jsonb) -> 'battles') x
    where x ->> 'battle_id' = 'b1000000-0000-0000-0000-000000000004') - 'id',
-  '{"name":null,"status":"dnf","completion_ms":null,"final_rank":null,"total_votes":0,"votes":null,"capture_status":"pending","screenshot_path":null}'::jsonb,
+  '{"name":null,"status":"dnf","completion_ms":null,"final_rank":null,"total_votes":0,"votes":null,"capture_status":"pending","taken_down":false,"screenshot_path":null}'::jsonb,
   'a DNF: no rank, no time, no screenshot');
 select is(
   (select x -> 'build' ->> 'screenshot_path' from jsonb_array_elements((:'h'::jsonb) -> 'battles') x

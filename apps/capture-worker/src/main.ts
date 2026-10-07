@@ -1,8 +1,8 @@
 /**
  * The worker process.
  *
- *   node dist/main.js           run the capture and destroy loops until SIGINT/SIGTERM
- *   node dist/main.js --once    drain both queues once, then exit (cron-style runs, tests)
+ *   node dist/main.js           run the capture, destroy and takedown loops until SIGINT/SIGTERM
+ *   node dist/main.js --once    drain the three queues once, then exit (cron-style runs, tests)
  *
  * Configuration: environment variables, see .env.example. Exit codes: 0 ok, 1 runtime error,
  * 2 configuration error.
@@ -37,7 +37,12 @@ async function main(): Promise<number> {
     try {
       const captures = await runner.drain('capture');
       const destroys = await runner.drain('destroy');
-      log.info('worker.once_done', { captures: captures.length, destroys: destroys.length });
+      const takedowns = await runner.drain('takedown');
+      log.info('worker.once_done', {
+        captures: captures.length,
+        destroys: destroys.length,
+        takedowns: takedowns.length,
+      });
     } finally {
       await renderer.close();
     }

@@ -227,6 +227,23 @@ describe('REVEAL', () => {
     c.dispose();
   });
 
+  it('a build taken down during REVEAL (T-024) loses its prefetched bundle', async () => {
+    const c = controller();
+    c.receive(reveal(0));
+    await flush();
+    const ids = Object.keys(c.getSnapshot().bundles);
+    expect(ids.length).toBeGreaterThan(1);
+    const removedId = ids.find((id) => id !== reveal(0).battle.reveal_order?.[0]) ?? '';
+    const snap = reveal(0, 11);
+    snap.builds = snap.builds.map((b) => (b.id === removedId ? { ...b, taken_down: true } : b));
+    c.receive(snap);
+    expect(Object.keys(c.getSnapshot().bundles)).not.toContain(removedId);
+    // The prefetch moves on to the next build that still has a slot.
+    await flush();
+    expect(Object.keys(c.getSnapshot().bundles).sort()).toEqual(['build-cleo', 'build-me']);
+    c.dispose();
+  });
+
   it('VOTING drops the bundles (no build runs any more)', async () => {
     const c = controller();
     c.receive(reveal(2));
@@ -371,6 +388,29 @@ describe('ballot', () => {
     c.receive(voting({ version: 21 }));
     await flush();
     expect(api.count('getMyVotes')).toBe(1);
+    c.dispose();
+  });
+
+  it('a build taken down mid-vote (T-024) leaves the ballot; the voter picks again', async () => {
+    api.ballot = {
+      overall: 'build-bob',
+      rule: 'build-cleo',
+      style: 'build-bob',
+      chaos: 'build-cleo',
+    };
+    const c = controller();
+    c.receive(voting());
+    await flush();
+    expect(c.getSnapshot().ballot.complete).toBe(true);
+    const snap = voting({ version: 21 });
+    snap.builds = snap.builds.map((b) =>
+      b.id === 'build-bob' ? { ...b, status: 'disqualified', name: null, taken_down: true } : b,
+    );
+    c.receive(snap);
+    expect(c.getSnapshot().ballot).toMatchObject({
+      votes: { rule: 'build-cleo', chaos: 'build-cleo' },
+      complete: false,
+    });
     c.dispose();
   });
 

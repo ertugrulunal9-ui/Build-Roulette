@@ -3,14 +3,14 @@
  * deadlines and inspect storage (like the pgTAP tests and supabase/scripts/e2e-solo.mjs).
  * Connection settings come from the environment or `supabase status -o env`.
  */
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const repoRoot = fileURLToPath(new URL('../../../', import.meta.url));
 let statusEnv: Record<string, string> | null = null;
 
 /** DB_URL, API_URL, SERVICE_ROLE_KEY…: from the environment or `supabase status -o env`. */
-function stackEnv(key: 'DB_URL' | 'API_URL' | 'SERVICE_ROLE_KEY'): string {
+function stackEnv(key: 'DB_URL' | 'API_URL' | 'SERVICE_ROLE_KEY' | 'ANON_KEY'): string {
   const fromEnv = process.env[key];
   if (fromEnv) return fromEnv;
   if (!statusEnv) {
@@ -43,6 +43,54 @@ export async function ephemeralText(path: string): Promise<string | null> {
   if (res.status === 400 || res.status === 404) return null;
   if (!res.ok) throw new Error(`download ${path}: HTTP ${String(res.status)}`);
   return res.text();
+}
+
+/** Uploads a file to the public `screenshots` bucket (service role), like the capture worker. */
+export async function uploadScreenshot(path: string, body: Uint8Array, contentType: string) {
+  const key = stackEnv('SERVICE_ROLE_KEY');
+  const res = await fetch(`${stackEnv('API_URL')}/storage/v1/object/screenshots/${path}`, {
+    method: 'POST',
+    headers: {
+      apikey: key,
+      authorization: `Bearer ${key}`,
+      'content-type': contentType,
+      'x-upsert': 'true',
+    },
+    body: new Uint8Array(body),
+  });
+  if (!res.ok) throw new Error(`upload ${path}: HTTP ${String(res.status)} ${await res.text()}`);
+}
+
+/** The public URL of a `screenshots` object. */
+export function publicScreenshotUrl(path: string): string {
+  return `${stackEnv('API_URL')}/storage/v1/object/public/screenshots/${path}`;
+}
+
+/** A new anonymous auth user (Auth API sign-up, like a first visit); returns its id. */
+export async function anonymousUserId(): Promise<string> {
+  const anon = stackEnv('ANON_KEY');
+  const res = await fetch(`${stackEnv('API_URL')}/auth/v1/signup`, {
+    method: 'POST',
+    headers: { apikey: anon, authorization: `Bearer ${anon}`, 'content-type': 'application/json' },
+    body: '{}',
+  });
+  const body = (await res.json()) as { user?: { id?: string } };
+  if (!res.ok || !body.user?.id) throw new Error(`anonymous sign-up: HTTP ${String(res.status)}`);
+  return body.user.id;
+}
+
+/** Creates (or resets) an email/password admin with supabase/scripts/seed-admin.mjs. */
+export function seedAdmin(email: string, password: string): void {
+  execFileSync('node', ['supabase/scripts/seed-admin.mjs', email, password], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      API_URL: stackEnv('API_URL'),
+      SERVICE_ROLE_KEY: stackEnv('SERVICE_ROLE_KEY'),
+      DB_URL: stackEnv('DB_URL'),
+    },
+  });
 }
 
 /** Runs SQL as the superuser; returns the unaligned, tuples-only output. */
@@ -104,4 +152,54 @@ export function dropRealtimeDatabaseFeed(): void {
 export function realtimeDatabaseFeedUp(): boolean {
   const out = realtimeRpc('IO.puts(Realtime.Tenants.Connect.whereis("realtime-dev") != nil)');
   return out.split('\n').at(-1) === 'true';
+}
+
+function realtimeRpcAsync(expr: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      'docker',
+      ['exec', REALTIME_CONTAINER, '/app/bin/realtime', 'rpc', expr],
+      { encoding: 'utf8' },
+      (error, stdout) => {
+        if (error) reject(new Error(`realtime rpc failed: ${error.message}`));
+        else resolve(stdout.trim());
+      },
+    );
+  });
+}
+
+/**
+ * Keeps the database feed down until `stop()`: the local Realtime restarts the tenant
+ * connection by itself on a 5-minute timer (seen at hh:m4:11 and hh:m9:11, with the
+ * "Killing N transport pids with no channels open" sweep), so a test that runs across that
+ * tick would get its events back. Polls without blocking the test (async docker exec) and
+ * drops the connection again; `stop()` returns how many restarts it undid.
+ */
+export function keepRealtimeDatabaseFeedDown(intervalMs = 300): { stop: () => Promise<number> } {
+  let restarts = 0;
+  const state = { stopped: false };
+  const loop = (async () => {
+    while (!state.stopped) {
+      const up = await realtimeRpcAsync(
+        'IO.puts(Realtime.Tenants.Connect.whereis("realtime-dev") != nil)',
+      ).then(
+        (out) => out.split('\n').at(-1) === 'true',
+        () => false,
+      );
+      if (up) {
+        restarts++;
+        await realtimeRpcAsync('Realtime.Tenants.Connect.shutdown("realtime-dev")').catch(
+          () => undefined,
+        );
+      }
+      await new Promise((r) => setTimeout(r, intervalMs));
+    }
+  })();
+  return {
+    stop: async () => {
+      state.stopped = true;
+      await loop;
+      return restarts;
+    },
+  };
 }

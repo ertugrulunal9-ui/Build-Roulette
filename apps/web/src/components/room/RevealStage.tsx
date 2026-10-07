@@ -22,6 +22,10 @@
  * - **Host:** "Next build" and "Skip to vote" (compare-and-set on the battle version; a
  *   stale click does nothing). They follow the crown when the host changes.
  * - **Strip:** every build in reveal order; revealed ones with their thumbnail.
+ * - **Report** (T-024): next to Skip, for other players' builds; the dialog also offers
+ *   "hide it for me" (= Skip). A build a moderator removed shows "Removed by moderators"
+ *   and never runs (the server skips its slot; this covers the moment before the next
+ *   phase event arrives).
  */
 import { PreviewHandle, type CrashReason, type PreviewBuild } from '@br/runtime';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
@@ -36,6 +40,8 @@ import type { SoloController, SoloState } from '../../lib/solo/controller';
 import { describeError } from '../../lib/solo/errors';
 import type { BattleSnapshot, RevealBuild, SnapshotBuild } from '../../lib/solo/types';
 import { screenshotUrl } from '../../lib/supabase/config';
+import { REMOVED_TEXT, RemovedCard } from '../moderation/Removed';
+import { ReportButton } from '../moderation/ReportButton';
 import { ChallengeCards } from '../results/ResultPieces';
 import { Countdown } from '../solo/Countdown';
 import { Avatar } from './pieces';
@@ -55,19 +61,24 @@ export function buildImage(build: SnapshotBuild | undefined, thumb: string | nul
 
 /** What the spotlight shows in this tab. */
 export type SpotlightView =
-  'skipped' | 'frozen' | 'no_start' | 'still' | 'live' | 'loading' | 'unavailable';
+  'removed' | 'skipped' | 'frozen' | 'no_start' | 'still' | 'live' | 'loading' | 'unavailable';
 
 /**
- * The spotlight's content for this viewer: a local stop (skip, freeze, failed start) wins;
- * then a touch device shows the still image until the viewer taps "run live"; then the
- * bundle's state decides.
+ * The spotlight's content for this viewer: a build removed by a moderator never runs; then
+ * a local stop (skip, freeze, failed start) wins; then a touch device shows the still image
+ * until the viewer taps "run live"; then the bundle's state decides.
  */
 export function spotlightView(
   showState: RevealVoteState,
   buildId: string | null,
-  { stillFirst, tapped }: { stillFirst: boolean; tapped: readonly string[] },
+  {
+    stillFirst,
+    tapped,
+    removed = false,
+  }: { stillFirst: boolean; tapped: readonly string[]; removed?: boolean },
 ): SpotlightView {
   if (buildId === null) return 'loading';
+  if (removed) return 'removed';
   if (showState.skipped.includes(buildId)) return 'skipped';
   if (showState.frozen.includes(buildId)) return 'frozen';
   if (showState.failedToStart.includes(buildId)) return 'no_start';
@@ -125,15 +136,16 @@ export function RevealStage({
     spot?.builder_name ??
     snapshot.players.find((p) => p.user_id === builderId)?.display_name ??
     'Someone';
+  const removed = spot?.taken_down === true || fallback?.taken_down === true;
   // An auto-shipped autosave has no name.
-  const name = spot?.name ?? fallback?.name ?? `${builderName}'s build`;
+  const name = removed ? REMOVED_TEXT : (spot?.name ?? fallback?.name ?? `${builderName}'s build`);
   const autoShipped = (spot?.status ?? fallback?.status) === 'auto_shipped';
   const mine = builderId === snapshot.me.user_id;
   const bundle = buildId ? showState.bundles[buildId] : undefined;
   const stillFirst = useTouchPrimary();
   // Builds this viewer chose to run live (a touch device starts each one as a still image).
   const [tapped, setTapped] = useState<readonly string[]>([]);
-  const view = spotlightView(showState, buildId, { stillFirst, tapped });
+  const view = spotlightView(showState, buildId, { stillFirst, tapped, removed });
   const stopped = view === 'skipped' || view === 'frozen' || view === 'no_start';
   const image = buildImage(fallback, buildId ? (showState.thumbs[buildId] ?? null) : null);
   const isHost = snapshot.me.is_host === true;
@@ -220,7 +232,21 @@ export function RevealStage({
                 for Build Roulette.
               </span>
               <div className="ml-auto flex gap-2">
-                {stopped ? (
+                {buildId && !mine && !removed && (
+                  <ReportButton
+                    buildId={buildId}
+                    buildLabel={`${(spot?.name ?? fallback?.name) ? `“${name}”` : 'A build'} by ${builderName}`}
+                    tone="dark"
+                    onHide={
+                      stopped
+                        ? undefined
+                        : () => {
+                            show.skip(buildId);
+                          }
+                    }
+                  />
+                )}
+                {view === 'removed' ? null : stopped ? (
                   <button
                     type="button"
                     data-testid="watch-build"
@@ -252,7 +278,9 @@ export function RevealStage({
               </div>
             </div>
             <div className="relative min-h-0 flex-1 bg-white">
-              {stopped ? (
+              {view === 'removed' ? (
+                <RemovedCard />
+              ) : stopped ? (
                 <StillImage
                   image={image}
                   name={name}
@@ -552,7 +580,11 @@ function RevealStrip({
             snapshot.builds.find((x) => x.id === id),
             showState.thumbs[id] ?? null,
           );
-          const label = b?.name ?? `${b?.builder_name ?? 'Someone'}'s build`;
+          const removed =
+            b?.taken_down === true || snapshot.builds.find((x) => x.id === id)?.taken_down === true;
+          const label = removed
+            ? REMOVED_TEXT
+            : (b?.name ?? `${b?.builder_name ?? 'Someone'}'s build`);
           return (
             <li
               key={id}
@@ -567,7 +599,9 @@ function RevealStrip({
               } ${state === 'upcoming' ? 'opacity-60' : ''}`}
             >
               <div className="relative aspect-[16/10] bg-zinc-800">
-                {state === 'upcoming' ? (
+                {removed ? (
+                  <RemovedCard compact />
+                ) : state === 'upcoming' ? (
                   <p className="absolute inset-0 grid place-items-center text-2xl font-black text-zinc-500">
                     ?
                   </p>

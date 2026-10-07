@@ -17,6 +17,8 @@ import { myBuild, type SoloState } from '../../lib/solo/controller';
 import { CAPTURE_TEXT, formatCompletion, formatCountdown } from '../../lib/solo/format';
 import type { BattleSnapshot, SnapshotBuild } from '../../lib/solo/types';
 import { screenshotUrl } from '../../lib/supabase/config';
+import { REMOVED_TEXT, RemovedCard } from '../moderation/Removed';
+import { ReportButton } from '../moderation/ReportButton';
 import { AwardBadges, ChallengeCards, VoteTally } from '../results/ResultPieces';
 import { RevealPane } from '../solo/RevealPane';
 
@@ -72,8 +74,9 @@ export function RoomResults({ state, remaining, lostVotes }: RoomResultsProps) {
   const isPlayer = snapshot.me.is_player;
   const shipped = mine?.status === 'shipped' || mine?.status === 'auto_shipped';
   // The last look runs the player's own final build; without one there is nothing to run
-  // (a DNF, e.g. a phone player), so the pane would only take a phone's whole screen.
-  const lastLook = isPlayer && shipped;
+  // (a DNF, e.g. a phone player), so the pane would only take a phone's whole screen. A
+  // build a moderator removed is not shown either (T-024).
+  const lastLook = isPlayer && shipped && mine.taken_down !== true;
   const pendingCaptures = snapshot.builds.some(
     (b) =>
       (b.status === 'shipped' || b.status === 'auto_shipped') && b.capture_status === 'pending',
@@ -130,11 +133,13 @@ export function RoomResults({ state, remaining, lostVotes }: RoomResultsProps) {
               {caption}
             </p>
           )}
-          {mine && !shipped && (
+          {mine && (!shipped || mine.taken_down === true) && (
             <p className="text-sm text-zinc-500" data-testid="no-last-look">
-              {mine.status === 'disqualified'
-                ? 'Your build was disqualified.'
-                : 'You did not ship this time. There is always the rematch.'}
+              {mine.taken_down === true
+                ? 'Your build was removed by the moderators.'
+                : mine.status === 'disqualified'
+                  ? 'Your build was disqualified.'
+                  : 'You did not ship this time. There is always the rematch.'}
             </p>
           )}
         </section>
@@ -171,8 +176,9 @@ function RankedBuilds({ snapshot }: { snapshot: BattleSnapshot }) {
     <ol className="flex flex-col gap-3">
       {builds.map((b) => {
         const shipped = b.status === 'shipped' || b.status === 'auto_shipped';
+        const removed = b.taken_down === true;
         const isMe = b.builder_id === snapshot.me.user_id;
-        const badge = STATUS_BADGE[b.status];
+        const badge = removed ? undefined : STATUS_BADGE[b.status];
         const hasShot =
           shipped &&
           b.screenshot_path !== null &&
@@ -184,6 +190,7 @@ function RankedBuilds({ snapshot }: { snapshot: BattleSnapshot }) {
             data-testid="ranked-build"
             data-rank={b.final_rank ?? ''}
             data-status={b.status}
+            data-removed={removed ? 'true' : 'false'}
             data-builder={b.builder_id}
             data-capture={shipped ? b.capture_status : 'none'}
             data-winner={winner ? 'true' : 'false'}
@@ -213,7 +220,9 @@ function RankedBuilds({ snapshot }: { snapshot: BattleSnapshot }) {
               </span>
             </div>
             <div className="relative aspect-[16/10] w-24 shrink-0 self-start overflow-hidden rounded-lg bg-zinc-100 sm:w-48 sm:self-auto dark:bg-zinc-800">
-              {hasShot && b.screenshot_path ? (
+              {removed ? (
+                <RemovedCard compact />
+              ) : hasShot && b.screenshot_path ? (
                 // eslint-disable-next-line @next/next/no-img-element -- a public Supabase Storage URL
                 <img
                   src={screenshotUrl(b.screenshot_path)}
@@ -232,8 +241,10 @@ function RankedBuilds({ snapshot }: { snapshot: BattleSnapshot }) {
                 className="truncate text-base font-black sm:text-lg"
                 data-testid="ranked-build-name"
               >
-                {b.name ??
-                  (b.status === 'dnf' ? 'Did not finish' : `${nameOf(b.builder_id)}'s build`)}
+                {removed
+                  ? REMOVED_TEXT
+                  : (b.name ??
+                    (b.status === 'dnf' ? 'Did not finish' : `${nameOf(b.builder_id)}'s build`))}
               </p>
               <p className="text-sm text-zinc-600 dark:text-zinc-400">
                 by{' '}
@@ -268,6 +279,14 @@ function RankedBuilds({ snapshot }: { snapshot: BattleSnapshot }) {
                   </span>
                 )}
                 <AwardBadges awards={snapshot.awards.filter((a) => a.build_id === b.id)} />
+                {shipped && !removed && !isMe && (
+                  <span className="ml-auto">
+                    <ReportButton
+                      buildId={b.id}
+                      buildLabel={`${b.name ? `“${b.name}”` : 'A build'} by ${nameOf(b.builder_id)}`}
+                    />
+                  </span>
+                )}
               </div>
               {voted && shipped && <VoteTally votes={b.votes} total={b.total_votes} />}
             </div>

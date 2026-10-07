@@ -136,6 +136,11 @@ export interface SnapshotBuild {
   total_votes: number;
   /** Multiplayer: per-category votes, null until RESULTS (and for builds that were not final). */
   votes?: VoteCounts | null;
+  /**
+   * T-024: a moderator removed the build (name and screenshot are null). In a running battle
+   * it is also `disqualified`. Older servers omit it.
+   */
+  taken_down?: boolean;
 }
 
 /** `advance_battle` */
@@ -192,6 +197,8 @@ export interface PublicBuild {
   stats: BuildStats;
   capture_status: CaptureStatus;
   screenshot_path: string | null;
+  /** T-024: removed by moderators (no name, no screenshot; rank and votes kept). */
+  taken_down?: boolean;
 }
 
 // ─── REVEAL and VOTING (M4) ───────────────────────────────────────────────────────────
@@ -205,6 +212,8 @@ export interface RevealBuild {
   builder_id: string;
   builder_name: string;
   status: BuildStatus;
+  /** T-024: removed by moderators: no files, no name; the reveal skips its slot. */
+  taken_down?: boolean;
   files: {
     js: string | null;
     css: string | null;

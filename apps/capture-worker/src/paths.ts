@@ -62,6 +62,22 @@ export function screenshotPath(build: Pick<BuildRow, 'id' | 'battle_id'>): strin
   return `${build.battle_id}/${build.id}.webp`;
 }
 
+/** The battle's folder in `screenshots`, with the trailing slash. */
+export function screenshotPrefix(battleId: string): string {
+  assertUuid('battle id', battleId);
+  return `${battleId}/`;
+}
+
+/**
+ * True for an entry name (relative to {@link screenshotPrefix}) that is a screenshot of the
+ * build: `{build}.webp`, `{build}.png`, or any other `{build}.<ext>` the worker or an
+ * operator may have left.
+ */
+export function isScreenshotOf(buildId: string, name: string): boolean {
+  assertUuid('build id', buildId);
+  return name.startsWith(`${buildId}.`) && !name.includes('/');
+}
+
 /** The battle's folder in `ephemeral-builds`, with the trailing slash. */
 export function battlePrefix(battleId: string): string {
   assertUuid('battle id', battleId);

@@ -5,6 +5,7 @@
  */
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { supabaseConfig } from './config';
+import { getCaptchaToken } from './turnstile';
 
 let client: SupabaseClient | null = null;
 
@@ -23,12 +24,19 @@ export function getSupabase(): SupabaseClient {
 /**
  * Makes sure the tab has a session, signing in anonymously if needed. Returns the user id.
  * A refresh keeps the same anonymous user (the session is stored), which is what lets a
- * player resume a running battle.
+ * player resume a running battle. With `NEXT_PUBLIC_TURNSTILE_SITE_KEY` set, a Turnstile
+ * token goes with the sign-up (turnstile.ts); without it (local, tests) none is sent.
  */
-export async function ensureSignedIn(supabase: SupabaseClient = getSupabase()): Promise<string> {
+export async function ensureSignedIn(
+  supabase: SupabaseClient = getSupabase(),
+  captcha: () => Promise<string | undefined> = getCaptchaToken,
+): Promise<string> {
   const { data } = await supabase.auth.getSession();
   if (data.session) return data.session.user.id;
-  const { data: signedIn, error } = await supabase.auth.signInAnonymously();
+  const captchaToken = await captcha();
+  const { data: signedIn, error } = await supabase.auth.signInAnonymously(
+    captchaToken ? { options: { captchaToken } } : undefined,
+  );
   if (error) throw error;
   const id = signedIn.user?.id;
   if (!id) throw new Error('anonymous sign-in returned no user');

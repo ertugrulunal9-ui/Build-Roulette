@@ -31,7 +31,15 @@ import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { BUILD_TIME_LIMITS_MINUTES, DEFAULT_PHASE_DURATIONS } from './durations';
-import { CAST_VOTE_ERRORS, JOIN_ROOM_ERRORS, RPC_ERROR_CODES, SERVICE_ERROR_CODES } from './errors';
+import {
+  ADMIN_ERROR_CODES,
+  CAST_VOTE_ERRORS,
+  JOIN_ROOM_ERRORS,
+  REPORT_BUILD_ERRORS,
+  RPC_ERROR_CODES,
+  SERVICE_ERROR_CODES,
+} from './errors';
+import { RATE_LIMITS, RATE_LIMIT_ACTIONS, REPORT_DETAILS_MAX, REPORT_REASONS } from './moderation';
 import { BATTLE_PHASES, isBattlePhase } from './phases';
 import {
   REVEAL_SLOT_MAX_SECONDS,
@@ -445,7 +453,7 @@ describe('schema drift: rooms and Realtime', () => {
         raised.add(m[1] ?? '');
       }
     }
-    const known = [...RPC_ERROR_CODES, ...SERVICE_ERROR_CODES];
+    const known = [...RPC_ERROR_CODES, ...SERVICE_ERROR_CODES, ...ADMIN_ERROR_CODES];
     expect(new Set(known).size, 'a code is listed twice').toBe(known.length);
     expect([...raised].sort()).toEqual([...known].sort());
   });
@@ -463,17 +471,25 @@ describe('schema drift: rooms and Realtime', () => {
     expect([...raised].sort()).toEqual([...CAST_VOTE_ERRORS].sort());
   });
 
-  it('JOIN_ROOM_ERRORS lists what public.join_room raises (plus the display name check)', () => {
-    const body = lastPrivateFunctionBody(readMigrations(), 'join_room', {
-      anyArgs: true,
-      schema: 'public',
-    });
-    expect(body, 'public.join_room not found').not.toBeNull();
+  it('JOIN_ROOM_ERRORS lists what join_room answers (plus the display name check and the limit)', () => {
+    const files = readMigrations();
+    // Since T-024 the body is private.join_room_as; public.join_room wraps it, returns the
+    // two "code leads nowhere" failures instead of raising them, and counts them.
+    const inner = lastPrivateFunctionBody(files, 'join_room_as', { anyArgs: true });
+    const outer = lastPrivateFunctionBody(files, 'join_room', { anyArgs: true, schema: 'public' });
+    expect(inner, 'private.join_room_as not found').not.toBeNull();
+    expect(outer, 'public.join_room not found').not.toBeNull();
     const raised = new Set(
-      [...(body ?? '').matchAll(/\bmessage\s*=\s*'([a-z_]+)'/g)].map((m) => m[1] ?? ''),
+      [...`${inner ?? ''}\n${outer ?? ''}`.matchAll(/\bmessage\s*=\s*'([a-z_]+)'/g)].map(
+        (m) => m[1] ?? '',
+      ),
     );
-    expect(body).toMatch(/private\.check_display_name\(/);
-    raised.add('invalid_display_name');
+    expect(inner).toMatch(/private\.check_display_name\(/);
+    raised.add('invalid_display_name').add('name_not_allowed');
+    expect(outer).toMatch(/private\.rate_limit_check\('join_room_failed'/);
+    expect(outer).toMatch(/private\.rate_limit_record\('join_room_failed'/);
+    raised.add('rate_limited');
+    expect(inList(outer ?? '', /\bif\s+v_msg\s+not\b/i)).toEqual(['room_not_found', 'room_closed']);
     expect([...raised].sort()).toEqual([...JOIN_ROOM_ERRORS].sort());
   });
 
@@ -718,6 +734,113 @@ describe('schema drift: vote ranks and awards (T-022)', () => {
       distinctOn: true,
       positiveOnly: true,
       awards: ['slug', 'count:category desc', 'build_id'],
+    });
+  });
+});
+
+// ─── Moderation (T-024) ───────────────────────────────────────────────────────────────
+
+/** The rows of the last `insert into private.rate_limits (...) values ...`. */
+function rateLimitSeed(files: readonly { name: string; sql: string }[]) {
+  const pattern =
+    /\binsert\s+into\s+private\.rate_limits\s*\(([^)]*)\)\s*values\s*([\s\S]*?)(?:\bon\s+conflict\b|;)/gi;
+  let rows: Record<string, { max: number; windowSeconds: number }> | null = null;
+  for (const { sql } of files) {
+    for (const match of stripSqlComments(sql).matchAll(pattern)) {
+      const columns = (match[1] ?? '').split(',').map((c) => c.trim());
+      const ia = columns.indexOf('action');
+      const im = columns.indexOf('max_count');
+      const iw = columns.indexOf('window_s');
+      rows = {};
+      for (const t of (match[2] ?? '').matchAll(new RegExp(String.raw`\(([^()]*)\)`, 'g'))) {
+        const values = [...(t[1] ?? '').matchAll(new RegExp(String.raw`${LITERAL}|\d+`, 'g'))].map(
+          (v) => v[0],
+        );
+        const action = unquote(values[ia] ?? "''");
+        rows[action] = { max: Number(values[im]), windowSeconds: Number(values[iw]) };
+      }
+    }
+  }
+  return rows;
+}
+
+/** The quoted values of the `reason in (...)` check in `create table public.reports`. */
+function reportReasonCheck(files: readonly { name: string; sql: string }[]): string[] {
+  for (const { sql } of files) {
+    const at = /\bcreate\s+table\s+public\.reports\b/i.exec(stripSqlComments(sql));
+    if (!at) continue;
+    const table = stripSqlComments(sql).slice(at.index);
+    return inList(table, /\breason\b[^,]*\bcheck\s*\(\s*reason\b/i);
+  }
+  return [];
+}
+
+describe('schema drift: moderation (T-024)', () => {
+  it('REPORT_REASONS matches the reports check constraint and report_build', () => {
+    const files = readMigrations();
+    expect(reportReasonCheck(files)).toEqual([...REPORT_REASONS]);
+    const body = lastPrivateFunctionBody(files, 'report_build', {
+      anyArgs: true,
+      schema: 'public',
+    });
+    expect(body, 'public.report_build not found').not.toBeNull();
+    expect(inList(body ?? '', /\bp_reason\s+not\b/i)).toEqual([...REPORT_REASONS]);
+    expect(body).toContain(`char_length(v_details) > ${String(REPORT_DETAILS_MAX)}`);
+  });
+
+  it('REPORT_BUILD_ERRORS lists what public.report_build raises (besides not_authenticated)', () => {
+    const body = lastPrivateFunctionBody(readMigrations(), 'report_build', {
+      anyArgs: true,
+      schema: 'public',
+    });
+    const raised = new Set(
+      [...(body ?? '').matchAll(/\bmessage\s*=\s*'([a-z_]+)'/g)].map((m) => m[1] ?? ''),
+    );
+    expect(body).toMatch(/private\.require_auth\(\)/);
+    expect(body).toMatch(/private\.rate_limit\('report_build'/);
+    raised.add('rate_limited');
+    expect([...raised].sort()).toEqual([...REPORT_BUILD_ERRORS].sort());
+  });
+
+  it('RATE_LIMITS matches the private.rate_limits seed', () => {
+    const seed = rateLimitSeed(readMigrations());
+    expect(seed, 'no insert into private.rate_limits found').not.toBeNull();
+    expect(Object.keys(seed ?? {}).sort()).toEqual([...RATE_LIMIT_ACTIONS].sort());
+    expect(seed).toEqual(RATE_LIMITS);
+  });
+
+  it('each limited RPC applies its limit, and the names go through the filter', () => {
+    const files = readMigrations();
+    const pub = (name: string) =>
+      lastPrivateFunctionBody(files, name, { anyArgs: true, schema: 'public' }) ?? '';
+    expect(pub('create_room')).toMatch(/private\.rate_limit\('create_room'/);
+    expect(pub('start_solo_battle')).toMatch(/private\.rate_limit\('start_solo_battle'/);
+    expect(pub('cast_vote')).toMatch(/private\.rate_limit\('cast_vote'/);
+    expect(pub('report_build')).toMatch(/private\.rate_limit\('report_build'/);
+    expect(pub('create_room')).toMatch(/private\.check_display_name\(/);
+    expect(pub('start_solo_battle')).toMatch(/private\.check_display_name\(/);
+    expect(pub('ship_build')).toMatch(/private\.check_name_allowed\(v_name, 'build'\)/);
+    const check = lastPrivateFunctionBody(files, 'check_display_name', { anyArgs: true }) ?? '';
+    expect(check).toMatch(/private\.check_name_allowed\(v_name, 'display'\)/);
+  });
+
+  it('parses the rate limit seed and the reason check', () => {
+    const files = [
+      {
+        name: '1.sql',
+        sql: `create table public.reports (
+                reason text not null check (reason in ('a', 'b')), -- the reasons
+                status text not null check (status in ('x')));
+              insert into private.rate_limits (action, max_count, window_s, label) values
+                ('one', 10, 3600, 'ones'), -- first
+                ('two', 2, 60, 'it''s')
+              on conflict (action) do nothing;`,
+      },
+    ];
+    expect(reportReasonCheck(files)).toEqual(['a', 'b']);
+    expect(rateLimitSeed(files)).toEqual({
+      one: { max: 10, windowSeconds: 3600 },
+      two: { max: 2, windowSeconds: 60 },
     });
   });
 });

@@ -52,9 +52,10 @@ export function VoteStage({
   const snapshot = battleState.snapshot;
   if (!snapshot) throw new Error('VoteStage needs a snapshot');
   const order = snapshot.battle.reveal_order ?? [];
+  // A build a moderator took down (T-024) is out of the vote.
   const builds = order
     .map((id) => snapshot.builds.find((b) => b.id === id))
-    .filter((b): b is SnapshotBuild => b !== undefined);
+    .filter((b): b is SnapshotBuild => b !== undefined && b.taken_down !== true);
   const categories = snapshot.vote_categories ?? [];
   const progress = snapshot.vote_progress ?? null;
   const ballot = showState.ballot;

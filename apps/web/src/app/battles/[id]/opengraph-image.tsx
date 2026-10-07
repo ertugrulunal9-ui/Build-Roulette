@@ -158,7 +158,7 @@ export default async function Image({ params }: { params: Promise<{ id: string }
               </div>
             )}
             <div style={{ display: 'flex', fontSize: 34, fontWeight: 900 }}>
-              {top.name ?? 'Did not finish'}
+              {top.taken_down ? 'Removed by moderators' : (top.name ?? 'Did not finish')}
             </div>
             <div style={{ display: 'flex', fontSize: 24, color: '#d4d4d8' }}>
               by {top.builder_name}

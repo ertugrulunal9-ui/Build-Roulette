@@ -9,7 +9,15 @@ Server-side screenshots and source destruction for finished battles
   shell's signed capture page, takes a 1280×800 PNG, converts it to WebP and stores it at
   `screenshots/{battle}/{build}.webp`, then `complete_capture('captured')`;
 - **destroy:** deletes `ephemeral-builds/{battle}/**` through the Storage API, checks that
-  nothing is left, then `complete_destroy(battle)`.
+  nothing is left, then `complete_destroy(battle)`;
+- **takedown** (T-024): a moderator took a build down. Deletes
+  `screenshots/{battle}/{build}.*` through the Storage API (only names that start with the
+  build id, only for a build whose `taken_down_at` is set), checks that nothing is left, then
+  `complete_takedown(build)` (`src/takedown-job.ts`). The build is already hidden
+  everywhere by then (the admin RPC cleared its name and screenshot path); this removes the
+  file, which its public URL served until now. SQL holds the job back while a capture of
+  the same build is still running (and never hands out a capture of a taken-down build),
+  so a capture cannot upload after the delete.
 
 Locally the renderer is Playwright + Chromium (`PlaywrightRenderer`); production is meant
 to use Cloudflare Browser Rendering (`BrowserRenderingRenderer` is a documented sketch, see
@@ -168,7 +176,8 @@ pnpm --filter @br/capture-worker test:integration  # real Chromium + the local S
 
 - Unit (`test/`): readiness rule, blank detection and WebP encoding, the capture job
   (signed URL contents, captured / fallback / retry / final failure / missing bundle /
-  aborts), the destroy job (recursive delete, guards), the runner (drain, backoff,
+  aborts), the destroy job (recursive delete, guards), the takedown job (only the build's
+  screenshots, the taken-down guard, leftovers retried, aborts), the runner (drain, backoff,
   concurrency, job timeout, graceful and forced shutdown), config, the Supabase client against
   a fake `fetch`, URL redaction.
 - Integration, renderer (`integration/renderer.test.ts`, no Supabase): a React build bundled
@@ -182,7 +191,10 @@ pnpm --filter @br/capture-worker test:integration  # real Chromium + the local S
   back to the client thumbnail; an auto-shipped build is captured from its autosave; a
   throwing bundle without a thumbnail is retried with backoff and fails on the 5th attempt;
   all four battles go to DESTROYED and the destroy worker leaves zero objects, with
-  `destroyed_at` / `source_destroyed_at` set and the screenshots kept.
+  `destroyed_at` / `source_destroyed_at` set and the screenshots kept. Then (T-024) an email
+  admin (Auth admin API + `private.admins`) takes alice's build down through
+  `admin_take_down_build`: the anon-key results hide it at once, the takedown worker deletes
+  its screenshot object (and only that one) and `complete_takedown` closes the job.
   `CAPTURE_TEST_SHOT_OUT=/path/shot.webp` keeps the React screenshot,
   `CAPTURE_TEST_LOG=/path/log.jsonl` the worker log. The test commits data, like
   `supabase/scripts/e2e-solo.mjs`. It runs on a stack other scripts have used: the

@@ -29,14 +29,17 @@ export function cardClass(kind: CardKind): string {
 export function ChallengeCards({
   challenge,
   compact = false,
+  stacked = false,
 }: {
   challenge: Challenge;
   compact?: boolean;
+  /** One card per row (a narrow column such as the REVEAL sidebar). */
+  stacked?: boolean;
 }) {
   const kinds: CardKind[] = ['build', 'rule', 'style'];
   return (
     <ul
-      className={`grid gap-2 ${compact ? 'grid-cols-1 sm:grid-cols-3' : 'grid-cols-1 sm:grid-cols-3'}`}
+      className={`grid gap-2 ${stacked ? 'grid-cols-1' : 'grid-cols-1 sm:grid-cols-3'}`}
       data-testid="challenge"
     >
       {kinds.map((k) => (

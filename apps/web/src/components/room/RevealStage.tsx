@@ -98,7 +98,7 @@ export function RevealStage({
           </span>
         )}
         {headerActions}
-        <div className="ml-auto">
+        <div className="ml-auto rounded-lg ring-1 ring-zinc-700">
           <Countdown
             getRemaining={() => battle.remainingMs()}
             label="This build"
@@ -242,7 +242,7 @@ export function RevealStage({
             <h2 className="mb-2 text-xs font-black tracking-widest text-zinc-400 uppercase">
               The challenge
             </h2>
-            <ChallengeCards challenge={snapshot.challenge} compact />
+            <ChallengeCards challenge={snapshot.challenge} compact stacked />
           </section>
           <p className="text-xs text-zinc-500">
             Watch closely: when the reveal ends, every player votes for the best build in four

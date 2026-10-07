@@ -373,6 +373,12 @@ CHAOS_SHARD=2 pnpm --filter @br/web test:e2e:chaos   # one of its 3 shards (~5 m
   reads the battle's version with every heartbeat and refetches when the server is ahead,
   and ship toasts come from snapshots, so a lost broadcast costs at most one heartbeat
   (10 s); the chaos test above pins it.
+- **The host's Next during the capture burst.** `reveal_next` / `skip_to_vote` carry the
+  battle version (compare-and-set), and the capture worker finishes the builds'
+  screenshots one after another right at the start of REVEAL, each one a new version. A
+  click that lost that race was dropped (T-023: the other cause of the 8-player test's
+  failures). The controller now resends it with the version the server returned while the
+  phase and the spotlight are unchanged (`HOST_RETRIES`, `src/lib/room/reveal-vote.ts`).
 - `test:e2e:cf` runs the playground suite against the Cloudflare Workers build
   (`cf:build`, then `opennextjs-cloudflare preview`, which is `wrangler dev` on workerd)
   instead of `next start` (`E2E_APP_SERVER=workers` in `playwright.config.ts`).

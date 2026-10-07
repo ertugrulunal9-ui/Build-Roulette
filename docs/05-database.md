@@ -395,4 +395,31 @@ migrations in `supabase/migrations/` are the source of truth.
     local anonymous sign-up limit is 300/h.
   - Tests: 762 pgTAP tests, plus `e2e-solo` (44), `e2e-multiplayer` (48) and
     `e2e-realtime` (33) scripts.
+- **Moderation and abuse controls (T-024):**
+  - **`report_build`:** callable by signed-in users, anonymous included. It covers final
+    builds only, from REVEAL by members or publicly once in RESULTS; own builds, duplicates
+    and taken-down builds are refused.
+  - **Admins:** listed in `private.admins`, managed with SQL only; anonymous users are
+    refused by a trigger. `is_admin()` gates every `admin_*` RPC, and every admin action is
+    logged in `private.admin_actions`. `/admin` returns 404 to non-admins; sign-in is at
+    `/admin/sign-in`, with httpOnly SameSite=Strict cookies scoped to `/admin`. There is no
+    service key in the web app.
+  - **Takedown:** the admin RPC hides the build at once (it sets `taken_down_at` and clears
+    `name` and `screenshot_path`; the originals go to `private.build_takedowns`). A
+    `takedown` job then deletes the screenshot through the Storage API.
+    - **What stays visible:** the builder's display name, rank, status, time, stats, vote
+      counts and awards, shown as "Removed by moderators".
+    - **During a running battle** it is treated like disqualified: its reveal slot is
+      skipped, votes for it are deleted (voters re-vote), and it gets no rank or award.
+  - **Name filter:** `private.blocked_terms` (an editable English + Turkish starter list),
+    with normalisation (diacritics, leetspeak, repeated letters). Short or ambiguous terms
+    only match a whole token, to avoid false positives. It applies to display names and
+    build names, with error `name_not_allowed`.
+  - **Rate limits:** `private.rate_limits`, a sliding window per user, with error
+    `rate_limited` (SQLSTATE PT429, `retry_after_s` in the hint). Defaults: create_room
+    10/h, failed join codes 20/10 min, report_build 20/h, start_solo_battle 30/h,
+    cast_vote 120/min.
+  - **Turnstile:** the token is passed to `signInAnonymously` when
+    `NEXT_PUBLIC_TURNSTILE_SITE_KEY` is set. Production must enable CAPTCHA in Supabase Auth
+    at the same time.
 

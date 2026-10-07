@@ -164,6 +164,8 @@ tiny `{type, version}` hints. Each player uses one channel per battle. We load-t
 concurrent rooms × 8 players in M5 and map the results to plan quotas.
 
 ### R9: Abuse
+> **Status (M5): mitigated in T-024:** reporting, an admin queue with takedown, a name filter, per-user rate limits and Turnstile wiring. Production still needs the admin users, the Turnstile keys and Cloudflare per-IP rules (see the board).
+
 Display names and build names go through a profanity filter. Rooms are private unless
 shared. The host can kick, and kicked players' builds are hidden. There is a report queue
 with screenshot takedown. Anonymous sign-ups are rate-limited with Turnstile.

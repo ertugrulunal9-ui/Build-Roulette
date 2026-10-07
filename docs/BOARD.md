@@ -9,8 +9,8 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 | T-022 | Rules/server fixes: one winner per vote category (tie-break: total votes → earlier ship), VOTING early end re-checked in `sweep_deadlines`, UI + e2e updates | `supabase/`, `apps/web/`, `packages/game/` | done | Merged |
 | T-023 | Test reliability: root-cause the flaky 8-player chaos test (1 in 5), shard the chaos suite for CI | `apps/web/` (e2e), `ci.yml` | done | Merged |
 | T-027 | Preview watchdog false "crashed" right after a rebuild under heavy CPU load (`heartbeat-timeout`, silent ~5.3 s): give a fresh `load` a longer grace, with tests | `packages/runtime/`, `apps/web/` | done | Merged |
-| T-024 | Abuse controls: report build, admin page (event logs + report queue + screenshot takedown), name filter, rate limits, Turnstile wiring | `supabase/`, `apps/web/`, `apps/capture-worker/` | in-progress | M5, task 4 |
-| T-025 | Load test (50 rooms × 8 players), Realtime/egress mapping to plan limits, cost per 1,000 battles | `tools/loadtest/`, `docs/` input | todo | M5 |
+| T-024 | Abuse controls: report build, admin page (event logs + report queue + screenshot takedown), name filter, rate limits, Turnstile wiring | `supabase/`, `apps/web/`, `apps/capture-worker/` | done | Merged |
+| T-025 | Load test (50 rooms × 8 players), Realtime/egress mapping to plan limits, cost per 1,000 battles | `tools/loadtest/`, `docs/` input | in-progress | M5, task 5 |
 | T-026 | Observability (Sentry/PostHog, env-gated), ISR for `/battles` + `/u`, runbooks | `apps/web/`, `apps/*`, `docs/runbooks/` | todo | M5 |
 | T-019 | M4 DB layer: REVEAL (order, slots, host skip) + VOTING (categories, no self-vote, revotes, secret ballots) phases, vote-based ranking + category awards, reveal-phase storage read access, realtime `vote_progress` | `supabase/`, `packages/game/` (constants), `ci.yml` | done | Merged |
 | T-020 | M4 web: synchronized REVEAL spotlight (one live build, thumbnails, prefetch, host skip), VOTE stage, vote-based results + permanent page | `apps/web/` (+ remove the CI pre-M4 switch) | done | Merged |
@@ -42,6 +42,9 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 | Supabase project (free plan to start) | Hosted database, auth, storage and realtime |
 | One domain for the app (optional at first; the app can run on a free Cloudflare address) | Public launch |
 | Later: second (usercontent) domain + Public Suffix List entry (F1) | Per-build isolation as the game grows |
+| At deploy: create the admin user(s) (Supabase dashboard → Add user, then the SQL insert in `supabase/README.md`) | Moderation (`/admin`) |
+| At deploy: Turnstile site and secret keys; enable CAPTCHA in Supabase Auth together with `NEXT_PUBLIC_TURNSTILE_SITE_KEY` | Bot protection for anonymous sign-up |
+| At deploy: Cloudflare per-IP rate-limit rules and protection for `/admin` (numbers in `supabase/README.md`) | Abuse protection at the edge |
 
 **User decisions (2026-10-04):** option A, so everything is hosted on Cloudflare and Vercel is dropped. The sandbox starts on `*.pages.dev` (already on the PSL), so there is no second domain at launch. Package CDN runs on Cloudflare Containers. Continue M2 locally.
 
@@ -80,6 +83,7 @@ Start M5.
 - T-022 Single-winner awards + voting sweep
 - T-023 Chaos reliability + sharding
 - T-027 Watchdog load grace
+- T-024 Abuse controls + admin
 
 ## Review log
 
@@ -488,3 +492,22 @@ Start M5.
 - The new throttled e2e fails on the old code with `heartbeat-timeout silentForMs 5121`.
 - Hub re-ran on a fresh clone: pipeline green (runtime 112, web 250); runtime e2e 26/26; playground 14/14; multiplayer 4/4; solo 2/2. The worker also ran chaos shard 1: 3/3.
 - docs/03 updated with the load-grace section.
+
+### T-024: accepted (M5 task 4)
+- Hub test-merged and re-ran on a fresh clone:
+  - pipeline green (web 279, game 134, capture-worker 73 unit tests);
+  - `supabase test db` **1166/1166**;
+  - e2e scripts 44/49/34/50/**21 (moderation)**;
+  - capture integration 13/13;
+  - moderation e2e 2/2, multiplayer 4/4, solo 2/2;
+  - **chaos shards 3/3, 2/2, 4/4**;
+  - runtime 26/26, playground 14/14.
+- Security read:
+  - `is_admin()` requires a non-anonymous JWT, a non-anonymous auth user, and membership in `private.admins` (a trigger refuses anonymous users);
+  - admin cookies are httpOnly, SameSite=Strict, `/admin`-scoped and Secure on https (unit-tested);
+  - `/admin` 404s for non-admins;
+  - admin RPCs run with the admin's own token (no service key in the web app).
+- Better than the brief: the takedown hides the build immediately in the RPC; the worker only deletes the file.
+- The worker hardened the T-023 lost-feed chaos test: the local Realtime restarts its tenant on a 5-min timer, and an in-flight event can arrive about 0.6 s after the cut.
+- **Product question for the user:** a build taken down after RESULTS keeps its rank and still shows the "WINNER" banner (seen in a screenshot). The hub recommends no winner banner and no awards for taken-down builds, without re-ranking.
+- Production setup items were added to "Blocked on the user".

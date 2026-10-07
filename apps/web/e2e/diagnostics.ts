@@ -186,6 +186,7 @@ const STAGES = [
   'countdown',
   'toast',
   'join-error',
+  'preview-crashed',
 ];
 
 async function pageState(page: Page): Promise<string> {

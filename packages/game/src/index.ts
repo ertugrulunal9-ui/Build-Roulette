@@ -19,14 +19,28 @@ export {
   REVEAL_SLOT_MAX_SECONDS,
   REVEAL_SLOT_MIN_SECONDS,
   REVEAL_TOTAL_SECONDS,
+  battleRevealSlotSeconds,
   revealSlotSeconds,
 } from './reveal';
+
+export {
+  DEFAULT_VOTING_SECONDS,
+  RANKING_CATEGORY,
+  REVEAL_VOTE_PHASE_REASONS,
+  VOTE_CATEGORIES,
+  VOTE_CATEGORY_SLUGS,
+  VOTING_MAX_SECONDS,
+  VOTING_MIN_SECONDS,
+  isVoteCategory,
+} from './votes';
+export type { RevealVotePhaseReason, VoteCategory } from './votes';
 
 export { estimateClockOffset, remainingMs } from './clock';
 export type { ClockSample } from './clock';
 
 export {
   AUTO_AWARDS,
+  BATTLE_BROADCAST_TYPES,
   BATTLE_EVENT_TYPES,
   BATTLE_ROLES,
   BUILD_STATUSES,
@@ -52,6 +66,7 @@ export {
 } from './rooms';
 export type {
   AutoAward,
+  BattleBroadcastType,
   BattleEventType,
   BattleRole,
   BuildStatus,
@@ -65,5 +80,11 @@ export type {
   RoomStatus,
 } from './rooms';
 
-export { JOIN_ROOM_ERRORS, RPC_ERROR_CODES, SERVICE_ERROR_CODES, isRpcErrorCode } from './errors';
-export type { JoinRoomError, RpcErrorCode } from './errors';
+export {
+  JOIN_ROOM_ERRORS,
+  RPC_ERROR_CODES,
+  SERVICE_ERROR_CODES,
+  VOTE_ERROR_CODES,
+  isRpcErrorCode,
+} from './errors';
+export type { JoinRoomError, RpcErrorCode, VoteErrorCode } from './errors';

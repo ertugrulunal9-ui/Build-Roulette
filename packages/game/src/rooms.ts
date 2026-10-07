@@ -82,6 +82,18 @@ export const BATTLE_EVENT_TYPES = [
 ] as const;
 export type BattleEventType = (typeof BATTLE_EVENT_TYPES)[number];
 
+/**
+ * Every event name the server broadcasts on `battle:{id}`: {@link BATTLE_EVENT_TYPES} plus
+ * `vote_progress` (M4, `{version, voted_count, eligible_count}` during VOTING). Checked
+ * against `private.battle_broadcast` by the drift test.
+ *
+ * `BATTLE_EVENT_TYPES` is the list the web reducer applies today; it treats any other name
+ * as `sync` (refetch), which is correct but chatty. The web task that adds the VOTE stage
+ * should handle `vote_progress` and fold it into `BATTLE_EVENT_TYPES`.
+ */
+export const BATTLE_BROADCAST_TYPES = [...BATTLE_EVENT_TYPES, 'vote_progress'] as const;
+export type BattleBroadcastType = (typeof BATTLE_BROADCAST_TYPES)[number];
+
 /** Broadcast event names on `room:{id}` (`private.room_broadcast`). */
 export const ROOM_EVENT_TYPES = ['room', 'member', 'sync'] as const;
 export type RoomEventType = (typeof ROOM_EVENT_TYPES)[number];

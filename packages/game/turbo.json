@@ -3,7 +3,11 @@
   "extends": ["//"],
   "tasks": {
     "test": {
-      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/supabase/migrations/**"]
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/supabase/migrations/**",
+        "$TURBO_ROOT$/supabase/tests/15_reveal_vote.test.sql"
+      ]
     }
   }
 }

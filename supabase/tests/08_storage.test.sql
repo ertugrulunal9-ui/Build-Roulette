@@ -50,8 +50,9 @@ select results_eq(
      from pg_policies where schemaname = 'storage' and tablename = 'objects' order by cmd $$,
   $$ values ('INSERT', 'authenticated', true),
             ('SELECT', 'authenticated', true),
+            ('SELECT', 'authenticated', true),
             ('UPDATE', 'authenticated', true) $$,
-  'storage.objects has exactly an INSERT, a SELECT and an UPDATE policy, for authenticated, on ephemeral-builds only');
+  'storage.objects has exactly an INSERT, two SELECT (owner; revealed builds, T-019) and an UPDATE policy, for authenticated, on ephemeral-builds only');
 
 -- ─── Owner writes while BUILDING (9) ──────────────────────────────────────
 set local role authenticated;

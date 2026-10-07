@@ -47,9 +47,33 @@ export const RPC_ERROR_CODES = [
 
 export type RpcErrorCode = (typeof RPC_ERROR_CODES)[number];
 
-/** Codes only the service-role functions raise (capture/destroy workers). */
-export const SERVICE_ERROR_CODES = [
+/**
+ * Codes added by the REVEAL and VOTING RPCs (M4: `cast_vote`, `reveal_next`,
+ * `skip_to_vote`, `get_reveal_builds`, `get_my_votes`). Those RPCs also raise codes of
+ * {@link RPC_ERROR_CODES} (`not_authenticated`, `battle_not_found`, `not_on_roster`,
+ * `kicked`, `not_a_member`, `not_host`, `wrong_phase`, `deadline_passed`,
+ * `invalid_version`).
+ *
+ * Kept apart from `RPC_ERROR_CODES` only because the web app maps every `RpcErrorCode` to a
+ * message (`Record<ErrorCode, string>`); the web task that adds the VOTE stage should add
+ * the messages and merge this list into `RPC_ERROR_CODES`.
+ */
+export const VOTE_ERROR_CODES = [
+  'not_a_voter',
   'build_not_found',
+  'invalid_category',
+  'self_vote',
+  'not_votable',
+] as const;
+
+export type VoteErrorCode = (typeof VOTE_ERROR_CODES)[number];
+
+/**
+ * Codes only the service-role functions raise (capture/destroy workers). `complete_capture`
+ * also raises `build_not_found`, which is listed in {@link VOTE_ERROR_CODES} since
+ * `cast_vote` raises it too.
+ */
+export const SERVICE_ERROR_CODES = [
   'invalid_capture_status',
   'invalid_path',
   'job_not_found',

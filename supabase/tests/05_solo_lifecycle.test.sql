@@ -491,7 +491,12 @@ select throws_ok(format($$ select public.get_battle_snapshot(%L) $$, :'c2_battle
   'P0002', 'battle_not_found', 'a stranger cannot read a running battle');
 reset role;
 
--- ═══ Multiplayer branches are not implemented (M3) ════════════════════════
+-- ═══ The multiplayer branches run without a room or players (M4) ═════════
+-- Until M4 they raised not_implemented. Battles whose settings are not solo
+-- and do not say reveal_vote = false take the reveal/vote path:
+--   shipping, no final build  → RESULTS (fewer than 2 final builds)
+--   reveal, empty order       → VOTING (the last slot is over)
+--   voting, nobody to vote    → RESULTS at the deadline
 insert into public.challenges (id, build_text, rule_text, style_text, time_limit_seconds) values
   ('5c000000-0000-0000-0000-000000000001', 'b', 'r', 's', 300),
   ('5c000000-0000-0000-0000-000000000002', 'b', 'r', 's', 300),
@@ -508,15 +513,16 @@ insert into public.battles (id, challenge_id, host_id, phase, settings, phase_en
 
 set local role service_role;
 select set_config('request.jwt.claims', :'service', true);
-select throws_ok($$ select public.advance_battle('5b000000-0000-0000-0000-000000000001', 0) $$,
-  '0A000', 'not_implemented', 'non-solo SHIPPING → REVEAL raises not_implemented');
-select throws_ok($$ select public.advance_battle('5b000000-0000-0000-0000-000000000002', 0) $$,
-  '0A000', 'not_implemented', 'REVEAL raises not_implemented');
-select throws_ok($$ select public.advance_battle('5b000000-0000-0000-0000-000000000003', 0) $$,
-  '0A000', 'not_implemented', 'VOTING raises not_implemented');
+select is(public.advance_battle('5b000000-0000-0000-0000-000000000001', 0) ->> 'phase', 'results',
+  'non-solo SHIPPING with no final build → RESULTS (no REVEAL or VOTING)');
+select is(public.advance_battle('5b000000-0000-0000-0000-000000000002', 0) ->> 'phase', 'voting',
+  'REVEAL whose last slot is over → VOTING');
+select is(public.advance_battle('5b000000-0000-0000-0000-000000000003', 0) ->> 'phase', 'results',
+  'VOTING at its deadline → RESULTS');
 reset role;
-select is((select phase::text from public.battles where id = '5b000000-0000-0000-0000-000000000001'),
-  'shipping', 'the failed transition changed nothing');
+select is((select payload ->> 'reason' from public.battle_events
+           where battle_id = '5b000000-0000-0000-0000-000000000001' and type = 'phase'),
+  'too_few_builds', 'the skipped reveal is logged with its reason');
 
 select * from finish();
 rollback;

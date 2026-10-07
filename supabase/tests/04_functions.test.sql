@@ -64,11 +64,18 @@ select set_eq(
     'public.heartbeat(p_room_id uuid)',
     'public.get_room_snapshot(p_room_id uuid)',
     'public.start_battle(p_room_id uuid)',
+    -- reveal and voting RPCs (T-019)
+    'public.reveal_next(p_battle_id uuid, p_expected_version integer)',
+    'public.skip_to_vote(p_battle_id uuid, p_expected_version integer)',
+    'public.cast_vote(p_battle_id uuid, p_category text, p_build_id uuid)',
+    'public.get_my_votes(p_battle_id uuid)',
+    'public.get_reveal_builds(p_battle_id uuid)',
     -- RLS helpers called by table, storage and realtime.messages policies
     'public.is_room_member(p_room_id uuid)',
     'public.is_battle_member(p_battle_id uuid)',
     'public.can_view_battle(p_battle_id uuid)',
     'public.can_write_build_object(p_name text)',
+    'public.can_read_revealed_object(p_name text)',
     'public.can_use_realtime_topic(p_topic text, p_send boolean)'
   ],
   'authenticated can execute exactly the client RPCs and the RLS helpers');

@@ -4,7 +4,14 @@
  * which vitest's fake timers control.
  */
 import type { BattlePhase } from '@br/game';
-import type { BattleSnapshot, SnapshotBuild } from '../solo/types';
+import type {
+  BattleSnapshot,
+  CastVoteResult,
+  HostRevealResult,
+  MyVotes,
+  RevealBuild,
+  SnapshotBuild,
+} from '../solo/types';
 import { GameError } from '../solo/errors';
 import type { RoomApi } from './api';
 import type {
@@ -307,11 +314,120 @@ export class FakeRoomApi implements RoomApi {
     return Promise.resolve(Date.now() + this.serverOffsetMs);
   }
 
+  // --- REVEAL and VOTING ---
+  /** Objects of `ephemeral-builds` by path. */
+  readonly objects = new Map<string, string | Blob>();
+  revealBuilds: RevealBuild[] = revealBuilds();
+  onRevealBuilds: Handler<[], RevealBuild[]> = () => structuredClone(this.revealBuilds);
+  onHost: Handler<['next' | 'skip', number], HostRevealResult> = (_kind, v) => ({
+    changed: true,
+    version: v + 1,
+    phase: 'reveal',
+    phase_ends_at: null,
+    reveal_index: 1,
+  });
+  /** The caller's ballot on the server. */
+  ballot: Record<string, string> = {};
+  categories = 4;
+  onVote: Handler<[string, string], CastVoteResult> = (category, buildId) => {
+    this.ballot[category] = buildId;
+    return {
+      category,
+      build_id: buildId,
+      ballot_complete: Object.keys(this.ballot).length >= this.categories,
+      battle: { version: 30, phase: 'voting', phase_ends_at: null },
+    };
+  };
+  onMyVotes: Handler<[], MyVotes> = () => ({
+    votes: { ...this.ballot },
+    complete: Object.keys(this.ballot).length >= this.categories,
+  });
+
+  async getRevealBuilds(battleId: string): Promise<RevealBuild[]> {
+    this.calls.push(['getRevealBuilds', battleId]);
+    return this.onRevealBuilds();
+  }
+  async revealNext(battleId: string, version: number): Promise<HostRevealResult> {
+    this.calls.push(['revealNext', battleId, version]);
+    return this.onHost('next', version);
+  }
+  async skipToVote(battleId: string, version: number): Promise<HostRevealResult> {
+    this.calls.push(['skipToVote', battleId, version]);
+    return this.onHost('skip', version);
+  }
+  async castVote(battleId: string, category: string, buildId: string): Promise<CastVoteResult> {
+    this.calls.push(['castVote', category, buildId]);
+    return this.onVote(category, buildId);
+  }
+  async getMyVotes(battleId: string): Promise<MyVotes> {
+    this.calls.push(['getMyVotes', battleId]);
+    return this.onMyVotes();
+  }
+  downloadText(path: string): Promise<string | null> {
+    this.calls.push(['downloadText', path]);
+    const body = this.objects.get(path);
+    if (body === undefined) return Promise.resolve(null);
+    return typeof body === 'string' ? Promise.resolve(body) : body.text();
+  }
+  downloadBlob(path: string): Promise<Blob | null> {
+    this.calls.push(['downloadBlob', path]);
+    const body = this.objects.get(path);
+    if (body === undefined) return Promise.resolve(null);
+    return Promise.resolve(typeof body === 'string' ? new Blob([body]) : body);
+  }
+
   count(method: string, arg?: unknown): number {
     return this.calls.filter((c) => c[0] === method && (arg === undefined || c[1] === arg)).length;
   }
   clearCalls(): void {
     this.calls.length = 0;
+  }
+}
+
+/**
+ * `get_reveal_builds` for {@link battleSnapshot}'s M4 battle (me, bob, cleo in that order),
+ * and the matching objects (bundle, css, manifest; a thumbnail for the first two).
+ */
+export function revealBuilds(
+  order: string[] = ['build-me', 'build-bob', 'build-cleo'],
+): RevealBuild[] {
+  const builders: Record<string, [string, string]> = {
+    'build-me': [ME, 'Ada'],
+    'build-bob': [BOB, 'Bob'],
+    'build-cleo': [CLEO, 'Cleo'],
+  };
+  return order.map((id, position) => {
+    const [builderId, name] = builders[id] ?? [ME, 'Ada'];
+    const dir = `${BATTLE_1}/${builderId}`;
+    return {
+      build_id: id,
+      position,
+      name: `${id} app`,
+      builder_id: builderId,
+      builder_name: name,
+      status: 'shipped',
+      files: {
+        js: `${dir}/bundle.js`,
+        css: `${dir}/bundle.css`,
+        manifest: `${dir}/manifest.json`,
+        thumb: id === 'build-cleo' ? null : `${dir}/thumb.webp`,
+      },
+    };
+  });
+}
+
+/** Puts the objects of {@link revealBuilds} into the fake storage. */
+export function storeRevealObjects(api: FakeRoomApi): void {
+  for (const b of api.revealBuilds) {
+    if (b.files.js) api.objects.set(b.files.js, `console.log(${JSON.stringify(b.build_id)})`);
+    if (b.files.css) api.objects.set(b.files.css, `.${b.build_id}{}`);
+    if (b.files.manifest) {
+      api.objects.set(
+        b.files.manifest,
+        JSON.stringify({ dependencies: { react: '19.2.0', 'react-dom': '19.2.0' } }),
+      );
+    }
+    if (b.files.thumb) api.objects.set(b.files.thumb, new Blob(['webp'], { type: 'image/webp' }));
   }
 }
 

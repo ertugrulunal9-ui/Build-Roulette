@@ -10,7 +10,8 @@
  *   toasts (host changes, ships, joins and leaves).
  * - **Battle:** the current battle runs in a SoloController in external mode: the sync
  *   engine feeds it snapshots and the clock, and the solo stages (spin, build, ship, results,
- *   destroy) render it. A rematch is a new battle, so a new controller.
+ *   destroy) render it. REVEAL and VOTING run in a RevealVoteController fed the same
+ *   snapshots. A rematch is a new battle, so new controllers.
  * - **Leave / kicked:** `leave_room` (and the battle's local workspace is deleted if a battle
  *   was running), or the kicked / closed / gone end states.
  */
@@ -30,6 +31,7 @@ import { formatCountdown } from '../solo/format';
 import { randomDisplayName } from '../solo/names';
 import type { BattleSnapshot } from '../solo/types';
 import type { RoomApi } from './api';
+import { RevealVoteController, type ObjectUrls } from './reveal-vote';
 import {
   INITIAL_SYNC_STATE,
   RoomSync,
@@ -81,6 +83,8 @@ export interface RoomControllerDeps {
   syncTimings?: Partial<SyncTimings>;
   /** How long a toast stays (ms). */
   toastMs?: number;
+  /** Object URLs for the reveal thumbnails (tests). */
+  objectUrls?: ObjectUrls;
 }
 
 export type RoomStage = 'starting' | 'name' | 'joining' | 'room' | 'join_error' | 'ended';
@@ -113,6 +117,8 @@ export interface RoomState {
   sync: RoomSyncState;
   /** The current battle's controller (null in the lobby before the first battle). */
   battle: SoloController | null;
+  /** The current battle's REVEAL and VOTING (created with `battle`). */
+  show: RevealVoteController | null;
   toasts: readonly Toast[];
   pending: PendingActions;
   /** The last failed lobby action (ready, start, kick, settings, leave). */
@@ -137,6 +143,7 @@ export function initialRoomState(code: string | null): RoomState {
     ended: null,
     sync: INITIAL_SYNC_STATE,
     battle: null,
+    show: null,
     toasts: [],
     pending: NO_PENDING,
     actionError: null,
@@ -183,6 +190,7 @@ export class RoomController {
   private offSync: (() => void) | null = null;
   private offNotice: (() => void) | null = null;
   private battle: SoloController | null = null;
+  private show: RevealVoteController | null = null;
   private disposed = false;
   private nextToastId = 1;
   private readonly toastTimers = new Map<number, TimerHandle>();
@@ -359,8 +367,7 @@ export class RoomController {
     this.disposed = true;
     this.epoch++;
     this.teardownSync();
-    this.battle?.dispose();
-    this.battle = null;
+    this.dropBattle();
     for (const h of this.toastTimers.values()) this.clock.clearTimeout(h);
     this.toastTimers.clear();
     this.listeners.clear();
@@ -416,27 +423,44 @@ export class RoomController {
     const snap = s.battle;
     const currentId = s.room?.room.current_battle_id ?? null;
     if (this.battle && this.battle.getSnapshot().battleId !== currentId) {
-      this.battle.dispose();
-      this.battle = null;
-      this.patch({ battle: null });
+      this.dropBattle();
+      this.patch({ battle: null, show: null });
     }
     if (snap === null) return;
     if (snap.battle.id !== currentId) return;
     if (!this.battle) {
+      const refetch = () => this.sync?.refetchBattle() ?? Promise.resolve();
       const c = new SoloController({
         api: this.deps.soloApi,
         cdnBaseUrl: this.deps.cdnBaseUrl,
         localWorkspaces: this.deps.localWorkspaces,
         clock: this.clock,
-        external: { refetch: () => this.sync?.refetchBattle() ?? Promise.resolve() },
+        external: { refetch },
+      });
+      const show = new RevealVoteController(snap.battle.id, {
+        api: this.deps.api,
+        cdnBaseUrl: this.deps.cdnBaseUrl,
+        refetch,
+        clock: this.clock,
+        ...(this.deps.objectUrls ? { objectUrls: this.deps.objectUrls } : {}),
       });
       this.battle = c;
+      this.show = show;
       c.openExternal(snap, s.clockOffsetMs);
-      this.patch({ battle: c });
+      show.receive(snap);
+      this.patch({ battle: c, show });
     } else {
       this.battle.receive(snap);
       this.battle.setClockOffset(s.clockOffsetMs);
+      this.show?.receive(snap);
     }
+  }
+
+  private dropBattle(): void {
+    this.battle?.dispose();
+    this.battle = null;
+    this.show?.dispose();
+    this.show = null;
   }
 
   private onNotice(n: SyncNotice): void {
@@ -490,12 +514,12 @@ export class RoomController {
         .catch(() => undefined);
     }
     this.teardownSync();
-    this.battle?.dispose();
-    this.battle = null;
+    this.dropBattle();
     this.patch({
       stage: 'ended',
       ended: reason,
       battle: null,
+      show: null,
       pending: NO_PENDING,
     });
   }

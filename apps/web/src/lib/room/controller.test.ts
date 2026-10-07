@@ -19,6 +19,7 @@ import {
   battleSnapshot,
   member,
   roomSnapshot,
+  storeRevealObjects,
 } from './test-support';
 
 let api: FakeRoomApi;
@@ -263,6 +264,48 @@ describe('battles', () => {
     const second = c.getSnapshot().battle;
     expect(second).not.toBe(first);
     expect(second?.getSnapshot().battleId).toBe(BATTLE_2);
+    c.dispose();
+  });
+
+  it('REVEAL and VOTING run in a RevealVoteController fed by the same snapshots', async () => {
+    storeRevealObjects(api);
+    api.room = roomSnapshot({ battleId: BATTLE_1, version: 3 });
+    api.battles.set(BATTLE_1, battleSnapshot({ version: 10, phase: 'reveal', revealIndex: 0 }));
+    const c = await joined();
+    const show = c.getSnapshot().show;
+    expect(show?.getSnapshot()).toMatchObject({ battleId: BATTLE_1 });
+    expect(show?.getSnapshot().bundles['build-me']?.status).toBe('ready');
+    // A slot step from the host: the spotlight's next build is already there (prefetched).
+    rt.open(`battle:${BATTLE_1}`).send({
+      type: 'phase',
+      version: 11,
+      phase: 'reveal',
+      phase_started_at: new Date().toISOString(),
+      phase_ends_at: new Date(Date.now() + 60_000).toISOString(),
+      reason: 'host_next',
+      reveal_index: 1,
+    });
+    await flush();
+    expect(c.getSnapshot().battle?.getSnapshot().snapshot?.battle.reveal_index).toBe(1);
+    expect(Object.keys(show?.getSnapshot().bundles ?? {}).sort()).toEqual([
+      'build-bob',
+      'build-cleo',
+    ]);
+    // The next battle disposes it with its SoloController.
+    api.room = roomSnapshot({ battleId: BATTLE_2, version: 5 });
+    api.battles.set(BATTLE_2, battleSnapshot({ id: BATTLE_2, version: 1, phase: 'spinning' }));
+    rt.open(ROOM_TOPIC).send({
+      type: 'room',
+      version: 4,
+      change: 'battle_started',
+      status: 'in_battle',
+      host_id: ME,
+      settings: {},
+      current_battle_id: BATTLE_2,
+    });
+    await flush();
+    expect(c.getSnapshot().show).not.toBe(show);
+    expect(c.getSnapshot().show?.getSnapshot().battleId).toBe(BATTLE_2);
     c.dispose();
   });
 

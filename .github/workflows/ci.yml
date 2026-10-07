@@ -3,11 +3,19 @@ name: CI
 on:
   push:
   pull_request:
-  # Manual runs also offer the network-bound package compatibility suite (job `compat`).
+  # Nightly: everything, plus the rooms chaos e2e (job `chaos`, about 10 minutes).
+  schedule:
+    - cron: '17 3 * * *'
+  # Manual runs also offer the network-bound package compatibility suite (job `compat`)
+  # and the rooms chaos e2e (job `chaos`).
   workflow_dispatch:
     inputs:
       compat:
         description: Run the R1 package compatibility suite against the npm registry
+        type: boolean
+        default: true
+      chaos:
+        description: Run the rooms chaos e2e (network drops, skewed clocks, refreshes; ~10 min)
         type: boolean
         default: true
 
@@ -222,6 +230,59 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: multiplayer-e2e-results
+          path: apps/web/test-results/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Stop the stack
+        if: always()
+        run: npx -y "$SUPABASE_CLI" stop --no-backup
+
+  # The chaos e2e takes about 10 minutes (real, shortened deadlines; up to 10 browser
+  # contexts), over the ~8 min budget for every push: nightly and on demand.
+  chaos:
+    name: Rooms chaos e2e (network drops, skewed clocks, refreshes, host leaves, T-0, abandoned, full room)
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.chaos)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SUPABASE_CLI: supabase@2.119.0
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright Chromium
+        run: pnpm --filter @br/capture-worker exec playwright-core install --with-deps chromium
+
+      # Same stack as the rooms e2e: Realtime, pg_cron, Storage, Auth, PostgREST.
+      - name: Start the local Supabase stack (with Realtime)
+        run: >-
+          npx -y "$SUPABASE_CLI" start
+          -x studio,imgproxy,vector,logflare,edge-runtime,supavisor,mailpit,postgres-meta
+
+      # e2e/chaos.spec.ts: 6 players under chaos, a seeded random run (the seed is in the
+      # log and the report; CHAOS_SEED replays it), steady typing vs the presence limit,
+      # everyone gone at T-0, an abandoned battle, a full room. Needs psql.
+      - name: Run the rooms chaos e2e
+        run: pnpm --filter @br/web test:e2e:chaos
+
+      - name: Upload Playwright output
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chaos-e2e-results
           path: apps/web/test-results/
           if-no-files-found: ignore
           retention-days: 7

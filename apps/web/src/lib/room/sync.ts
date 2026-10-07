@@ -8,6 +8,10 @@
  *   `current + 1` is applied (reducer.ts), a gap refetches the snapshot. Events that arrive
  *   while a snapshot is being fetched are buffered and replayed on top of it. Every `phase`
  *   event, every `sync` event and every (re)subscribe refetches.
+ * - **Never stuck:** a gap refetches at once; while the same hole stays open (the fresh
+ *   snapshot is still behind the buffered events) or a wanted snapshot cannot be fetched
+ *   (offline), the topic asks again with backoff (1 s, 2 s, 4 s… at most 30 s). Events are
+ *   never dropped while waiting: the newest are buffered.
  * - **Battle switch:** when `current_battle_id` changes (a rematch), the old battle topic is
  *   closed and the new one subscribed.
  * - **Heartbeat:** `heartbeat(room_id)` every ~10 s (presence for the server and host
@@ -15,16 +19,31 @@
  *   `kicked`, `room_closed`, `not_a_member` and `room_not_found` end the session.
  * - **Recovery:** on `visibilitychange` → visible and on `online`, the clock is measured
  *   again and both snapshots are refetched. While the room topic is not subscribed
- *   (Realtime down or reconnecting), both snapshots are polled every few seconds.
+ *   (Realtime down or reconnecting) or the browser is offline, the connection reads
+ *   `degraded` ("Reconnecting…") and both snapshots are polled every few seconds. (An
+ *   offline browser can keep its WebSocket "open" without traffic until the Realtime
+ *   heartbeat times out, so the `offline` event is the first sign, not the channel status.)
  * - **Clock:** `server_now()` sampled 3× (lowest RTT) at start, every 60 s and on recovery.
  * - **Presence:** `{user_id, display_name, device, activity}` tracked on the room topic,
- *   at most once per 2 s, again after every (re)subscribe.
+ *   at most once per 2 s and 4 times per 30 s (Realtime closes the channel of a client
+ *   that sends more than 5 presence messages in 30 s), again after every (re)subscribe,
+ *   never while offline (they would arrive as one burst).
+ * - **Closed channels:** a topic the server closes (CLOSED, e.g. a rate limit or an
+ *   expired token; supabase-js does not rejoin those) is subscribed again after 1 s, 2 s,
+ *   4 s… (at most 30 s). Errors and timeouts are left to supabase-js, which rejoins.
  * - **Teardown:** `stop()` closes both topics and every timer and listener.
  *
  * Plain TypeScript with injected API, Realtime, clock and environment, unit tested with
  * fakes (sync.test.ts). React reads it through the RoomController.
  */
-import { HEARTBEAT_INTERVAL_MS, PRESENCE_THROTTLE_MS, battleTopic, roomTopic } from '@br/game';
+import {
+  HEARTBEAT_INTERVAL_MS,
+  PRESENCE_MAX_PER_WINDOW,
+  PRESENCE_THROTTLE_MS,
+  PRESENCE_WINDOW_MS,
+  battleTopic,
+  roomTopic,
+} from '@br/game';
 import { measureClockOffset } from '../solo/clock-sync';
 import { realClock, type SoloClock, type TimerHandle } from '../solo/controller';
 import { toGameError, type GameError } from '../solo/errors';
@@ -84,9 +103,11 @@ export interface RealtimePort {
   ): TopicSubscription;
 }
 
-/** The page coming back: the tab became visible, or the network came back. */
+/** The page coming back (the tab became visible, the network came back) or going offline. */
 export interface SyncEnvironment {
   onResume(cb: (reason: 'visible' | 'online') => void): () => void;
+  /** The browser lost the network (`offline`). */
+  onOffline?(cb: () => void): () => void;
 }
 
 export const browserEnvironment: SyncEnvironment = {
@@ -104,21 +125,37 @@ export const browserEnvironment: SyncEnvironment = {
       window.removeEventListener('online', onOnline);
     };
   },
+  onOffline(cb) {
+    window.addEventListener('offline', cb);
+    return () => {
+      window.removeEventListener('offline', cb);
+    };
+  },
 };
 
 export interface SyncTimings {
   heartbeatMs: number;
   clockResyncMs: number;
   presenceThrottleMs: number;
+  /** At most `presenceMaxPerWindow` tracks per `presenceWindowMs` (Realtime's limit is 5/30 s). */
+  presenceMaxPerWindow: number;
+  presenceWindowMs: number;
   /** Snapshot polling while the room topic is not subscribed. */
   fallbackPollMs: number;
+  /** First retry of a snapshot that is still behind (or failed); doubles each time. */
+  retryBaseMs: number;
+  retryMaxMs: number;
 }
 
 export const DEFAULT_SYNC_TIMINGS: SyncTimings = {
   heartbeatMs: HEARTBEAT_INTERVAL_MS,
   clockResyncMs: 60_000,
   presenceThrottleMs: PRESENCE_THROTTLE_MS,
+  presenceMaxPerWindow: PRESENCE_MAX_PER_WINDOW,
+  presenceWindowMs: PRESENCE_WINDOW_MS,
   fallbackPollMs: 5_000,
+  retryBaseMs: 1_000,
+  retryMaxMs: 30_000,
 };
 
 export interface RoomSyncDeps {
@@ -182,18 +219,29 @@ interface VersionedOptions<S, E extends { version: number }> {
   onApplied(e: E, next: S, previous: S): void;
   onFetchError(e: GameError): void;
   stats: SyncStats;
+  /** Timers for the retries (the engine's clock). */
+  clock: Pick<SoloClock, 'setTimeout' | 'clearTimeout'>;
+  retryBaseMs: number;
+  retryMaxMs: number;
 }
+
+/** Events kept while a hole is open; older ones are covered by the next snapshot. */
+export const MAX_BUFFERED_EVENTS = 200;
 
 /**
  * A snapshot plus the version rules: stale events are dropped, the next one is applied, a
  * gap refetches. Fetches coalesce; events received during a fetch are replayed after it.
+ * A hole that a fetch did not close, or a fetch that failed, is retried with backoff until
+ * a snapshot catches up: the topic never drops events or gives up.
  */
 export class VersionedTopic<S, E extends { version: number }> {
   snapshot: S | null = null;
   private fetching: Promise<void> | null = null;
   private again = false;
   private buffer: E[] = [];
-  private gapRefetches = 0;
+  /** Retries in a row for the current problem (an open hole or failing fetches). */
+  private retries = 0;
+  private retryTimer: TimerHandle | null = null;
   private disposed = false;
 
   constructor(private readonly o: VersionedOptions<S, E>) {}
@@ -201,11 +249,46 @@ export class VersionedTopic<S, E extends { version: number }> {
   receive(ev: E): void {
     if (this.disposed) return;
     if (this.fetching || this.snapshot === null) {
-      this.buffer.push(ev);
+      this.keep(ev);
       if (!this.fetching) void this.refetch();
       return;
     }
     this.handle(ev);
+  }
+
+  private keep(ev: E): void {
+    this.buffer.push(ev);
+    if (this.buffer.length > MAX_BUFFERED_EVENTS) {
+      this.buffer.sort((a, b) => a.version - b.version).shift();
+    }
+  }
+
+  /**
+   * Fetches again: at once for a new problem, then after 1 s, 2 s, 4 s… (at most
+   * `retryMaxMs`) while it persists. A fetch already running replays the buffer when done.
+   */
+  private retry(): void {
+    if (this.disposed || this.retryTimer !== null || this.fetching) return;
+    const delay =
+      this.retries === 0
+        ? 0
+        : Math.min(this.o.retryBaseMs * 2 ** (this.retries - 1), this.o.retryMaxMs);
+    this.retries++;
+    if (delay === 0) {
+      void this.refetch();
+      return;
+    }
+    this.retryTimer = this.o.clock.setTimeout(() => {
+      this.retryTimer = null;
+      void this.refetch();
+    }, delay);
+  }
+
+  /** The snapshot caught up: the next problem starts with an immediate fetch again. */
+  private settled(): void {
+    this.retries = 0;
+    if (this.retryTimer !== null) this.o.clock.clearTimeout(this.retryTimer);
+    this.retryTimer = null;
   }
 
   private handle(ev: E): void {
@@ -218,15 +301,11 @@ export class VersionedTopic<S, E extends { version: number }> {
     }
     if (check === 'gap') {
       this.o.stats.gaps++;
-      // Refetch (at most twice in a row for the same hole), then replay this event.
-      if (this.gapRefetches < 2) {
-        this.gapRefetches++;
-        this.buffer.push(ev);
-        void this.refetch();
-      }
+      // Keep it, fetch the missing versions, then replay it on top of the fresh snapshot.
+      this.keep(ev);
+      this.retry();
       return;
     }
-    this.gapRefetches = 0;
     const { next, refetch } = this.o.reduce(snap, ev);
     this.snapshot = next;
     this.o.stats.applied++;
@@ -242,6 +321,7 @@ export class VersionedTopic<S, E extends { version: number }> {
       return this.fetching;
     }
     this.fetching = (async () => {
+      let failed = false;
       try {
         do {
           this.again = false;
@@ -251,7 +331,8 @@ export class VersionedTopic<S, E extends { version: number }> {
             fresh = await this.o.fetch();
           } catch (e) {
             if (!this.isDisposed()) this.o.onFetchError(toGameError(e));
-            return;
+            failed = true;
+            break;
           }
           if (this.isDisposed()) return;
           // Events applied meanwhile may already be ahead of this snapshot.
@@ -263,11 +344,18 @@ export class VersionedTopic<S, E extends { version: number }> {
       } finally {
         this.fetching = null;
       }
-      // Only reached after a successful fetch (failures return above and keep the buffer).
-      if (!this.isDisposed()) {
-        const buffered = this.buffer.splice(0).sort((a, b) => a.version - b.version);
-        for (const ev of buffered) this.handle(ev);
+      if (this.isDisposed()) return;
+      if (failed) {
+        // The buffer is kept; ask again later (never at once after a failure).
+        this.retries = Math.max(this.retries, 1);
+        this.retry();
+        return;
       }
+      const buffered = this.buffer.splice(0).sort((a, b) => a.version - b.version);
+      for (const ev of buffered) this.handle(ev);
+      // Every buffered event was applied or stale: the hole is closed. Otherwise handle()
+      // kept the rest and scheduled the next try.
+      if (this.buffer.length === 0) this.settled();
     })();
     return this.fetching;
   }
@@ -275,6 +363,8 @@ export class VersionedTopic<S, E extends { version: number }> {
   dispose(): void {
     this.disposed = true;
     this.buffer = [];
+    if (this.retryTimer !== null) this.o.clock.clearTimeout(this.retryTimer);
+    this.retryTimer = null;
   }
 
   // Methods, so TypeScript does not narrow the flags across awaits.
@@ -288,7 +378,7 @@ export class VersionedTopic<S, E extends { version: number }> {
 
 // ─── The engine ───────────────────────────────────────────────────────────────────────
 
-type TimerName = 'heartbeat' | 'clock' | 'poll' | 'presence';
+type TimerName = 'heartbeat' | 'clock' | 'poll' | 'presence' | 'rejoinRoom' | 'rejoinBattle';
 
 function deviceKind(): 'desktop' | 'mobile' {
   try {
@@ -365,12 +455,19 @@ export class RoomSync {
   private battleTopic: VersionedTopic<BattleSnapshot, BattleEvent> | null = null;
   private battleSub: TopicSubscription | null = null;
   private offResume: (() => void) | null = null;
+  private offOffline: (() => void) | null = null;
+  /** The browser said `offline` and has not said `online` since. */
+  private offline = false;
   private stopped = false;
 
   private presence: Omit<PresencePayload, 'activity'> | null = null;
   private activity: Activity = IDLE_ACTIVITY;
   private lastTrackAt = Number.NEGATIVE_INFINITY;
   private lastTracked: string | null = null;
+  /** When the recent tracks were sent (the 30 s budget). */
+  private trackTimes: number[] = [];
+  /** Server-closed subscriptions in a row, per topic (the rejoin backoff). */
+  private rejoins = { room: 0, battle: 0 };
 
   constructor(deps: RoomSyncDeps) {
     this.api = deps.api;
@@ -403,8 +500,13 @@ export class RoomSync {
     if (this.state.roomId !== null || this.stopped) return;
     this.patch({ roomId, connection: 'connecting' });
     this.offResume =
-      this.env?.onResume(() => {
+      this.env?.onResume((reason) => {
+        if (reason === 'online') this.setOffline(false);
         this.resync();
+      }) ?? null;
+    this.offOffline =
+      this.env?.onOffline?.(() => {
+        this.setOffline(true);
       }) ?? null;
 
     this.roomTopic = new VersionedTopic<RoomSnapshot, RoomEvent>({
@@ -422,27 +524,15 @@ export class RoomSync {
         if (e.code === 'room_not_found') void this.beat();
       },
       stats: this.stats,
+      clock: this.clock,
+      retryBaseMs: this.timings.retryBaseMs,
+      retryMaxMs: this.timings.retryMaxMs,
     });
 
     // Private channels need the session token before the first join.
     await this.realtime.setAuth().catch(() => undefined);
     if (this.isStopped()) return;
-    this.roomSub = this.realtime.subscribe(
-      roomTopic(roomId),
-      { presenceKey: this.userId },
-      {
-        broadcast: (_event, payload) => {
-          const ev = parseRoomEvent(payload);
-          if (ev) this.roomTopic?.receive(ev);
-        },
-        presence: (state) => {
-          this.patch({ presence: normalizePresence(state) });
-        },
-        status: (status) => {
-          this.onRoomStatus(status);
-        },
-      },
-    );
+    this.subscribeRoom(roomId);
     // Show the room at once; the SUBSCRIBED callback refetches again (nothing is missed).
     void this.roomTopic.refetch();
     void this.syncClock();
@@ -459,6 +549,8 @@ export class RoomSync {
     this.timers.clear();
     this.offResume?.();
     this.offResume = null;
+    this.offOffline?.();
+    this.offOffline = null;
     this.roomSub?.close();
     this.roomSub = null;
     this.closeBattle();
@@ -494,7 +586,7 @@ export class RoomSync {
     this.flushPresence();
   }
 
-  /** The player's BUILD activity (lines, last build, typing); sent at most every 2 s. */
+  /** The player's BUILD activity (lines, last build, typing); throttled (see flushPresence). */
   setActivity(activity: Activity): void {
     this.activity = activity;
     this.flushPresence();
@@ -502,11 +594,42 @@ export class RoomSync {
 
   // --- Room ---------------------------------------------------------------------------
 
-  private onRoomStatus(status: ChannelStatus): void {
+  private subscribeRoom(roomId: string): void {
+    this.roomSub?.close();
+    const sub: TopicSubscription = this.realtime.subscribe(
+      roomTopic(roomId),
+      { presenceKey: this.userId },
+      {
+        broadcast: (_event, payload) => {
+          const ev = parseRoomEvent(payload);
+          if (ev) this.roomTopic?.receive(ev);
+        },
+        presence: (state) => {
+          this.patch({ presence: normalizePresence(state) });
+        },
+        status: (status) => {
+          if (this.roomSub === sub) this.onRoomStatus(status, roomId);
+        },
+      },
+    );
+    this.roomSub = sub;
+  }
+
+  /** Subscribes again after the server closed a topic: 1 s, 2 s, 4 s… at most 30 s. */
+  private scheduleRejoin(topic: 'room' | 'battle', rejoin: () => void): void {
+    const name = topic === 'room' ? 'rejoinRoom' : 'rejoinBattle';
+    if (this.stopped || this.timers.has(name)) return;
+    const n = this.rejoins[topic]++;
+    const delay = Math.min(this.timings.retryBaseMs * 2 ** n, this.timings.retryMaxMs);
+    this.setTimer(name, delay, rejoin);
+  }
+
+  private onRoomStatus(status: ChannelStatus, roomId: string): void {
     if (this.stopped) return;
     if (status === 'SUBSCRIBED') {
+      this.rejoins.room = 0;
       this.roomSubscribed = true;
-      this.patch({ connection: 'live' });
+      this.patch({ connection: this.offline ? 'degraded' : 'live' });
       // (Re)subscribed: anything may have been missed. Presence must be tracked again.
       void this.roomTopic?.refetch();
       void this.refetchBattle();
@@ -514,10 +637,26 @@ export class RoomSync {
       this.flushPresence();
     } else {
       this.roomSubscribed = false;
-      // supabase-js rejoins on its own; poll meanwhile.
+      // supabase-js rejoins after an error or a timeout, not after the server closed the
+      // channel: then this engine subscribes again. Poll meanwhile.
       this.patch({ connection: 'degraded' });
+      if (status === 'CLOSED') {
+        this.scheduleRejoin('room', () => {
+          this.subscribeRoom(roomId);
+        });
+      }
     }
     this.schedulePoll();
+  }
+
+  /** `offline`: say so at once and poll; `online`: back to the channel's own status. */
+  private setOffline(offline: boolean): void {
+    if (this.stopped || offline === this.offline) return;
+    this.offline = offline;
+    this.patch({ connection: !offline && this.roomSubscribed ? 'live' : 'degraded' });
+    this.schedulePoll();
+    // Presence held back while offline goes out now (one message, not a burst).
+    if (!offline) this.flushPresence();
   }
 
   private onRoomChange(room: RoomSnapshot): void {
@@ -557,13 +696,26 @@ export class RoomSync {
         if (this.battleTopic === topic) this.notify({ topic: 'battle', event, battle, previous });
       },
       onFetchError: () => {
-        // Retried by the next event, the fallback poll or a resync.
+        // Retried with backoff (and by the next event, the fallback poll or a resync).
       },
       stats: this.stats,
+      clock: this.clock,
+      retryBaseMs: this.timings.retryBaseMs,
+      retryMaxMs: this.timings.retryMaxMs,
     });
     this.battleTopic = topic;
+    this.rejoins.battle = 0;
+    this.subscribeBattle(battleId, topic);
+    void topic.refetch();
+  }
+
+  private subscribeBattle(
+    battleId: string,
+    topic: VersionedTopic<BattleSnapshot, BattleEvent>,
+  ): void {
+    this.battleSub?.close();
     // Presence lives on the room topic (lobby and BUILD sidebar alike): none here.
-    this.battleSub = this.realtime.subscribe(
+    const sub: TopicSubscription = this.realtime.subscribe(
       battleTopic(battleId),
       { presenceKey: null },
       {
@@ -573,14 +725,23 @@ export class RoomSync {
         },
         presence: () => undefined,
         status: (status) => {
-          if (status === 'SUBSCRIBED') void topic.refetch();
+          if (this.battleSub !== sub || this.stopped) return;
+          if (status === 'SUBSCRIBED') {
+            this.rejoins.battle = 0;
+            void topic.refetch();
+          } else if (status === 'CLOSED') {
+            this.scheduleRejoin('battle', () => {
+              if (this.battleTopic === topic) this.subscribeBattle(battleId, topic);
+            });
+          }
         },
       },
     );
-    void topic.refetch();
+    this.battleSub = sub;
   }
 
   private closeBattle(): void {
+    this.clearTimer('rejoinBattle');
     this.battleSub?.close();
     this.battleSub = null;
     this.battleTopic?.dispose();
@@ -637,10 +798,10 @@ export class RoomSync {
     if (offset !== null && !this.stopped) this.patch({ clockOffsetMs: offset });
   }
 
-  /** While the room topic is down, poll both snapshots. */
+  /** While the room topic is down (or the browser offline), poll both snapshots. */
   private schedulePoll(): void {
     this.clearTimer('poll');
-    if (this.stopped || this.roomSubscribed) return;
+    if (this.stopped || (this.roomSubscribed && !this.offline)) return;
     this.setTimer('poll', this.timings.fallbackPollMs, () => {
       void this.refetchRoom();
       void this.refetchBattle();
@@ -652,10 +813,18 @@ export class RoomSync {
 
   private flushPresence(): void {
     if (this.stopped || !this.presence || !this.roomSub || !this.roomSubscribed) return;
+    if (this.offline) return; // sent when the network is back
     const payload: PresencePayload = { ...this.presence, activity: this.activity };
     const json = JSON.stringify(payload);
     if (json === this.lastTracked) return;
-    const wait = this.lastTrackAt + this.timings.presenceThrottleMs - this.clock.now();
+    const now = this.clock.now();
+    const { presenceThrottleMs, presenceMaxPerWindow, presenceWindowMs } = this.timings;
+    this.trackTimes = this.trackTimes.filter((t) => t > now - presenceWindowMs);
+    let wait = this.lastTrackAt + presenceThrottleMs - now;
+    const oldest = this.trackTimes[0];
+    if (this.trackTimes.length >= presenceMaxPerWindow && oldest !== undefined) {
+      wait = Math.max(wait, oldest + presenceWindowMs - now);
+    }
     if (wait > 0) {
       if (!this.timers.has('presence')) {
         this.setTimer('presence', wait, () => {
@@ -664,7 +833,8 @@ export class RoomSync {
       }
       return;
     }
-    this.lastTrackAt = this.clock.now();
+    this.lastTrackAt = now;
+    this.trackTimes.push(now);
     this.lastTracked = json;
     void this.roomSub.track(payload).then((ok) => {
       if (!ok && this.lastTracked === json) this.lastTracked = null;

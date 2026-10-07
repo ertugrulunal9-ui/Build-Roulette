@@ -25,7 +25,6 @@ import { decodeRaw, isBlank, pixelStats, type RawImage } from '../src/image';
 import { createLogger } from '../src/log';
 import { PlaywrightRenderer } from '../src/playwright-renderer';
 import { WorkerRunner, type JobOutcome } from '../src/runner';
-import { SupabaseBackend } from '../src/supabase';
 import {
   SECRET,
   buildReactBundle,
@@ -34,7 +33,7 @@ import {
   startFixtures,
   type Fixtures,
 } from './support';
-import { Stack, loadStackEnv, sleep, type User } from './supabase-stack';
+import { OwnJobsBackend, Stack, loadStackEnv, sleep, type User } from './supabase-stack';
 
 const ORANGE = { r: 255, g: 87, b: 34 };
 const GREEN = { r: 0, g: 160, b: 80 };
@@ -44,7 +43,7 @@ const THROWING = `throw new Error('boom on load');\n`;
 let stack: Stack;
 let fx: Fixtures;
 let renderer: PlaywrightRenderer;
-let backend: SupabaseBackend;
+let backend: OwnJobsBackend;
 let runner: WorkerRunner;
 const logs: string[] = [];
 
@@ -69,7 +68,11 @@ beforeAll(async () => {
   stack = new Stack(loadStackEnv());
   fx = await startFixtures([new URL(stack.env.API_URL).origin]);
   renderer = new PlaywrightRenderer();
-  backend = new SupabaseBackend({ url: stack.env.API_URL, serviceKey: stack.env.SERVICE_ROLE_KEY });
+  // Claims only this test's jobs: the shared queue may hold other scripts' leftovers.
+  backend = new OwnJobsBackend(stack, {
+    url: stack.env.API_URL,
+    serviceKey: stack.env.SERVICE_ROLE_KEY,
+  });
   runner = new WorkerRunner(
     {
       backend,
@@ -95,17 +98,14 @@ afterAll(async () => {
   if (logOut) writeFileSync(logOut, `${logs.join('\n')}\n`);
 });
 
-/** Puts this build's capture job first in line (jobs left by other runs may exist). */
-function prioritize(kind: 'capture' | 'destroy', ref: string): void {
-  stack.sql(
-    `update public.jobs set run_after = '-infinity' where kind = '${kind}' and ref_id = '${ref}' and status in ('queued', 'running')`,
-  );
-}
-
-/** Runs the capture worker once (drains the queue) and returns the outcome for `build`. */
+/**
+ * Runs the capture worker once (drains this test's capture jobs that are due) and returns
+ * the outcome for `build`.
+ */
 async function captureOnce(build: string): Promise<CaptureOutcome> {
-  prioritize('capture', build);
+  backend.own(build);
   const results: { job: Job; outcome: JobOutcome }[] = await runner.drain('capture');
+  expect(results.map((r) => r.job.ref_id)).toEqual([build]);
   const mine = results.find((r) => r.job.ref_id === build);
   if (!mine)
     throw new Error(`the capture job of ${build} was not processed: ${JSON.stringify(results)}`);
@@ -285,8 +285,10 @@ describe('capture + destroy workers on the local Supabase stack', () => {
     expect(job.error).not.toContain('token=');
     expect(buildRow(build)['capture_status']).toBe('pending');
 
-    // Skip ahead to the 5th attempt.
-    stack.sql(`update public.jobs set attempts = 4 where kind = 'capture' and ref_id = '${build}'`);
+    // Skip ahead to the 5th attempt, and past the backoff.
+    stack.sql(
+      `update public.jobs set attempts = 4, run_after = now() where kind = 'capture' and ref_id = '${build}'`,
+    );
     const last = await captureOnce(build);
     expect(last.result).toBe('failed');
     expect(buildRow(build)['capture_status']).toBe('failed');
@@ -306,9 +308,10 @@ describe('capture + destroy workers on the local Supabase stack', () => {
         snap = await p.user.snapshot(p.battle);
       }
       expect(snap.battle.phase).toBe('destroyed');
-      prioritize('destroy', p.battle);
+      backend.own(p.battle);
     }
     const results = await runner.drain('destroy');
+    expect(results.map((r) => r.job.ref_id).sort()).toEqual(all.map((p) => p.battle).sort());
     for (const p of all) {
       const mine = results.find((r) => r.job.ref_id === p.battle);
       expect(mine?.outcome.result, p.battle).toBe('destroyed');

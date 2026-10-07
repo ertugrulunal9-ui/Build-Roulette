@@ -21,8 +21,9 @@ const APP_SERVER_COMMAND =
 export default defineConfig({
   testDir: './e2e',
   // The solo game and the rooms need the Supabase stack: playwright.solo.config.ts
-  // (`test:e2e:solo`) and playwright.multi.config.ts (`test:e2e:multi`).
-  testIgnore: /(solo|multiplayer).*\.spec\.ts$/,
+  // (`test:e2e:solo`), playwright.multi.config.ts (`test:e2e:multi`) and
+  // playwright.chaos.config.ts (`test:e2e:chaos`).
+  testIgnore: /(solo|multiplayer|chaos).*\.spec\.ts$/,
   // One shared mock CDN and shell, and timing-sensitive watchdog checks: run serially.
   workers: 1,
   fullyParallel: false,

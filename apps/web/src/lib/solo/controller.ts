@@ -38,6 +38,7 @@ import { measureClockOffset } from './clock-sync';
 import { GameError, toGameError } from './errors';
 import { buildStats, parseSourceJson, sourceJson } from './stats';
 import type { BattleSnapshot, BuildStats, SnapshotBuild } from './types';
+import { pruneBattleWorkspaces, type StoredBattleWorkspace } from './workspace-cleanup';
 
 // ─── Dependencies ─────────────────────────────────────────────────────────────────────
 
@@ -62,8 +63,8 @@ export const realClock: SoloClock = {
 /** The battle workspaces in IndexedDB (key `battle:{id}`). */
 export interface LocalWorkspaces {
   delete(workspaceId: string): Promise<void>;
-  /** Deletes every battle workspace except `keepId` (stale-workspace cleanup, docs/03 §3.6). */
-  deleteBattleWorkspacesExcept(keepId: string | null): Promise<void>;
+  /** Every battle workspace with its last local save (for the stale cleanup). */
+  listBattleWorkspaces(): Promise<StoredBattleWorkspace[]>;
 }
 
 export interface BuildArtifacts {
@@ -472,11 +473,7 @@ export class SoloController {
     };
     this.emit();
     this.apply(snapshot);
-    void this.deps.localWorkspaces
-      .deleteBattleWorkspacesExcept(
-        isTerminalPhase(snapshot.battle.phase) ? null : battleWorkspaceId(snapshot.battle.id),
-      )
-      .catch(() => undefined);
+    void this.pruneLocalWorkspaces(snapshot);
   }
 
   /** A newer snapshot of the open battle (stale or foreign ones are ignored). */
@@ -530,16 +527,29 @@ export class SoloController {
       this.patch({ stage: 'battle' });
       this.deps.onBattleChange?.(battleId);
       this.apply(snapshot);
-      void this.deps.localWorkspaces
-        .deleteBattleWorkspacesExcept(
-          isTerminalPhase(snapshot.battle.phase) ? null : battleWorkspaceId(battleId),
-        )
-        .catch(() => undefined);
+      void this.pruneLocalWorkspaces(snapshot);
     } catch (e) {
       if (epoch !== this.epoch) return;
       this.patch({ stage: 'name', battleId: null, error: toGameError(e) });
       this.deps.onBattleChange?.(null);
     }
+  }
+
+  /**
+   * Deletes the stale copies of other battles (workspace-cleanup.ts): only battles that are
+   * over or untouched for 24 h, never one that another tab is still playing.
+   */
+  private pruneLocalWorkspaces(snapshot: BattleSnapshot): Promise<string[]> {
+    const local = this.deps.localWorkspaces;
+    return pruneBattleWorkspaces(
+      {
+        list: () => local.listBattleWorkspaces(),
+        delete: (id) => local.delete(id),
+        battlePhases: (ids) => this.api.battlePhases(ids),
+        now: () => this.clock.now(),
+      },
+      isTerminalPhase(snapshot.battle.phase) ? null : battleWorkspaceId(snapshot.battle.id),
+    );
   }
 
   private resetBattleState(): void {

@@ -59,8 +59,33 @@ describe('start and resume', () => {
     expect(state(c)).toMatchObject({ stage: 'battle', battleId: BATTLE, userId: USER });
     expect(state(c).snapshot?.battle.phase).toBe('spinning');
     expect(battleChanges).toEqual([BATTLE]);
-    // Stale battle workspaces in IndexedDB are cleaned up, this one is kept.
-    expect(local.kept).toEqual([battleWorkspaceId(BATTLE)]);
+    c.dispose();
+  });
+
+  it('cleans up stale battle workspaces only: over on the server, or untouched for 24 h', async () => {
+    const running = '44444444-4444-4444-8444-444444444444'; // another tab plays it
+    const destroyed = '55555555-5555-4555-8555-555555555555';
+    const unknown = '66666666-6666-4666-8666-666666666666'; // the server does not say
+    const ancient = '77777777-7777-4777-8777-777777777777';
+    for (const id of [BATTLE, running, destroyed, unknown]) {
+      local.stored.set(battleWorkspaceId(id), Date.now() - 60_000);
+    }
+    local.stored.set(battleWorkspaceId(ancient), Date.now() - 25 * 60 * 60 * 1000);
+    api.phases = { [running]: 'building', [destroyed]: 'destroyed', [ancient]: 'building' };
+    const c = controller();
+    await c.start('Turbo Otter');
+    await flush();
+    expect(local.deleted.sort()).toEqual(
+      [battleWorkspaceId(destroyed), battleWorkspaceId(ancient)].sort(),
+    );
+    expect([...local.stored.keys()].sort()).toEqual(
+      [BATTLE, running, unknown].map(battleWorkspaceId).sort(),
+    );
+    // Only the recent ones were asked about (the open battle never).
+    expect(api.calls.find((call) => call[0] === 'battlePhases')).toEqual([
+      'battlePhases',
+      [running, destroyed, unknown],
+    ]);
     c.dispose();
   });
 
@@ -473,7 +498,6 @@ describe('results and destroy', () => {
     expect(state(c).destroy).toBe('done');
     await flush();
     expect(local.deleted).toEqual([battleWorkspaceId(BATTLE)]);
-    expect(local.kept).toEqual([null]);
     c.dispose();
   });
 
@@ -510,11 +534,26 @@ describe('external mode (multiplayer)', () => {
     return { c, refetches };
   }
 
+  it('a room battle opening keeps a solo battle that another tab is playing', async () => {
+    const solo = '44444444-4444-4444-8444-444444444444';
+    local.stored.set(battleWorkspaceId(solo), Date.now() - 5_000);
+    api.phases = { [solo]: 'building' };
+    const { c } = external();
+    c.openExternal(snapshotAt('building', { version: 2, endsInMs: 300_000 }), 0);
+    await flush();
+    expect(local.deleted).toEqual([]);
+    // Once that battle is over on the server, the next battle that opens cleans it up.
+    api.phases = { [solo]: 'destroyed' };
+    c.openExternal(snapshotAt('building', { version: 2, endsInMs: 300_000 }), 0);
+    await flush();
+    expect(local.deleted).toEqual([battleWorkspaceId(solo)]);
+    c.dispose();
+  });
+
   it('opens from a pushed snapshot and never polls or samples the clock itself', async () => {
     const { c, refetches } = external();
     c.openExternal(snapshotAt('building', { version: 2, endsInMs: 300_000 }), 1_500);
     expect(state(c)).toMatchObject({ stage: 'battle', battleId: BATTLE, clockOffsetMs: 1_500 });
-    expect(local.kept).toEqual([battleWorkspaceId(BATTLE)]);
     await vi.advanceTimersByTimeAsync(120_000);
     expect(api.count('getSnapshot')).toBe(0);
     expect(api.count('serverNow')).toBe(0);

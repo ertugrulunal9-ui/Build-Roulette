@@ -183,6 +183,7 @@ pnpm --filter @br/web test             # unit (Vitest): solo + room controllers,
 pnpm --filter @br/web test:e2e         # /playground (Playwright), no Supabase needed
 pnpm --filter @br/web test:e2e:solo    # /play against the REAL local Supabase stack
 pnpm --filter @br/web test:e2e:multi   # rooms: 3+ browser contexts, REAL stack WITH Realtime
+pnpm --filter @br/web test:e2e:chaos   # rooms under chaos (~10 min), same stack
 ```
 
 - `test:e2e` runs `next build`, then Playwright starts `next start -p 3100` and
@@ -223,6 +224,34 @@ pnpm --filter @br/web test:e2e:multi   # rooms: 3+ browser contexts, REAL stack 
   - **join errors:** an unknown code and a malformed one.
 
   `MULTI_SCREENSHOT_DIR=/dir` saves `t017-{lobby,build-sidebar,spectator,results}.png`.
+  Clicks on the ship dialog go through `clickRouted` (`e2e/helpers.ts`): Chromium routes a
+  mouse event from the compositor's hit-test data, which right after the dialog opens can
+  still show the cross-site preview iframe there (measured: 16–21 of 40 first clicks under
+  CPU load went to the iframe; `bringToFront` does not help, every headless window is
+  visible and focused). The helper hovers until the button itself gets the pointer move,
+  then clicks once. A person cannot click a button before it is drawn, so this is a test
+  artefact, not a product bug.
+- `test:e2e:chaos` (`playwright.chaos.config.ts`, `e2e/chaos.spec.ts`; docs/04 §4.8 and the
+  M3 exit criteria) runs on the same servers. The battle's time limit is set while it spins,
+  so BUILD runs on real server deadlines; the 5 min abandonment window and the 60 s last
+  look are shortened with psql. Every battle ends with a database check of its terminal
+  state (one event per version, one build per roster player, every hand-shipped build kept,
+  no draft after DESTROY, captures settled, ranks 1…n, files destroyed):
+  - **6 players under chaos:** clocks at ±5 min (`newPlayer(…, { clockSkewMs })`), a 15 s
+    network drop mid-BUILD with an edit made offline, refreshes mid-BUILD and mid-RESULTS,
+    the host's context closes (host migration, toasts and crown; her autosave ships), the
+    new host starts the rematch;
+  - **random chaos (seeded):** drops, refreshes, edits and ships picked by a PRNG on skewed
+    clocks; `CHAOS_SEED=n` replays a run (the seed is logged and in the report);
+  - **steady typing:** a new line every ~1.5 s for a minute must not trip Realtime's
+    presence limit (5 messages per 30 s per client, or the server closes the channel);
+  - **all clients closed at T-0:** pg_cron alone ends BUILD and SHIPPING, auto-ships the
+    autosaves (including the final one at T-3 s), captures, RESULTS;
+  - **abandoned:** a returning player sees the abandoned battle in the lobby;
+  - **a full room:** the 9th player spectates; with 20 spectators, `room_full`.
+
+  A full run signs up 27 anonymous users (mind the 300/hour local Auth limit above). CI runs
+  it nightly and on demand (job `chaos`).
 - `test:e2e:cf` runs the playground suite against the Cloudflare Workers build
   (`cf:build`, then `opennextjs-cloudflare preview`, which is `wrangler dev` on workerd)
   instead of `next start` (`E2E_APP_SERVER=workers` in `playwright.config.ts`).

@@ -7,6 +7,8 @@
  * or from `supabase status -o env`.
  */
 import { execFileSync } from 'node:child_process';
+import type { Job, JobKind } from '../src/backend';
+import { SupabaseBackend, type SupabaseBackendOptions } from '../src/supabase';
 
 export interface StackEnv {
   API_URL: string;
@@ -152,6 +154,54 @@ export class User {
     if (snap.battle.phase !== 'building')
       throw new Error(`expected building, got ${snap.battle.phase}`);
     return battle;
+  }
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/**
+ * The worker's backend in the integration test: the real SupabaseBackend, except that it
+ * only claims jobs of the builds and battles this test created (`own()`).
+ *
+ * The stack's queue is shared: other scripts (the solo, multiplayer and Realtime e2e, the
+ * web e2e) leave capture and destroy jobs behind, and the real `claim_job` rightly hands
+ * them out first (oldest `run_after`). So the claim runs `claim_job` itself, as the
+ * superuser, in one transaction that parks every foreign claimable job of that kind
+ * (`run_after = infinity`) and restores it before committing: other sessions never see a
+ * foreign job change, and the claim logic under test (order, lease, attempts) stays the
+ * product's. Test-only: the product worker claims everything.
+ */
+export class OwnJobsBackend extends SupabaseBackend {
+  private readonly refs = new Set<string>();
+
+  constructor(
+    private readonly stack: Stack,
+    opts: SupabaseBackendOptions,
+  ) {
+    super(opts);
+  }
+
+  /** Lets the worker claim the jobs of this build (capture) or battle (destroy). */
+  own(refId: string): void {
+    if (!UUID.test(refId)) throw new Error(`not a uuid: ${refId}`);
+    this.refs.add(refId);
+  }
+
+  override claimJob(kind: JobKind): Promise<Job | null> {
+    if (this.refs.size === 0) return Promise.resolve(null);
+    const refs = [...this.refs].map((r) => `'${r}'`).join(',');
+    const k = kind === 'capture' ? 'capture' : 'destroy';
+    // One psql command string = one transaction; only the last statement prints a row.
+    const out = this.stack.sql(`
+      create temp table parked on commit drop as
+        select id, run_after from public.jobs
+        where kind = '${k}' and status in ('queued', 'running') and ref_id not in (${refs});
+      update public.jobs j set run_after = 'infinity' from parked p where j.id = p.id;
+      create temp table claimed on commit drop as select * from public.claim_job('${k}');
+      update public.jobs j set run_after = p.run_after from parked p where j.id = p.id;
+      select coalesce((select row_to_json(c) from claimed c where c.id is not null), 'null');`);
+    const last = out.split('\n').pop() ?? 'null';
+    return Promise.resolve(JSON.parse(last) as Job | null);
   }
 }
 

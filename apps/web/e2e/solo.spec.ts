@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { buildFrame, replaceEditorText } from './helpers';
+import { buildFrame, clickRouted, replaceEditorText } from './helpers';
 import { battleRow, ephemeralObjects, sql } from './stack';
 
 /**
@@ -110,7 +110,7 @@ test('ship: spin → build → ship → results (screenshot, speedrun) → destr
   await page.getByTestId('ship-button').click();
   await expect(page.getByTestId('ship-dialog')).toContainText("You can't edit after");
   await page.getByTestId('build-name').fill('E2E Rocket');
-  await page.getByTestId('confirm-ship').click();
+  await clickRouted(page.getByTestId('confirm-ship'));
 
   // RESULTS: speedrun, completion time, then the real screenshot from the capture worker.
   await expect(page.getByTestId('results')).toBeVisible({ timeout: 30_000 });

@@ -465,6 +465,61 @@ describe('heartbeat', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it('a battle event Realtime never delivered is caught by the next beat (the battle version)', async () => {
+    api.room = roomSnapshot({ battleId: BATTLE_1, version: 3 });
+    api.battles.set(BATTLE_1, battleSnapshot({ version: 10, phase: 'reveal', revealIndex: 0 }));
+    const s = await started();
+    rt.open(B1_TOPIC).status('SUBSCRIBED');
+    await flush();
+    api.clearCalls();
+    // Up to date: the beat reads the version and fetches nothing.
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(api.count('battleVersion', BATTLE_1)).toBe(1);
+    expect(api.count('getBattleSnapshot')).toBe(0);
+    // The host moves to the next build; the broadcast is lost (the channel stays subscribed).
+    api.battles.set(BATTLE_1, battleSnapshot({ version: 11, phase: 'reveal', revealIndex: 1 }));
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(api.count('getBattleSnapshot', BATTLE_1)).toBe(1);
+    expect(s.getSnapshot().battle?.battle).toMatchObject({ version: 11, reveal_index: 1 });
+    expect(s.stats.missed).toBe(1);
+    // A late copy of the event is then stale, not applied twice.
+    rt.open(B1_TOPIC).send({
+      type: 'phase',
+      version: 11,
+      phase: 'reveal',
+      reveal_index: 1,
+      phase_started_at: new Date().toISOString(),
+      phase_ends_at: new Date(Date.now() + 30_000).toISOString(),
+    });
+    expect(s.stats.stale).toBe(1);
+    s.stop();
+  });
+
+  it('the battle version is not read once the battle is over, nor when it is unreadable', async () => {
+    api.room = roomSnapshot({ battleId: BATTLE_1, version: 3 });
+    api.battles.set(BATTLE_1, battleSnapshot({ version: 20, phase: 'destroyed' }));
+    const s = await started();
+    api.clearCalls();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(api.count('battleVersion')).toBe(0);
+    s.stop();
+
+    api.battles.set(BATTLE_1, battleSnapshot({ version: 5, phase: 'building' }));
+    const t = await started();
+    api.onBattleVersion = () => null;
+    api.clearCalls();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(api.count('battleVersion')).toBe(1);
+    expect(api.count('getBattleSnapshot')).toBe(0);
+    api.onBattleVersion = () => {
+      throw new GameError('network');
+    };
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(api.count('getBattleSnapshot')).toBe(0);
+    expect(t.getSnapshot().ended).toBeNull();
+    t.stop();
+  });
+
   it('a network failure is retried by the next beat', async () => {
     const s = await started();
     api.onHeartbeat = () => {

@@ -116,6 +116,8 @@ export function PreviewPane({
           <div
             role="alert"
             data-testid="preview-crashed"
+            data-reason={snapshot.crash?.reason}
+            data-silent-ms={snapshot.crash ? Math.round(snapshot.crash.silentForMs) : undefined}
             className="absolute inset-0 grid place-items-center bg-zinc-100 p-6 text-center dark:bg-zinc-900"
           >
             <div className="flex max-w-sm flex-col items-center gap-3">

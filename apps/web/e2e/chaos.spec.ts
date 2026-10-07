@@ -1,4 +1,5 @@
-import { expect, test, type Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
+import { expect, test } from './diagnostics';
 import { buildFrame, clickRouted } from './helpers';
 import {
   autosaveNow,
@@ -18,7 +19,13 @@ import {
   writeApp,
   type Player,
 } from './rooms';
-import { assertUuid, ephemeralText, sql } from './stack';
+import {
+  assertUuid,
+  dropRealtimeDatabaseFeed,
+  ephemeralText,
+  realtimeDatabaseFeedUp,
+  sql,
+} from './stack';
 
 /**
  * Rooms under chaos (playwright.chaos.config.ts, docs/04 §4.8, docs/06 M3 exit criteria):
@@ -295,7 +302,7 @@ function expectNoPageErrors(players: Player[]): void {
 
 // ─── 6 players under chaos ────────────────────────────────────────────────────────────
 
-test('6 players under chaos: skewed clocks, a network drop, refreshes, the host vanishes (in BUILD, and the next one in REVEAL); the battle completes and the new host starts the rematch', async ({
+test('6 players under chaos: skewed clocks, a network drop, refreshes, the host vanishes (in BUILD, and the next one in REVEAL); the battle completes and the new host starts the rematch @chaos-1', async ({
   browser,
 }, info) => {
   test.setTimeout(12 * MIN);
@@ -691,7 +698,7 @@ function prng(seed: number): () => number {
   };
 }
 
-test('random chaos (seeded): drops, refreshes, edits and ships at random on skewed clocks; no shipped build is lost', async ({
+test('random chaos (seeded): drops, refreshes, edits and ships at random on skewed clocks; no shipped build is lost @chaos-2', async ({
   browser,
 }, info) => {
   test.setTimeout(7 * MIN);
@@ -787,7 +794,7 @@ test('random chaos (seeded): drops, refreshes, edits and ships at random on skew
 
 // ─── Everyone gone at T-0 ─────────────────────────────────────────────────────────────
 
-test('all clients closed at T-0: pg_cron alone ends BUILD, auto-ships the autosaves, runs REVEAL and VOTING, captures and reaches RESULTS', async ({
+test('all clients closed at T-0: pg_cron alone ends BUILD, auto-ships the autosaves, runs REVEAL and VOTING, captures and reaches RESULTS @chaos-2', async ({
   browser,
 }, info) => {
   test.setTimeout(6 * MIN);
@@ -871,7 +878,7 @@ test('all clients closed at T-0: pg_cron alone ends BUILD, auto-ships the autosa
 
 // ─── Abandoned ────────────────────────────────────────────────────────────────────────
 
-test('abandoned: no roster player for 5 min; a returning player finds the battle abandoned', async ({
+test('abandoned: no roster player for 5 min; a returning player finds the battle abandoned @chaos-1', async ({
   browser,
 }, info) => {
   test.setTimeout(4 * MIN);
@@ -974,6 +981,121 @@ test('a minute of steady typing keeps the room channel (Realtime closes channels
         where room_id = (select room_id from public.battles where id = '${battleId}')`);
   await expect.poll(() => phaseOf(battleId), { timeout: 30_000 }).toBe('abandoned');
   await expectTerminal(battleId, { phase: 'abandoned', shipped: {} });
+});
+
+// ─── Realtime loses the database feed ─────────────────────────────────────────────────
+
+test('Realtime stops delivering the battle events mid-REVEAL (channels still subscribed): every page still follows the reveal, the vote and the results', async ({
+  browser,
+}, info) => {
+  test.setTimeout(5 * MIN);
+  const una = await newPlayer(browser, info, 'Una Host');
+  const vic = await newPlayer(browser, info, 'Vic Deaf');
+  const wes = await newPlayer(browser, info, 'Wes Deaf');
+  const all = [una, vic, wes];
+  // Battle events (broadcasts on the battle topic) each page receives once the feed is down.
+  let counting = false;
+  const battleFrames = all.map(() => 0);
+  for (const [i, p] of all.entries()) {
+    p.page.on('websocket', (ws) => {
+      ws.on('framereceived', (f) => {
+        const text = typeof f.payload === 'string' ? f.payload : f.payload.toString();
+        if (counting && text.includes('realtime:battle:') && text.includes('"version"')) {
+          battleFrames[i] = (battleFrames[i] ?? 0) + 1;
+        }
+      });
+    });
+  }
+  const code = await gather(all);
+  const battleId = await startBattle(code, all, 120);
+  for (const [i, p] of all.entries()) {
+    await ship(p.page, `${p.name} build`, { last: i === all.length - 1 });
+  }
+  await expect.poll(() => phaseOf(battleId), { timeout: MIN }).toBe('reveal');
+  await expectSameSpotlight(all);
+  const versionBefore = Number(sql(`select version from public.battles where id = '${battleId}'`));
+
+  // From now on no battle broadcast reaches anyone (T-023: the local Realtime does this by
+  // itself every 10 minutes; it made the 6- and 8-player tests fail now and then).
+  dropRealtimeDatabaseFeed();
+  expect(realtimeDatabaseFeedUp()).toBe(false);
+  counting = true;
+  // The capture worker screenshots the builds meanwhile: more versions nobody hears of, so
+  // the host's Next is likely to go out with a stale version (resent by the controller).
+  await expect
+    .poll(
+      () =>
+        sql(
+          `select count(*) from public.builds where battle_id = '${battleId}' and capture_status = 'pending'`,
+        ),
+      { timeout: MIN, intervals: [250] },
+    )
+    .toBe('0');
+
+  // The host moves on: her own page and everyone else's learn it from the heartbeat's
+  // battle version check (every 10 s), not from an event.
+  const sentVersions: number[] = [];
+  una.page.on('request', (r) => {
+    if (r.url().endsWith('/rpc/reveal_next')) {
+      sentVersions.push((r.postDataJSON() as { p_expected_version: number }).p_expected_version);
+    }
+  });
+  await clickRouted(una.page.getByTestId('reveal-next'));
+  for (const p of all) {
+    await expect(p.page.getByTestId('reveal-stage')).toHaveAttribute('data-index', '1', {
+      timeout: 25_000,
+    });
+  }
+  // One click: sent once, or resent with the server's version when a capture made it stale.
+  info.annotations.push({ type: 'reveal_next versions', description: sentVersions.join(',') });
+  console.log(`reveal_next expected versions: ${sentVersions.join(', ')}`);
+  expect(sentVersions.length).toBeGreaterThanOrEqual(1);
+  expect(
+    sql(
+      `select count(*) from public.battle_events where battle_id = '${battleId}' and payload ->> 'reason' = 'host_next'`,
+    ),
+  ).toBe('1');
+  await expectSameSpotlight(all);
+  await clickRouted(una.page.getByTestId('skip-to-vote'));
+  for (const p of all) {
+    await expect(p.page.getByTestId('vote-stage')).toBeVisible({ timeout: 25_000 });
+  }
+  const buildOf = (name: string) =>
+    sql(
+      `select id from public.builds where battle_id = '${battleId}' and builder_id = '${userOf(battleId, name)}'`,
+    );
+  for (const [i, p] of all.entries()) {
+    const pick = buildOf((all[(i + 1) % all.length] ?? una).name);
+    for (const cat of ['overall', 'rule', 'style', 'chaos']) {
+      const last = i === all.length - 1 && cat === 'chaos';
+      const option = p.page.locator(
+        `[data-testid=vote-category][data-category=${cat}] [data-testid=vote-option][data-build="${pick}"]`,
+      );
+      // The last pick of the last ballot ends VOTING at once.
+      if (last) await option.click();
+      else await vote(p.page, cat, pick);
+    }
+  }
+  for (const p of all) {
+    await expect(p.page.getByTestId('results')).toBeVisible({ timeout: 25_000 });
+  }
+  // Still no feed: the pages kept up without a single battle event.
+  expect(realtimeDatabaseFeedUp()).toBe(false);
+  expect(battleFrames).toEqual([0, 0, 0]);
+  expect(
+    Number(sql(`select version from public.battles where id = '${battleId}'`)),
+  ).toBeGreaterThanOrEqual(versionBefore + 3); // next, skip, …, results
+
+  endLastLook(battleId);
+  for (const p of all) {
+    await expect(p.page.getByTestId('lobby')).toBeVisible({ timeout: 30_000 });
+  }
+  await expectTerminal(battleId, {
+    phase: 'destroyed',
+    shipped: Object.fromEntries(all.map((p) => [p.name, `${p.name} build`])),
+  });
+  expectNoPageErrors(all);
+  for (const p of all) await p.context.close();
 });
 
 // ─── 8 players: the largest party ─────────────────────────────────────────────────────
@@ -1083,7 +1205,7 @@ test('8 players, a full party battle: everyone ships, the reveal of 8 builds, ev
 
 // ─── A full room ──────────────────────────────────────────────────────────────────────
 
-test('a full room: the 9th player spectates; with every spectator slot taken, room_full', async ({
+test('a full room: the 9th player spectates; with every spectator slot taken, room_full @chaos-1', async ({
   browser,
 }, info) => {
   test.setTimeout(4 * MIN);

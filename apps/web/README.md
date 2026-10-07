@@ -235,7 +235,8 @@ pnpm --filter @br/web test:e2e         # /playground (Playwright), no Supabase n
 pnpm --filter @br/web test:e2e:solo    # /play against the REAL local Supabase stack
 pnpm --filter @br/web test:e2e:multi   # rooms: 3+ browser contexts (and phones), REAL stack WITH Realtime
 pnpm --filter @br/web test:e2e:mobile  # only the phone spec of the above
-pnpm --filter @br/web test:e2e:chaos   # rooms under chaos (~13 min), same stack
+pnpm --filter @br/web test:e2e:chaos   # rooms under chaos (~14 min), same stack
+CHAOS_SHARD=2 pnpm --filter @br/web test:e2e:chaos   # one of its 3 shards (~5 min each)
 ```
 
 - `test:e2e` runs `next build`, then Playwright starts `next start -p 3100` and
@@ -334,10 +335,50 @@ pnpm --filter @br/web test:e2e:chaos   # rooms under chaos (~13 min), same stack
     that his pick was not counted;
   - **8 players** (the largest party): everyone ships, a reveal of 8 builds (38 s slots),
     everyone votes in every category, ranked results with the tallies, destroy, lobby;
-  - **a full room:** the 9th player spectates; with 20 spectators, `room_full`.
+  - **a full room:** the 9th player spectates; with 20 spectators, `room_full`;
+  - **Realtime loses the database feed** (T-023): mid-REVEAL, Realtime stops forwarding the
+    database's broadcasts (`docker exec` into the Realtime container,
+    `dropRealtimeDatabaseFeed` in `e2e/stack.ts`) with every channel still subscribed; every
+    page still follows the next build, the vote, RESULTS and DESTROY, with zero battle
+    events delivered (the heartbeat's battle-version check, `src/lib/room/sync.ts`).
 
-  A full run signs up 38 anonymous users (mind the 300/hour local Auth limit above). CI runs
-  it nightly and on demand (job `chaos`).
+  A full run signs up 41 anonymous users (mind the 300/hour local Auth limit above).
+  **Shards:** `CHAOS_SHARD=1|2|3` runs a third of the suite: a test joins shard 1 or 2 with
+  `@chaos-1` / `@chaos-2` at the end of its title, shard 3 runs every test without either
+  tag (so a new test always runs somewhere). About 5 minutes each (measured: 4.8, 4.4 and
+  4.8 min). Each shard has its own output directory (`test-results/chaos-shard-N/`) and
+  report (`playwright-report/chaos-shard-N/`), so shards 1 and 2 can also run side by side
+  on one stack (servers started once, `E2E_REUSE_SERVERS=1`); shard 3 needs the stack to
+  itself (its lost-feed test cuts Realtime's database feed for every client of the stack).
+  CI runs the three shards as parallel jobs, each with its own stack, on every push, nightly
+  and on demand (job `chaos`).
+- **Failure diagnostics** (rooms and chaos e2e, `e2e/diagnostics.ts`): the specs import
+  `test` from there, and every failed test gets, next to Playwright's trace and
+  screenshots: `players.md` (per player: URL, the visible stages with their data
+  attributes, the Realtime channels by topic, the last log lines) and `players-full.log`
+  (console, page errors, failed requests and Realtime frames of every page, timestamped),
+  a labelled screenshot per page, `db.json` (the test's battles with their events, builds,
+  votes and jobs, the rooms and their members, slow or failed pg_cron runs),
+  `services.log` (the capture worker and shell output of the test's window; written by
+  `scripts/solo-services.ts` to `BR_SERVICES_LOG`) and `docker-*.log` (the Realtime,
+  Postgres, Auth, PostgREST and Storage containers). The HTML report
+  (`playwright-report/multi/`, `playwright-report/chaos*/`) keeps them until the next run;
+  CI uploads both directories when a job fails.
+- **Realtime drops broadcasts on the local stack.** Every 10 minutes the local Realtime
+  closes its database connection ("Rebalancing Tenant database connection for a closer
+  region": its node's region is `local`, the tenant's `us-east-1`) and reconnects only when
+  a client joins a channel. Until then every channel stays subscribed but no broadcast from
+  the database arrives, and the ones sent meanwhile are lost. That made the chaos tests
+  fail now and then (T-023: pages stuck on the previous REVEAL slot). The sync engine now
+  reads the battle's version with every heartbeat and refetches when the server is ahead,
+  and ship toasts come from snapshots, so a lost broadcast costs at most one heartbeat
+  (10 s); the chaos test above pins it.
+- **The host's Next during the capture burst.** `reveal_next` / `skip_to_vote` carry the
+  battle version (compare-and-set), and the capture worker finishes the builds'
+  screenshots one after another right at the start of REVEAL, each one a new version. A
+  click that lost that race was dropped (T-023: the other cause of the 8-player test's
+  failures). The controller now resends it with the version the server returned while the
+  phase and the spotlight are unchanged (`HOST_RETRIES`, `src/lib/room/reveal-vote.ts`).
 - `test:e2e:cf` runs the playground suite against the Cloudflare Workers build
   (`cf:build`, then `opennextjs-cloudflare preview`, which is `wrangler dev` on workerd)
   instead of `next start` (`E2E_APP_SERVER=workers` in `playwright.config.ts`).

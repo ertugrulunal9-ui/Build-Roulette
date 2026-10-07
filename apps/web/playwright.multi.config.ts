@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import { defineConfig } from '@playwright/test';
 
 /**
@@ -13,6 +14,11 @@ import { defineConfig } from '@playwright/test';
  */
 const APP_PORT = Number(process.env['APP_PORT'] ?? 3100);
 const APP_ORIGIN = `http://localhost:${String(APP_PORT)}`;
+// The services' output with timestamps, for the diagnostics of a failed test
+// (e2e/diagnostics.ts). In the output directory: wiped at the start of a run, uploaded by CI.
+const SERVICES_LOG = (process.env['BR_SERVICES_LOG'] ??= fileURLToPath(
+  new URL('./test-results/services.log', import.meta.url),
+));
 
 export default defineConfig({
   testDir: './e2e',
@@ -22,7 +28,9 @@ export default defineConfig({
   fullyParallel: false,
   timeout: 420_000,
   expect: { timeout: 20_000 },
-  reporter: [['list']],
+  // The HTML report keeps every failure's error, trace, screenshots and diagnostics
+  // (players.md, db.json, services.log, docker-*.log) until the next run of this suite.
+  reporter: [['list'], ['html', { open: 'never', outputFolder: 'playwright-report/multi' }]],
   use: {
     baseURL: APP_ORIGIN,
     browserName: 'chromium',
@@ -36,7 +44,7 @@ export default defineConfig({
     {
       command: 'tsx scripts/solo-services.ts --realtime',
       url: 'http://127.0.0.1:4321/v1/',
-      env: { BR_APP_ORIGINS: APP_ORIGIN },
+      env: { BR_APP_ORIGINS: APP_ORIGIN, BR_SERVICES_LOG: SERVICES_LOG },
       gracefulShutdown: { signal: 'SIGTERM', timeout: 40_000 },
       reuseExistingServer: process.env['E2E_REUSE_SERVERS'] === '1',
       stdout: 'pipe',

@@ -79,3 +79,29 @@ export function battleRow(battleId: string): {
     ),
   ) as { phase: string; destroyed_at: string | null };
 }
+
+/** The local stack's Realtime container (`supabase_<service>_<project_id>`). */
+const REALTIME_CONTAINER = 'supabase_realtime_build-roulette';
+
+function realtimeRpc(expr: string): string {
+  return execFileSync('docker', ['exec', REALTIME_CONTAINER, '/app/bin/realtime', 'rpc', expr], {
+    encoding: 'utf8',
+  }).trim();
+}
+
+/**
+ * Realtime stops forwarding the database's broadcasts (`realtime.send`), with every channel
+ * still subscribed, until the next channel join: what the local stack's Realtime does by
+ * itself every 10 minutes ("Rebalancing Tenant database connection for a closer region":
+ * the node's region is `local`, the tenant's `us-east-1`). Whatever is sent meanwhile is
+ * never delivered. Needs docker (the stack runs in it).
+ */
+export function dropRealtimeDatabaseFeed(): void {
+  realtimeRpc('Realtime.Tenants.Connect.shutdown("realtime-dev")');
+}
+
+/** Whether Realtime is connected to the database (and forwards its broadcasts). */
+export function realtimeDatabaseFeedUp(): boolean {
+  const out = realtimeRpc('IO.puts(Realtime.Tenants.Connect.whereis("realtime-dev") != nil)');
+  return out.split('\n').at(-1) === 'true';
+}

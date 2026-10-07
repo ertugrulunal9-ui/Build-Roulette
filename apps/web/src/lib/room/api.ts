@@ -119,6 +119,21 @@ export class SupabaseRoomApi implements RoomApi {
     return this.rpc<HeartbeatResult>('heartbeat', { p_room_id: roomId });
   }
 
+  async battleVersion(battleId: string): Promise<number | null> {
+    let res;
+    try {
+      res = await this.supabase
+        .from('battles')
+        .select('version')
+        .eq('id', battleId)
+        .maybeSingle<{ version: number }>();
+    } catch (e) {
+      throw toGameError(e);
+    }
+    if (res.error) throw toGameError(res.error);
+    return res.data?.version ?? null;
+  }
+
   getRoomSnapshot(roomId: string): Promise<RoomSnapshot> {
     return this.rpc<RoomSnapshot>('get_room_snapshot', { p_room_id: roomId });
   }

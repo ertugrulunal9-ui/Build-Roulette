@@ -3,11 +3,11 @@ name: CI
 on:
   push:
   pull_request:
-  # Nightly: everything, plus the rooms chaos e2e (job `chaos`, about 10 minutes).
+  # Nightly: everything once a day, even without a push.
   schedule:
     - cron: '17 3 * * *'
   # Manual runs also offer the network-bound package compatibility suite (job `compat`)
-  # and the rooms chaos e2e (job `chaos`).
+  # and can leave out the rooms chaos e2e (job `chaos`).
   workflow_dispatch:
     inputs:
       compat:
@@ -15,15 +15,17 @@ on:
         type: boolean
         default: true
       chaos:
-        description: Run the rooms chaos e2e (network drops, skewed clocks, refreshes; ~10 min)
+        description: Run the rooms chaos e2e (network drops, skewed clocks, refreshes; 3 shards of ~5 min)
         type: boolean
         default: true
 
 permissions:
   contents: read
 
+# A new push cancels the older run of the same branch. The nightly run has its own group: a
+# push used to cancel it halfway (run 29, its chaos job never finished).
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}${{ github.event_name == 'schedule' && '-nightly' || '' }}
   cancel-in-progress: true
 
 env:
@@ -240,7 +242,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: multiplayer-e2e-results
-          path: apps/web/test-results/
+          path: |
+            apps/web/test-results/
+            apps/web/playwright-report/
           if-no-files-found: ignore
           retention-days: 7
 
@@ -248,15 +252,26 @@ jobs:
         if: always()
         run: npx -y "$SUPABASE_CLI" stop --no-backup
 
-  # The chaos e2e takes about 13 minutes (real, shortened deadlines; up to 10 browser
-  # contexts), over the ~8 min budget for every push: nightly and on demand.
+  # The chaos e2e (about 13 minutes of real, shortened deadlines; up to 10 browser contexts)
+  # runs as 3 shards in parallel, each on its own runner with its own stack: about 5 minutes
+  # of tests per shard (apps/web/playwright.chaos.config.ts), so it fits every push. Manual
+  # runs can leave it out (input `chaos`).
   chaos:
-    name: Rooms chaos e2e (network drops, skewed clocks, refreshes, host leaves, T-0, abandoned, full room)
-    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.chaos)
+    name: Rooms chaos e2e, shard ${{ matrix.shard }}/3 (network drops, skewed clocks, refreshes, host leaves, T-0, abandoned, 8 players, full room)
+    if: github.event_name != 'workflow_dispatch' || inputs.chaos
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 25
+    strategy:
+      # Every shard reports, even when another one failed.
+      fail-fast: false
+      matrix:
+        # 1: 6 players under chaos, abandoned, full room. 2: random chaos, everyone gone at
+        # T-0. 3: every other test (REVEAL/VOTE chaos, steady typing, the lost Realtime feed,
+        # 8 players, and any new test without a @chaos-1/@chaos-2 tag).
+        shard: [1, 2, 3]
     env:
       SUPABASE_CLI: supabase@2.119.0
+      CHAOS_SHARD: ${{ matrix.shard }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -282,20 +297,26 @@ jobs:
           npx -y "$SUPABASE_CLI" start
           -x studio,imgproxy,vector,logflare,edge-runtime,supavisor,mailpit,postgres-meta
 
-      # e2e/chaos.spec.ts: 6 players under chaos, REVEAL and VOTE under chaos (a refresh
-      # mid-REVEAL, a vote cast offline and retried, a player offline until the vote
-      # closes, the host leaving mid-VOTE), a seeded random run (the seed is in the log and
-      # the report; CHAOS_SEED replays it), steady typing vs the presence limit, everyone
-      # gone at T-0, an abandoned battle, an 8-player battle, a full room. Needs psql.
-      - name: Run the rooms chaos e2e
+      # e2e/chaos.spec.ts, the shard picked by CHAOS_SHARD: 6 players under chaos, REVEAL
+      # and VOTE under chaos (a refresh mid-REVEAL, a vote cast offline and retried, a player
+      # offline until the vote closes, the host leaving mid-VOTE), a seeded random run (the
+      # seed is in the log and the report; CHAOS_SEED replays it), steady typing vs the
+      # presence limit, everyone gone at T-0, an abandoned battle, an 8-player battle, a full
+      # room, Realtime losing its database feed mid-REVEAL. Needs psql and docker (the
+      # lost-feed test, and the container logs of a failed test).
+      - name: Run the rooms chaos e2e (shard ${{ matrix.shard }}/3)
         run: pnpm --filter @br/web test:e2e:chaos
 
+      # A failed test's trace, screenshots and diagnostics (players.md, db.json,
+      # services.log, docker-*.log: e2e/diagnostics.ts), and the HTML report.
       - name: Upload Playwright output
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: chaos-e2e-results
-          path: apps/web/test-results/
+          name: chaos-e2e-results-shard-${{ matrix.shard }}
+          path: |
+            apps/web/test-results/
+            apps/web/playwright-report/
           if-no-files-found: ignore
           retention-days: 7
 

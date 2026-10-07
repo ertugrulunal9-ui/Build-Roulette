@@ -316,6 +316,13 @@ export class FakeRoomApi implements RoomApi {
     this.calls.push(['heartbeat', roomId]);
     return this.onHeartbeat();
   }
+  /** The server's battle version; by default the battle snapshot's own. */
+  onBattleVersion: Handler<[string], number | null> = (id) =>
+    this.battles.get(id)?.battle.version ?? null;
+  async battleVersion(battleId: string): Promise<number | null> {
+    this.calls.push(['battleVersion', battleId]);
+    return this.onBattleVersion(battleId);
+  }
   serverNow(): Promise<number> {
     this.calls.push(['serverNow']);
     return Promise.resolve(Date.now() + this.serverOffsetMs);

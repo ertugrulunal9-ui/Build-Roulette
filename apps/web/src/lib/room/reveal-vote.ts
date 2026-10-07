@@ -16,7 +16,12 @@
  *   frozen): only this tab stops running it and shows its thumbnail instead. The room goes
  *   on; nothing is sent to the server.
  * - **Host controls:** `reveal_next` / `skip_to_vote` with the snapshot's version as the
- *   compare-and-set. A stale call (`changed: false`) or one the server refuses because the
+ *   compare-and-set. The battle's version also moves for things that do not change what
+ *   the click means (a screenshot landing: the capture worker finishes the builds' captures
+ *   one after another right at the start of REVEAL), so a stale answer whose phase is still
+ *   REVEAL on the same spotlight (any spotlight, for a skip) is sent again with the version
+ *   it returned, up to `HOST_RETRIES` times. A stale call that really is stale (the
+ *   spotlight moved: the timer or another click) or one the server refuses because the
  *   moment passed (`not_host` after a host change, `wrong_phase`, `invalid_version`) is a
  *   quiet no-op plus a refetch: the realtime events tell everyone what really happened.
  * - **Ballot:** `get_my_votes` restores the caller's own choices (after a refresh too);
@@ -171,6 +176,8 @@ export function spotlightBuild(
 
 /** Host errors that only mean "that moment passed": no message, just catch up. */
 const QUIET_HOST_ERRORS = new Set(['not_host', 'wrong_phase', 'invalid_version']);
+/** Resends of a host click whose version went stale for an unrelated reason. */
+export const HOST_RETRIES = 3;
 /** Vote errors after which the snapshot is surely stale. */
 const STALE_VOTE_ERRORS = new Set(['wrong_phase', 'deadline_passed', 'not_a_member', 'kicked']);
 /**
@@ -310,17 +317,30 @@ export class RevealVoteController {
     if (!snap || this.state.host.pending !== null || snap.battle.phase !== 'reveal') return;
     if (!snap.me.is_host) return;
     this.patch({ host: { pending: kind, error: null } });
-    const { id, version } = snap.battle;
+    const { id, reveal_index: spotlight } = snap.battle;
+    let { version } = snap.battle;
     let result: HostRevealResult | null = null;
     let error: GameError | null = null;
-    try {
-      result = await (kind === 'next'
-        ? this.api.revealNext(id, version)
-        : this.api.skipToVote(id, version));
-    } catch (e) {
-      error = toGameError(e);
+    for (let attempt = 0; ; attempt++) {
+      result = null;
+      error = null;
+      try {
+        result = await (kind === 'next'
+          ? this.api.revealNext(id, version)
+          : this.api.skipToVote(id, version));
+      } catch (e) {
+        error = toGameError(e);
+      }
+      if (this.disposed) return;
+      // Stale only because something unrelated moved the version (a capture): the click
+      // still means the same thing, so it goes again with the server's version.
+      const sameMoment =
+        result?.changed === false &&
+        result.phase === 'reveal' &&
+        (kind === 'skip' || result.reveal_index === spotlight);
+      if (!sameMoment || attempt >= HOST_RETRIES) break;
+      version = result?.version ?? version;
     }
-    if (this.disposed) return;
     const quiet = error !== null && QUIET_HOST_ERRORS.has(error.code);
     this.patch({ host: { pending: null, error: error && !quiet ? error : null } });
     // A stale version, a host change or a phase that moved on: the snapshot is behind.

@@ -18,10 +18,14 @@
  * private channels, broadcasts from the database, Presence). Env: BR_APP_ORIGINS (default http://localhost:3000), SHELL_PORT (4321),
  * CDN_PORT (4322), APP_PORT (3000, with --next), CAPTURE_HMAC_SECRET (default: random per
  * run), SUPABASE_INTERNAL_IMAGE_REGISTRY (passed to `supabase start`), and the stack's
- * API_URL / ANON_KEY / SERVICE_ROLE_KEY (default: `supabase status -o env`).
+ * API_URL / ANON_KEY / SERVICE_ROLE_KEY (default: `supabase status -o env`), and
+ * BR_SERVICES_LOG (a file that also gets every line, each prefixed with an ISO timestamp:
+ * the rooms e2e attach the lines of a failed test's time window, see e2e/diagnostics.ts).
  */
 import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
+import { mkdirSync, openSync, writeSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startShellServer } from '@br/sandbox-shell/server';
 // The mock CDN lives in @br/runtime's test support (imported by path, like dev:sandbox).
@@ -44,8 +48,24 @@ const appOrigins = (env['BR_APP_ORIGINS'] ?? `http://localhost:${String(appPort)
 const shellPort = Number(env['SHELL_PORT'] ?? 4321);
 const cdnPort = Number(env['CDN_PORT'] ?? 4322);
 
+const logFd = (() => {
+  const file = env['BR_SERVICES_LOG'];
+  if (!file) return null;
+  mkdirSync(dirname(file), { recursive: true });
+  return openSync(file, 'w');
+})();
+
+/** Copies complete lines to BR_SERVICES_LOG, each with a timestamp. */
+function sink(text: string): void {
+  if (logFd === null) return;
+  const at = new Date().toISOString();
+  const lines = text.split('\n').filter((l) => l.length > 0);
+  writeSync(logFd, lines.map((l) => `${at} ${l}\n`).join(''));
+}
+
 function log(msg: string): void {
   process.stdout.write(`[solo] ${msg}\n`);
+  sink(`[solo] ${msg}`);
 }
 
 interface StackEnv {
@@ -158,8 +178,16 @@ function run(
       .filter((l) => l.length > 0)
       .map((l) => `[${name}] ${l}\n`)
       .join('');
-  child.stdout.on('data', (c: Buffer) => process.stdout.write(prefix(c)));
-  child.stderr.on('data', (c: Buffer) => process.stderr.write(prefix(c)));
+  child.stdout.on('data', (c: Buffer) => {
+    const text = prefix(c);
+    process.stdout.write(text);
+    sink(text);
+  });
+  child.stderr.on('data', (c: Buffer) => {
+    const text = prefix(c);
+    process.stderr.write(text);
+    sink(text);
+  });
   child.on('exit', (code, signal) => {
     log(`${name} exited (${String(code ?? signal)})`);
     if (!stopping) void stop(1);

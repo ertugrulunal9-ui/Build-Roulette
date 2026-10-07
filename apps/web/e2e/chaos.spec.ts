@@ -296,7 +296,7 @@ function expectNoPageErrors(players: Player[]): void {
 
 // ─── 6 players under chaos ────────────────────────────────────────────────────────────
 
-test('6 players under chaos: skewed clocks, a network drop, refreshes, the host vanishes (in BUILD, and the next one in REVEAL); the battle completes and the new host starts the rematch', async ({
+test('6 players under chaos: skewed clocks, a network drop, refreshes, the host vanishes (in BUILD, and the next one in REVEAL); the battle completes and the new host starts the rematch @chaos-1', async ({
   browser,
 }, info) => {
   test.setTimeout(12 * MIN);
@@ -692,7 +692,7 @@ function prng(seed: number): () => number {
   };
 }
 
-test('random chaos (seeded): drops, refreshes, edits and ships at random on skewed clocks; no shipped build is lost', async ({
+test('random chaos (seeded): drops, refreshes, edits and ships at random on skewed clocks; no shipped build is lost @chaos-2', async ({
   browser,
 }, info) => {
   test.setTimeout(7 * MIN);
@@ -788,7 +788,7 @@ test('random chaos (seeded): drops, refreshes, edits and ships at random on skew
 
 // ─── Everyone gone at T-0 ─────────────────────────────────────────────────────────────
 
-test('all clients closed at T-0: pg_cron alone ends BUILD, auto-ships the autosaves, runs REVEAL and VOTING, captures and reaches RESULTS', async ({
+test('all clients closed at T-0: pg_cron alone ends BUILD, auto-ships the autosaves, runs REVEAL and VOTING, captures and reaches RESULTS @chaos-2', async ({
   browser,
 }, info) => {
   test.setTimeout(6 * MIN);
@@ -872,7 +872,7 @@ test('all clients closed at T-0: pg_cron alone ends BUILD, auto-ships the autosa
 
 // ─── Abandoned ────────────────────────────────────────────────────────────────────────
 
-test('abandoned: no roster player for 5 min; a returning player finds the battle abandoned', async ({
+test('abandoned: no roster player for 5 min; a returning player finds the battle abandoned @chaos-1', async ({
   browser,
 }, info) => {
   test.setTimeout(4 * MIN);
@@ -1084,7 +1084,7 @@ test('8 players, a full party battle: everyone ships, the reveal of 8 builds, ev
 
 // ─── A full room ──────────────────────────────────────────────────────────────────────
 
-test('a full room: the 9th player spectates; with every spectator slot taken, room_full', async ({
+test('a full room: the 9th player spectates; with every spectator slot taken, room_full @chaos-1', async ({
   browser,
 }, info) => {
   test.setTimeout(4 * MIN);

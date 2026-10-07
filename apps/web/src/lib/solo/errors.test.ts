@@ -60,6 +60,23 @@ describe('toGameError: the T-011 error contract', () => {
     expect(describeError(new GameError('deadline_passed'))).toMatch(/Time is up/);
   });
 
+  it('rate_limited says how long to wait when the server says it (T-024)', () => {
+    const limited = toGameError({
+      message: 'rate_limited',
+      details: 'You sent too many reports recently. Try again in 9 minutes.',
+      hint: '{"retry_after_s": 500}',
+      code: 'PT429',
+    });
+    expect(describeError(limited)).toBe(
+      'You sent too many reports recently. Try again in 9 minutes.',
+    );
+    // An HTTP 429 from elsewhere (Auth sign-ups) keeps the generic sentence.
+    expect(describeError(toGameError({ message: 'Request rate limit reached', status: 429 }))).toBe(
+      describeError('rate_limited'),
+    );
+    expect(describeError('name_not_allowed')).toMatch(/not allowed/);
+  });
+
   it('every cast_vote code has its own VOTE message; others fall back to describeError', () => {
     const texts = CAST_VOTE_ERRORS.map((code) => describeVoteError(code));
     for (const text of texts) {

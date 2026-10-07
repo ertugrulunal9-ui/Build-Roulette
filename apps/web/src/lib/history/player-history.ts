@@ -39,6 +39,8 @@ export interface HistoryBattle {
     votes: VoteCounts | null;
     capture_status: CaptureStatus;
     screenshot_path: string | null;
+    /** T-024: removed by moderators (no name, no screenshot; rank and votes kept). */
+    taken_down?: boolean;
   };
   awards: { award: AwardKind; source: 'vote' | 'auto'; votes: number | null }[];
 }

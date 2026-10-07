@@ -18,7 +18,11 @@ import {
 /** Codes raised by the client RPCs (SQL, solo and rooms). */
 export const RPC_ERROR_CODES = GAME_RPC_ERROR_CODES;
 
-/** Codes the client adds for failures outside the RPCs. */
+/**
+ * Codes the client adds for failures outside the RPCs. (`rate_limited` is an RPC code since
+ * T-024; any other HTTP 429, e.g. too many anonymous sign-ups from one address, maps to it
+ * too.)
+ */
 export const CLIENT_ERROR_CODES = [
   /** Storage RLS refused a write (deadline passed, already shipped, wrong folder). */
   'upload_refused',
@@ -30,8 +34,6 @@ export const CLIENT_ERROR_CODES = [
   'nothing_built',
   /** The server could not be reached. */
   'network',
-  /** HTTP 429, e.g. too many anonymous sign-ups from one address. */
-  'rate_limited',
   'unknown',
 ] as const;
 
@@ -126,16 +128,30 @@ const MESSAGES: Record<ErrorCode, string> = {
   invalid_category: 'That vote category does not exist.',
   self_vote: 'You cannot vote for your own build.',
   not_votable: 'That build cannot get votes: it was not shipped.',
+  name_not_allowed: 'That name is not allowed here. Pick another one.',
+  invalid_reason: 'Pick a reason for the report.',
+  invalid_details: 'The details are too long (500 characters at most).',
+  own_build: 'You cannot report your own build.',
+  already_reported: 'You already reported this build. Thanks, a moderator will look at it.',
   upload_refused: 'The server refused the upload: the deadline may have passed.',
   file_too_large: 'Your build is over the 5 MB limit. Remove large files or images.',
   build_failed: 'Your code does not build. Fix the errors under Problems first.',
   nothing_built: 'Nothing has built successfully yet, so there is nothing to ship.',
   network: 'Cannot reach the server. Check your connection and try again.',
-  rate_limited: 'Too many requests from your network right now. Wait a minute and try again.',
+  rate_limited: 'Too many requests right now. Wait a few minutes and try again.',
   unknown: 'Something went wrong. Try again.',
 };
 
 export function describeError(e: GameError | ErrorCode): string {
+  // The server's rate-limit details say how long to wait ("… Try again in 9 minutes.").
+  if (
+    typeof e !== 'string' &&
+    e.code === 'rate_limited' &&
+    e.details &&
+    /try again in/i.test(e.details)
+  ) {
+    return e.details;
+  }
   return MESSAGES[typeof e === 'string' ? e : e.code];
 }
 

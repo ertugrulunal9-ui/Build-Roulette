@@ -265,7 +265,9 @@ export class RoomController {
     } catch (e) {
       if (epoch !== this.epoch) return;
       const error = toGameError(e);
-      this.patch({ stage: error.code === 'invalid_display_name' ? 'name' : 'join_error', error });
+      // A refused name (too long, or blocked by the name filter) goes back to the name prompt.
+      const nameError = error.code === 'invalid_display_name' || error.code === 'name_not_allowed';
+      this.patch({ stage: nameError ? 'name' : 'join_error', error });
     }
   }
 

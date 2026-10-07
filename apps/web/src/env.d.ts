@@ -10,6 +10,12 @@ declare namespace NodeJS {
     readonly NEXT_PUBLIC_SUPABASE_ANON_KEY?: string;
     /** Alternative to the anon key: a publishable key (`sb_publishable_…`). */
     readonly NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY?: string;
+    /**
+     * Cloudflare Turnstile site key (T-024). When set, anonymous sign-ups send a Turnstile
+     * token (Supabase Auth must have Turnstile enabled with the matching secret). Unset
+     * locally: no widget, no token.
+     */
+    readonly NEXT_PUBLIC_TURNSTILE_SITE_KEY?: string;
     /** The app's public origin, for absolute OG image URLs (`metadataBase`). */
     readonly NEXT_PUBLIC_SITE_URL?: string;
   }

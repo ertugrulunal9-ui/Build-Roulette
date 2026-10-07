@@ -525,12 +525,12 @@ function NameForm({
 }
 
 /**
- * A screen for every `join_room` error (`invalid_display_name` goes back to the name
- * prompt). Typed against @br/game's list, so a new code cannot be forgotten.
+ * A screen for every `join_room` error (`invalid_display_name` and `name_not_allowed` go
+ * back to the name prompt). Typed against @br/game's list, so a new code cannot be forgotten.
  */
 const JOIN_ERRORS: Record<
-  Exclude<JoinRoomError, 'invalid_display_name'>,
-  { title: string; text: (code: string) => string }
+  Exclude<JoinRoomError, 'invalid_display_name' | 'name_not_allowed'>,
+  { title: string; text: (code: string, error: GameError | null) => string }
 > = {
   room_not_found: {
     title: 'Room not found',
@@ -543,6 +543,11 @@ const JOIN_ERRORS: Record<
   kicked: {
     title: 'You cannot join this room',
     text: () => 'The host removed you from this room, so you cannot come back to it.',
+  },
+  rate_limited: {
+    title: 'Too many wrong room codes',
+    text: (_code, error) =>
+      `${error ? describeError(error) : describeError('rate_limited')} Ask your host for the invite link.`,
   },
   room_full: {
     title: 'This room is full',
@@ -573,7 +578,7 @@ function JoinError({
         {known?.title ?? 'Could not join the room'}
       </h1>
       <p className="text-zinc-600 dark:text-zinc-400">
-        {known ? known.text(code) : describeError(error ?? 'unknown')}
+        {known ? known.text(code, error) : describeError(error ?? 'unknown')}
       </p>
       <div className="flex flex-wrap justify-center gap-3">
         {!known && (

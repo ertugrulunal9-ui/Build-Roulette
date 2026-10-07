@@ -123,18 +123,18 @@ describe('joining', () => {
     },
   );
 
-  it('invalid_display_name goes back to the name prompt', async () => {
-    api.onJoin = () => {
-      throw new GameError('invalid_display_name');
-    };
-    const c = controller();
-    await c.init();
-    expect(c.getSnapshot()).toMatchObject({
-      stage: 'name',
-      error: { code: 'invalid_display_name' },
-    });
-    c.dispose();
-  });
+  it.each(['invalid_display_name', 'name_not_allowed'] as const)(
+    '%s goes back to the name prompt',
+    async (code) => {
+      api.onJoin = () => {
+        throw new GameError(code);
+      };
+      const c = controller();
+      await c.init();
+      expect(c.getSnapshot()).toMatchObject({ stage: 'name', error: { code } });
+      c.dispose();
+    },
+  );
 
   it('a malformed code is room_not_found without asking the server', async () => {
     const c = controller('nope!');

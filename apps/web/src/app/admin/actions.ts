@@ -9,12 +9,17 @@
  * Of these, only a takedown changes public pages (T-026): it expires the cached copies of
  * the battle's page, its OG image and the history pages that list it. Dismissing reports
  * changes nothing public (reports are never shown).
+ *
+ * T-030 (runbooks): "Refresh public copies" expires a battle's cached pages by hand (after a
+ * takedown made with SQL, or a revalidation that went missing; docs/runbooks/
+ * cache-not-revalidating.md), and "Send a test error" checks the server's Sentry setup.
  */
 import { revalidatePath, updateTag } from 'next/cache';
 import { cookies, headers } from 'next/headers';
 import { notFound, redirect } from 'next/navigation';
 import { after } from 'next/server';
 import { TAKEDOWN_REEXPIRE_MS, takedownPaths, takedownTags } from '../../lib/cache/policy';
+import { sendTestError } from '../../lib/telemetry/server';
 import {
   ACCESS_COOKIE,
   REFRESH_COOKIE,
@@ -159,4 +164,33 @@ export async function takeDownAction(formData: FormData): Promise<void> {
         : { done: res.data?.retried ? 'retried' : 'taken_down', build: buildId },
     ),
   );
+}
+
+/**
+ * Expires the cached copies of one battle's public pages (page, OG image, the histories that
+ * list it), like a takedown does. The battle id is checked through `admin_battle_log` (which
+ * also logs the lookup), so only an existing battle is touched.
+ */
+export async function refreshPublicCopiesAction(formData: FormData): Promise<void> {
+  const token = await adminToken();
+  const battleId = field(formData, 'battle_id');
+  const res = await adminRpc<{ battle: { id: string } }>(token, 'admin_battle_log', {
+    p_battle_id: battleId,
+  });
+  if (!res.data) {
+    redirect(
+      `/admin?${new URLSearchParams({ error: res.error ?? 'battle_not_found' }).toString()}`,
+    );
+  }
+  expirePublicCopies(res.data.battle.id);
+  redirect(
+    `/admin?${new URLSearchParams({ q: res.data.battle.id, done: 'refreshed' }).toString()}`,
+  );
+}
+
+/** Sends a test error to Sentry from the server (the Health section's button). */
+export async function sendTestErrorAction(): Promise<void> {
+  await adminToken();
+  const sent = await sendTestError();
+  redirect(`/admin?done=${sent ? 'test_error_sent' : 'test_error_off'}`);
 }

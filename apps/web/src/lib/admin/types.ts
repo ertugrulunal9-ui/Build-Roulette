@@ -149,3 +149,59 @@ export interface AdminAction {
   payload: Record<string, unknown>;
   created_at: string;
 }
+
+/** `admin_ops_health` (supabase/migrations/20261008150000_ops_health.sql, T-030). */
+export interface OpsHealth {
+  generated_at: string;
+  battles: {
+    grace_s: number;
+    /** Battles that are not over, by phase. */
+    running: Partial<Record<BattlePhase, number>>;
+    overdue_total: number;
+    stuck_total: number;
+    overdue: {
+      phase: BattlePhase;
+      count: number;
+      stuck: number;
+      waiting_for_captures: number;
+      oldest_overdue_s: number;
+      oldest_battle_id: string;
+    }[];
+    destroy_pending: { count: number; oldest_s: number | null; oldest_battle_id: string | null };
+  };
+  jobs: {
+    kind: 'capture' | 'destroy' | 'takedown';
+    queued: number;
+    running: number;
+    ready: number;
+    lease_expired: number;
+    oldest_pending_s: number | null;
+    oldest_pending_ref: string | null;
+    done_last_hour: number;
+    failed_last_hour: number;
+    failed_last_day: number;
+    last_failure: { at: string; ref_id: string; error: string | null } | null;
+  }[];
+  captures_last_day: { captured: number; fallback: number; failed: number };
+  cron: {
+    available: boolean;
+    error?: string;
+    jobs: {
+      name: string;
+      schedule: string;
+      active: boolean;
+      last_run: { start: string; status: string; duration_ms: number | null } | null;
+      runs_last_hour: number;
+      failed_last_hour: number;
+      last_failure: { at: string; message: string | null } | null;
+    }[];
+  };
+  ttl: {
+    battles_past_ttl: number;
+    oldest_battle_past_ttl_id: string | null;
+    ephemeral_objects: number;
+    ephemeral_objects_past_ttl: number;
+    oldest_ephemeral_object_s: number | null;
+    ephemeral_objects_of_destroyed: number;
+  };
+}

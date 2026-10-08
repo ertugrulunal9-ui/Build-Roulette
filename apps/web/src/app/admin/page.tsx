@@ -5,8 +5,14 @@ import type { ReactNode } from 'react';
 import { adminRpc, parseLookup } from '../../lib/admin/session';
 import type { AdminAction, BattleLog, LogEvent, QueueItem, RoomLog } from '../../lib/admin/types';
 import { screenshotUrl } from '../../lib/supabase/config';
-import { dismissReportsAction, signOutAction, takeDownAction } from './actions';
+import {
+  dismissReportsAction,
+  refreshPublicCopiesAction,
+  signOutAction,
+  takeDownAction,
+} from './actions';
 import { requireAdminPage } from './admin-session';
+import { HealthView } from './health-view';
 
 /**
  * /admin (T-024): the moderators' page, server-rendered. Everyone who is not a signed-in
@@ -18,6 +24,8 @@ import { requireAdminPage } from './admin-session';
  * - **Look up** a battle id or a room code: the battle_events / room_events timeline (the
  *   event-log page moved here from M3) and the builds with their status.
  * - **Admin actions:** the latest entries of the admin log.
+ * - **Health** (T-030): `admin_ops_health`, the signals the runbooks in docs/runbooks/ start
+ *   from (overdue battles, the jobs queue, the sweeps, TTL leftovers), on the main views.
  */
 
 export const metadata: Metadata = {
@@ -49,6 +57,11 @@ const DONE_TEXT: Record<string, string> = {
   taken_down:
     'Build taken down: hidden everywhere now; its screenshot is deleted by the capture worker.',
   retried: 'The screenshot delete was queued again.',
+  refreshed:
+    "The cached copies of this battle's public pages were expired: the next visit renders them fresh.",
+  test_error_sent: 'Test error sent to Sentry: look for "Build Roulette test error".',
+  test_error_off:
+    'Server error reporting is off in this deployment (no SENTRY_DSN or NEXT_PUBLIC_SENTRY_DSN).',
 };
 
 function when(iso: string | null | undefined): string {
@@ -157,7 +170,10 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
           </p>
         )
       ) : (
-        <QueueView token={token} resolved={view === 'resolved'} />
+        <>
+          <HealthView token={token} />
+          <QueueView token={token} resolved={view === 'resolved'} />
+        </>
       )}
 
       <ActionLog token={token} />
@@ -441,13 +457,21 @@ async function BattleLogView({ token, battleId }: { token: string; battleId: str
           <dd>{when(battle.destroyed_at)}</dd>
         </dl>
         {(battle.phase === 'results' || battle.phase === 'destroyed') && (
-          <Link
-            href={`/battles/${battle.id}`}
-            className="text-sm font-semibold underline"
-            target="_blank"
-          >
-            Public results page
-          </Link>
+          <div className="flex flex-wrap items-center gap-3">
+            <Link
+              href={`/battles/${battle.id}`}
+              className="text-sm font-semibold underline"
+              target="_blank"
+            >
+              Public results page
+            </Link>
+            <form action={refreshPublicCopiesAction}>
+              <input type="hidden" name="battle_id" value={battle.id} />
+              <button type="submit" className={smallButton} data-testid="admin-refresh-copies">
+                Refresh public copies
+              </button>
+            </form>
+          </div>
         )}
       </Section>
       <Section title={`Players (${String(players.length)})`}>

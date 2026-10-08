@@ -110,3 +110,32 @@ export function App() {
   await expect(buildFrame(page).locator('h1')).toHaveText('Back to React');
   await expect(page.getByTestId('error-overlay')).toHaveCount(0);
 });
+
+test('a CDN that never answers: "still loading", then the build runs once it answers', async ({
+  page,
+}) => {
+  await openPlayground(page);
+  await expect(buildFrame(page).locator('h1')).toHaveText('Hello, Build Roulette!');
+  await setCdnOutage(page, 'hang');
+
+  await replaceEditorText(
+    page,
+    `import { renderToStaticMarkup } from 'react-dom/server';
+
+export function App() {
+  return <h1 className="late">{renderToStaticMarkup(<b>late</b>)}</h1>;
+}
+`,
+  );
+  const overlay = page.getByTestId('error-overlay');
+  await expect(overlay).toContainText('The build is still loading', { timeout: 20_000 });
+  await expect(page.getByTestId('error-message')).toContainText(
+    'Still waiting for the package server after 8 s: react-dom@19.3.0/server',
+  );
+  await expect(page.getByTestId('preview-crashed')).toHaveCount(0);
+
+  // The package server answers at last: the build runs and the note goes.
+  await setCdnOutage(page, 'off');
+  await expect(buildFrame(page).locator('h1.late')).toHaveText('<b>late</b>');
+  await expect(overlay).toHaveCount(0);
+});

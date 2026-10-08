@@ -102,10 +102,11 @@ export const LoadSchema = z.object({
   importMap: ImportMapSchema,
   mode: RunModeSchema,
   /**
-   * Optional (T-032): the package CDN module URLs the bundle imports directly. The shell
-   * never loads them because of this list; it only checks them (with the import map's URLs)
-   * to name the package that could not load when the module graph fails or stalls
-   * ("Package server unreachable: zustand@5.0.15"). Older shells ignore it.
+   * Optional (T-032): the package CDN URLs the bundle imports directly (CDN module URLs, and
+   * the import map URLs of the entry points it imports). The shell never loads anything
+   * because of this list; it only checks these URLs (then the rest of the import map) to name
+   * the package that could not load when the module graph fails or stalls ("Package server
+   * unreachable: zustand@5.0.15"). Older shells ignore it.
    */
   packages: z.optional(
     z

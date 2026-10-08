@@ -165,6 +165,7 @@ concurrent rooms × 8 players in M5 and map the results to plan quotas.
 
 ### R9: Abuse
 > **Status (M5): mitigated in T-024:** reporting, an admin queue with takedown, a name filter, per-user rate limits and Turnstile wiring. Production still needs the admin users, the Turnstile keys and Cloudflare per-IP rules (see the board).
+> T-026 caches the public pages; a takedown from `/admin` revalidates them at once. One made with SQL does not: cached copies then show the build for up to an hour (apps/web/DEPLOY.md, "Caching").
 
 Display names and build names go through a profanity filter. Rooms are private unless
 shared. The host can kick, and kicked players' builds are hidden. There is a report queue

@@ -68,6 +68,8 @@ export interface LoadConfig {
   requestTimeoutMs: number;
   /** Raise the local Kong gateway's nginx worker_connections to this (0: leave it at 512). */
   gatewayConnections: number;
+  /** Realtime's authorization pool for the run (0: leave it; the local default is 1). */
+  realtimeDbPool: number;
 }
 
 const BASE: LoadConfig = {
@@ -102,6 +104,7 @@ const BASE: LoadConfig = {
   dockerStats: true,
   requestTimeoutMs: 20_000,
   gatewayConnections: 8192,
+  realtimeDbPool: 0,
 };
 
 export const PROFILES: Record<string, Partial<LoadConfig>> = {
@@ -145,6 +148,7 @@ const NUMERIC: (keyof LoadConfig)[] = [
   'seed',
   'requestTimeoutMs',
   'gatewayConnections',
+  'realtimeDbPool',
 ];
 
 /** `--battles-per-room` → `battlesPerRoom`. */
@@ -273,6 +277,7 @@ Options (defaults in src/config.ts):
   --capture true|false --capture-concurrency N
   --realtime-limits keep|free|pro|pro-nocap|unlimited   (local Realtime tenant quotas)
   --auth admin|anonymous
+  --realtime-db-pool N      (Realtime authorization pool, db_pool; 0 leaves the local default 1)
   --gateway-connections N   (local Kong nginx worker_connections; 0 keeps the default 512)
   --drain-timeout-s S --room-timeout-s S --seed N --out-dir DIR --docker-stats true|false
 `;

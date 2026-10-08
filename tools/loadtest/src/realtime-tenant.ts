@@ -103,6 +103,39 @@ export class RealtimeTenant {
     };
   }
 
+  /**
+   * The tenant's authorization pool (`db_pool` of the extension settings; Realtime uses 1
+   * connection when it is not set, which is the local default). Every private-channel join
+   * runs its RLS check through this pool. The local stack's database settings are rewritten
+   * with their local values (the API takes the extension as a whole).
+   */
+  async setDbPool(n: number): Promise<void> {
+    const ext = {
+      type: 'postgres_cdc_rls',
+      settings: {
+        db_host: 'supabase_db_build-roulette',
+        db_name: 'postgres',
+        db_user: 'supabase_admin',
+        db_password: 'postgres',
+        db_port: '5432',
+        region: 'us-east-1',
+        poll_interval_ms: 100,
+        poll_max_record_bytes: 1048576,
+        poll_max_changes: 100,
+        ssl_enforced: false,
+        publication: 'supabase_realtime',
+        slot_name: 'supabase_realtime_replication_slot',
+        db_pool: n,
+      },
+    };
+    const res = await fetch(this.url, {
+      method: 'PATCH',
+      headers: this.headers,
+      body: JSON.stringify({ tenant: { extensions: [ext] } }),
+    });
+    if (!res.ok) throw new Error(`realtime tenant PATCH (db_pool): HTTP ${String(res.status)}`);
+  }
+
   async set(limits: TenantLimits): Promise<void> {
     const res = await fetch(this.url, {
       method: 'PATCH',

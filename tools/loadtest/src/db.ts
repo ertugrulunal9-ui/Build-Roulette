@@ -50,20 +50,32 @@ export async function eventTimes(
   db: Db,
   battleIds: string[],
   roomIds: string[],
-): Promise<{ key: string; version: number; type: string; detail: string | null; ms: number }[]> {
+): Promise<
+  {
+    key: string;
+    version: number;
+    type: string;
+    detail: string | null;
+    source: string;
+    ms: number;
+  }[]
+> {
   const res = await db.query<{
     key: string;
     version: number;
     type: string;
     detail: string | null;
+    source: string;
     ms: number;
   }>(
     `select 'b:' || battle_id as key, version, type,
             case when type = 'phase' then coalesce(payload ->> 'from', '') || '>' || coalesce(payload ->> 'to', '') end as detail,
+            case when actor_id is null then 'server' else 'client' end as source,
             extract(epoch from created_at) * 1000 as ms
        from public.battle_events where battle_id = any($1::uuid[])
      union all
      select 'r:' || room_id, version, type, payload ->> 'change' as detail,
+            case when actor_id is null then 'server' else 'client' end,
             extract(epoch from created_at) * 1000
        from public.room_events where room_id = any($2::uuid[])`,
     [battleIds, roomIds],

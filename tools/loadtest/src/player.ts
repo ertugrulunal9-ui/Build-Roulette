@@ -270,9 +270,11 @@ export class Topic {
           resolve('TIMED_OUT');
         }
       }, timeoutMs);
-      channel.subscribe((status) => {
+      channel.subscribe((status, err) => {
         const st: string = status;
         m.channelStatus(st);
+        if (err)
+          m.count(`channel_error:${this.topic.split(':')[0] ?? ''}:${err.message.slice(0, 80)}`);
         this.status = st;
         if (st === 'SUBSCRIBED') {
           if (!this.subscribedOnce) {

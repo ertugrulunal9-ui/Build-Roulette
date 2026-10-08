@@ -15,6 +15,8 @@ export interface EventTime {
   version: number;
   type: string;
   detail: string | null;
+  /** 'server' (sweep_deadlines, workers: no actor) or 'client' (an RPC). */
+  source: string;
   ms: number;
 }
 
@@ -65,6 +67,8 @@ export interface Report {
   propagation: {
     clockOffsetMs: Summary;
     battlePhaseMs: Summary;
+    /** Battle phase events by who caused them: the sweep (one transaction for many battles) or an RPC. */
+    battlePhaseBySource: Record<string, Summary>;
     battleAllMs: Summary;
     roomAllMs: Summary;
     byType: Record<string, Summary>;
@@ -180,6 +184,7 @@ export function buildReport(inp: RunInputs): Report {
   const evIndex = new Map<string, EventTime>();
   for (const e of inp.events) evIndex.set(`${e.key}#${String(e.version)}`, e);
   const phase: number[] = [];
+  const phaseBySource: Record<string, number[]> = {};
   const battleAll: number[] = [];
   const roomAll: number[] = [];
   const byType: Record<string, number[]> = {};
@@ -204,7 +209,10 @@ export function buildReport(inp: RunInputs): Report {
       (byType[t] ??= []).push(d);
       if (key.startsWith('b:')) {
         battleAll.push(d);
-        if (ev.type === 'phase') phase.push(d);
+        if (ev.type === 'phase') {
+          phase.push(d);
+          (phaseBySource[ev.source] ??= []).push(d);
+        }
       } else {
         roomAll.push(d);
       }
@@ -365,6 +373,9 @@ export function buildReport(inp: RunInputs): Report {
     propagation: {
       clockOffsetMs: roundSummary(summarize(shards.flatMap((s) => s.clockOffsetMs)), 2),
       battlePhaseMs: phaseSummary,
+      battlePhaseBySource: Object.fromEntries(
+        sortedEntries(phaseBySource).map(([k, v]) => [k, roundSummary(summarize(v))]),
+      ),
       battleAllMs: roundSummary(summarize(battleAll)),
       roomAllMs: roundSummary(summarize(roomAll)),
       byType: Object.fromEntries(
@@ -533,6 +544,11 @@ export function renderMarkdown(r: Report): string {
   L.push('## Propagation (server event created_at → client receipt)', '');
   L.push('| Events | n | p50 | p95 | p99 | max | unit |', '|---|---|---|---|---|---|---|');
   L.push(sumRow('battle `phase`', r.propagation.battlePhaseMs));
+  for (const [k, s] of Object.entries(r.propagation.battlePhaseBySource)) {
+    L.push(
+      sumRow(`battle \`phase\`, caused by ${k === 'server' ? 'the sweep/worker' : 'an RPC'}`, s),
+    );
+  }
   L.push(sumRow('all battle events', r.propagation.battleAllMs));
   L.push(sumRow('all room events', r.propagation.roomAllMs));
   for (const [k, s] of Object.entries(r.propagation.byType)) L.push(sumRow(k, s));

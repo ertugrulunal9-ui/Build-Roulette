@@ -18,6 +18,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { readFileSync } from 'node:fs';
 import { cpus, loadavg, totalmem } from 'node:os';
 import { join, resolve } from 'node:path';
+import { gzipSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { HELP, parseArgs, UsageError, type LoadConfig } from './config';
 import {
@@ -138,6 +139,13 @@ async function main(): Promise<number> {
     } else {
       applied = before;
     }
+    if (cfg.realtimeDbPool > 0) {
+      await tenant.setDbPool(cfg.realtimeDbPool);
+      const note = `Realtime authorization pool (db_pool) set to ${String(cfg.realtimeDbPool)} for this run (local default: 1).`;
+      notes.push(note);
+      log(note);
+      await sleep(2000);
+    }
   } catch (e) {
     notes.push(`Realtime tenant API unavailable (${(e as Error).message}); quotas unchanged.`);
   }
@@ -236,6 +244,11 @@ async function main(): Promise<number> {
   const sizeAfter = await databaseSize(adminDb);
   await adminDb.end();
   if (capture) await capture.stop();
+  if (cfg.realtimeDbPool > 0) {
+    await tenant.setDbPool(1).catch(() => {
+      notes.push('Could not restore the Realtime db_pool.');
+    });
+  }
   if (before && cfg.realtimeLimits !== 'keep') {
     await tenant.set(before).catch(() => {
       notes.push('Could not restore the Realtime tenant quotas.');
@@ -274,6 +287,11 @@ async function main(): Promise<number> {
     notes,
   });
   writeFileSync(join(outDir, 'report.json'), JSON.stringify(report, null, 1));
+  // The raw receipts and event times, to re-analyse propagation without a new run.
+  writeFileSync(
+    join(outDir, 'receipts.json.gz'),
+    gzipSync(JSON.stringify({ events, receipts: shards.map((s) => s.receipts) })),
+  );
   writeFileSync(join(outDir, 'report.md'), renderMarkdown(report));
   const v = report.propagation.verdict;
   log(`report: ${join(outDir, 'report.md')}`);

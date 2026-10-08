@@ -48,6 +48,8 @@ function controller(code = 'k7qxm'): RoomController {
     localWorkspaces: local,
     nameStore: names,
     env: new FakeEnvironment(),
+    // The battle topic is joined at once (the random 0–500 ms stagger is sync.test.ts's).
+    syncTimings: { battleJoinStaggerMs: 0 },
   });
 }
 

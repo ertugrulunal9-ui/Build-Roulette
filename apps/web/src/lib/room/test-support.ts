@@ -297,12 +297,17 @@ export class FakeRoomApi implements RoomApi {
     if (!b) throw new GameError('battle_not_found');
     return structuredClone(b);
   };
-  onHeartbeat: Handler<[], HeartbeatResult> = () => ({
-    server_now: new Date(Date.now() + this.serverOffsetMs).toISOString(),
-    room_version: this.room.room.version,
-    host_id: this.room.room.host_id,
-    status: this.room.room.status,
-  });
+  onHeartbeat: Handler<[], HeartbeatResult> = () => {
+    const battleId = this.room.room.current_battle_id;
+    return {
+      server_now: new Date(Date.now() + this.serverOffsetMs).toISOString(),
+      room_version: this.room.room.version,
+      host_id: this.room.room.host_id,
+      status: this.room.room.status,
+      battle_id: battleId,
+      battle_version: battleId === null ? null : this.onBattleVersion(battleId),
+    };
+  };
 
   async getRoomSnapshot(roomId: string): Promise<RoomSnapshot> {
     this.calls.push(['getRoomSnapshot', roomId]);
@@ -316,13 +321,9 @@ export class FakeRoomApi implements RoomApi {
     this.calls.push(['heartbeat', roomId]);
     return this.onHeartbeat();
   }
-  /** The server's battle version; by default the battle snapshot's own. */
-  onBattleVersion: Handler<[string], number | null> = (id) =>
+  /** The battle version the heartbeat reports; by default the battle snapshot's own. */
+  onBattleVersion: (battleId: string) => number | null = (id) =>
     this.battles.get(id)?.battle.version ?? null;
-  async battleVersion(battleId: string): Promise<number | null> {
-    this.calls.push(['battleVersion', battleId]);
-    return this.onBattleVersion(battleId);
-  }
   serverNow(): Promise<number> {
     this.calls.push(['serverNow']);
     return Promise.resolve(Date.now() + this.serverOffsetMs);

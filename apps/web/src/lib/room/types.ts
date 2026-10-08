@@ -101,6 +101,12 @@ export interface HeartbeatResult {
   room_version: number;
   host_id: string;
   status: RoomStatus;
+  /**
+   * T-029: the room's current battle (the running one, or the last) and its version, for
+   * the lost-broadcast check; null without a battle. Missing from a server older than T-029.
+   */
+  battle_id?: string | null;
+  battle_version?: number | null;
 }
 
 // ─── Realtime payloads (`payload.type` is the event name) ─────────────────────────────

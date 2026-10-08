@@ -171,16 +171,74 @@ describe('clock and countdown', () => {
     c.dispose();
   });
 
-  it('an overdue battle that does not move is nudged again only every 5 s', async () => {
+  it('a battle that does not move after a nudge is nudged again after 5, 10, 20, then every 30 s; a new version starts over', async () => {
+    const at: number[] = [];
+    const advance = api.onAdvance;
+    api.onAdvance = (v) => {
+      at.push(Date.now());
+      return advance(v);
+    };
+    const t0 = Date.now();
+    const c = await openIn(snapshotAt('shipping', { endsInMs: 0, version: 5 }));
+    await vi.advanceTimersByTimeAsync(5_000 + 10_000 + 20_000 + 30_000 + 30_000);
+    expect(at.map((t) => t - t0)).toEqual([0, 5_000, 15_000, 35_000, 65_000, 95_000]);
+    // The battle moves (a new version, still overdue): nudged at once, then 5 s again.
+    api.snapshot = snapshotAt('shipping', { endsInMs: 0, version: 6 });
+    const t1 = Date.now();
+    await vi.advanceTimersByTimeAsync(2_500); // the next poll brings it
+    expect(at).toHaveLength(7);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(at).toHaveLength(8);
+    expect((at[7] ?? 0) - (at[6] ?? 0)).toBe(5_000);
+    expect((at[6] ?? 0) - t1).toBeLessThanOrEqual(2_500);
+    c.dispose();
+  });
+
+  it('RESULTS is not nudged while a screenshot is pending (the sweep ends it); once it is in, it is', async () => {
     const c = await openIn(
       snapshotAt('results', { endsInMs: 0, version: 5, status: 'shipped', capture: 'pending' }),
     );
+    const polls = api.count('getSnapshot');
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(api.count('advanceBattle')).toBe(0);
+    // Polled at the phase's pace (2 s), not every 250 ms.
+    expect(api.count('getSnapshot') - polls).toBeLessThanOrEqual(31);
+    // The screenshot is in: the next snapshot shows it, and RESULTS is nudged at once.
+    api.snapshot = snapshotAt('results', {
+      endsInMs: 0,
+      version: 6,
+      status: 'shipped',
+      capture: 'captured',
+    });
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect(api.count('advanceBattle')).toBe(1);
+    // The sweep or the nudge ended it: DESTROYED arrives, and the nudging stops.
+    api.snapshot = snapshotAt('destroyed', { endsInMs: null, version: 7, status: 'shipped' });
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(state(c).snapshot?.battle.phase).toBe('destroyed');
+    expect(api.count('advanceBattle')).toBe(1);
+    c.dispose();
+  });
+
+  it('a pending capture of a build that is not final (DNF) does not hold the RESULTS nudge back', async () => {
+    const c = await openIn(
+      snapshotAt('results', { endsInMs: 0, version: 5, status: 'dnf', capture: 'pending' }),
+    );
     await vi.advanceTimersByTimeAsync(1_000);
     expect(api.count('advanceBattle')).toBe(1);
-    await vi.advanceTimersByTimeAsync(3_000);
-    expect(api.count('advanceBattle')).toBe(1);
-    await vi.advanceTimersByTimeAsync(2_000);
-    expect(api.count('advanceBattle')).toBe(2);
+    c.dispose();
+  });
+
+  it('resyncs the clock with one server_now sample every 60 s', async () => {
+    api.serverOffsetMs = 5_000;
+    const c = await openIn(
+      snapshotAt('building', { endsInMs: 300_000, serverOffsetMs: 5_000, version: 2 }),
+    );
+    expect(api.count('serverNow')).toBe(3);
+    api.serverOffsetMs = 6_000;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(api.count('serverNow')).toBe(4);
+    expect(state(c).clockOffsetMs).toBe(6_000);
     c.dispose();
   });
 
@@ -607,6 +665,26 @@ describe('external mode (multiplayer)', () => {
     expect(state(c).snapshot?.battle.phase).toBe('building');
     c.receive(snapshotAt('shipping', { version: 4 }));
     expect(state(c).snapshot?.battle.phase).toBe('shipping');
+    c.dispose();
+  });
+
+  it('external: a capture event that completes the screenshots re-arms the RESULTS nudge', async () => {
+    const { c, refetches } = external();
+    c.openExternal(
+      snapshotAt('results', { version: 8, endsInMs: 0, status: 'shipped', capture: 'pending' }),
+      0,
+    );
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(api.count('advanceBattle')).toBe(0);
+    expect(refetches).toEqual([]);
+    c.receive(
+      snapshotAt('results', { version: 9, endsInMs: 0, status: 'shipped', capture: 'captured' }),
+    );
+    await flush();
+    expect(api.calls.filter((x) => x[0] === 'advanceBattle')).toEqual([
+      ['advanceBattle', BATTLE, 9],
+    ]);
+    expect(refetches).toHaveLength(1);
     c.dispose();
   });
 

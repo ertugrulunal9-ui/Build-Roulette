@@ -1,8 +1,9 @@
 'use client';
 
 /**
- * Everyone's progress during BUILD: live activity from Presence (lines, last build, typing;
- * throttled to one update per 2 s) and the shipped badges from `build` events, e.g.
+ * Everyone's progress during BUILD: live activity from Presence (lines, last build, active =
+ * edited in the last 15 s; at most one update per 15 s per player and only for a change that
+ * matters, T-029) and the shipped badges from `build` events, e.g.
  * "Ada shipped 'Snack Overflow' at 3:12". No database writes: Presence is client-claimed
  * and only decorates; the ship badges are server state.
  */
@@ -98,7 +99,15 @@ export function ProgressSidebar({ battle, presence, layout }: ProgressSidebarPro
               ) : (
                 <span className="text-emerald-700 dark:text-emerald-400">✓ builds</span>
               )}
-              {live.activity.typing && <span className="animate-pulse font-semibold">typing…</span>}
+              {live.activity.typing && (
+                <span
+                  className="font-semibold"
+                  title="Edited in the last 15 s"
+                  data-testid="active"
+                >
+                  ✎ active
+                </span>
+              )}
               {live.device === 'mobile' && <span title="On a phone">📱</span>}
             </p>
           ) : (

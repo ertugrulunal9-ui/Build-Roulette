@@ -8,6 +8,9 @@
  * `onHide` links the report to the viewer's own "hide this build for me" (the REVEAL
  * "Skip this build"): the dialog offers it next to the report and after sending it, since
  * a report takes effect only once a moderator acts.
+ *
+ * A report that went through is the `report_filed` analytics event (reason and surface
+ * only, T-030).
  */
 import {
   REPORT_DETAILS_MAX,
@@ -17,6 +20,7 @@ import {
 } from '@br/game';
 import { useEffect, useId, useRef, useState } from 'react';
 import { submitReport, type SubmitReport } from '../../lib/moderation/report';
+import { track as defaultTrack, type Track } from '../../lib/telemetry/analytics';
 import { describeError, type GameError } from '../../lib/solo/errors';
 
 type Stage =
@@ -35,6 +39,8 @@ interface ReportButtonProps {
   onHide?: (() => void) | undefined;
   /** Tests inject a fake; the default calls `report_build`. */
   submit?: SubmitReport;
+  /** Product analytics (tests pass a spy). */
+  track?: Track;
 }
 
 export function ReportButton({
@@ -43,6 +49,7 @@ export function ReportButton({
   tone = 'page',
   onHide,
   submit = submitReport,
+  track = defaultTrack,
 }: ReportButtonProps) {
   const [open, setOpen] = useState(false);
   const [stage, setStage] = useState<Stage>({ kind: 'form' });
@@ -75,6 +82,7 @@ export function ReportButton({
     setStage({ kind: 'sending' });
     try {
       await submit({ buildId, reason, details });
+      track('report_filed', { reason, surface: tone === 'dark' ? 'reveal' : 'results' });
       setStage({ kind: 'thanks', already: false });
     } catch (e) {
       const error = e as GameError;

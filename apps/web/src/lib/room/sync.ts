@@ -54,6 +54,12 @@
  *   stays subscribed, so a Realtime rate limit cannot turn into a rejoin storm. Errors and
  *   timeouts are left to supabase-js, which rejoins.
  * - **Teardown:** `stop()` closes both topics and every timer and listener.
+ * - **Health (T-030):** `stats` counts what the engine had to do to stay in sync: missed
+ *   events (heartbeats ahead of the snapshot), refetches, gaps, time spent degraded,
+ *   rejoins, server-closed channels and channel errors. Per battle, `onBattleHealth` gets
+ *   those counters over the battle once: when it ends (DESTROYED, ABANDONED), or when this
+ *   client stops following it (a rematch, leaving, the page going away). Only for a battle
+ *   the client saw running; it becomes the `sync_health` analytics event (RoomController).
  *
  * Plain TypeScript with injected API, Realtime, clock and environment, unit tested with
  * fakes (sync.test.ts). React reads it through the RoomController.
@@ -135,6 +141,8 @@ export interface SyncEnvironment {
   onResume(cb: (reason: 'visible' | 'online') => void): () => void;
   /** The browser lost the network (`offline`). */
   onOffline?(cb: () => void): () => void;
+  /** The page is being unloaded (`pagehide`). */
+  onPageHide?(cb: () => void): () => void;
 }
 
 export const browserEnvironment: SyncEnvironment = {
@@ -156,6 +164,12 @@ export const browserEnvironment: SyncEnvironment = {
     window.addEventListener('offline', cb);
     return () => {
       window.removeEventListener('offline', cb);
+    };
+  },
+  onPageHide(cb) {
+    window.addEventListener('pagehide', cb);
+    return () => {
+      window.removeEventListener('pagehide', cb);
     };
   },
 };
@@ -214,6 +228,8 @@ export interface RoomSyncDeps {
   clock?: SoloClock | undefined;
   env?: SyncEnvironment | undefined;
   timings?: Partial<SyncTimings> | undefined;
+  /** Once per battle this client saw running (see "Health" above). */
+  onBattleHealth?: ((report: BattleSyncHealth) => void) | undefined;
 }
 
 // ─── State ────────────────────────────────────────────────────────────────────────────
@@ -249,7 +265,7 @@ export type SyncNotice =
   | { topic: 'room'; event: RoomEvent; room: RoomSnapshot; previous: RoomSnapshot }
   | { topic: 'battle'; event: BattleEvent; battle: BattleSnapshot; previous: BattleSnapshot };
 
-/** Counters for tests and debugging. */
+/** Counters for tests, debugging and the per-battle health report. */
 export interface SyncStats {
   applied: number;
   stale: number;
@@ -257,7 +273,40 @@ export interface SyncStats {
   fetches: number;
   /** Heartbeats that found the battle ahead of the snapshot (broadcasts never arrived). */
   missed: number;
+  /** Time the connection read `degraded`, for periods that ended (see `currentStats()`). */
+  degradedMs: number;
+  /** Re-subscribes after the server closed a topic. */
+  rejoins: number;
+  /** Topics the server closed (CLOSED). */
+  serverClosed: number;
+  /** CHANNEL_ERROR and TIMED_OUT statuses (supabase-js rejoins those itself). */
+  channelErrors: number;
 }
+
+/** Why a battle's health report was made. */
+export type BattleHealthEnd = 'destroyed' | 'abandoned' | 'left' | 'switched' | 'closed';
+
+/** The engine's counters over one battle (`onBattleHealth`). */
+export interface BattleSyncHealth {
+  battleId: string;
+  roomId: string;
+  ended: BattleHealthEnd;
+  durationMs: number;
+  /** The counters' increase while this client followed the battle. */
+  stats: SyncStats;
+}
+
+const NO_STATS: SyncStats = {
+  applied: 0,
+  stale: 0,
+  gaps: 0,
+  fetches: 0,
+  missed: 0,
+  degradedMs: 0,
+  rejoins: 0,
+  serverClosed: 0,
+  channelErrors: 0,
+};
 
 // ─── One versioned topic ──────────────────────────────────────────────────────────────
 
@@ -507,7 +556,20 @@ export class RoomSync {
   private readonly timings: SyncTimings;
   private readonly userId: string;
   private readonly timers = new Map<TimerName, TimerHandle>();
-  readonly stats: SyncStats = { applied: 0, stale: 0, gaps: 0, fetches: 0, missed: 0 };
+  readonly stats: SyncStats = { ...NO_STATS };
+  /** Since when the connection reads `degraded` (null while it does not). */
+  private degradedSince: number | null = null;
+  /** The battle being followed for its health report. */
+  private watch: {
+    battleId: string;
+    roomId: string;
+    startedAt: number;
+    base: SyncStats;
+    sawLive: boolean;
+    reported: boolean;
+  } | null = null;
+  private offPageHide: (() => void) | null = null;
+  private readonly onBattleHealth: ((report: BattleSyncHealth) => void) | null;
 
   private roomTopic: VersionedTopic<RoomSnapshot, RoomEvent> | null = null;
   private roomSub: TopicSubscription | null = null;
@@ -547,6 +609,7 @@ export class RoomSync {
     this.env = deps.env ?? null;
     this.timings = { ...DEFAULT_SYNC_TIMINGS, ...deps.timings };
     this.userId = deps.userId;
+    this.onBattleHealth = deps.onBattleHealth ?? null;
     this.serverClock = new ServerClock(
       () => this.api.serverNow(),
       () => this.clock.now(),
@@ -582,6 +645,10 @@ export class RoomSync {
     this.offOffline =
       this.env?.onOffline?.(() => {
         this.setOffline(true);
+      }) ?? null;
+    this.offPageHide =
+      this.env?.onPageHide?.(() => {
+        this.reportBattleHealth('closed');
       }) ?? null;
 
     this.roomTopic = new VersionedTopic<RoomSnapshot, RoomEvent>({
@@ -619,6 +686,7 @@ export class RoomSync {
   /** Leaves every topic and stops every timer. Idempotent. */
   stop(reason: EndReason | null = null): void {
     if (this.stopped) return;
+    this.reportBattleHealth(reason === null ? 'closed' : 'left');
     this.stopped = true;
     for (const h of this.timers.values()) this.clock.clearTimeout(h);
     this.timers.clear();
@@ -626,6 +694,8 @@ export class RoomSync {
     this.offResume = null;
     this.offOffline?.();
     this.offOffline = null;
+    this.offPageHide?.();
+    this.offPageHide = null;
     this.roomSub?.close();
     this.roomSub = null;
     this.closeBattle();
@@ -708,7 +778,10 @@ export class RoomSync {
     const n = this.rejoins[topic]++;
     const { rejoinBaseMs, rejoinMaxMs, rejoinJitter } = this.timings;
     const base = Math.min(rejoinBaseMs * 2 ** n, rejoinMaxMs);
-    this.setTimer(name, Math.round(base * (1 + rejoinJitter * this.clock.random())), rejoin);
+    this.setTimer(name, Math.round(base * (1 + rejoinJitter * this.clock.random())), () => {
+      this.stats.rejoins++;
+      rejoin();
+    });
   }
 
   /**
@@ -739,6 +812,7 @@ export class RoomSync {
       this.claimOwed = true;
       this.flushPresence();
     } else {
+      this.countStatus(status);
       this.clearTimer('decayRoom');
       this.roomSubscribed = false;
       // supabase-js rejoins after an error or a timeout, not after the server closed the
@@ -785,16 +859,26 @@ export class RoomSync {
   // --- Battle -------------------------------------------------------------------------
 
   private openBattle(battleId: string | null): void {
+    this.reportBattleHealth('switched');
     this.closeBattle();
     this.battleId = battleId;
     this.patch({ battle: null });
     if (battleId === null || this.stopped) return;
+    this.watch = {
+      battleId,
+      roomId: this.state.roomId ?? '',
+      startedAt: this.clock.now(),
+      base: this.currentStats(),
+      sawLive: false,
+      reported: false,
+    };
     const topic = new VersionedTopic<BattleSnapshot, BattleEvent>({
       version: (s) => s.battle.version,
       reduce: applyBattleEvent,
       fetch: () => this.api.getBattleSnapshot(battleId),
       onChange: (s) => {
         if (this.battleTopic !== topic) return;
+        this.watchBattle(s);
         this.patch({ battle: s });
         // Activity held back outside BUILDING may go out now that it started.
         this.flushPresence();
@@ -842,6 +926,7 @@ export class RoomSync {
         presence: () => undefined,
         status: (status) => {
           if (this.battleSub !== sub || this.stopped) return;
+          this.countStatus(status);
           if (status === 'SUBSCRIBED') {
             this.scheduleDecay('battle');
             void topic.refetch();
@@ -1038,6 +1123,48 @@ export class RoomSync {
     });
   }
 
+  // --- Health (T-030) -----------------------------------------------------------------
+
+  private countStatus(status: ChannelStatus): void {
+    if (status === 'CLOSED') this.stats.serverClosed++;
+    else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') this.stats.channelErrors++;
+  }
+
+  /** The counters now, with the degraded period still running included. */
+  private currentStats(): SyncStats {
+    const open = this.degradedSince === null ? 0 : this.clock.now() - this.degradedSince;
+    return { ...this.stats, degradedMs: this.stats.degradedMs + open };
+  }
+
+  /** A battle snapshot came in: note that it ran, report when it ended. */
+  private watchBattle(snap: BattleSnapshot): void {
+    const w = this.watch;
+    if (w?.battleId !== snap.battle.id) return;
+    if (!isTerminalPhase(snap.battle.phase)) w.sawLive = true;
+    else this.reportBattleHealth(snap.battle.phase === 'abandoned' ? 'abandoned' : 'destroyed');
+  }
+
+  /** Reports the followed battle's health once, if this client saw it running. */
+  private reportBattleHealth(ended: BattleHealthEnd): void {
+    const w = this.watch;
+    if (!w || w.reported || !w.sawLive || this.stopped) return;
+    w.reported = true;
+    const now = this.currentStats();
+    const stats = { ...NO_STATS };
+    for (const k of Object.keys(stats) as (keyof SyncStats)[]) stats[k] = now[k] - w.base[k];
+    try {
+      this.onBattleHealth?.({
+        battleId: w.battleId,
+        roomId: w.roomId,
+        ended,
+        durationMs: this.clock.now() - w.startedAt,
+        stats,
+      });
+    } catch {
+      // A reporting problem never breaks the sync.
+    }
+  }
+
   // --- Plumbing -----------------------------------------------------------------------
 
   /** A method, so TypeScript does not narrow the flag across awaits. */
@@ -1074,6 +1201,11 @@ export class RoomSync {
   }
 
   private patch(p: Partial<RoomSyncState>): void {
+    if (p.connection !== undefined && p.connection !== this.state.connection) {
+      const now = this.clock.now();
+      if (this.degradedSince !== null) this.stats.degradedMs += now - this.degradedSince;
+      this.degradedSince = p.connection === 'degraded' ? now : null;
+    }
     this.state = { ...this.state, ...p };
     for (const l of this.listeners) l();
   }

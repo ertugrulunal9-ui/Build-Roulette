@@ -1,0 +1,208 @@
+import { startFakeIngest, type FakeIngest } from '@br/telemetry/testing';
+import { expect, test } from '@playwright/test';
+import { openPlayground, replaceEditorText } from './helpers';
+import { seedAdmin } from './stack';
+import {
+  INGEST_PORT,
+  UUID,
+  createRoomAs,
+  sentryLoaded,
+  sessionUserId,
+  throwInPage,
+  type PosthogEvent,
+  type SentryEvent,
+} from './telemetry';
+
+/**
+ * Error reporting and analytics ON (T-030): the build points its Sentry DSN and its PostHog
+ * host at a local fake ingest (playwright.telemetry.config.ts, `build:telemetry`). What
+ * arrives there must be scrubbed: no query strings or fragments, no room codes, display names,
+ * emails or raw user ids, nothing from the sandbox iframe; a hashed user id joins the two.
+ */
+
+let ingest: FakeIngest;
+const sentry = () => ingest.sentryEvents as SentryEvent[];
+const posthog = () => ingest.posthogEvents as unknown as PosthogEvent[];
+const allBodies = () => ingest.requests.map((r) => `${r.url}\n${r.body}`).join('\n');
+
+test.beforeAll(async () => {
+  ingest = await startFakeIngest(INGEST_PORT);
+});
+test.afterAll(async () => {
+  await ingest.close();
+});
+test.beforeEach(() => {
+  ingest.reset();
+});
+
+test('a browser error arrives scrubbed, with the route, release and environment', async ({
+  page,
+}) => {
+  await page.goto('/?utm_source=secret-campaign#secret-fragment');
+  await sentryLoaded(page);
+  await throwInPage(
+    page,
+    'boom for mod@example.com at https://elsewhere.example/r/K7QXM?invite=secret-invite',
+  );
+  await expect.poll(() => sentry().length).toBe(1);
+  const ev = sentry()[0];
+  expect(ev?.exception?.values?.[0]).toMatchObject({
+    type: 'Error',
+    value: 'boom for <email> at https://elsewhere.example/r/[code]',
+  });
+  expect(ev?.request?.url).toMatch(/^http:\/\/localhost:\d+\/$/);
+  expect(ev?.tags).toMatchObject({ route: '/', runtime: 'browser' });
+  expect(ev?.release).toMatch(/^build-roulette-web@/);
+  expect(ev?.environment).toBe('e2e');
+  expect(ev?.user).toBeUndefined(); // not signed in
+  expect(ev?.breadcrumbs).toBeUndefined();
+  expect(ev?.extra).toBeUndefined();
+  const raw = allBodies();
+  for (const secret of ['secret-campaign', 'secret-fragment', 'secret-invite', 'mod@example.com']) {
+    expect(raw, secret).not.toContain(secret);
+  }
+  // Errors only: no session pings, no transactions, no replays.
+  expect(ingest.requests.every((r) => r.url.startsWith('/api/1/envelope/'))).toBe(true);
+  expect(raw).not.toContain('"type":"session"');
+  expect(raw).not.toContain('"type":"transaction"');
+});
+
+test('analytics: room_created and room_joined, pseudonymous; errors carry the same id and the room', async ({
+  page,
+}) => {
+  const code = await createRoomAs(page, 'Zed Secretname');
+  const userId = await sessionUserId(page);
+  expect(userId).toMatch(UUID);
+  await expect
+    .poll(() => posthog().map((e) => e.event), { timeout: 15_000 })
+    .toEqual(expect.arrayContaining(['room_created', 'room_joined']));
+  const created = posthog().find((e) => e.event === 'room_created');
+  const joined = posthog().find((e) => e.event === 'room_joined');
+  expect(created?.distinct_id).toMatch(/^[0-9a-f]{32}$/);
+  expect(joined?.distinct_id).toBe(created?.distinct_id);
+  expect(created?.properties['room_id']).toMatch(UUID);
+  expect(created?.properties).toMatchObject({
+    path: '/',
+    $process_person_profile: false,
+    $geoip_disable: true,
+    $lib: 'build-roulette-web',
+  });
+  expect(joined?.properties).toMatchObject({
+    room_id: created?.properties['room_id'],
+    role: 'player',
+    path: '/r/[code]',
+  });
+  const batch = ingest.requests.find((r) => r.url.startsWith('/batch'));
+  expect(JSON.parse(batch?.body ?? '{}')).toMatchObject({ api_key: 'phc_e2e_test' });
+
+  // An error on the room page: the room id tag and the same pseudonymous user.
+  await sentryLoaded(page);
+  await throwInPage(page, 'an error in the lobby');
+  await expect.poll(() => sentry().length).toBe(1);
+  const ev = sentry()[0];
+  expect(ev?.user).toEqual({ id: created?.distinct_id });
+  expect(ev?.tags).toMatchObject({
+    route: '/r/[code]',
+    room_id: created?.properties['room_id'],
+  });
+  expect(ev?.request?.url).toMatch(/\/r\/\[code\]$/);
+
+  const raw = allBodies();
+  for (const secret of ['Zed Secretname', code, userId]) {
+    expect(raw, secret).not.toContain(secret);
+  }
+});
+
+test('Do Not Track / Global Privacy Control: no analytics, errors without a user', async ({
+  browser,
+}) => {
+  const ctx = await browser.newContext();
+  await ctx.addInitScript(() => {
+    Object.defineProperty(Navigator.prototype, 'globalPrivacyControl', { get: () => true });
+  });
+  const page = await ctx.newPage();
+  await createRoomAs(page, 'Private Pat');
+  await sentryLoaded(page);
+  await throwInPage(page, 'an error with GPC on');
+  await expect.poll(() => sentry().length).toBe(1);
+  expect(sentry()[0]?.user).toBeUndefined();
+  // The analytics flush would have run after 2 s.
+  await page.waitForTimeout(3_000);
+  await page.close(); // pagehide: nothing either
+  expect(posthog()).toEqual([]);
+  expect(ingest.requests.filter((r) => r.url.startsWith('/batch'))).toEqual([]);
+  await ctx.close();
+});
+
+test('nothing from the sandbox: its errors, console output and build code stay in the iframe', async ({
+  page,
+}) => {
+  await openPlayground(page);
+  await sentryLoaded(page);
+  await replaceEditorText(
+    page,
+    "export function App() {\n  console.error('SANDBOX_SECRET_CONSOLE');\n  throw new Error('SANDBOX_SECRET_THROW');\n}\n",
+  );
+  await expect(page.getByTestId('error-message')).toContainText('SANDBOX_SECRET_THROW');
+  await expect(page.getByTestId('console')).toContainText('SANDBOX_SECRET_CONSOLE');
+  // A build error quotes the source.
+  await replaceEditorText(page, 'export const SANDBOX_SECRET_SYNTAX = <;\n');
+  await expect(page.getByTestId('build-status')).not.toHaveText(/^Built in/);
+  await page.waitForTimeout(3_000);
+  expect(allBodies()).not.toContain('SANDBOX_SECRET');
+  // Reporting is live on this page: the app's own error does arrive.
+  await throwInPage(page, 'an app error on the playground');
+  await expect.poll(() => sentry().length).toBe(1);
+  expect(sentry()[0]?.exception?.values?.[0]?.value).toBe('an app error on the playground');
+  expect(allBodies()).not.toContain('SANDBOX_SECRET');
+});
+
+test('a server error (the admin test error) arrives with its digest, scrubbed', async ({
+  browser,
+}) => {
+  const email = `telemetry-${String(Date.now())}@telemetry.e2e`;
+  const password = `pw-${Math.random().toString(36).slice(2)}-Aa1`;
+  seedAdmin(email, password);
+  const ctx = await browser.newContext();
+  const admin = await ctx.newPage();
+  await admin.goto('/admin/sign-in');
+  await admin.getByTestId('admin-email').fill(email);
+  await admin.getByTestId('admin-password').fill(password);
+  await admin.getByTestId('admin-sign-in-submit').click();
+  await expect(admin).toHaveURL(/\/admin$/);
+  await expect(admin.getByTestId('admin-health')).toBeVisible();
+  ingest.reset();
+
+  await admin.getByTestId('admin-test-error').click();
+  const screen = admin.getByTestId('global-error');
+  await expect(screen).toBeVisible();
+  const digest = (await screen.getAttribute('data-digest')) ?? '';
+  await expect(screen).toContainText(`Error code ${digest}`);
+  expect(digest).not.toBe('');
+
+  await expect
+    .poll(() => sentry().filter((e) => e.tags?.['service'] === 'web').length, { timeout: 15_000 })
+    .toBe(1);
+  const ev = sentry().find((e) => e.tags?.['service'] === 'web');
+  expect(ev?.exception?.values?.[0]).toMatchObject({
+    type: 'Error',
+    value: 'Build Roulette test error (thrown from /admin on purpose)',
+  });
+  expect(ev?.tags).toMatchObject({
+    service: 'web',
+    route: '/admin',
+    route_type: 'action',
+    digest,
+    runtime: process.env['E2E_APP_SERVER'] === 'workers' ? 'workerd' : 'node',
+  });
+  expect(ev?.request).toEqual({ url: '/admin', method: 'POST' });
+  expect(ev?.release).toMatch(/^build-roulette-web@/);
+  // The client does not report it again (it has a digest: a server error).
+  await admin.waitForTimeout(2_000);
+  expect(sentry().filter((e) => e.tags?.['runtime'] === 'browser')).toEqual([]);
+  const raw = allBodies();
+  for (const secret of [email, 'br_admin_at', 'br_admin_rt', password]) {
+    expect(raw, secret).not.toContain(secret);
+  }
+  await ctx.close();
+});

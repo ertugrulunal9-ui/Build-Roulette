@@ -8,7 +8,7 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "build": "esbuild src/main.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outfile=dist/main.js --log-level=warning",
+    "build": "esbuild src/main.ts --bundle --platform=node --target=node22 --format=esm --external:esbuild --external:semver --external:cjs-module-lexer --external:es-module-lexer --outfile=dist/main.js --log-level=warning",
     "start": "node dist/main.js",
     "dev": "tsx src/main.ts",
     "lint": "eslint . --max-warnings=0",
@@ -17,6 +17,7 @@
     "compat": "tsx compat/run.ts"
   },
   "dependencies": {
+    "@br/telemetry": "workspace:*",
     "cjs-module-lexer": "2.2.1",
     "es-module-lexer": "3.0.2",
     "esbuild": "0.28.2",

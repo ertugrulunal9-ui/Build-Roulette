@@ -37,6 +37,7 @@
 import { isTerminalPhase } from '@br/game';
 import type { CrashReason, PreviewBuild } from '@br/runtime';
 import { realClock, type SoloClock, type TimerHandle } from '../solo/controller';
+import { track as defaultTrack, type Track } from '../telemetry/analytics';
 import { toGameError, type GameError } from '../solo/errors';
 import type {
   BattleSnapshot,
@@ -83,6 +84,8 @@ export interface RevealVoteDeps {
   clock?: SoloClock;
   /** Retry delay for `get_reveal_builds` and the ballot after a failure. */
   retryMs?: number;
+  /** Product analytics: `vote_cast` per vote the server took (T-030). */
+  track?: Track;
 }
 
 // ─── State ────────────────────────────────────────────────────────────────────────────
@@ -444,6 +447,11 @@ export class RevealVoteController {
     const latest = next ?? buildId;
 
     if (result) {
+      (this.deps.track ?? defaultTrack)('vote_cast', {
+        battle_id: battleId,
+        category,
+        revote: this.state.ballot.votes[category] !== undefined,
+      });
       this.patchBallot({
         pending,
         votes: { ...this.state.ballot.votes, [category]: result.build_id },

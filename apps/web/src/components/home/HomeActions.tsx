@@ -53,13 +53,15 @@ export function HomeActions() {
     setBusy(true);
     setError(null);
     try {
-      const [{ getSupabase, ensureSignedIn }, { SupabaseRoomApi }] = await Promise.all([
+      const [{ getSupabase, ensureSignedIn }, { SupabaseRoomApi }, { track }] = await Promise.all([
         import('../../lib/supabase/browser'),
         import('../../lib/room/api'),
+        import('../../lib/telemetry/analytics'),
       ]);
       const api = new SupabaseRoomApi(getSupabase(), ensureSignedIn);
       await api.ensureSession();
       const room = await api.createRoom(trimmed);
+      track('room_created', { room_id: room.room_id });
       try {
         window.localStorage.setItem(NAME_KEY, trimmed);
       } catch {

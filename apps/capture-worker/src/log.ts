@@ -1,6 +1,9 @@
 /**
  * Structured logs: one JSON object per line on stdout (`{"t", "level", "msg", ...fields}`),
  * so a log drain can index the fields. Never log secrets or signed URLs (they carry tokens).
+ *
+ * `onError` sees every `error` line (with the child loggers' fields): main.ts sends those to
+ * Sentry when a DSN is configured (reporting.ts, T-030).
  */
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
@@ -27,6 +30,8 @@ export function createLogger(
     write?: (line: string) => void;
     now?: () => Date;
     base?: LogFields;
+    /** Called for every `error` line (after it is written). Must not throw. */
+    onError?: (msg: string, fields: LogFields) => void;
   } = {},
 ): Logger {
   const min = ORDER[opts.level ?? 'info'];
@@ -46,6 +51,13 @@ export function createLogger(
       line = JSON.stringify({ t: now().toISOString(), level, msg, ...base, unserializable: true });
     }
     write(line);
+    if (level === 'error' && opts.onError) {
+      try {
+        opts.onError(msg, { ...base, ...fields });
+      } catch {
+        // Reporting never breaks the worker.
+      }
+    }
   };
   return {
     debug: (m, f) => {

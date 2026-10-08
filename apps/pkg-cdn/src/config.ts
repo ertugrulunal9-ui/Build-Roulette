@@ -44,6 +44,9 @@ export interface CdnConfig {
 
 export const ENV_DOCS: Record<string, string> = {
   PKG_CDN_PORT: 'Port to listen on (default 4400; PORT is also honored)',
+  SENTRY_DSN: 'Sentry DSN for error reporting (default none: nothing is sent; T-030)',
+  SENTRY_ENVIRONMENT: 'Sentry environment (default production)',
+  SENTRY_RELEASE: 'Release name reported with errors (default none)',
   PKG_CDN_HOST: 'Interface to bind (default 127.0.0.1)',
   PKG_CDN_CACHE_DIR: 'Disk cache directory (default apps/pkg-cdn/node_modules/.cache/pkg-cdn)',
   PKG_CDN_CACHE_QUOTA_MB: 'Disk quota of the cache, LRU-evicted above it (default 5120; 0 = none)',

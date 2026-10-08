@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { battleWorkspaceId } from '../solo/controller';
 import { GameError } from '../solo/errors';
 import { FakeApi, FakeLocalWorkspaces } from '../solo/test-support';
+import type { AnalyticsEventName } from '../telemetry/analytics';
 import { RoomController, playerCount, readyCount, roomView, type NameStore } from './controller';
 import {
   BATTLE_1,
@@ -442,5 +443,67 @@ describe('leaving and being kicked', () => {
     c.dispose();
     expect(rt.topics.every((t) => t.closed)).toBe(true);
     expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe('analytics (T-030)', () => {
+  it('room_joined, battle_started + rematch from the host, one sync_health per battle', async () => {
+    const events: [AnalyticsEventName, Record<string, unknown>][] = [];
+    // The room's last battle (BATTLE_2) is still running when the host starts the next.
+    api.room = roomSnapshot({ battleId: BATTLE_2, version: 3 });
+    api.battles.set(BATTLE_2, battleSnapshot({ id: BATTLE_2, version: 2, phase: 'building' }));
+    const c = new RoomController('k7qxm', {
+      api,
+      soloApi: new FakeApi(),
+      realtime: rt,
+      cdnBaseUrl: 'https://pkg.test',
+      localWorkspaces: local,
+      nameStore: names,
+      env: new FakeEnvironment(),
+      syncTimings: { battleJoinStaggerMs: 0 },
+      track: (name, props) => {
+        events.push([name, props as Record<string, unknown>]);
+      },
+    });
+    await c.init();
+    rt.open(ROOM_TOPIC).status('SUBSCRIBED');
+    await flush();
+    expect(events).toEqual([['room_joined', { room_id: ROOM, role: 'player' }]]);
+
+    await c.start();
+    expect(events.slice(1)).toEqual([
+      [
+        'battle_started',
+        { battle_id: BATTLE_1, mode: 'multiplayer', room_id: ROOM, rematch: true },
+      ],
+      ['rematch', { room_id: ROOM, battle_id: BATTLE_1, previous_battle_id: BATTLE_2 }],
+    ]);
+
+    // BATTLE_2 ends: its sync-health report (and battle_completed from its controller).
+    api.battles.set(BATTLE_2, battleSnapshot({ id: BATTLE_2, version: 3, phase: 'destroyed' }));
+    rt.open(`battle:${BATTLE_2}`).send({
+      type: 'phase',
+      version: 3,
+      phase: 'destroyed',
+      phase_started_at: new Date().toISOString(),
+      phase_ends_at: null,
+    });
+    await flush();
+    const health = events.filter(([n]) => n === 'sync_health');
+    expect(health).toHaveLength(1);
+    expect(health[0]?.[1]).toMatchObject({
+      battle_id: BATTLE_2,
+      room_id: ROOM,
+      ended: 'destroyed',
+      missed: 0,
+      gaps: 0,
+      degraded_ms: 0,
+      rejoins: 0,
+      server_closed: 0,
+      channel_errors: 0,
+    });
+    expect(events.map(([n]) => n)).toContain('battle_completed');
+    c.dispose();
+    expect(events.filter(([n]) => n === 'sync_health')).toHaveLength(1);
   });
 });

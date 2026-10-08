@@ -506,6 +506,7 @@ export class FakeRealtime implements RealtimePort {
 export class FakeEnvironment implements SyncEnvironment {
   private readonly listeners = new Set<(reason: 'visible' | 'online') => void>();
   private readonly offlineListeners = new Set<() => void>();
+  private readonly pageHideListeners = new Set<() => void>();
   onResume(cb: (reason: 'visible' | 'online') => void): () => void {
     this.listeners.add(cb);
     return () => this.listeners.delete(cb);
@@ -514,14 +515,22 @@ export class FakeEnvironment implements SyncEnvironment {
     this.offlineListeners.add(cb);
     return () => this.offlineListeners.delete(cb);
   }
-  fire(reason: 'visible' | 'online' | 'offline'): void {
+  onPageHide(cb: () => void): () => void {
+    this.pageHideListeners.add(cb);
+    return () => this.pageHideListeners.delete(cb);
+  }
+  fire(reason: 'visible' | 'online' | 'offline' | 'pagehide'): void {
     if (reason === 'offline') {
       for (const l of this.offlineListeners) l();
+      return;
+    }
+    if (reason === 'pagehide') {
+      for (const l of this.pageHideListeners) l();
       return;
     }
     for (const l of this.listeners) l(reason);
   }
   get size(): number {
-    return this.listeners.size + this.offlineListeners.size;
+    return this.listeners.size + this.offlineListeners.size + this.pageHideListeners.size;
   }
 }

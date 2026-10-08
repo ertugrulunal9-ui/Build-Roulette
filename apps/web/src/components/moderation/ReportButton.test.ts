@@ -8,17 +8,23 @@ import { createElement } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ReportInput } from '../../lib/moderation/report';
 import { GameError } from '../../lib/solo/errors';
+import type { Track } from '../../lib/telemetry/analytics';
 import { ReportButton } from './ReportButton';
 
 afterEach(cleanup);
 
-function open(submit: (input: ReportInput) => Promise<void>, onHide?: () => void) {
+function open(
+  submit: (input: ReportInput) => Promise<void>,
+  onHide?: () => void,
+  track: Track = () => undefined,
+) {
   render(
     createElement(ReportButton, {
       buildId: 'build-1',
       buildLabel: '“Snack Overflow” by Ana',
       submit,
       onHide,
+      track,
     }),
   );
   fireEvent.click(screen.getByTestId('report-build'));
@@ -45,6 +51,31 @@ describe('ReportButton', () => {
     });
     expect(screen.getByTestId('report-build').textContent).toContain('Reported');
     expect(screen.queryByTestId('report-details')).toBeNull();
+  });
+
+  it('a report that went through is the report_filed event: reason and surface only (T-030)', async () => {
+    const track = vi.fn<Track>();
+    open(() => Promise.resolve(), undefined, track);
+    fireEvent.click(screen.getByTestId('report-reason-phishing'));
+    fireEvent.change(screen.getByTestId('report-details'), { target: { value: 'my secret text' } });
+    fireEvent.click(screen.getByTestId('report-submit'));
+    await waitFor(() => {
+      expect(track).toHaveBeenCalledWith('report_filed', {
+        reason: 'phishing',
+        surface: 'results',
+      });
+    });
+    expect(JSON.stringify(track.mock.calls)).not.toContain('secret');
+    cleanup();
+    // A refused report is not an event.
+    const refused = vi.fn<Track>();
+    open(() => Promise.reject(new GameError('own_build')), undefined, refused);
+    fireEvent.click(screen.getByTestId('report-reason-spam'));
+    fireEvent.click(screen.getByTestId('report-submit'));
+    await waitFor(() => {
+      expect(screen.getByTestId('report-error')).toBeTruthy();
+    });
+    expect(refused).not.toHaveBeenCalled();
   });
 
   it('already reported is a thank-you too', async () => {

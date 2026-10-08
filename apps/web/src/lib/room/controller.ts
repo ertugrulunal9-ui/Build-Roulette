@@ -14,6 +14,9 @@
  *   snapshots. A rematch is a new battle, so new controllers.
  * - **Leave / kicked:** `leave_room` (and the battle's local workspace is deleted if a battle
  *   was running), or the kicked / closed / gone end states.
+ * - **Telemetry (T-030):** `room_joined`, `battle_started` and `rematch` (the host's start),
+ *   and one `sync_health` event per battle from the sync engine's counters (analytics.ts);
+ *   the room id is the error reports' `room_id` tag. All no-ops while telemetry is off.
  */
 import { isTerminalPhase, normalizeRoomCode } from '@br/game';
 import type { SoloApi } from '../solo/api';
@@ -31,10 +34,13 @@ import { formatCountdown } from '../solo/format';
 import { randomDisplayName } from '../solo/names';
 import type { BattleSnapshot } from '../solo/types';
 import type { RoomApi } from './api';
+import { track as defaultTrack, type Track } from '../telemetry/analytics';
+import { setTelemetryContext } from '../telemetry/context';
 import { RevealVoteController, type ObjectUrls } from './reveal-vote';
 import {
   INITIAL_SYNC_STATE,
   RoomSync,
+  type BattleSyncHealth,
   type EndReason,
   type RealtimePort,
   type RoomSyncState,
@@ -85,6 +91,8 @@ export interface RoomControllerDeps {
   toastMs?: number;
   /** Object URLs for the reveal thumbnails (tests). */
   objectUrls?: ObjectUrls;
+  /** Product analytics (default: analytics.ts; tests pass a spy). */
+  track?: Track;
 }
 
 export type RoomStage = 'starting' | 'name' | 'joining' | 'room' | 'join_error' | 'ended';
@@ -186,6 +194,7 @@ export class RoomController {
   private readonly deps: RoomControllerDeps;
   private readonly clock: SoloClock;
   private readonly nameStore: NameStore | null;
+  private readonly track: Track;
   private sync: RoomSync | null = null;
   private offSync: (() => void) | null = null;
   private offNotice: (() => void) | null = null;
@@ -201,6 +210,7 @@ export class RoomController {
     this.deps = deps;
     this.clock = deps.clock ?? realClock;
     this.nameStore = deps.nameStore ?? null;
+    this.track = deps.track ?? defaultTrack;
     this.state = initialRoomState(normalizeRoomCode(code));
   }
 
@@ -260,6 +270,7 @@ export class RoomController {
       }
       const joined = await this.deps.api.joinRoom(code, displayName);
       if (epoch !== this.epoch) return;
+      this.track('room_joined', { room_id: joined.room_id, role: joined.role ?? 'player' });
       this.nameStore?.set(displayName);
       this.connect(joined.room_id, displayName);
     } catch (e) {
@@ -287,8 +298,12 @@ export class RoomController {
       clock: this.clock,
       env: this.deps.env,
       timings: this.deps.syncTimings,
+      onBattleHealth: (h) => {
+        this.reportSyncHealth(h);
+      },
     });
     this.sync = sync;
+    setTelemetryContext({ roomId, mode: 'multiplayer' });
     this.offSync = sync.subscribe(() => {
       this.onSync(sync);
     });
@@ -329,7 +344,21 @@ export class RoomController {
   /** Host only: starts a battle (or the rematch). */
   start(): Promise<void> {
     return this.action('start', async (api, roomId) => {
-      await api.startBattle(roomId);
+      const previous = this.state.sync.room?.room.current_battle_id ?? null;
+      const battleId = await api.startBattle(roomId);
+      this.track('battle_started', {
+        battle_id: battleId,
+        mode: 'multiplayer',
+        room_id: roomId,
+        rematch: previous !== null,
+      });
+      if (previous !== null) {
+        this.track('rematch', {
+          room_id: roomId,
+          battle_id: battleId,
+          previous_battle_id: previous,
+        });
+      }
       // The room event switches every client; refetch so this one does not wait for it.
       void this.sync?.refetchRoom();
     });
@@ -448,12 +477,14 @@ export class RoomController {
         localWorkspaces: this.deps.localWorkspaces,
         clock: this.clock,
         external: { refetch },
+        track: this.track,
       });
       const show = new RevealVoteController(snap.battle.id, {
         api: this.deps.api,
         cdnBaseUrl: this.deps.cdnBaseUrl,
         refetch,
         clock: this.clock,
+        track: this.track,
         ...(this.deps.objectUrls ? { objectUrls: this.deps.objectUrls } : {}),
       });
       this.battle = c;
@@ -468,7 +499,25 @@ export class RoomController {
     }
   }
 
+  /** The sync engine's counters over one battle → the `sync_health` event. */
+  private reportSyncHealth(h: BattleSyncHealth): void {
+    this.track('sync_health', {
+      battle_id: h.battleId,
+      room_id: h.roomId,
+      ended: h.ended,
+      duration_s: Math.round(h.durationMs / 1000),
+      missed: h.stats.missed,
+      refetches: h.stats.fetches,
+      gaps: h.stats.gaps,
+      degraded_ms: Math.round(h.stats.degradedMs),
+      rejoins: h.stats.rejoins,
+      server_closed: h.stats.serverClosed,
+      channel_errors: h.stats.channelErrors,
+    });
+  }
+
   private dropBattle(): void {
+    if (this.battle) setTelemetryContext({ battleId: null, phase: null });
     this.battle?.dispose();
     this.battle = null;
     this.show?.dispose();
@@ -561,6 +610,7 @@ export class RoomController {
     this.offNotice = null;
     this.sync?.stop();
     this.sync = null;
+    setTelemetryContext({ roomId: null, battleId: null, phase: null, mode: null });
   }
 
   private patch(p: Partial<RoomState>): void {

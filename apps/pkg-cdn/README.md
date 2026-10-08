@@ -149,6 +149,17 @@ parsed objects, if every in-flight request were a maximum-size packument; typica
 | `PKG_CDN_RETRY_AFTER_SECONDS`                                    | `5`                                            |
 | `PKG_CDN_ALLOW_SHA1`                                             | `0`                                            |
 
+### Error reporting (T-030)
+
+Off unless `SENTRY_DSN` is set (`SENTRY_ENVIRONMENT`, `SENTRY_RELEASE` optional); the startup
+log says which. With it, a request that ends in **500** (an unexpected exception, a bundling
+failure that is ours) or **502** (the npm registry failed: the first sign of a registry
+outage) is reported to Sentry with the request path without its query string, the method,
+the status and the error code (`src/reporting.ts`, built on `@br/telemetry`). Package
+problems (4xx), load shedding (503), slow cold builds (504) and clients that went away (499)
+are not. A crash of the process is reported before it exits.
+`docs/runbooks/package-cdn-outage.md` says what to do with them.
+
 ## Availability: limits, load shedding, cancellation
 
 - **Global limits.** Three limiters are shared by all requests: registry requests (packuments

@@ -23,6 +23,13 @@
  *   instead, because the shell evaluates the new bundle on its own main thread (one long task
  *   that can take seconds on a busy CPU). Only the app's own `load` opens the window; `ready`
  *   can only close it, so the sandbox can never extend it (README "Load grace").
+ * - Starvation (T-031): every limit above is measured in **app-awake time**, not wall-clock
+ *   time. The watchdog tick (every 250 ms) advances an awake clock by at most one interval
+ *   (plus 50 ms of timer jitter) per run, so when the app's own main thread was stalled (a long task of its own, or a starved
+ *   machine giving the process no CPU), the stall is not counted as the sandbox's silence:
+ *   while the app is stalled it can neither send pings nor receive pongs. A loop in a
+ *   site-isolated frame does not delay the app's timers, so it is still caught after 5 s of
+ *   awake time (README "Starvation").
  *
  * Trust model: everything the shell sends is untrusted display data. `ready`, `pong`,
  * `heartbeat` and `storage-reset` are hints; the app never takes an action that matters for
@@ -104,19 +111,26 @@ export interface PreviewOptions {
   shellOrigin?: string;
   /** Run mode of the first iframe. Default `live`. */
   mode?: RunMode;
-  /** No `pong` for this long -> crash. Default 5000 ms. */
+  /** No `pong` for this long (app-awake time) -> crash. Default 5000 ms. */
   heartbeatTimeoutMs?: number;
   /**
    * Load grace: the longest silence tolerated while a `load` the handle sent is still
-   * evaluating (no `ready` for it yet), and at most this long after it was sent. Never less
-   * than `heartbeatTimeoutMs`. Default 15000 ms.
+   * evaluating (no `ready` for it yet), and at most this long after it was sent (app-awake
+   * time). Never less than `heartbeatTimeoutMs`. Default 15000 ms.
    */
   loadGraceMs?: number;
   /** Ping interval while connected. Default 1000 ms. */
   pingIntervalMs?: number;
-  /** No completed handshake for this long after a navigation -> crash. Default 10000 ms. */
+  /**
+   * No completed handshake for this long (app-awake time) after a navigation -> crash.
+   * Default 10000 ms.
+   */
   handshakeTimeoutMs?: number;
-  /** Watchdog tick. Default 250 ms. */
+  /**
+   * Watchdog tick. Default 250 ms. Each tick advances the app-awake clock by at most this
+   * much plus `TICK_JITTER_MS`: a tick that runs later measures an app-side stall, which is
+   * not counted (T-031).
+   */
   watchdogIntervalMs?: number;
   /** Overrides for the app-side message budgets (`DEFAULT_PREVIEW_BUDGETS`). */
   budgets?: Partial<PreviewBudgets>;
@@ -140,6 +154,26 @@ export type CrashReason = 'heartbeat-timeout' | 'handshake-timeout';
  */
 export type CrashPhase = 'connecting' | 'loading' | 'running';
 
+/**
+ * A watchdog crash. Silences are measured in app-awake time (T-031): `silentForMs` is what
+ * crossed the limit; the wall-clock silence is `silentForMs + stalledMs`, where `stalledMs`
+ * is time the app's own timers did not run beyond normal timer jitter (its main thread was
+ * busy, or the process got no CPU), which is starvation evidence rather than the sandbox's
+ * silence.
+ */
+export interface PreviewCrash {
+  reason: CrashReason;
+  /** App-awake time since the last pong (since the navigation, for a handshake timeout). */
+  silentForMs: number;
+  phase: CrashPhase;
+  /** Wall-clock time since the last pong (since the navigation, for a handshake timeout). */
+  wallSilentForMs: number;
+  /** `wallSilentForMs - silentForMs`: app-side timer stalls during the silence, not counted. */
+  stalledMs: number;
+  /** The longest single app-side stall during the silence (how late one tick ran). */
+  longestStallMs: number;
+}
+
 /** Why the handle replaced its iframe element. */
 export type FrameReason = 'mode-change' | 'reset' | 'restart';
 
@@ -159,7 +193,7 @@ export interface PreviewEventMap {
   error: RuntimeErrorMessage;
   /** At most once per second: messages dropped by the budgets since the last notice. */
   dropped: { count: number; byType: Record<BudgetedType, number> };
-  crash: { reason: CrashReason; silentForMs: number; phase: CrashPhase };
+  crash: PreviewCrash;
 }
 
 export type PreviewState = 'connecting' | 'connected' | 'crashed' | 'disposed';
@@ -183,14 +217,39 @@ export interface PreviewStats {
   /** Round trip of the last accepted ping, in ms. */
   lastRttMs: number | null;
   /**
-   * End of the load grace window (clock time): set when a `load` is sent, shortened by its
-   * `ready`. 0 = none so far.
+   * End of the load grace window in wall-clock time, as the window would end if the app is
+   * never stalled (the watchdog itself counts it in app-awake time): set when a `load` is
+   * sent, shortened by its `ready`. 0 = none so far.
    */
   loadGraceUntil: number;
   /** `heartbeat` messages received (informational only). */
   heartbeats: number;
   lastHeartbeatAt: number;
+  /**
+   * App-side stalls (T-031): watchdog ticks that ran at least `STALL_MS` (1 s) late, i.e. the
+   * app's own main thread did not run timers for that long (a long task of its own, or a
+   * starved machine). Not counted while the tab is hidden.
+   */
+  stalls: number;
+  /** Total lateness of those ticks. */
+  stallMs: number;
+  /** The longest one. */
+  longestStallMs: number;
+  /**
+   * Silences that went over the limit in wall-clock time but not in app-awake time, and then
+   * ended with a pong: crashes the pre-T-031 watchdog would have reported for a live build.
+   */
+  sparedSilences: number;
 }
+
+/** A watchdog tick at least this late is counted as an app-side stall (`stats.stalls`). */
+export const STALL_MS = 1000;
+
+/**
+ * Timer jitter a watchdog tick may have and still count fully as awake time: a page that is
+ * merely busy runs its timers a few tens of ms late, which must not slow loop detection.
+ */
+export const TICK_JITTER_MS = 50;
 
 /**
  * The handshake guard, as a pure function: is this window message a `hello` from exactly
@@ -272,8 +331,33 @@ export class PreviewHandle {
     loadGraceUntil: 0,
     heartbeats: 0,
     lastHeartbeatAt: 0,
+    stalls: 0,
+    stallMs: 0,
+    longestStallMs: 0,
+    sparedSilences: 0,
   };
   private watchdog: ReturnType<typeof setInterval> | null = null;
+  // --- The app-awake clock (T-031) -------------------------------------------------------
+  // Every watchdog limit is measured on this clock. It follows the real clock while the
+  // app's own timers run, but each tick advances it by at most one `watchdogIntervalMs` (plus
+  // `TICK_JITTER_MS`): a tick that runs later shows that the app itself was stalled (its main thread was busy, or
+  // the process got no CPU), and that stall is not counted as the sandbox's silence. Events
+  // between ticks read `awakeAt(now)`, which is capped the same way, so the clock never goes
+  // backwards.
+  /** Awake-clock time at the last tick. */
+  private awakeBase = 0;
+  /** Real-clock time of the last tick (or of the watchdog start / the tab becoming visible). */
+  private lastTickAt = 0;
+  /** Awake-clock time of the last pong (or handshake, or the tab becoming visible). */
+  private lastPongAwake = 0;
+  /** Awake-clock time the current navigation started. */
+  private navigatedAwake = 0;
+  /** Awake-clock end of the load grace window (0 = none). */
+  private graceUntilAwake = 0;
+  /** The longest app stall within the current silence (crash evidence). */
+  private silenceLongestStall = 0;
+  /** The current silence went over the limit by the wall clock (the pre-T-031 rule). */
+  private silenceOverWallLimit = false;
   private listening = false;
   private pendingLoad: LoadMessage | null = null;
   private latestLoadId = 0;
@@ -502,14 +586,38 @@ export class PreviewHandle {
   private sendLoad(msg: LoadMessage): void {
     this.send(msg);
     this.loadInFlight = true;
-    this._stats.loadGraceUntil = this.now() + this.loadGraceMs;
+    const now = this.now();
+    this._stats.loadGraceUntil = now + this.loadGraceMs;
+    this.graceUntilAwake = this.awakeAt(now) + this.loadGraceMs;
   }
 
   private listen(): void {
     this.win.addEventListener('message', this.onWindowMessage);
     this.doc.addEventListener('visibilitychange', this.onVisibilityChange);
+    this.restartAwakeClock(this.now());
     this.watchdog = setInterval(this.tick, this.watchdogIntervalMs);
     this.listening = true;
+  }
+
+  /** The app-awake clock at real-clock time `now` (between ticks: capped like a tick). */
+  private awakeAt(now: number): number {
+    const credit = Math.min(
+      Math.max(0, now - this.lastTickAt),
+      this.watchdogIntervalMs + TICK_JITTER_MS,
+    );
+    return this.awakeBase + credit;
+  }
+
+  /** Brings the awake clock up to `now` and measures from there (no stall is recorded). */
+  private restartAwakeClock(now: number): void {
+    this.awakeBase = this.awakeAt(now);
+    this.lastTickAt = now;
+  }
+
+  /** A new silence starts (a pong, a handshake, a navigation, the tab becoming visible). */
+  private resetSilence(): void {
+    this.silenceLongestStall = 0;
+    this.silenceOverWallLimit = false;
   }
 
   /** Starts a navigation of `frame` to the shell; arms the single expected `hello`. */
@@ -517,7 +625,10 @@ export class PreviewHandle {
     this._state = 'connecting';
     this.awaitingHello = true;
     this.nonce = null;
-    this.navigatedAt = this.now();
+    const now = this.now();
+    this.navigatedAt = now;
+    this.navigatedAwake = this.awakeAt(now);
+    this.resetSilence();
     frame.src = this.shellUrl;
   }
 
@@ -640,6 +751,11 @@ export class PreviewHandle {
         this._stats.pongs++;
         this._stats.lastPongAt = now;
         this._stats.lastRttMs = now - sentAt;
+        this.lastPongAwake = this.awakeAt(now);
+        // The build was alive: a silence the wall-clock rule would have called a crash was
+        // the app's own stall (a false crash before T-031).
+        if (this.silenceOverWallLimit) this._stats.sparedSilences++;
+        this.resetSilence();
         return;
       }
       case 'heartbeat':
@@ -665,6 +781,10 @@ export class PreviewHandle {
         this._stats.loadGraceUntil = Math.min(
           this._stats.loadGraceUntil,
           now + this.heartbeatTimeoutMs,
+        );
+        this.graceUntilAwake = Math.min(
+          this.graceUntilAwake,
+          this.awakeAt(now) + this.heartbeatTimeoutMs,
         );
         this.emit('ready', { loadId: msg.loadId });
         return;
@@ -716,7 +836,10 @@ export class PreviewHandle {
     this.nonce = null; // single use
     this._state = 'connected';
     this._stats.handshakes++;
-    this._stats.lastPongAt = this.now();
+    const now = this.now();
+    this._stats.lastPongAt = now;
+    this.lastPongAwake = this.awakeAt(now);
+    this.resetSilence();
     // Storage resets first: the shell runs queued messages in order and finishes a reset
     // before it starts the next load.
     for (const r of [...this.storageRequests.values()]) {
@@ -728,6 +851,7 @@ export class PreviewHandle {
     // A new shell: no load of the old one carries over (a pending one is sent just below).
     this.loadInFlight = false;
     this._stats.loadGraceUntil = 0;
+    this.graceUntilAwake = 0;
     if (this.pendingLoad) {
       this.sendLoad(this.pendingLoad);
       this.pendingLoad = null;
@@ -777,36 +901,92 @@ export class PreviewHandle {
   private readonly onVisibilityChange = (): void => {
     if (this.doc.hidden) return;
     // Hidden tabs throttle timers (down to 1/min after 5 min in Chrome). Give the shell a
-    // fresh grace period when we become visible instead of declaring a false crash.
+    // fresh grace period when we become visible instead of declaring a false crash. The
+    // hidden time is neither awake time nor a stall: measure from now.
     const now = this.now();
-    if (this._state === 'connecting') this.navigatedAt = now;
+    this.restartAwakeClock(now);
+    if (this._state === 'connecting') {
+      this.navigatedAt = now;
+      this.navigatedAwake = this.awakeBase;
+      this.resetSilence();
+    }
     if (this._state === 'connected') {
       this._stats.lastPongAt = now;
+      this.lastPongAwake = this.awakeBase;
+      this.resetSilence();
       this.sendPing();
     }
   };
 
   private readonly tick = (): void => {
-    if (this.doc.hidden) return;
     const now = this.now();
+    // How late this tick ran is how long the app's own timers were stalled: no ping could be
+    // sent and no pong received meanwhile. Only up to one interval (plus jitter) counts as
+    // awake time.
+    const stall = Math.max(0, now - this.lastTickAt - this.watchdogIntervalMs);
+    this.awakeBase = this.awakeAt(now);
+    this.lastTickAt = now;
+    // Hidden tabs: no check, and throttled timers are not stalls (the clock restarts when the
+    // tab becomes visible).
+    if (this.doc.hidden) return;
+    if (stall > 0) this.recordStall(stall);
+    const awake = this.awakeBase;
     if (this._state === 'connecting') {
-      if (now - this.navigatedAt > this.handshakeTimeoutMs)
-        this.crash('handshake-timeout', now - this.navigatedAt, 'connecting');
+      if (awake - this.navigatedAwake > this.handshakeTimeoutMs) {
+        this.crash(
+          'handshake-timeout',
+          'connecting',
+          awake - this.navigatedAwake,
+          now - this.navigatedAt,
+        );
+      }
       return;
     }
     if (this._state !== 'connected') return;
-    const lastPongAt = this._stats.lastPongAt;
-    const silent = now - lastPongAt;
+    this.noteWallClockRule(now);
+    const silent = awake - this.lastPongAwake;
     if (silent <= this.heartbeatTimeoutMs) return;
     // Load grace: a load the app sent may block the shell's main thread for a while (module
     // compile + evaluation is one task). Tolerated until the window ends, and never more than
     // `loadGraceMs` of silence in total, however many loads the app sends meanwhile.
-    const graceEnd = Math.min(this._stats.loadGraceUntil, lastPongAt + this.loadGraceMs);
-    if (now <= graceEnd) return;
-    this.crash('heartbeat-timeout', silent, this.loadInFlight ? 'loading' : 'running');
+    const graceEnd = Math.min(this.graceUntilAwake, this.lastPongAwake + this.loadGraceMs);
+    if (awake <= graceEnd) return;
+    this.crash(
+      'heartbeat-timeout',
+      this.loadInFlight ? 'loading' : 'running',
+      silent,
+      now - this._stats.lastPongAt,
+    );
   };
 
-  private crash(reason: CrashReason, silentForMs: number, phase: CrashPhase): void {
+  private recordStall(stall: number): void {
+    this.silenceLongestStall = Math.max(this.silenceLongestStall, stall);
+    if (stall < STALL_MS) return;
+    this._stats.stalls++;
+    this._stats.stallMs += stall;
+    this._stats.longestStallMs = Math.max(this._stats.longestStallMs, stall);
+  }
+
+  /**
+   * Would the pre-T-031 watchdog (wall-clock silence, wall-clock load grace) have crashed
+   * now? Remembered for the current silence; if a pong ends it, it was a false crash spared
+   * (`stats.sparedSilences`).
+   */
+  private noteWallClockRule(now: number): void {
+    if (this.silenceOverWallLimit) return;
+    const lastPongAt = this._stats.lastPongAt;
+    if (now - lastPongAt <= this.heartbeatTimeoutMs) return;
+    if (now <= Math.min(this._stats.loadGraceUntil, lastPongAt + this.loadGraceMs)) return;
+    this.silenceOverWallLimit = true;
+  }
+
+  private crash(
+    reason: CrashReason,
+    phase: CrashPhase,
+    silentForMs: number,
+    wallSilentForMs: number,
+  ): void {
+    const longestStallMs = this.silenceLongestStall;
     this.teardown();
     this._state = 'crashed';
     // Taking the iframe out of the document discards its documents; with site isolation the
@@ -817,7 +997,14 @@ export class PreviewHandle {
       this._iframe.replaceWith(placeholder);
       this.placeholder = placeholder;
     }
-    this.emit('crash', { reason, silentForMs, phase });
+    this.emit('crash', {
+      reason,
+      silentForMs,
+      phase,
+      wallSilentForMs,
+      stalledMs: Math.max(0, wallSilentForMs - silentForMs),
+      longestStallMs,
+    });
   }
 
   private teardown(): void {

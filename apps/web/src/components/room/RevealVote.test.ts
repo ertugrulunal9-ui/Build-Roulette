@@ -52,6 +52,8 @@ function fakeShow() {
     skip: vi.fn(),
     watch: vi.fn(),
     markFrozen: vi.fn(),
+    previewCrashed: vi.fn(),
+    previewHealth: { follow: vi.fn(() => () => undefined) },
     next: vi.fn(() => Promise.resolve()),
     skipToVote: vi.fn(() => Promise.resolve()),
     dismissHostError: vi.fn(),

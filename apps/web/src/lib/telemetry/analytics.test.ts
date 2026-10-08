@@ -163,6 +163,11 @@ describe('the batch', () => {
       rejoins: 0,
       server_closed: 0,
       channel_errors: 0,
+      preview_crashes: 1,
+      preview_restarts: 0,
+      preview_stalls: 2,
+      preview_stall_ms: 7400,
+      preview_spared: 1,
     });
     await vi.waitFor(() => {
       expect(fetchSpy).toHaveBeenCalledTimes(2);

@@ -15,7 +15,8 @@
  * - **Leave / kicked:** `leave_room` (and the battle's local workspace is deleted if a battle
  *   was running), or the kicked / closed / gone end states.
  * - **Telemetry (T-030):** `room_joined`, `battle_started` and `rematch` (the host's start),
- *   and one `sync_health` event per battle from the sync engine's counters (analytics.ts);
+ *   and one `sync_health` event per battle from the sync engine's counters (analytics.ts),
+ *   plus this tab's preview watchdog counters for the battle (T-031, sandbox-health.ts);
  *   the room id is the error reports' `room_id` tag. All no-ops while telemetry is off.
  */
 import { isTerminalPhase, normalizeRoomCode } from '@br/game';
@@ -36,6 +37,11 @@ import type { BattleSnapshot } from '../solo/types';
 import type { RoomApi } from './api';
 import { track as defaultTrack, type Track } from '../telemetry/analytics';
 import { setTelemetryContext } from '../telemetry/context';
+import {
+  previewHealthProps,
+  sandboxHealth,
+  type SandboxHealthTally,
+} from '../telemetry/sandbox-health';
 import { RevealVoteController, type ObjectUrls } from './reveal-vote';
 import {
   INITIAL_SYNC_STATE,
@@ -93,6 +99,8 @@ export interface RoomControllerDeps {
   objectUrls?: ObjectUrls;
   /** Product analytics (default: analytics.ts; tests pass a spy). */
   track?: Track;
+  /** The battles' preview watchdog counters (default: the page's, sandbox-health.ts). */
+  sandboxHealth?: SandboxHealthTally;
 }
 
 export type RoomStage = 'starting' | 'name' | 'joining' | 'room' | 'join_error' | 'ended';
@@ -486,6 +494,7 @@ export class RoomController {
         clock: this.clock,
         track: this.track,
         ...(this.deps.objectUrls ? { objectUrls: this.deps.objectUrls } : {}),
+        ...(this.deps.sandboxHealth ? { sandboxHealth: this.deps.sandboxHealth } : {}),
       });
       this.battle = c;
       this.show = show;
@@ -513,6 +522,7 @@ export class RoomController {
       rejoins: h.stats.rejoins,
       server_closed: h.stats.serverClosed,
       channel_errors: h.stats.channelErrors,
+      ...previewHealthProps((this.deps.sandboxHealth ?? sandboxHealth).take(h.battleId)),
     });
   }
 

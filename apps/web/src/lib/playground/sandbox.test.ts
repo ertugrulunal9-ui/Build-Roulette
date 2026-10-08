@@ -13,6 +13,8 @@ import {
 } from '@br/runtime';
 import { createWorkspace } from '@br/workspace';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { AnalyticsEvents } from '../telemetry/analytics';
+import { PreviewHealth, SandboxHealthTally } from '../telemetry/sandbox-health';
 import type { FrameScheduler } from './frame-batcher';
 import { SandboxController, type PlaygroundRuntime } from './sandbox';
 
@@ -25,12 +27,23 @@ vi.mock('./runtime-factory', () => ({
 
 type Listener = (payload: unknown) => void;
 
+const CRASH: PreviewEventMap['crash'] = {
+  reason: 'heartbeat-timeout',
+  silentForMs: 5100,
+  phase: 'running',
+  wallSilentForMs: 5100,
+  stalledMs: 0,
+  longestStallMs: 0,
+};
+
 /** Enough of PreviewHandle for the controller: events, load, the retained console. */
 class FakePreview {
   state: PreviewHandle['state'] = 'connecting';
   readonly log = new ConsoleLog(200_000, 500);
   readonly loads: unknown[] = [];
   restarts = 0;
+  /** The watchdog counters PreviewHealth follows (T-031). */
+  stats = { stalls: 0, stallMs: 0, sparedSilences: 0 };
   private readonly listeners = new Map<string, Set<Listener>>();
 
   on<K extends keyof PreviewEventMap>(event: K, l: (p: PreviewEventMap[K]) => void): () => void {
@@ -165,13 +178,13 @@ function fakeHost(): HTMLElement {
   return { ownerDocument: doc, replaceChildren: () => undefined } as unknown as HTMLElement;
 }
 
-async function setup() {
+async function setup(health?: PreviewHealth) {
   const runtime = new FakeRuntime();
   const frames = new Frames();
   const controller = new SandboxController(
     fakeHost(),
     { shellUrl: 'https://b1.usercontent.example/v1/', cdnBaseUrl: 'https://pkg.example' },
-    { runtime, frames },
+    { runtime, frames, ...(health ? { health } : {}) },
   );
   await controller.start(createWorkspace('react-ts'));
   const preview = runtime.previews[0];
@@ -240,7 +253,7 @@ describe('SandboxController output batching', () => {
   it('restartPreview restarts the same handle and loads the last good build', async () => {
     const { controller, runtime, preview } = await setup();
     preview.state = 'crashed';
-    preview.emit('crash', { reason: 'heartbeat-timeout', silentForMs: 5100, phase: 'running' });
+    preview.emit('crash', CRASH);
     expect(controller.getSnapshot().preview).toBe('crashed');
     preview.state = 'crashed';
     controller.restartPreview();
@@ -248,6 +261,81 @@ describe('SandboxController output batching', () => {
     expect(runtime.previews).toHaveLength(1);
     expect(controller.getSnapshot().crash).toBeNull();
     expect(preview.loads).toHaveLength(2); // the first build, then the reload after restart
+  });
+});
+
+describe('SandboxController watchdog telemetry (T-031)', () => {
+  const BATTLE = '9d8e7f6a-5b4c-4d3e-8f2a-1b0c9d8e7f6a';
+  const telemetry = () => {
+    const sent: AnalyticsEvents['preview_crash'][] = [];
+    const tally = new SandboxHealthTally();
+    const health = new PreviewHealth({
+      mode: 'live',
+      battleId: BATTLE,
+      tally,
+      win: null,
+      track: (name, props) => {
+        if (name === 'preview_crash') sent.push(props as AnalyticsEvents['preview_crash']);
+      },
+    });
+    return { sent, tally, health };
+  };
+
+  it('a crash, then Restart preview: one preview_crash, restarted', async () => {
+    const { sent, tally, health } = telemetry();
+    const { controller, preview } = await setup(health);
+    preview.state = 'crashed';
+    preview.emit('crash', { ...CRASH, stalledMs: 300, wallSilentForMs: 5400 });
+    expect(sent).toEqual([]);
+    controller.restartPreview();
+    expect(sent).toEqual([
+      {
+        battle_id: BATTLE,
+        mode: 'live',
+        reason: 'heartbeat_timeout',
+        phase: 'running',
+        silent_ms: 5100,
+        wall_silent_ms: 5400,
+        stalled_ms: 300,
+        longest_stall_ms: 0,
+        restarted: true,
+      },
+    ]);
+    // The preview's own watchdog counters count for the battle while it runs.
+    preview.stats = { stalls: 2, stallMs: 7000, sparedSilences: 1 };
+    expect(tally.take(BATTLE)).toEqual({
+      crashes: 1,
+      restarts: 1,
+      stalls: 2,
+      stallMs: 7000,
+      spared: 1,
+    });
+  });
+
+  it('a new project replacing a crashed preview counts as a restart', async () => {
+    const { sent, health } = telemetry();
+    const { controller, preview } = await setup(health);
+    preview.state = 'crashed';
+    preview.emit('crash', CRASH);
+    controller.replace(createWorkspace('vanilla-ts'));
+    expect(sent.map((e) => e.restarted)).toEqual([true]);
+  });
+
+  it('a crash nobody restarted is sent when the BUILD screen goes', async () => {
+    const { sent, health } = telemetry();
+    const { controller, preview } = await setup(health);
+    preview.state = 'crashed';
+    preview.emit('crash', { ...CRASH, phase: 'loading', silentForMs: 15_100 });
+    controller.dispose();
+    expect(sent).toEqual([expect.objectContaining({ phase: 'loading', restarted: false })]);
+  });
+
+  it('a restart of a preview that did not crash reports nothing', async () => {
+    const { sent, health } = telemetry();
+    const { controller } = await setup(health);
+    controller.restartPreview();
+    controller.dispose();
+    expect(sent).toEqual([]);
   });
 });
 

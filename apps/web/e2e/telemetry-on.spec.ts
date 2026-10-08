@@ -1,6 +1,6 @@
 import { startFakeIngest, type FakeIngest } from '@br/telemetry/testing';
 import { expect, test } from '@playwright/test';
-import { openPlayground, replaceEditorText } from './helpers';
+import { openFile, openPlayground, replaceEditorText } from './helpers';
 import { seedAdmin } from './stack';
 import {
   INGEST_PORT,
@@ -155,6 +155,63 @@ test('nothing from the sandbox: its errors, console output and build code stay i
   await expect.poll(() => sentry().length).toBe(1);
   expect(sentry()[0]?.exception?.values?.[0]?.value).toBe('an app error on the playground');
   expect(allBodies()).not.toContain('SANDBOX_SECRET');
+});
+
+test('a preview watchdog crash arrives as preview_crash (T-031): restarted, no build code or names', async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  // A solo battle (signed in, so analytics has its pseudonymous id), to BUILD.
+  await page.goto('/');
+  await page.getByTestId('play-solo').click();
+  await expect(page).toHaveURL(/\/play$/);
+  await page.getByTestId('display-name').fill('Loopy Secretname');
+  await page.getByRole('button', { name: 'Spin', exact: true }).click();
+  await expect(page).toHaveURL(/[?&]battle=[0-9a-f-]{36}/);
+  const battleId = new URL(page.url()).searchParams.get('battle');
+  await expect(page.getByTestId('spin')).toBeHidden({ timeout: 30_000 });
+  await expect(page.getByTestId('build-status')).toHaveText(/^Built in \d+ ms$/, {
+    timeout: 30_000,
+  });
+
+  // A build that loops half a second after it started (after its `ready`).
+  await openFile(page, 'src/App.tsx');
+  await replaceEditorText(
+    page,
+    "setTimeout(() => {\n  console.log('SANDBOX_SECRET_LOOP');\n  for (;;) {}\n}, 500);\nexport function App() {\n  return <h1>SANDBOX_SECRET_TITLE</h1>;\n}\n",
+  );
+  const crashed = page.getByTestId('preview-crashed');
+  await expect(crashed).toBeVisible({ timeout: 20_000 });
+  await expect(crashed).toHaveAttribute('data-phase', 'running');
+  // Not sent yet: whether the player restarts it is part of the event.
+  expect(posthog().filter((e) => e.event === 'preview_crash')).toEqual([]);
+  await crashed.getByRole('button', { name: 'Restart preview' }).click();
+
+  await expect
+    .poll(() => posthog().filter((e) => e.event === 'preview_crash').length, { timeout: 15_000 })
+    .toBe(1);
+  const ev = posthog().find((e) => e.event === 'preview_crash');
+  expect(ev?.distinct_id).toMatch(/^[0-9a-f]{32}$/);
+  expect(ev?.properties).toMatchObject({
+    battle_id: battleId,
+    mode: 'live',
+    reason: 'heartbeat_timeout',
+    phase: 'running',
+    restarted: true,
+    path: '/play',
+  });
+  const p = ev?.properties ?? {};
+  const silent = p['silent_ms'] as number;
+  const wall = p['wall_silent_ms'] as number;
+  expect(silent).toBeGreaterThan(5000);
+  expect(silent).toBeLessThanOrEqual(5600);
+  expect(wall).toBeGreaterThanOrEqual(silent);
+  expect(p['stalled_ms']).toBe(wall - silent);
+  expect(typeof p['longest_stall_ms']).toBe('number');
+  const raw = allBodies();
+  for (const secret of ['SANDBOX_SECRET', 'Loopy Secretname', 'for (;;)', 'setTimeout']) {
+    expect(raw, secret).not.toContain(secret);
+  }
 });
 
 test('a server error (the admin test error) arrives with its digest, scrubbed', async ({

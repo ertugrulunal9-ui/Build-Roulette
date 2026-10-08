@@ -6,13 +6,18 @@
  * storage is wiped before the bundle loads (so nothing an earlier build stored there, e.g.
  * during the REVEAL, can reach it), and again when the build is destroyed (or the pane
  * unmounts), then the preview is disposed: nothing of the build stays in this tab.
+ * A watchdog crash is a `preview_crash` analytics event (T-031, mode `reveal`; there is no
+ * restart here), and the preview's watchdog stats count for the battle's preview health.
  */
 import { PreviewHandle, type CrashReason, type PreviewBuild } from '@br/runtime';
 import { useEffect, useRef, useState } from 'react';
 import { playgroundConfig } from '../../lib/playground/config';
 import type { DestroyStage } from '../../lib/solo/controller';
+import { PreviewHealth } from '../../lib/telemetry/sandbox-health';
 
 interface RevealPaneProps {
+  /** The battle (preview telemetry, T-031). */
+  battleId: string;
   build: PreviewBuild | null;
   status: 'none' | 'loading' | 'ready' | 'unavailable' | 'destroyed';
   destroy: DestroyStage;
@@ -20,10 +25,14 @@ interface RevealPaneProps {
   caption: string;
 }
 
-export function RevealPane({ build, status, destroy, caption }: RevealPaneProps) {
+export function RevealPane({ battleId, build, status, destroy, caption }: RevealPaneProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   /** Why the watchdog stopped the preview (it froze, or it never started), if it did. */
   const [crashed, setCrashed] = useState<CrashReason | null>(null);
+  const battleIdRef = useRef(battleId);
+  useEffect(() => {
+    battleIdRef.current = battleId;
+  }, [battleId]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -38,8 +47,11 @@ export function RevealPane({ build, status, destroy, caption }: RevealPaneProps)
       shellUrl: playgroundConfig.shellUrl,
       mode: 'reveal',
     });
-    const offCrash = preview.on('crash', ({ reason }) => {
-      setCrashed(reason);
+    const health = new PreviewHealth({ mode: 'reveal', battleId: battleIdRef.current });
+    health.follow(preview);
+    const offCrash = preview.on('crash', (crash) => {
+      setCrashed(crash.reason);
+      health.crashed(crash);
     });
     // Wipe what an earlier build (another battle's, or a reveal in this tab) left on the
     // sandbox origin, in a fresh iframe, before this one loads: the load waits for the new
@@ -48,6 +60,7 @@ export function RevealPane({ build, status, destroy, caption }: RevealPaneProps)
     preview.load(build, 'reveal');
     return () => {
       offCrash();
+      health.close();
       setCrashed(null);
       // Wipe what the build stored on the sandbox origin, in a new iframe, then let it go.
       let wiping: Promise<unknown>;

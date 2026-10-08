@@ -104,6 +104,7 @@ export function BuildStage({
   const session = useWorkspaceSession(battleWorkspaceId(battleId), {
     restore: () => controller.restoreWorkspace(),
     readOnly: locked,
+    battleId,
   });
   const {
     workspace,

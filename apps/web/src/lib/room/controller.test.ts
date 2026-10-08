@@ -7,6 +7,7 @@ import { battleWorkspaceId } from '../solo/controller';
 import { GameError } from '../solo/errors';
 import { FakeApi, FakeLocalWorkspaces } from '../solo/test-support';
 import type { AnalyticsEventName } from '../telemetry/analytics';
+import { SandboxHealthTally } from '../telemetry/sandbox-health';
 import { RoomController, playerCount, readyCount, roomView, type NameStore } from './controller';
 import {
   BATTLE_1,
@@ -449,6 +450,9 @@ describe('leaving and being kicked', () => {
 describe('analytics (T-030)', () => {
   it('room_joined, battle_started + rematch from the host, one sync_health per battle', async () => {
     const events: [AnalyticsEventName, Record<string, unknown>][] = [];
+    // This tab's preview watchdog over BATTLE_2 (T-031): one crash after a starved stretch.
+    const sandboxHealth = new SandboxHealthTally();
+    sandboxHealth.add(BATTLE_2, { crashes: 1, restarts: 1, stalls: 2, stallMs: 6000.4, spared: 1 });
     // The room's last battle (BATTLE_2) is still running when the host starts the next.
     api.room = roomSnapshot({ battleId: BATTLE_2, version: 3 });
     api.battles.set(BATTLE_2, battleSnapshot({ id: BATTLE_2, version: 2, phase: 'building' }));
@@ -464,6 +468,7 @@ describe('analytics (T-030)', () => {
       track: (name, props) => {
         events.push([name, props as Record<string, unknown>]);
       },
+      sandboxHealth,
     });
     await c.init();
     rt.open(ROOM_TOPIC).status('SUBSCRIBED');
@@ -501,6 +506,11 @@ describe('analytics (T-030)', () => {
       rejoins: 0,
       server_closed: 0,
       channel_errors: 0,
+      preview_crashes: 1,
+      preview_restarts: 1,
+      preview_stalls: 2,
+      preview_stall_ms: 6000,
+      preview_spared: 1,
     });
     expect(events.map(([n]) => n)).toContain('battle_completed');
     c.dispose();

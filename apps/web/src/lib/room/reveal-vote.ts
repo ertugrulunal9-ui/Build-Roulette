@@ -14,7 +14,9 @@
  *   the strip and the VOTE grid. Revoked when the battle ends or the controller goes.
  * - **Skip / frozen:** a viewer can skip the spotlighted build (or the watchdog finds it
  *   frozen): only this tab stops running it and shows its thumbnail instead. The room goes
- *   on; nothing is sent to the server.
+ *   on; nothing is sent to the server. A watchdog crash is also a `preview_crash` analytics
+ *   event (T-031, `previewHealth`), sent once the viewer ran the build again or the battle
+ *   ended for this controller.
  * - **Host controls:** `reveal_next` / `skip_to_vote` with the snapshot's version as the
  *   compare-and-set. The battle's version also moves for things that do not change what
  *   the click means (a screenshot landing: the capture worker finishes the builds' captures
@@ -35,9 +37,10 @@
  * The snapshot comes from the room's sync engine through `receive()`.
  */
 import { isTerminalPhase } from '@br/game';
-import type { CrashReason, PreviewBuild } from '@br/runtime';
+import type { CrashReason, PreviewBuild, PreviewCrash } from '@br/runtime';
 import { realClock, type SoloClock, type TimerHandle } from '../solo/controller';
 import { track as defaultTrack, type Track } from '../telemetry/analytics';
+import { PreviewHealth, type SandboxHealthTally } from '../telemetry/sandbox-health';
 import { toGameError, type GameError } from '../solo/errors';
 import type {
   BattleSnapshot,
@@ -84,8 +87,10 @@ export interface RevealVoteDeps {
   clock?: SoloClock;
   /** Retry delay for `get_reveal_builds` and the ballot after a failure. */
   retryMs?: number;
-  /** Product analytics: `vote_cast` per vote the server took (T-030). */
+  /** Product analytics: `vote_cast` per vote the server took (T-030), `preview_crash` (T-031). */
   track?: Track;
+  /** The per-battle preview counters (default: the page's, sandbox-health.ts). */
+  sandboxHealth?: SandboxHealthTally;
 }
 
 // ─── State ────────────────────────────────────────────────────────────────────────────
@@ -231,6 +236,12 @@ export class RevealVoteController {
   private readonly bundleLoads = new Set<string>();
   /** category → the choice to send once the request in flight settles. */
   private readonly queued = new Map<string, string>();
+  /**
+   * Watchdog telemetry of the spotlight's live previews (T-031): the React side follows each
+   * PreviewHandle's stats with it; crashes and restarts come through `previewCrashed` and
+   * `watch`.
+   */
+  readonly previewHealth: PreviewHealth;
 
   constructor(
     battleId: string,
@@ -241,6 +252,12 @@ export class RevealVoteController {
     this.clock = deps.clock ?? realClock;
     this.retryMs = deps.retryMs ?? 2_000;
     this.state = initialRevealVoteState(battleId);
+    this.previewHealth = new PreviewHealth({
+      mode: 'reveal',
+      battleId,
+      track: deps.track ?? defaultTrack,
+      ...(deps.sandboxHealth ? { tally: deps.sandboxHealth } : {}),
+    });
   }
 
   // --- Store contract -----------------------------------------------------------------
@@ -329,6 +346,9 @@ export class RevealVoteController {
 
   /** Run it again (after a skip, a freeze or a failed start): a fresh preview. */
   watch(buildId: string): void {
+    if (this.state.frozen.includes(buildId) || this.state.failedToStart.includes(buildId)) {
+      this.previewHealth.restarted(buildId);
+    }
     this.patch({
       skipped: this.state.skipped.filter((id) => id !== buildId),
       frozen: this.state.frozen.filter((id) => id !== buildId),
@@ -344,6 +364,13 @@ export class RevealVoteController {
     const key = reason === 'handshake-timeout' ? 'failedToStart' : 'frozen';
     if (this.state[key].includes(buildId)) return;
     this.patch({ [key]: [...this.state[key], buildId] });
+  }
+
+  /** The spotlight's preview crashed (its watchdog): frozen, and reported (T-031). */
+  previewCrashed(buildId: string, crash: PreviewCrash): void {
+    if (this.disposed) return;
+    this.previewHealth.crashed(crash, buildId);
+    this.markFrozen(buildId, crash.reason);
   }
 
   // --- Host intents -------------------------------------------------------------------
@@ -677,6 +704,7 @@ export class RevealVoteController {
     if (this.disposed) return;
     this.release();
     this.disposed = true;
+    this.previewHealth.close();
     if (this.retryTimer !== null) this.clock.clearTimeout(this.retryTimer);
     this.retryTimer = null;
     if (this.voteRetryTimer !== null) this.clock.clearTimeout(this.voteRetryTimer);

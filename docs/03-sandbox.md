@@ -177,6 +177,11 @@ also gets a **safe-mode restart**: the next load runs with `requestAnimationFram
 timers paused until the user clicks, so a loop that runs on load can't freeze the page
 repeatedly.
 
+As built: liveness is a `ping`/`pong` round trip (T-009), a load gets a 15 s grace
+(T-027), and since T-031 every limit counts app-awake time only, so a starved app page
+doesn't report its own stall as a frozen build. See "Watchdog load grace" and "Watchdog
+under starvation" below.
+
 ## 3.6 Workspace lifecycle
 
 ```mermaid
@@ -337,10 +342,77 @@ limit, so the old watchdog reported a crash for a slow but finite load.
   which up to 15 s of silence is tolerated. `ready` for that load can only *shorten* the
   window, to 5 s after `ready`.
 - **Why the sandbox can't abuse it:** only the app's own sends open or move the window, so
-  the sandbox can't extend it. Total silence never exceeds 15 s.
+  the sandbox can't extend it. Total silence never exceeds 15 s (of app-awake time since
+  T-031).
 - **Detection bounds:**
   - a loop after `ready` is still caught in about 4–5.25 s;
   - a loop during the load (at a module's top level) is caught within about 15.25 s of the
     load. That's the accepted trade-off.
 - `crash` events now carry `phase` (`connecting` | `loading` | `running`).
 
+
+### Watchdog under starvation (T-031)
+
+T-027's grace covers a load. The same false crash also happened **after** `ready`: in chaos
+shard 1 (6 browsers on 4 CPUs) one player's preview reported `heartbeat-timeout
+silentMs=5309 phase=running` at the start of BUILD, with no loop in the build.
+
+- **Root cause:** silence was measured on the wall clock (`now - lastPongAt`). While the app
+  page itself gets no CPU (a starved machine), or runs a long task of its own, it can neither
+  send pings nor receive pongs. When it resumes, the first watchdog tick counts the app's own
+  stall as the frame's silence. A real loop in a site-isolated frame doesn't delay the app's
+  timers, so the two can be told apart from the app side.
+- **Evidence in the failure artifacts:**
+  - the crash was already on screen 6.4 s after BUILD started; that player's first build took
+    2349 ms (about 150 ms normally);
+  - her page's DevTools events stopped: the `building` broadcast that the other five pages
+    logged at 50.38 s reached hers at 54.30 s, and four presence messages the others got one
+    second apart arrived within 8 ms at 55.39 s;
+  - her page sent no screencast frame for 9.5 s (two 4.8 s gaps), the longest of the six
+    (the others: 1.5–2.8 s gaps).
+  - So her app page's own main thread did not run for about 5 s. The crash measured that.
+- **Reproduced** (`packages/runtime/e2e/watchdog-starvation.spec.ts`), both with a calm build:
+  - every renderer process of the browser stopped (SIGSTOP) for 7 s, with the app page and
+    the frame CPU-throttled x6: the old watchdog reported `heartbeat-timeout`, silence
+    7.3 s, phase `running`;
+  - both throttled pages blocked by overlapping long tasks (app 6.5 s, frame 7.5 s): silence
+    6.0 s, phase `running`.
+- **Fix: app-awake time.** Every watchdog limit (the 5 s heartbeat limit, the 15 s load grace,
+  the 10 s handshake timeout) is measured on an **app-awake clock**. The 250 ms watchdog tick
+  advances it by at most one interval plus 50 ms of timer jitter per run (a busy page runs its
+  timers a few tens of ms late, which must not slow loop detection). A tick that runs later
+  shows that the app's own timers were stalled, and the stall is not counted. Events between ticks (a pong, `ready`, a
+  `load` send) read the clock capped the same way, so it never runs backwards. While the
+  app's timers run on time, awake time equals wall-clock time, and nothing changes.
+- **Bounds** (awake time; wall-clock time is longer by however long the app was stalled):
+  - a loop after `ready` is caught 4.0–5.25 s after it starts, as before. Measured: 4.3–4.8 s.
+    With a 3 s whole-browser stop inside the silence: 5.0–5.2 s awake, 7.1–7.5 s wall;
+  - a loop during the load is caught within 15.25 s of the send (T-027's bound);
+  - a handshake is given up after 10 s;
+  - **hidden tabs are unchanged:** no check while hidden, and a fresh 5 s when the tab
+    becomes visible. Hidden time is neither awake time nor a stall;
+  - any stall of the app's own timers is tolerated, however long. A build that doesn't answer
+    for 5 s while the app *is* awake is still a crash, because that's indistinguishable from
+    a loop (for example, a frame that is far more starved than the app);
+  - under continuous starvation each late tick counts 300 ms only. If every tick runs 1.25 s
+    late (one tick per 1.5 s), 5 s of awake time is 25 s of wall-clock time. A real loop is
+    caught that much later. That's accepted: the tab itself is that slow meanwhile.
+- **Trust:** only the app's own timers advance the clock; nothing the sandbox sends does. A
+  build could delay the app's timers only by keeping the app busy (message floods are
+  budgeted, F4) or by starving the whole CPU. A hostile build can already answer pings from a
+  worker (F8), so this adds no new capability.
+- **`crash` events carry the evidence:** `silentForMs` (awake), `wallSilentForMs`,
+  `stalledMs` (the difference) and `longestStallMs`. `PreviewStats` counts app stalls of
+  1 s or more (`stalls`, `stallMs`, `longestStallMs`) and `sparedSilences`: silences the old
+  wall-clock rule would have reported as a crash, which then ended with a pong.
+- **Sandbox health telemetry** (`apps/web/src/lib/telemetry/sandbox-health.ts`):
+  - every crash is a `preview_crash` analytics event: reason, phase, `silent_ms`,
+    `wall_silent_ms`, `stalled_ms`, `longest_stall_ms`, `mode` (`live` while building,
+    `reveal` for a spotlight or the last look) and `restarted`. It's sent once that outcome
+    is known: Restart preview / Run it again, the preview going away, or `pagehide`;
+  - the battle's `sync_health` adds this tab's `preview_crashes`, `preview_restarts`,
+    `preview_stalls`, `preview_stall_ms` and `preview_spared`;
+  - T-030 rules apply: only the battle's UUID, enums and numbers; no code, console or names;
+    nothing without the PostHog key or with DNT/GPC.
+  - `preview_spared` counts the false crashes the fix avoided. A crash with a large
+    `stalled_ms` or `longest_stall_ms` happened on a starved tab and deserves a look.

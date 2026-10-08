@@ -118,6 +118,7 @@ export function ResultsStage({ controller, state, remaining }: ResultsStageProps
 
         <section className="flex flex-col gap-4">
           <RevealPane
+            battleId={battle.id}
             build={state.reveal.build}
             status={state.reveal.status}
             destroy={state.destroy}

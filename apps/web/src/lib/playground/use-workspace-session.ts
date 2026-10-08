@@ -16,6 +16,7 @@ import {
   type RefObject,
 } from 'react';
 import type { RevealRequest } from '../../components/playground/CodeEditor';
+import { PreviewHealth } from '../telemetry/sandbox-health';
 import { playgroundConfig, type PlaygroundConfig } from './config';
 import { SandboxController, type SandboxSnapshot } from './sandbox';
 import {
@@ -60,10 +61,16 @@ export interface WorkspaceSession {
 
 export function useWorkspaceSession(
   workspaceId: string,
-  opts: PersistentWorkspaceOptions & { readOnly?: boolean; config?: PlaygroundConfig } = {},
+  opts: PersistentWorkspaceOptions & {
+    readOnly?: boolean;
+    config?: PlaygroundConfig;
+    /** The battle being built, for the preview's watchdog telemetry (T-031); none on /playground. */
+    battleId?: string | null;
+  } = {},
 ): WorkspaceSession {
   const { workspace, update, saveState, notice } = usePersistentWorkspace(workspaceId, opts);
   const config = opts.config ?? playgroundConfig;
+  const battleId = opts.battleId ?? null;
   const readOnly = opts.readOnly ?? false;
   const hostRef = useRef<HTMLDivElement>(null);
   const workspaceRef = useRef<Workspace | null>(null);
@@ -95,7 +102,9 @@ export function useWorkspaceSession(
     const host = hostRef.current;
     const ws = workspaceRef.current;
     if (!loaded || !host || !ws) return;
-    const c = new SandboxController(host, config);
+    const c = new SandboxController(host, config, {
+      health: new PreviewHealth({ mode: 'live', battleId }),
+    });
     controllerRef.current = c;
     setController(c);
     void c.start(ws);
@@ -104,7 +113,7 @@ export function useWorkspaceSession(
       if (controllerRef.current === c) controllerRef.current = null;
       setController(null);
     };
-    // The config is fixed for the session.
+    // The config and the battle are fixed for the session (the workspace id names the battle).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loaded]);
 

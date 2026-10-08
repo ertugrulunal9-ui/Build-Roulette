@@ -63,6 +63,13 @@ Error reporting (Sentry) and product analytics (PostHog), both **off unless conf
   battle and client from the sync engine's counters (`RoomSync.stats`: missed events,
   refetches, gaps, degraded time, rejoins, server-closed channels, channel errors). No
   autocapture, no replay, no cookies or storage, no person profiles; off with DNT/GPC.
+- **Sandbox health (T-031):** `lib/telemetry/sandbox-health.ts`. Every preview watchdog
+  crash is a `preview_crash` event (reason, phase, the app-awake and wall-clock silences, the
+  app's own stall during it, `live`/`reveal`, whether the user restarted it), sent once that
+  outcome is known (a restart, the preview going away, or `pagehide`). `sync_health` adds
+  this tab's preview counts for the battle: crashes, restarts, app stalls of 1 s or more and
+  their total, and `preview_spared` (silences the pre-T-031 watchdog would have called a
+  crash). Only the battle UUID, enums and numbers: no build code, console output or names.
 - `/admin` → Health has "Send a test error to Sentry" (it throws in a server action, so the
   error takes the real path and the screen shows its digest).
 

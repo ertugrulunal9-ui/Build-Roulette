@@ -87,6 +87,16 @@ mitigations:
 - mobile viewers see screenshots by default and open a live build by tapping;
 - a future option is a loop-guard transform in the bundler (CodePen-style) as defence in depth.
 
+**The opposite failure, false crashes (T-027, T-031):** on a starved machine the watchdog
+used to report healthy builds as frozen. That happened during a slow load (T-027: a 15 s
+load grace), and also when the app page itself got no CPU for 5 s (T-031). Since T-031 every
+watchdog limit counts only the time the app's own timers ran, so the app's stall is never
+blamed on the build. The residual trade-off: on a tab that is starved all the time, a real
+loop is caught after 5 s of *app-awake* time, which is longer on the wall clock. Production
+visibility: every crash is a `preview_crash` analytics event with the stall evidence, and
+`sync_health` counts the false crashes avoided (`preview_spared`), docs/03 "Watchdog under
+starvation".
+
 ### R3: Faithful, authentic, reliable screenshots
 **Why it's hard.** The screenshot is the only permanent artifact. Client-side
 DOM-to-canvas libraries (html2canvas, html-to-image) miss WebGL, some CSS, cross-origin

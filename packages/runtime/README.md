@@ -116,7 +116,7 @@ a preview in a cross-site sandboxed iframe. It works together with:
   synchronously in the port listener, so a pong shows that the event loop still runs tasks.
   A pong counts only for a `seq` that is still outstanding. The handle checks every 250 ms
   and emits `crash` (reason `heartbeat-timeout`, name kept for compatibility) when no pong
-  arrived for 5 s, then takes the iframe out of the DOM. The shell no longer sends periodic
+  arrived for 5 s of app-awake time (see "Starvation"), then takes the iframe out of the DOM. The shell no longer sends periodic
   `heartbeat`s; a `heartbeat` that arrives is counted (`stats.heartbeats`) but does not count
   as liveness, because anything holding the port can send one. When the app tab is hidden
   the check pauses, and when the tab becomes visible again the grace period restarts, so
@@ -151,6 +151,29 @@ a preview in a cross-site sandboxed iframe. It works together with:
   - Why not loading progress messages from the shell? The blocking part is a single task:
     the shell can't report anything from inside it, and an untrusted milestone could only
     ever shorten the grace anyway.
+- **Starvation (T-031)**: the same false crash happened after `ready`, when the app page
+  itself got no CPU for about 5 s (chaos shard 1: `heartbeat-timeout silentMs=5309
+  phase=running`, no loop). While the app's main thread doesn't run, it can neither send
+  pings nor receive pongs, so a wall-clock silence measured the app's own stall. Now every
+  limit (the 5 s heartbeat limit, the load grace, the 10 s handshake timeout) is measured on
+  an **app-awake clock**:
+  - each watchdog tick advances the clock by at most one `watchdogIntervalMs`, so a tick that
+    runs late (the app was stalled) counts as 250 ms;
+  - events between ticks (pong, `ready`, a `load` send, the handshake) read it capped the
+    same way, so it never runs backwards;
+  - only the app's own timers move it. Nothing the sandbox sends does.
+  - While the app's timers run on time, nothing changes: a loop after `ready` is caught
+    4.0–5.25 s after it starts, and a loop during a load within 15.25 s of the send. With
+    stalls, those are awake times, and wall-clock time is longer by the stalls.
+  - A frame that doesn't answer for 5 s while the app is awake is still a crash.
+  - Hidden tabs behave as before. Hidden time is neither awake time nor a stall.
+  - `crash` adds `wallSilentForMs`, `stalledMs` (wall minus awake) and `longestStallMs`.
+    `stats` adds `stalls` (ticks at least `STALL_MS` = 1 s late), `stallMs`,
+    `longestStallMs`, and `sparedSilences`: silences the wall-clock rule would have called a
+    crash, which then ended with a pong.
+  - e2e `watchdog-starvation` stops every renderer of the browser for 7 s (SIGSTOP), and
+    separately blocks both CPU-throttled pages with long tasks. The old watchdog crashed in
+    both (silence 7.3 s / 6.0 s); now neither crashes, and a loop is still caught.
 - **`PreviewHandle` takes its iframe out of the DOM on `crash`** (a comment node keeps its
   place), and `dispose()` removes it. Callers must therefore put the iframe in a container
   that React (or any other view library) does not manage. Create the iframe imperatively in
@@ -310,15 +333,19 @@ last two full e2e runs.
 | Watchdog: loop start → `crash` | **4.1 s** (silence at crash: 5.17 s; T-009, ping/pong) | ≤ 6 s |
 | Watchdog: loop at module top level (before `ready`), load sent → `crash` | **14.3 s** (silence 15.2 s; T-027 load grace, was 4.5 s) | ≤ 15.25 s |
 | Watchdog: slow but finite load, shell CPU throttled x6 (e2e `watchdog-load`) | 8.0–10.1 s evaluation, longest pong gap 8.7–10.7 s, **no crash**; a loop after it: 4.2–5.0 s | no crash below 15 s |
+| Watchdog: every renderer stopped 7 s, app + frame throttled x6 (e2e `watchdog-starvation`) | app stall 6.8–7.0 s, **no crash** (old: crash, silence 7.3 s); a loop with a 3 s stop in its silence: 7.1–7.5 s wall, 5.0–5.2 s awake | no crash; loop ≤ 5.25 s awake |
+| Watchdog: app 6.5 s + frame 7.5 s long tasks, both throttled x6 (e2e `watchdog-starvation`) | app stall 5.6–6.4 s, **no crash** (old: crash, silence 6.0 s); a loop after it: 4.3–4.7 s | no crash; loop ≤ 6 s |
 | App page during the loop (site-isolated) | evaluate RTT ≤ 9 ms, worst 50 ms timer gap ≤ 68 ms | responsive |
 | `resetStorage()` (new iframe + handshake + full wipe incl. Clear-Site-Data + ack) | 100–250 ms | |
 | `shell.js` (minified) | **39.1 KB raw, 13.0 KB gzip** (T-009) | "~5 KB" |
 | `esbuild.wasm` | 13.98 MB raw, 3.75 MB gzip, 2.71 MB brotli | preload in lobby |
 | Bundler worker JS (minified, excl. wasm) | 76.6 KB raw, 22.4 KB gzip | |
 
-The watchdog fires 5 s after the *last pong*. Pings are 1 s apart and the check runs every
-250 ms, so detection after a loop starts falls between about 4.0 s and 5.25 s. A loop during
-a load, before its `ready`, is caught when the 15 s load grace ends (see "Load grace").
+The watchdog fires 5 s of app-awake time after the *last pong*. Pings are 1 s apart and the
+check runs every 250 ms, so detection after a loop starts falls between about 4.0 s and
+5.25 s (plus any time the app's own timers were stalled meanwhile, see "Starvation"). A loop
+during a load, before its `ready`, is caught when the 15 s load grace ends (see "Load
+grace").
 
 ## Design decisions and deviations from docs/03
 

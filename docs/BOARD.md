@@ -670,4 +670,5 @@ Start M5.
   - runbook check 0 failed;
   - solo 3/3 and multiplayer 5/5 (both including the new outage specs), moderation 4/4, telemetry 6/6 + 1/1;
   - **chaos shards 3/3, 2/2, 4/4**.
+- CI run 45 on GitHub (head 64d2905) is green in every job: check, db (with the runbook check), capture + solo + moderation, rooms + telemetry, runtime + playground, chaos shards 1–3. Load test and compat are manual-only and were skipped.
 - **M5 status:** every task is merged. Sign-off (the exit criterion: every runbook rehearsed once on staging) waits on the user's accounts.

@@ -261,7 +261,9 @@ describe('fetchTextFromNetwork (T-032)', () => {
   const url = `${CDN}/animate.css@4.1.1/animate.min.css`;
 
   it('returns the text and lets the HTTP cache answer (no cache override)', async () => {
-    const f = vi.fn((_u: string, _init?: RequestInit) => Promise.resolve(new Response('.a{}')));
+    const f = vi.fn<(u: string, init?: RequestInit) => Promise<Response>>(() =>
+      Promise.resolve(new Response('.a{}')),
+    );
     vi.stubGlobal('fetch', f);
     expect(await fetchTextFromNetwork(url)).toBe('.a{}');
     expect(f).toHaveBeenCalledWith(url, { credentials: 'omit' });

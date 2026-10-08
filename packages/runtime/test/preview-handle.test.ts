@@ -208,7 +208,7 @@ describe('iframe attributes per mode', () => {
     handle.load({ ...BUILD, packages: [] });
     const many = Array.from({ length: 300 }, (_, i) => `https://pkg.example/p${String(i)}@1.0.0`);
     handle.load({ ...BUILD, packages: many });
-    const loads = shell.messages.filter((m) => m['type'] === 'load');
+    const loads = shell.messages.filter((m) => m.type === 'load');
     expect(loads[0]?.['packages']).toEqual(packages);
     expect('packages' in (loads[1] ?? {})).toBe(false);
     expect('packages' in (loads[2] ?? {})).toBe(false);

@@ -42,8 +42,8 @@ function spyPreview() {
     return 1;
   });
   vi.spyOn(PreviewHandle.prototype, 'on').mockImplementation((event, listener) => {
-    if (event === 'crash') crashListeners.push(listener as (e: PreviewCrash) => void);
-    if (event === 'error') errorListeners.push(listener as (e: RuntimeErrorMessage) => void);
+    if (event === 'crash') crashListeners.push(listener);
+    if (event === 'error') errorListeners.push(listener);
     return () => undefined;
   });
   return { order, crashListeners, errorListeners };

@@ -22,7 +22,8 @@
     "cf:build": "NEXT_TELEMETRY_DISABLED=1 WRANGLER_SEND_METRICS=false opennextjs-cloudflare build",
     "cf:preview": "NEXT_TELEMETRY_DISABLED=1 WRANGLER_SEND_METRICS=false opennextjs-cloudflare preview",
     "cf:deploy": "NEXT_TELEMETRY_DISABLED=1 WRANGLER_SEND_METRICS=false opennextjs-cloudflare deploy",
-    "test:e2e:cf": "pnpm run cf:build && E2E_APP_SERVER=workers playwright test"
+    "test:e2e:cf": "pnpm run cf:build && E2E_APP_SERVER=workers playwright test",
+    "test:e2e:cf:moderation": "pnpm run cf:build && E2E_APP_SERVER=workers playwright test -c playwright.moderation.config.ts"
   },
   "dependencies": {
     "@br/game": "workspace:*",

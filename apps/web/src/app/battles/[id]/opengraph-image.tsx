@@ -1,7 +1,7 @@
 import { ImageResponse } from 'next/og';
 import { formatTimeLimit } from '../../../lib/solo/format';
 import { ogTopBuild } from '../../../lib/solo/og-card';
-import { fetchPublicBattle } from '../../../lib/solo/public-battle';
+import { loadPublicBattle } from '../../../lib/solo/public-battle';
 import { screenshotUrl } from '../../../lib/supabase/config';
 
 /**
@@ -17,8 +17,16 @@ import { screenshotUrl } from '../../../lib/supabase/config';
  * replaced by a framed card with the build's name: decoding WebP here would need a wasm
  * codec in the Worker bundle. Follow-up: a PNG card image from the capture worker, or
  * Cloudflare image transformations in production.
+ *
+ * Cached like the page (T-026): ISR with the lifetime and the `battle:{id}` tag of
+ * `loadPublicBattle`, so a takedown re-renders it at once. The screenshot is fetched
+ * `no-store` (`force-static` keeps that from turning the route dynamic): only the finished
+ * PNG is cached, never a copy of the screenshot, which a takedown deletes from Storage.
  */
 
+export const dynamic = 'force-static';
+/** The longest a card is cached (SETTLED_BATTLE.revalidate, as a literal for Next). */
+export const revalidate = 3600;
 export const alt = 'Build Roulette battle results';
 export const size = { width: 1200, height: 630 };
 export const contentType = 'image/png';
@@ -41,7 +49,7 @@ function toBase64(bytes: Uint8Array): string {
 /** The screenshot as a data URL satori can draw, or null (missing, WebP, too large). */
 async function embeddableScreenshot(path: string): Promise<string | null> {
   try {
-    const res = await fetch(screenshotUrl(path));
+    const res = await fetch(screenshotUrl(path), { cache: 'no-store' });
     if (!res.ok) return null;
     const bytes = new Uint8Array(await res.arrayBuffer());
     if (bytes.byteLength > 2 * 1024 * 1024) return null;
@@ -61,7 +69,8 @@ const CHIP: Record<'build' | 'rule' | 'style', { bg: string; fg: string }> = {
 
 export default async function Image({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const data = await fetchPublicBattle(id).catch(() => null);
+  // A failed read throws (a 500, not cached; ISR keeps serving the last good card).
+  const data = await loadPublicBattle(id.toLowerCase());
 
   if (!data) {
     return new ImageResponse(

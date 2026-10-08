@@ -5,9 +5,15 @@
  * Every action re-reads the session cookie and calls the RPC with the admin's own token, so
  * Postgres (`is_admin()`) decides, not this code. Next.js checks the Origin of server action
  * posts, and the cookies are SameSite=Strict, httpOnly and scoped to /admin.
+ *
+ * Of these, only a takedown changes public pages (T-026): it expires the cached copies of
+ * the battle's page, its OG image and the history pages that list it. Dismissing reports
+ * changes nothing public (reports are never shown).
  */
+import { updateTag } from 'next/cache';
 import { cookies, headers } from 'next/headers';
 import { notFound, redirect } from 'next/navigation';
+import { takedownTags } from '../../lib/cache/policy';
 import {
   ACCESS_COOKIE,
   REFRESH_COOKIE,
@@ -115,10 +121,15 @@ export async function takeDownAction(formData: FormData): Promise<void> {
   const token = await adminToken();
   const buildId = field(formData, 'build_id');
   const note = field(formData, 'note');
-  const res = await adminRpc<{ retried: boolean }>(token, 'admin_take_down_build', {
-    p_build_id: buildId,
-    p_note: note || null,
-  });
+  const res = await adminRpc<{ retried: boolean; battle_id?: unknown }>(
+    token,
+    'admin_take_down_build',
+    { p_build_id: buildId, p_note: note || null },
+  );
+  // The battle id comes from the server's answer, not from the form. `updateTag` expires the
+  // copies at once: the next visitor waits for a fresh render instead of getting the cached
+  // one while it regenerates. Also on a retry (cheap, and it repairs a missed revalidation).
+  if (res.data) for (const tag of takedownTags(res.data.battle_id)) updateTag(tag);
   redirect(
     backTo(
       formData,

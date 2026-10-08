@@ -97,7 +97,10 @@ export class SimPlayer {
         password,
         email_confirm: true,
       });
-      if (created.error) throw new Error(`admin createUser: ${created.error.message}`);
+      // A retry after a lost response finds the user already there: sign in anyway.
+      if (created.error && !/already been registered/i.test(created.error.message)) {
+        throw new Error(`admin createUser: ${created.error.message}`);
+      }
       const { data, error } = await this.client.auth.signInWithPassword({ email, password });
       if (error) throw new Error(`password sign-in: ${error.message}`);
       this.id = data.user.id;

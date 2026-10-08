@@ -66,6 +66,8 @@ export interface LoadConfig {
   dockerStats: boolean;
   /** HTTP requests that take longer are aborted and counted as `timeout`. */
   requestTimeoutMs: number;
+  /** Raise the local Kong gateway's nginx worker_connections to this (0: leave it at 512). */
+  gatewayConnections: number;
 }
 
 const BASE: LoadConfig = {
@@ -99,6 +101,7 @@ const BASE: LoadConfig = {
   outDir: 'loadtest-results',
   dockerStats: true,
   requestTimeoutMs: 20_000,
+  gatewayConnections: 8192,
 };
 
 export const PROFILES: Record<string, Partial<LoadConfig>> = {
@@ -141,6 +144,7 @@ const NUMERIC: (keyof LoadConfig)[] = [
   'roomTimeoutS',
   'seed',
   'requestTimeoutMs',
+  'gatewayConnections',
 ];
 
 /** `--battles-per-room` → `battlesPerRoom`. */
@@ -269,5 +273,6 @@ Options (defaults in src/config.ts):
   --capture true|false --capture-concurrency N
   --realtime-limits keep|free|pro|unlimited   (local Realtime tenant quotas for the run)
   --auth admin|anonymous
+  --gateway-connections N   (local Kong nginx worker_connections; 0 keeps the default 512)
   --drain-timeout-s S --room-timeout-s S --seed N --out-dir DIR --docker-stats true|false
 `;

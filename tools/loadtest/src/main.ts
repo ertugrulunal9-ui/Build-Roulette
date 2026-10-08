@@ -32,6 +32,7 @@ import {
   type DbSample,
 } from './db';
 import { DockerSampler } from './docker';
+import { raiseGatewayConnections } from './gateway';
 import { adminDbUrl, loadStackEnv } from './env';
 import type { RawMetrics } from './metrics';
 import { sleep } from './player';
@@ -99,6 +100,16 @@ async function main(): Promise<number> {
     () => false,
   );
   if (!ping) throw new Error('Realtime is not running: start the stack WITH realtime');
+
+  if (cfg.gatewayConnections > 0) {
+    try {
+      const note = await raiseGatewayConnections(cfg.gatewayConnections);
+      notes.push(note);
+      log(note);
+    } catch (e) {
+      notes.push(`Could not raise the gateway's worker_connections: ${(e as Error).message}`);
+    }
+  }
 
   // Realtime tenant quotas.
   const tenant = new RealtimeTenant(env.API_URL, env.JWT_SECRET);

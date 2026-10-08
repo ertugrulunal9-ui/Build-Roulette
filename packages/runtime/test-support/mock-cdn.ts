@@ -123,6 +123,53 @@ export type CdnOutage = 'refuse' | 'error' | 'hang';
 
 export const CDN_OUTAGES: readonly CdnOutage[] = ['refuse', 'error', 'hang'];
 
+/** `refuse` | `error` | `hang`, `off` (null), or undefined for anything else. */
+export function parseOutage(mode: string | null): CdnOutage | null | undefined {
+  if (mode === 'off') return null;
+  return CDN_OUTAGES.find((o) => o === mode);
+}
+
+/**
+ * Answers `POST /cdn-outage?mode=refuse|error|hang|off` (`setOutage`) for e2e suites whose
+ * services run in another process (apps/web scripts). Listens on 127.0.0.1 only. Test
+ * support: never part of anything deployed.
+ */
+export async function startOutageControl(
+  cdn: Pick<MockCdn, 'setOutage'>,
+  port: number,
+): Promise<{ url: string; close(): Promise<void> }> {
+  const server = createServer((req, res) => {
+    const url = new URL(req.url ?? '/', 'http://control.local');
+    const outage = parseOutage(url.searchParams.get('mode'));
+    if (req.method !== 'POST' || url.pathname !== '/cdn-outage' || outage === undefined) {
+      res.writeHead(400, { 'Content-Type': 'text/plain' });
+      res.end('POST /cdn-outage?mode=refuse|error|hang|off\n');
+      return;
+    }
+    void cdn.setOutage(outage).then(() => {
+      res.writeHead(200, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' });
+      res.end(`cdn outage: ${outage ?? 'off'}\n`);
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(port, '127.0.0.1', () => {
+      resolve();
+    });
+  });
+  const addr = server.address();
+  const bound = typeof addr === 'object' && addr ? addr.port : port;
+  return {
+    url: `http://127.0.0.1:${String(bound)}`,
+    close: () =>
+      new Promise<void>((resolve) => {
+        server.close(() => {
+          resolve();
+        });
+      }),
+  };
+}
+
 export interface MockCdn {
   url: string;
   /** The current listener (a new one after an outage of kind `refuse` ends). */

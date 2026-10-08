@@ -17,7 +17,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import * as esbuild from 'esbuild';
 import { startShellServer } from '@br/sandbox-shell/server';
-import { CDN_OUTAGES, startMockCdn, type CdnOutage } from './mock-cdn';
+import { parseOutage, startMockCdn, type CdnOutage } from './mock-cdn';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -34,12 +34,6 @@ export interface DevServers {
   shellJsBytes: number;
   setCdnOutage(outage: CdnOutage | null): Promise<void>;
   close(): Promise<void>;
-}
-
-/** `refuse` | `error` | `hang` | `off` (null), or undefined for anything else. */
-export function parseOutage(mode: string | null): CdnOutage | null | undefined {
-  if (mode === 'off') return null;
-  return CDN_OUTAGES.find((o) => o === mode);
 }
 
 export interface PlaygroundConfig {

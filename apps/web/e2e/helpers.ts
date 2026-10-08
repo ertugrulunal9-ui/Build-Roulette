@@ -42,6 +42,24 @@ export async function clickRouted(target: Locator): Promise<void> {
   await target.click();
 }
 
+/**
+ * Starts or ends a simulated package CDN outage (T-032) through the control endpoint of
+ * scripts/sandbox-servers.ts and scripts/solo-services.ts: `refuse` (connection refused),
+ * `error` (502 without CORS headers, like an edge error page), `hang` (no answer until it
+ * ends) or `off`.
+ */
+export async function setCdnOutage(
+  page: Page,
+  mode: 'refuse' | 'error' | 'hang' | 'off',
+): Promise<void> {
+  const port = process.env['CDN_CONTROL_PORT'] ?? '4323';
+  const res = await page.request.post(`http://127.0.0.1:${port}/cdn-outage?mode=${mode}`);
+  expect(res.status()).toBe(200);
+}
+
+/** The package CDN's origin as the e2e servers run it (`NEXT_PUBLIC_PKG_CDN_URL`'s default). */
+export const CDN_ORIGIN = `http://localhost:${process.env['CDN_PORT'] ?? '4322'}`;
+
 /** The user's document lives in the shell's child iframe: preview iframe -> build iframe. */
 export function buildFrame(page: Page): FrameLocator {
   return page.frameLocator('[data-testid=preview-frame]').frameLocator('iframe');

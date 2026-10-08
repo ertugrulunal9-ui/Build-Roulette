@@ -10,9 +10,9 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 | T-023 | Test reliability: root-cause the flaky 8-player chaos test (1 in 5), shard the chaos suite for CI | `apps/web/` (e2e), `ci.yml` | done | Merged |
 | T-027 | Preview watchdog false "crashed" right after a rebuild under heavy CPU load (`heartbeat-timeout`, silent ~5.3 s): give a fresh `load` a longer grace, with tests | `packages/runtime/`, `apps/web/` | done | Merged |
 | T-024 | Abuse controls: report build, admin page (event logs + report queue + screenshot takedown), name filter, rate limits, Turnstile wiring | `supabase/`, `apps/web/`, `apps/capture-worker/` | done | Merged |
-| T-028 | Taken-down builds lose the Winner highlight and all awards (no re-rank, no reassignment) on results, `/battles/[id]`, `/u/[id]`, OG image, room RESULTS | `supabase/`, `apps/web/` | in-progress | M5, task 6 |
+| T-028 | Taken-down builds lose the Winner highlight and all awards (no re-rank, no reassignment) on results, `/battles/[id]`, `/u/[id]`, OG image, room RESULTS | `supabase/`, `apps/web/` | done | Merged |
 | T-025 | Load test (50 rooms × 8 players), Realtime/egress mapping to plan limits, cost per 1,000 battles | `tools/loadtest/`, `docs/` input | done | Merged |
-| T-029 | Scaling fixes from the load test: ~4× fewer Presence messages (≤1 activity update / 15 s, none after BUILDING) + harder backoff after server-closed channels; no nudge storm in RESULTS (backoff / stop nudging while waiting for captures); `heartbeat` returns the battle version (drop the extra read); single-sample clock resync | `apps/web/`, `supabase/` | todo | M5, after T-028 |
+| T-029 | Scaling fixes from the load test: ~4× fewer Presence messages (≤1 activity update / 15 s, none after BUILDING) + harder backoff after server-closed channels; no nudge storm in RESULTS (backoff / stop nudging while waiting for captures); `heartbeat` returns the battle version (drop the extra read); single-sample clock resync | `apps/web/`, `supabase/` | in-progress | M5, task 7 |
 | T-026 | Observability (Sentry/PostHog, env-gated), ISR for `/battles` + `/u`, runbooks | `apps/web/`, `apps/*`, `docs/runbooks/` | todo | M5 |
 | T-019 | M4 DB layer: REVEAL (order, slots, host skip) + VOTING (categories, no self-vote, revotes, secret ballots) phases, vote-based ranking + category awards, reveal-phase storage read access, realtime `vote_progress` | `supabase/`, `packages/game/` (constants), `ci.yml` | done | Merged |
 | T-020 | M4 web: synchronized REVEAL spotlight (one live build, thumbnails, prefetch, host skip), VOTE stage, vote-based results + permanent page | `apps/web/` (+ remove the CI pre-M4 switch) | done | Merged |
@@ -539,3 +539,12 @@ Start M5.
 - Test-only stack tweaks (Kong `worker_connections`, Realtime tenant quotas) are applied at runtime inside the local containers and restored. They are not committed config.
 - Hub re-ran on a fresh clone: pipeline green (loadtest 14 unit tests); **smoke profile on a fresh stack: 3/3 battles, p95 17.4 ms, 100% delivered, 0 errors**. The full 400-client run was not re-run by the hub (about 40 min).
 - Product fixes queued as **T-029**. The spend cap and `db_pool` go on the user's deploy checklist.
+
+### T-028: accepted (M5 task 6)
+- The first worker was lost in a container restart (no commits); re-dispatched with the same brief.
+- **Server:** new migration `20261008130000_takedown_awards.sql`. `get_public_battle`, `get_player_history` and `get_battle_snapshot` are T-024's versions with only the `awards` reads changed (the hub diffed each function against T-024's). The stored `awards` rows are untouched.
+- **Better than the brief:** the `awards_select` RLS policy also hides the awards of a taken-down build from direct table reads. Without it, any signed-in viewer of the battle could still read them.
+- **Web:** shared helpers `isWinner`, `awardsOf`, `rankMedal` (`lib/solo/format.ts`) used by room RESULTS, `/battles/[id]`, `/u/[id]` and solo results. The OG text moved to `lib/solo/og-card.ts`: a removed rank-1 build gets a neutral "#1 · n VOTES" chip; nobody is promoted.
+- **Decisions:** vote counts stay visible on a removed build (the hub's recommendation); no medal either (a gold highlight, treated like the banner).
+- **Tests:** new pgTAP `23_takedown_awards` (24 tests; 11 fail on the T-024 functions); component tests (9 fail when the helpers are broken); `e2e/moderation.spec.ts` checks banner, chips, "#1 Removed by moderators", kept vote total, the runner-up not promoted, OG 200, `/u/[id]`.
+- Hub re-ran on a fresh clone: pipeline green (web 296 unit tests); `supabase test db` **1191/1191**; `e2e-moderation.mjs` **26/26**; moderation e2e 2/2; multiplayer 4/4; solo 2/2. Screenshot checked: "#1 Removed by moderators", no banner, ring or chips, 3 votes kept; #2 keeps Best Style without a banner.

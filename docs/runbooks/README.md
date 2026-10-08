@@ -32,7 +32,11 @@ What to do when something in production goes wrong. Each runbook has the same pa
   `room_joined` → `battle_started` → `build_shipped` → `vote_cast` → `battle_completed` →
   `rematch`), `report_filed`, and **`sync_health`**: one event per battle and client with
   `missed` (broadcasts Realtime never delivered), `refetches`, `gaps`, `degraded_ms`,
-  `rejoins`, `server_closed`, `channel_errors`.
+  `rejoins`, `server_closed`, `channel_errors`, and the preview counts `preview_crashes`,
+  `preview_restarts`, `preview_stalls`, `preview_stall_ms`, `preview_spared` (T-031).
+  **`preview_crash`**: one event per preview crash (`reason`, `phase`, `mode`, `silent_ms`
+  in app-awake time, `wall_silent_ms`, `stalled_ms`, `longest_stall_ms`, `restarted`). Many
+  crashes with a large `stalled_ms` point at overloaded player machines, not at loops.
 - **Logs:** Supabase dashboard → Logs (Postgres: `sweep_deadlines: battle … not advanced`
   warnings; Realtime; Auth), Cloudflare → Workers → `build-roulette-web` → Logs, the capture
   worker's and the package CDN's stdout (one JSON object per line).

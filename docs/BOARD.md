@@ -15,8 +15,8 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 | T-029 | Scaling fixes from the load test: ~4× fewer Presence messages (≤1 activity update / 15 s, none after BUILDING) + harder backoff after server-closed channels; no nudge storm in RESULTS (backoff / stop nudging while waiting for captures); `heartbeat` returns the battle version (drop the extra read); single-sample clock resync | `apps/web/`, `supabase/` | done | Merged |
 | T-026 | ISR for `/battles/[id]` (+ OG image) and `/u/[id]` on the R2 incremental cache; takedowns revalidate the affected pages | `apps/web/` | done | Merged (observability and runbooks split off → T-030) |
 | T-030 | Observability (Sentry/PostHog, env-gated, no PII; sync-engine missed-event and degraded-time counts), runbooks (`docs/runbooks/`) | `apps/web/`, `apps/*`, `docs/runbooks/` | done | Merged |
-| T-031 | Preview watchdog false crash **after** `ready` under whole-machine CPU starvation (chaos shard 1, `heartbeat-timeout silentMs=5309 phase=running`): count only silence while the app itself was awake and pinging; report preview crashes (phase, silence, starvation evidence) as a sandbox-health event | `packages/runtime/`, `apps/web/` | in-progress | M5, task 10 |
-| T-032 | Template packages survive a package-CDN outage after the lobby preload (R10): measure what the browser really caches for the shell and build frames (cache partitioning, opaque origins, the shell's own wipe), choose a Service Worker, an in-shell module cache or edge-only caching, implement it, and test it with an e2e that kills the CDN mid-BUILD | `apps/sandbox-shell/`, `packages/runtime/`, `apps/web/`, `apps/pkg-cdn/` | todo | M5, after T-031 |
+| T-031 | Preview watchdog false crash **after** `ready` under whole-machine CPU starvation (chaos shard 1, `heartbeat-timeout silentMs=5309 phase=running`): count only silence while the app itself was awake and pinging; report preview crashes (phase, silence, starvation evidence) as a sandbox-health event | `packages/runtime/`, `apps/web/` | done | Merged |
+| T-032 | Template packages survive a package-CDN outage after the lobby preload (R10): measure what the browser really caches for the shell and build frames (cache partitioning, opaque origins, the shell's own wipe), choose a Service Worker, an in-shell module cache or edge-only caching, implement it, and test it with an e2e that kills the CDN mid-BUILD | `apps/sandbox-shell/`, `packages/runtime/`, `apps/web/`, `apps/pkg-cdn/` | in-progress | M5, task 11 |
 | T-019 | M4 DB layer: REVEAL (order, slots, host skip) + VOTING (categories, no self-vote, revotes, secret ballots) phases, vote-based ranking + category awards, reveal-phase storage read access, realtime `vote_progress` | `supabase/`, `packages/game/` (constants), `ci.yml` | done | Merged |
 | T-020 | M4 web: synchronized REVEAL spotlight (one live build, thumbnails, prefetch, host skip), VOTE stage, vote-based results + permanent page | `apps/web/` (+ remove the CI pre-M4 switch) | done | Merged |
 | T-021 | M4 completion: mobile reveal/vote layout, player history `/u/[id]`, chaos coverage for reveal/vote, M4 exit criteria | `apps/web/`, `supabase/` (tests) | done | Merged |
@@ -618,3 +618,28 @@ Start M5.
   - solo 2/2, multiplayer 4/4; chaos shards 2 and 3 passed (2/2, 4/4).
 - **Chaos shard 1 failed once:** Eve's preview showed `heartbeat-timeout silentMs=5309 phase=running` with no loop in the code, under the 6-browser load. T-030 touches neither the runtime nor the preview, and telemetry is off in that test. The re-run passed 3/3. This is the T-027 failure mode after `ready` → **T-031**. The failure artifacts are kept in the hub scratchpad.
 - The M5 scope item "Service Worker cache for template packages" was never done. It needs a measurement first (the shell wipes its own Service Workers, and the build frame has an opaque origin) → **T-032**.
+
+### T-031: accepted (M5 task 10)
+- **Root cause, with evidence from the hub's failure artifacts:**
+  - at the start of BUILD, Eve's app main thread got no CPU for about 5 s;
+  - her `building` broadcast was logged 3.9 s after the other pages';
+  - four presence diffs arrived within 8 ms of each other;
+  - her screencast had 4.8 s frame gaps;
+  - her first build took 2.3 s instead of about 150 ms.
+
+  The watchdog's wall-clock silence measured the app's own stall, not a loop in the frame.
+- **Reproduced on the old code** with a new runtime e2e (`watchdog-starvation`): every renderer SIGSTOP'd for 7 s, or overlapping long tasks on both throttled pages, gave a false `heartbeat-timeout phase running`.
+- **Fix:** every watchdog limit (5 s heartbeat, 15 s load grace, 10 s handshake) is measured in app-awake time. The 250 ms tick advances an awake clock by at most one interval plus 50 ms jitter, so a late tick (an app stall) isn't counted. Only the app's own timers move the clock, never anything the sandbox sends.
+- **Bounds:**
+  - a loop after `ready` is still caught in 4.0–5.25 s of awake time (measured 4.3–4.8 s);
+  - a loop during a load is caught within T-027's 15.25 s;
+  - hidden tabs are unchanged.
+- **Hub security note (accepted):** with site isolation, a loop in the frame doesn't stall the app's timers, so detection is unchanged. A build that also saturates every core could slow the app's ticks and stretch detection (at worst about 4× on the wall clock), but it is still caught. Without site isolation (Safari, low-RAM Android) a loop freezes the app anyway; that residual risk is documented in R2.
+- **Telemetry:** `preview_crash` events (reason, phase, mode, awake and wall silences, stall evidence, restarted) and preview counts in `sync_health`. No build code and no names. The hub added both to the runbook index.
+- 9 new runtime unit tests, all failing on the old code.
+- Hub re-ran on a fresh clone:
+  - pipeline green (runtime 121, web 390 unit tests);
+  - runtime e2e **28/28** (including `watchdog-starvation` 2/2);
+  - playground 14/14, solo 2/2, multiplayer 4/4, telemetry 6/6 + 1/1;
+  - **chaos shards 3/3, 2/2, 4/4, and shard 1 again 3/3.**
+- CI run 42 on GitHub (with the runbook check and the telemetry e2e added) was green.

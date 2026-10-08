@@ -210,7 +210,7 @@ describe('REVEAL', () => {
     c.dispose();
   });
 
-  it('skip and freeze are local; watching again clears both', async () => {
+  it('skip, freeze and missing packages are local; watching again clears them', async () => {
     const c = controller();
     c.receive(reveal(1));
     await flush();
@@ -222,10 +222,19 @@ describe('REVEAL', () => {
     // A build that never started is not "frozen".
     c.markFrozen('build-me', 'handshake-timeout');
     expect(c.getSnapshot()).toMatchObject({ frozen: ['build-cleo'], failedToStart: ['build-me'] });
+    // T-032: a build whose packages could not load here.
+    c.packagesFailed('build-bob');
+    c.packagesFailed('build-bob');
+    expect(c.getSnapshot().noPackages).toEqual(['build-bob']);
     c.watch('build-bob');
     c.watch('build-cleo');
     c.watch('build-me');
-    expect(c.getSnapshot()).toMatchObject({ skipped: [], frozen: [], failedToStart: [] });
+    expect(c.getSnapshot()).toMatchObject({
+      skipped: [],
+      frozen: [],
+      failedToStart: [],
+      noPackages: [],
+    });
     // Nothing went to the server.
     expect(
       api.calls.filter((x) => !['getRevealBuilds', 'downloadText', 'downloadBlob'].includes(x[0])),

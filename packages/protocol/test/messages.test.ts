@@ -115,6 +115,23 @@ describe('parseAppToShell', () => {
       imports[`p${i}`] = `https://x.example/p${i}`;
     expect(parseAppToShell({ ...validLoad, importMap: { imports } }).ok).toBe(false);
   });
+
+  it('takes an optional list of package URLs (T-032), bounded and http(s) only', () => {
+    const packages = ['https://pkg.example/zustand@5.0.15?external=react,react-dom'];
+    const r = parseAppToShell({ ...validLoad, packages });
+    expect(r.ok && r.value.type === 'load' && r.value.packages).toEqual(packages);
+    const without = parseAppToShell(validLoad);
+    expect(without.ok && without.value.type === 'load' && without.value.packages).toBe(undefined);
+    for (const bad of [
+      ['javascript:alert(1)'],
+      ['blob:https://x/1'],
+      [`https://x.example/${'a'.repeat(LIMITS.importMapValueMaxChars)}`],
+      Array.from({ length: LIMITS.loadPackagesMax + 1 }, (_, i) => `https://x.example/p${i}`),
+      'https://x.example/p',
+    ]) {
+      expect(parseAppToShell({ ...validLoad, packages: bad }).ok).toBe(false);
+    }
+  });
 });
 
 describe('parseShellToApp', () => {

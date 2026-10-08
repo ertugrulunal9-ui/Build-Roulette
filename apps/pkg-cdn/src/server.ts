@@ -16,8 +16,21 @@ import type { CdnConfig } from './config';
 import { CdnError, errorMessage } from './errors';
 import { packagePath, parseCdnUrl } from './url';
 
-const IMMUTABLE = 'public, max-age=31536000, immutable';
-const REDIRECT_CACHE = 'public, max-age=300';
+/**
+ * Exact-version URLs never change: browsers and the edge keep them a year without asking
+ * again. That is what lets a player's browser, and the Cloudflare edge, keep serving packages
+ * already requested while this origin is down (T-032, README "Running behind the Cloudflare
+ * cache").
+ */
+export const IMMUTABLE = 'public, max-age=31536000, immutable';
+/**
+ * 302 from a range, tag or bare name: 5 minutes, so new releases show up. A shared cache may
+ * also serve the old hop for a minute while it revalidates, and for a day while this origin
+ * fails (RFC 5861 `stale-while-revalidate` / `stale-if-error`, T-032). Builds never request
+ * these (their URLs are exact), so they matter for people and tools only.
+ */
+export const REDIRECT_CACHE =
+  'public, max-age=300, stale-while-revalidate=60, stale-if-error=86400';
 
 const BASE_HEADERS: Record<string, string> = {
   'Access-Control-Allow-Origin': '*',
@@ -78,7 +91,11 @@ export function createCdnHandler(cdn: PackageCdn, opts: HandlerOptions = {}) {
     headers: Record<string, string>,
     body?: string | Buffer,
   ): void {
-    res.writeHead(status, { ...BASE_HEADERS, ...headers });
+    // An explicit length: no chunked encoding, and caches that require a length (Cache
+    // Reserve, T-032) can keep the response.
+    const length =
+      body === undefined ? {} : { 'Content-Length': Buffer.byteLength(body).toString() };
+    res.writeHead(status, { ...BASE_HEADERS, ...length, ...headers });
     if (req.method === 'HEAD' || body === undefined) res.end();
     else res.end(body);
   }

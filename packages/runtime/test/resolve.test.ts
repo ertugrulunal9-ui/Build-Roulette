@@ -292,6 +292,18 @@ describe('buildImportMap', () => {
       },
     });
   });
+  it('only has exact-version URLs: no redirect hop that expires (T-032)', () => {
+    const exact = /^(?:@[^/@]+\/)?[^/@]+@\d+\.\d+\.\d+(?:-[\w.]+)?(?:\/[^?]*)?$/;
+    const map = buildImportMap(DEPS, 'https://pkg.example.net');
+    expect(Object.keys(map.imports)).toHaveLength(5);
+    for (const url of Object.values(map.imports)) {
+      expect(new URL(url).pathname.slice(1), url).toMatch(exact);
+    }
+    // A range or tag is never mapped (it would be a 302 that is only cached for 5 minutes).
+    expect(buildImportMap({ react: '^19.3.0', 'react-dom': 'latest' }, CDN)).toEqual({
+      imports: {},
+    });
+  });
   it('is empty without React (vanilla templates)', () => {
     expect(buildImportMap({ zustand: '5.0.15' }, CDN)).toEqual({ imports: {} });
   });

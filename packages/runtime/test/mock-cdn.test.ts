@@ -126,3 +126,44 @@ describe('mock CDN server', () => {
     expect((await get('/animate.css@4.1.1/missing.css')).status).toBe(404);
   });
 });
+
+describe('mock CDN outages (T-032)', () => {
+  let cdn: MockCdn;
+  beforeAll(async () => {
+    cdn = await startMockCdn();
+  });
+  afterAll(async () => {
+    await cdn.close();
+  });
+  const status = (p: string, timeoutMs = 2000) =>
+    fetch(cdn.url + p, { signal: AbortSignal.timeout(timeoutMs) }).then(
+      (r) => ({ status: r.status, cors: r.headers.get('access-control-allow-origin') }),
+      (e: unknown) => (e instanceof Error ? e.name : 'error'),
+    );
+
+  it('refuses connections, then serves again on the same port', async () => {
+    expect(await status('/react@19.3.0')).toEqual({ status: 200, cors: '*' });
+    await cdn.setOutage('refuse');
+    expect(cdn.outage()).toBe('refuse');
+    expect(await status('/react@19.3.0')).toBe('TypeError'); // connection refused
+    await cdn.setOutage(null);
+    expect(await status('/react@19.3.0')).toEqual({ status: 200, cors: '*' });
+  });
+
+  it('answers 502 without CORS headers, like an edge error page', async () => {
+    await cdn.setOutage('error');
+    expect(await status('/react@19.3.0')).toEqual({ status: 502, cors: null });
+    await cdn.setOutage(null);
+    expect(await status('/react@19.3.0')).toEqual({ status: 200, cors: '*' });
+  });
+
+  it('holds requests open until the outage ends, then answers them', async () => {
+    await cdn.setOutage('hang');
+    expect(await status('/react@19.3.0', 300)).toBe('TimeoutError');
+    const waiting = status('/react@19.3.0', 5000);
+    await new Promise((r) => setTimeout(r, 200));
+    await cdn.setOutage(null);
+    expect(await waiting).toEqual({ status: 200, cors: '*' });
+    expect(await status('/react@19.3.0')).toEqual({ status: 200, cors: '*' });
+  });
+});

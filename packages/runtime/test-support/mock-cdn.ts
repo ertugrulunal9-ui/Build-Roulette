@@ -108,11 +108,78 @@ export interface MockCdnOptions {
   log?: (line: string) => void;
 }
 
+/**
+ * A simulated outage of the package CDN (T-032 e2e):
+ * - `refuse`: the listener is closed and open connections are dropped, so the browser gets
+ *   "connection refused" at once (the container is down and nothing answers for it);
+ * - `error`: every request gets a `502` without CORS headers, like an error page from the
+ *   edge in front of a dead origin (the browser sees a CORS failure, i.e. a network error);
+ * - `hang`: requests are accepted and not answered while the outage lasts (a black hole, or
+ *   an edge waiting for an origin that does not answer); when it ends they are answered
+ *   normally, like an origin that finally comes back.
+ * `null` ends the outage.
+ */
+export type CdnOutage = 'refuse' | 'error' | 'hang';
+
+export const CDN_OUTAGES: readonly CdnOutage[] = ['refuse', 'error', 'hang'];
+
+/** `refuse` | `error` | `hang`, `off` (null), or undefined for anything else. */
+export function parseOutage(mode: string | null): CdnOutage | null | undefined {
+  if (mode === 'off') return null;
+  return CDN_OUTAGES.find((o) => o === mode);
+}
+
+/**
+ * Answers `POST /cdn-outage?mode=refuse|error|hang|off` (`setOutage`) for e2e suites whose
+ * services run in another process (apps/web scripts). Listens on 127.0.0.1 only. Test
+ * support: never part of anything deployed.
+ */
+export async function startOutageControl(
+  cdn: Pick<MockCdn, 'setOutage'>,
+  port: number,
+): Promise<{ url: string; close(): Promise<void> }> {
+  const server = createServer((req, res) => {
+    const url = new URL(req.url ?? '/', 'http://control.local');
+    const outage = parseOutage(url.searchParams.get('mode'));
+    if (req.method !== 'POST' || url.pathname !== '/cdn-outage' || outage === undefined) {
+      res.writeHead(400, { 'Content-Type': 'text/plain' });
+      res.end('POST /cdn-outage?mode=refuse|error|hang|off\n');
+      return;
+    }
+    void cdn.setOutage(outage).then(() => {
+      res.writeHead(200, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' });
+      res.end(`cdn outage: ${outage ?? 'off'}\n`);
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(port, '127.0.0.1', () => {
+      resolve();
+    });
+  });
+  const addr = server.address();
+  const bound = typeof addr === 'object' && addr ? addr.port : port;
+  return {
+    url: `http://127.0.0.1:${String(bound)}`,
+    close: () =>
+      new Promise<void>((resolve) => {
+        server.close(() => {
+          resolve();
+        });
+      }),
+  };
+}
+
 export interface MockCdn {
   url: string;
-  server: Server;
-  /** Number of esbuild bundles produced (cache misses). */
+  /** The current listener (a new one after an outage of kind `refuse` ends). */
+  readonly server: Server;
+  /** Number of esbuild bundles produced (cache misses) and requests seen. */
   stats: { builds: number; requests: number };
+  /** The current outage, or null while the CDN serves normally. */
+  outage(): CdnOutage | null;
+  /** Starts or ends a simulated outage (see `CdnOutage`). Resolves once it is in effect. */
+  setOutage(outage: CdnOutage | null): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -423,31 +490,86 @@ export function createMockCdnHandler(opts: MockCdnOptions = {}) {
 
 export async function startMockCdn(opts: MockCdnOptions = {}): Promise<MockCdn> {
   const { handle, stats } = createMockCdnHandler(opts);
-  const server = createServer((req, res) => {
+  const host = opts.host ?? 'localhost';
+  let outage: CdnOutage | null = null;
+  /** Requests held open by a `hang` outage, answered when it ends. */
+  const held = new Map<ServerResponse, IncomingMessage>();
+  const onRequest = (req: IncomingMessage, res: ServerResponse) => {
+    if (outage === 'error') {
+      stats.requests++;
+      // No Access-Control-Allow-Origin, like an edge error page: a CORS failure in the browser.
+      res.writeHead(502, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' });
+      res.end('502 Bad Gateway (simulated package CDN outage)');
+      return;
+    }
+    if (outage === 'hang') {
+      stats.requests++;
+      held.set(res, req);
+      res.on('close', () => held.delete(res));
+      return;
+    }
+    serve(req, res);
+  };
+  const serve = (req: IncomingMessage, res: ServerResponse) => {
     handle(req, res).catch((e: unknown) => {
       if (!res.headersSent)
         res.writeHead(500, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
       res.end(`mock-cdn internal error: ${e instanceof Error ? e.message : String(e)}`);
     });
-  });
-  const host = opts.host ?? 'localhost';
-  await new Promise<void>((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(opts.port ?? 0, host, () => {
-      resolve();
+  };
+  const listen = async (port: number): Promise<Server> => {
+    const s = createServer(onRequest);
+    await new Promise<void>((resolve, reject) => {
+      s.once('error', reject);
+      s.listen(port, host, () => {
+        resolve();
+      });
     });
-  });
+    return s;
+  };
+  const stop = (s: Server) =>
+    new Promise<void>((resolve) => {
+      s.close(() => {
+        resolve();
+      });
+      s.closeAllConnections();
+    });
+  let server: Server | null = await listen(opts.port ?? 0);
   const addr = server.address();
   const port = typeof addr === 'object' && addr ? addr.port : (opts.port ?? 0);
+  let current: Server = server;
   return {
     url: `http://${host}:${String(port)}`,
-    server,
+    get server() {
+      return current;
+    },
     stats,
-    close: () =>
-      new Promise<void>((resolve) => {
-        server.close(() => {
-          resolve();
-        });
-      }),
+    outage: () => outage,
+    async setOutage(next) {
+      if (next === outage) return;
+      const release = outage === 'hang' ? [...held] : [];
+      held.clear();
+      if (outage === 'refuse') {
+        server = await listen(port);
+        current = server;
+      }
+      if (next === 'refuse' && server) {
+        const s = server;
+        server = null;
+        await stop(s);
+      }
+      outage = next;
+      // Requests a `hang` held are served when it ends (an origin that finally answers).
+      for (const [res, req] of release) {
+        if (next === null) serve(req, res);
+        else res.destroy();
+      }
+    },
+    close: async () => {
+      for (const res of held.keys()) res.destroy();
+      held.clear();
+      if (server) await stop(server);
+      server = null;
+    },
   };
 }

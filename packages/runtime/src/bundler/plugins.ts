@@ -3,6 +3,7 @@
  * They only use the esbuild plugin API, so they run unchanged in esbuild-wasm (browser
  * worker) and in esbuild/esbuild-wasm under Node (tests).
  */
+import { describePackageFailures, type PackageFailure } from '@br/protocol';
 import type { Loader, Plugin } from 'esbuild-wasm';
 import type { FileMap } from '../types';
 import {
@@ -20,6 +21,23 @@ export const VFS_NAMESPACE = 'vfs';
 export const CDN_CSS_NAMESPACE = 'cdn-css';
 
 export type FetchText = (url: string) => Promise<string>;
+
+/**
+ * A package file the CDN did not deliver: `status` is the HTTP status of an error answer, or
+ * null when no answer arrived (network error, connection refused, CORS failure of an edge
+ * error page). `detail` is the first line of the server's error text.
+ */
+export class PackageFetchError extends Error {
+  readonly status: number | null;
+  readonly detail: string | undefined;
+
+  constructor(status: number | null, detail?: string) {
+    super(status === null ? 'package server unreachable' : `HTTP ${String(status)}`);
+    this.name = 'PackageFetchError';
+    this.status = status;
+    this.detail = detail;
+  }
+}
 
 /**
  * `vfs`: resolves the entry point and relative / workspace-absolute imports against the
@@ -82,14 +100,34 @@ function loadAsset(path: string, contents: string) {
 }
 
 /**
+ * Why package CSS could not be fetched, in the words the preview uses for modules (T-032):
+ * no answer is "Package server unreachable", an HTTP error carries the server's text.
+ */
+export function packageCssFailure(url: string, e: unknown): string {
+  if (e instanceof PackageFetchError) {
+    const failure: PackageFailure =
+      e.status === null
+        ? { url, kind: 'unreachable' }
+        : { url, kind: 'http', status: e.status, ...(e.detail ? { detail: e.detail } : {}) };
+    const text = describePackageFailures([failure]);
+    if (text !== null) return text;
+  }
+  return `Failed to fetch package CSS ${url}: ${e instanceof Error ? e.message : String(e)}`;
+}
+
+/**
  * `cdn-rewrite` + package `css`: bare imports become external CDN URLs (React stays bare
  * for the import map) that pin the manifest's versions of peers (`deps=`), package CSS is
- * fetched and inlined, undeclared packages are errors.
+ * fetched and inlined, undeclared packages are errors. `onModule` and `onImportMapSpecifier`
+ * see what the bundle imports from the CDN (the build's `packages`, T-032).
  */
 export function cdnPlugin(opts: {
   dependencies: Record<string, string>;
   cdnBaseUrl: string;
   fetchText: FetchText;
+  onModule?: (url: string) => void;
+  /** Sees every bare specifier left for the import map (`react`, `react-dom/client`, …). */
+  onImportMapSpecifier?: (specifier: string) => void;
 }): Plugin {
   const deps = cdnDepsPins(opts.dependencies) ?? [];
   return {
@@ -113,8 +151,10 @@ export function cdnPlugin(opts: {
         const r = resolveBareImport(args.path, opts.dependencies, opts.cdnBaseUrl, deps);
         switch (r.kind) {
           case 'import-map':
+            opts.onImportMapSpecifier?.(args.path);
             return { path: args.path, external: true };
           case 'cdn':
+            opts.onModule?.(r.url);
             return { path: r.url, external: true };
           case 'cdn-css':
             return { path: r.url, namespace: CDN_CSS_NAMESPACE };
@@ -127,13 +167,7 @@ export function cdnPlugin(opts: {
         try {
           return { contents: await opts.fetchText(args.path), loader: 'css' as const };
         } catch (e) {
-          return {
-            errors: [
-              {
-                text: `Failed to fetch package CSS ${args.path}: ${e instanceof Error ? e.message : String(e)}`,
-              },
-            ],
-          };
+          return { errors: [{ text: packageCssFailure(args.path, e) }] };
         }
       });
     },

@@ -90,7 +90,9 @@ native ESM fallback, or Sandpack as a stopgap, before continuing.
 **Scope**
 - Admin page to inspect `battle_events` / `room_events` (moved from M3)
 - Load test with 50 concurrent rooms × 8 players (scripted clients). Map Realtime connections, messages and egress to plan limits and costs.
-- Self-hosted esm.sh behind Cloudflare, plus a Service Worker cache for template packages
+- Self-hosted package CDN behind Cloudflare; template packages survive a CDN outage from the
+  browser's HTTP cache (T-032: a Service Worker cache was dropped for security, see
+  [03-sandbox](03-sandbox.md) "Package cache and CDN outages")
 - Moderation: profanity filter, report queue and admin takedown, rate limits on room creation, joins and reports
 - Sentry and PostHog dashboards: funnel, sandbox metrics, capture success rate, destroy lag
 - Runbooks: stuck battle, capture backlog, CDN outage

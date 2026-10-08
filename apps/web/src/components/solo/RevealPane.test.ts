@@ -5,6 +5,7 @@
  * when it goes; the watchdog's two crash reasons read differently, and a crash is reported
  * (T-031).
  */
+import type { RuntimeErrorMessage } from '@br/protocol';
 import { PreviewHandle, type PreviewCrash } from '@br/runtime';
 import { act, cleanup, render, screen } from '@testing-library/react';
 import { createElement } from 'react';
@@ -31,6 +32,7 @@ const BATTLE = '00000000-0000-4000-8000-0000000000b1';
 function spyPreview() {
   const order: string[] = [];
   const crashListeners: ((e: PreviewCrash) => void)[] = [];
+  const errorListeners: ((e: RuntimeErrorMessage) => void)[] = [];
   vi.spyOn(PreviewHandle.prototype, 'resetStorage').mockImplementation(() => {
     order.push('resetStorage');
     return Promise.resolve({ type: 'storage-reset' as const, ok: true });
@@ -41,9 +43,10 @@ function spyPreview() {
   });
   vi.spyOn(PreviewHandle.prototype, 'on').mockImplementation((event, listener) => {
     if (event === 'crash') crashListeners.push(listener);
+    if (event === 'error') errorListeners.push(listener);
     return () => undefined;
   });
-  return { order, crashListeners };
+  return { order, crashListeners, errorListeners };
 }
 
 describe('RevealPane', () => {
@@ -108,5 +111,40 @@ describe('RevealPane', () => {
         }),
       ],
     ]);
+  });
+});
+
+describe('RevealPane package errors (T-032)', () => {
+  it('says so when the build packages cannot load; other errors and stall notes do not', () => {
+    const { errorListeners } = spyPreview();
+    render(
+      createElement(RevealPane, {
+        battleId: BATTLE,
+        build: BUILD,
+        status: 'ready',
+        destroy: 'none',
+        caption: 'Last look',
+      }),
+    );
+    const emit = (e: RuntimeErrorMessage) => {
+      act(() => {
+        for (const l of errorListeners) l(e);
+      });
+    };
+    emit({ type: 'runtime-error', kind: 'error', message: 'TypeError: x is undefined' });
+    // Not yet a failure: the build may still start.
+    emit({
+      type: 'runtime-error',
+      kind: 'module-load',
+      message: 'Still waiting for the package server after 8 s: zustand@5.0.15',
+    });
+    expect(screen.queryByTestId('reveal-no-packages')).toBeNull();
+    emit({
+      type: 'runtime-error',
+      kind: 'module-load',
+      message: 'Package server unreachable: zustand@5.0.15',
+    });
+    expect(screen.getByTestId('reveal-no-packages').textContent).toContain('package server');
+    cleanup();
   });
 });

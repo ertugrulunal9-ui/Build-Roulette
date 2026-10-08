@@ -36,6 +36,7 @@
  * the game because of one (threat model §3.9, README "Trust model").
  */
 import {
+  LIMITS,
   PROTOCOL_VERSION,
   createNonce,
   parseShellToApp,
@@ -142,6 +143,11 @@ export interface PreviewBuild {
   js: string;
   css: string;
   importMap: ImportMap;
+  /**
+   * The package CDN module URLs the bundle imports (`BuildResult.packages`, T-032): a hint
+   * the shell uses to name the package that could not load. Optional.
+   */
+  packages?: readonly string[];
 }
 
 /** `heartbeat-timeout`: no `pong` within `heartbeatTimeoutMs` (name kept for compatibility). */
@@ -466,6 +472,9 @@ export class PreviewHandle {
       css: build.css,
       importMap: build.importMap,
       mode,
+      ...(build.packages?.length
+        ? { packages: build.packages.slice(0, LIMITS.loadPackagesMax) }
+        : {}),
     };
     this.latestLoadId = loadId;
     this.readyAccepted = false;

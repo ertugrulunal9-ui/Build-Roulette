@@ -18,6 +18,12 @@
  * graph compiles and evaluates in one task), for seconds on a busy CPU: the app allows up to
  * 15 s of silence until this load's `ready` (the load grace, packages/runtime README).
  *
+ * Packages (T-032, `packages.ts`): after a build ran, its import map's URLs are fetched once
+ * into the browser's HTTP cache (the build frame's partition), so the template's packages
+ * keep working while the package CDN is down. When the module graph fails, or still waits
+ * after 8 s, the shell checks the build's package URLs the same way and names the one that
+ * is missing ("Package server unreachable: zustand@5.0.15").
+ *
  * `load` and `reset-storage` run one at a time, in arrival order (`SerialQueue`): a load
  * that arrives during a reset starts only after the wipe finished, so a build never sees a
  * half-wiped origin and its open IndexedDB connections can't block the wipe.
@@ -40,6 +46,14 @@ import {
 } from '@br/protocol';
 import { createChildFrame, injectBuild, installBuildApi, openBuildDocument } from './build-frame';
 import { RESET_ENDPOINT } from './headers';
+import {
+  STALL_MS,
+  WARM_DELAY_MS,
+  explainLoadFailure,
+  explainStall,
+  packageCandidates,
+  warmPackages,
+} from './packages';
 import { captureThumbnail } from './thumbnail';
 import { SerialQueue, wipeOriginStorage } from './wipe';
 
@@ -63,6 +77,17 @@ let port: MessagePort | null = null;
 let helloTimer: ReturnType<typeof setInterval> | null = null;
 let frame: HTMLIFrameElement | null = null;
 let currentBlobUrl: string | null = null;
+/** The current load's "still waiting for packages" check (T-032). */
+let stallTimer: ReturnType<typeof setTimeout> | null = null;
+/**
+ * The shell's own `fetch`, taken before any build runs: a build can replace `parent.fetch`,
+ * which would only garble its own package messages, but never this reference.
+ */
+const shellFetch: typeof fetch = window.fetch.bind(window);
+/** Import map URLs this shell realm already fetched into the HTTP cache (T-032 warm-up). */
+const warmed = new Set<string>();
+const MODULE_LOAD_FAILED =
+  'The build or one of its packages failed to load (network or CDN error; see the browser console).';
 const consoleWindow = { start: 0, count: 0, dropped: 0 };
 const queue = new SerialQueue();
 
@@ -128,6 +153,10 @@ function instrument(w: Window & typeof globalThis): void {
 }
 
 function teardownFrame(): void {
+  if (stallTimer !== null) {
+    clearTimeout(stallTimer);
+    stallTimer = null;
+  }
   if (frame) {
     frame.remove();
     frame = null;
@@ -156,20 +185,54 @@ function runLoad(msg: LoadMessage): void {
     post({ type: 'ready', loadId: msg.loadId });
     return;
   }
+  // T-032: the URLs to check when the module graph fails or stalls (the error event does not
+  // say which one failed), and to warm up after it ran.
+  const candidates = packageCandidates(msg.importMap, msg.packages);
+  let finished = false;
+  const settled = () => {
+    finished = true;
+    if (stallTimer !== null) clearTimeout(stallTimer);
+    stallTimer = null;
+  };
   currentBlobUrl = injectBuild(opened.document, msg, {
     onLoad: () => {
-      if (frame === f) post({ type: 'ready', loadId: msg.loadId });
+      if (frame !== f) return;
+      settled();
+      post({ type: 'ready', loadId: msg.loadId });
+      if (msg.mode !== 'capture') {
+        const urls = Object.values(msg.importMap.imports);
+        setTimeout(() => {
+          void warmPackages(urls, shellFetch, warmed).catch(() => undefined);
+        }, WARM_DELAY_MS);
+      }
     },
     onError: () => {
       if (frame !== f) return;
-      reportError(
-        undefined,
-        'module-load',
-        'The build or one of its packages failed to load (network or CDN error; see the browser console).',
-      );
-      post({ type: 'ready', loadId: msg.loadId });
+      settled();
+      // Name the package that did not load: cached ones answer at once, the others fail fast
+      // (or time out), so this adds well under a second when the CDN is down.
+      void explainLoadFailure(candidates, shellFetch)
+        .catch(() => null)
+        .then((text) => {
+          if (frame !== f) return;
+          reportError(undefined, 'module-load', text ?? MODULE_LOAD_FAILED);
+          post({ type: 'ready', loadId: msg.loadId });
+        });
     },
   });
+  // A module graph can also wait forever (a CDN that accepts connections and never answers).
+  // The watchdog does not see that (the shell keeps answering pings), so say what it waits
+  // for. No `ready`: the build may still start.
+  stallTimer = setTimeout(() => {
+    stallTimer = null;
+    if (frame !== f) return;
+    void explainStall(candidates, STALL_MS, shellFetch)
+      .catch(() => null)
+      .then((text) => {
+        // Not after the load ended meanwhile (its own outcome was reported).
+        if (frame === f && !finished && text !== null) reportError(undefined, 'module-load', text);
+      });
+  }, STALL_MS);
   // Keyboard games: someone else's build (reveal, capture) gets the keyboard at once. Not in
   // `live` mode: there every rebuild loads a new frame, and focusing it would pull the
   // keyboard out of the app's editor mid-typing. A click on the build focuses it, and a

@@ -15,7 +15,7 @@
  * crash, sent once the user restarted the preview or the controller went away, and the
  * preview's watchdog stats for the battle's `sync_health`.
  */
-import type { RuntimeErrorMessage } from '@br/protocol';
+import { isPackageStall, type RuntimeErrorMessage } from '@br/protocol';
 import type {
   BuildResult,
   ConsoleEntry,
@@ -416,7 +416,18 @@ export class SandboxController {
     this.update({ preview: 'connecting', crash: null, runtimeErrors: [], console: [] });
     this.previewOff = [
       preview.on('ready', () => {
-        this.update({ preview: 'running', readyCount: this.snapshot.readyCount + 1 });
+        // A "still waiting for the package server" note (T-032) is moot once the build runs.
+        const waiting = (e: RuntimeErrorMessage) =>
+          e.kind === 'module-load' && isPackageStall(e.message);
+        this.pendingErrors = this.pendingErrors.filter((e) => !waiting(e));
+        const runtimeErrors = this.snapshot.runtimeErrors.some(waiting)
+          ? this.snapshot.runtimeErrors.filter((e) => !waiting(e))
+          : this.snapshot.runtimeErrors;
+        this.update({
+          preview: 'running',
+          readyCount: this.snapshot.readyCount + 1,
+          runtimeErrors,
+        });
       }),
       // Console, errors and drop notices: batched, one snapshot update per frame.
       preview.on('console', () => {

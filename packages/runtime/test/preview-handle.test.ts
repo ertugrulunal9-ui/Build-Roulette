@@ -198,6 +198,22 @@ describe('iframe attributes per mode', () => {
     expect(current()).not.toBe(next);
     expect(current().getAttribute('sandbox')).toBe(PREVIEW_SANDBOX_BY_MODE.live);
   });
+
+  it('sends the build package URLs as a hint (T-032); none when the build has none', () => {
+    const { handle, connect } = setup();
+    const shell = connect();
+    const packages = ['https://pkg.example/zustand@5.0.15?external=react,react-dom'];
+    handle.load({ ...BUILD, packages });
+    handle.load(BUILD);
+    handle.load({ ...BUILD, packages: [] });
+    const many = Array.from({ length: 300 }, (_, i) => `https://pkg.example/p${String(i)}@1.0.0`);
+    handle.load({ ...BUILD, packages: many });
+    const loads = shell.messages.filter((m) => m.type === 'load');
+    expect(loads[0]?.['packages']).toEqual(packages);
+    expect('packages' in (loads[1] ?? {})).toBe(false);
+    expect('packages' in (loads[2] ?? {})).toBe(false);
+    expect(loads[3]?.['packages']).toEqual(many.slice(0, 200));
+  });
 });
 
 describe('resetStorage: clean slate', () => {

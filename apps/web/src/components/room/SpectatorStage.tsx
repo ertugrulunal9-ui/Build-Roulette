@@ -3,10 +3,13 @@
 /**
  * A spectator during SPIN / BUILD / SHIP (a late joiner, or a member over the player
  * limit): the challenge, the countdown and everyone's progress, but no editor. A player
- * on a phone sees the same view with a "building needs a desktop browser" notice.
+ * on a phone sees the same view with a "building needs a desktop browser" notice. On a
+ * desktop the template's packages are warmed into the browser's cache for REVEAL (T-032).
  */
 import type { ReactNode } from 'react';
+import { useTouchPrimary } from '../../lib/device';
 import type { PresenceMap } from '../../lib/room/types';
+import { TemplateWarmup } from '../playground/TemplateWarmup';
 import type { SoloController, SoloState } from '../../lib/solo/controller';
 import { ChallengeCards } from '../results/ResultPieces';
 import { Countdown } from '../solo/Countdown';
@@ -33,6 +36,7 @@ export function SpectatorStage({
   headerActions,
   playerNotice,
 }: SpectatorStageProps) {
+  const touch = useTouchPrimary();
   const snapshot = state.snapshot;
   if (!snapshot) throw new Error('SpectatorStage needs a snapshot');
   const phase = snapshot.battle.phase;
@@ -57,6 +61,8 @@ export function SpectatorStage({
           />
         </div>
       </header>
+      {/* T-032: a spectator runs no BUILD preview; warm React for the REVEAL. */}
+      {!touch && <TemplateWarmup />}
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-6">
         {playerNotice}
         <ChallengeCards challenge={snapshot.challenge} />

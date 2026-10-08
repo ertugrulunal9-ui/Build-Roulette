@@ -12,8 +12,9 @@
  *   one live preview (reveal mode, storage wiped first) for the spotlighted build.
  * - **Thumbnails:** `thumb.webp` of each build (shipped by hand only) as an object URL, for
  *   the strip and the VOTE grid. Revoked when the battle ends or the controller goes.
- * - **Skip / frozen:** a viewer can skip the spotlighted build (or the watchdog finds it
- *   frozen): only this tab stops running it and shows its thumbnail instead. The room goes
+ * - **Skip / frozen / no packages:** a viewer can skip the spotlighted build (or the watchdog
+ *   finds it frozen, or its packages cannot load while the package CDN is down, T-032): only
+ *   this tab stops running it and shows its thumbnail instead. The room goes
  *   on; nothing is sent to the server. A watchdog crash is also a `preview_crash` analytics
  *   event (T-031, `previewHealth`), sent once the viewer ran the build again or the battle
  *   ended for this controller.
@@ -144,6 +145,12 @@ export interface RevealVoteState {
    * differently from a freeze: the build did nothing wrong.
    */
   failedToStart: readonly string[];
+  /**
+   * Build ids whose code or packages could not load in this tab (a `module-load` error from
+   * the shell; with the package CDN down, a package this browser never cached, T-032). Shown
+   * with the screenshot; the build did nothing wrong.
+   */
+  noPackages: readonly string[];
   host: { pending: 'next' | 'skip' | null; error: GameError | null };
   ballot: BallotState;
 }
@@ -158,6 +165,7 @@ export function initialRevealVoteState(battleId: string): RevealVoteState {
     skipped: [],
     frozen: [],
     failedToStart: [],
+    noPackages: [],
     host: { pending: null, error: null },
     ballot: {
       votes: {},
@@ -344,7 +352,7 @@ export class RevealVoteController {
     this.patch({ skipped: [...this.state.skipped, buildId] });
   }
 
-  /** Run it again (after a skip, a freeze or a failed start): a fresh preview. */
+  /** Run it again (after a skip, a freeze, a failed start or missing packages): a fresh preview. */
   watch(buildId: string): void {
     if (this.state.frozen.includes(buildId) || this.state.failedToStart.includes(buildId)) {
       this.previewHealth.restarted(buildId);
@@ -353,7 +361,18 @@ export class RevealVoteController {
       skipped: this.state.skipped.filter((id) => id !== buildId),
       frozen: this.state.frozen.filter((id) => id !== buildId),
       failedToStart: this.state.failedToStart.filter((id) => id !== buildId),
+      noPackages: this.state.noPackages.filter((id) => id !== buildId),
     });
+  }
+
+  /**
+   * The spotlight's code or packages could not load here (T-032: the shell's `module-load`
+   * error, usually the package CDN being unreachable): its screenshot shows instead, in this
+   * tab only. Display only, like every shell message: a build that sends one stops itself.
+   */
+  packagesFailed(buildId: string): void {
+    if (this.disposed || this.state.noPackages.includes(buildId)) return;
+    this.patch({ noPackages: [...this.state.noPackages, buildId] });
   }
 
   /**

@@ -2,8 +2,9 @@
  * Runs the real plugins in esbuild-wasm under Node (same wasm binary as the browser worker).
  */
 import * as esbuild from 'esbuild-wasm';
-import { describe, expect, it, vi } from 'vitest';
-import { bundle, cachedFetchText } from '../src/bundler/bundle';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { bundle, cachedFetchText, fetchTextFromNetwork } from '../src/bundler/bundle';
+import { PackageFetchError } from '../src/bundler/plugins';
 import type { BundleInput, FileMap } from '../src/types';
 
 const CDN = 'https://pkg.example.net';
@@ -88,6 +89,14 @@ describe('bundle() with esbuild-wasm', () => {
     expect(r.css).toContain('url(data:image/png;base64,');
     expect(r.importMap.imports['react']).toBe(`${CDN}/react@19.3.0`);
     expect(r.durationMs).toBeGreaterThan(0);
+    // T-032: the CDN URLs the bundle imports, once each (the shell names them on failure).
+    // React entry points as their import map URLs; not react/jsx-dev-runtime (not imported).
+    expect(r.packages).toEqual([
+      `${CDN}/react-dom@19.3.0/client?external=react,react-dom`,
+      `${CDN}/react@19.3.0/jsx-runtime?external=react,react-dom`,
+      `${CDN}/zustand@5.0.15/middleware${q}`,
+      `${CDN}/zustand@5.0.15${q}`,
+    ]);
   });
 
   it('defines NODE_ENV and minifies in production mode', async () => {
@@ -181,6 +190,27 @@ describe('bundle() with esbuild-wasm', () => {
     expect(r.diagnostics[0]?.text).toContain('Failed to fetch package CSS');
   });
 
+  it('says the package server is unreachable, or what it answered, for package CSS (T-032)', async () => {
+    const files = { 'src/main.tsx': `import 'animate.css/animate.min.css';` };
+    const down = await bundle(esbuild, input(files), {
+      cdnBaseUrl: CDN,
+      fetchText: () => Promise.reject(new PackageFetchError(null)),
+    });
+    expect(down.ok).toBe(false);
+    expect(down.diagnostics[0]).toMatchObject({ severity: 'error', file: 'src/main.tsx', line: 1 });
+    expect(down.diagnostics[0]?.text).toMatch(
+      /^Package server unreachable: animate\.css@4\.1\.1\/animate\.min\.css\n/,
+    );
+    const missing = await bundle(esbuild, input(files), {
+      cdnBaseUrl: CDN,
+      fetchText: () => Promise.reject(new PackageFetchError(404, 'pkg-cdn: no such file')),
+    });
+    expect(missing.diagnostics[0]?.text).toBe(
+      'Package server error (HTTP 404) for animate.css@4.1.1/animate.min.css: pkg-cdn: no such file',
+    );
+    expect(down.packages).toBeUndefined();
+  });
+
   it('warns when react and react-dom versions differ', async () => {
     const r = await bundle(
       esbuild,
@@ -221,5 +251,36 @@ describe('cachedFetchText', () => {
     await expect(f('bad')).rejects.toThrow('x');
     await Promise.resolve();
     expect(await f('bad')).toBe('body:bad');
+  });
+});
+
+describe('fetchTextFromNetwork (T-032)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+  const url = `${CDN}/animate.css@4.1.1/animate.min.css`;
+
+  it('returns the text and lets the HTTP cache answer (no cache override)', async () => {
+    const f = vi.fn<(u: string, init?: RequestInit) => Promise<Response>>(() =>
+      Promise.resolve(new Response('.a{}')),
+    );
+    vi.stubGlobal('fetch', f);
+    expect(await fetchTextFromNetwork(url)).toBe('.a{}');
+    expect(f).toHaveBeenCalledWith(url, { credentials: 'omit' });
+  });
+
+  it('turns no answer into PackageFetchError(null)', async () => {
+    vi.stubGlobal('fetch', () => Promise.reject(new TypeError('Failed to fetch')));
+    const e = await fetchTextFromNetwork(url).catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(PackageFetchError);
+    expect(e).toMatchObject({ status: null });
+  });
+
+  it('turns an HTTP error into PackageFetchError(status, first line of the body)', async () => {
+    vi.stubGlobal('fetch', () =>
+      Promise.resolve(new Response('pkg-cdn: overloaded\nretry later', { status: 503 })),
+    );
+    const e = await fetchTextFromNetwork(url).catch((x: unknown) => x);
+    expect(e).toMatchObject({ status: 503, detail: 'pkg-cdn: overloaded' });
   });
 });

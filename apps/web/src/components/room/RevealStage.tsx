@@ -13,7 +13,8 @@
  * - **Skip / stopped:** "Skip this build" lives outside the iframe, so it works even when
  *   the build hangs; it stops the build in this tab only and shows its screenshot (or
  *   thumbnail). The watchdog's crash states show the same fallback: "this build froze" (no
- *   pong for 5 s) or "this build couldn't start" (the sandbox never answered).
+ *   pong for 5 s) or "this build couldn't start" (the sandbox never answered), and so does a
+ *   build whose packages can't load while the package CDN is down (T-032).
  * - **Phones and tablets** (touch-primary, `useTouchPrimary`): each build shows its
  *   screenshot or thumbnail first, with a big "Tap to run live" button (docs/02 R2: mobile
  *   browsers isolate cross-site frames less, so running someone's build is the viewer's
@@ -62,7 +63,15 @@ export function buildImage(build: SnapshotBuild | undefined, thumb: string | nul
 
 /** What the spotlight shows in this tab. */
 export type SpotlightView =
-  'removed' | 'skipped' | 'frozen' | 'no_start' | 'still' | 'live' | 'loading' | 'unavailable';
+  | 'removed'
+  | 'skipped'
+  | 'frozen'
+  | 'no_start'
+  | 'no_packages'
+  | 'still'
+  | 'live'
+  | 'loading'
+  | 'unavailable';
 
 /**
  * The spotlight's content for this viewer: a build removed by a moderator never runs; then
@@ -83,6 +92,7 @@ export function spotlightView(
   if (showState.skipped.includes(buildId)) return 'skipped';
   if (showState.frozen.includes(buildId)) return 'frozen';
   if (showState.failedToStart.includes(buildId)) return 'no_start';
+  if (showState.noPackages.includes(buildId)) return 'no_packages';
   if (stillFirst && !tapped.includes(buildId)) return 'still';
   const bundle = showState.bundles[buildId];
   if (bundle?.status === 'ready') return 'live';
@@ -90,22 +100,33 @@ export function spotlightView(
   return 'loading';
 }
 
+/** Why this tab stopped running the spotlight (each shows the still image instead). */
+export type StoppedView = 'skipped' | 'frozen' | 'no_start' | 'no_packages';
+
+export function isStopped(view: SpotlightView): view is StoppedView {
+  return view === 'skipped' || view === 'frozen' || view === 'no_start' || view === 'no_packages';
+}
+
 /** The fallback of a build this tab stopped running, by why it stopped. */
-export const STOPPED: Record<'skipped' | 'frozen' | 'no_start', { testId: string; text: string }> =
-  {
-    skipped: {
-      testId: 'build-skipped',
-      text: 'You skipped this build. It keeps going for everyone else.',
-    },
-    frozen: {
-      testId: 'build-froze',
-      text: 'This build froze, so it was stopped on your screen. Everyone else keeps watching.',
-    },
-    no_start: {
-      testId: 'build-no-start',
-      text: 'This build couldn’t start on your screen (its sandbox never answered). Everyone else keeps watching.',
-    },
-  };
+export const STOPPED: Record<StoppedView, { testId: string; text: string }> = {
+  skipped: {
+    testId: 'build-skipped',
+    text: 'You skipped this build. It keeps going for everyone else.',
+  },
+  frozen: {
+    testId: 'build-froze',
+    text: 'This build froze, so it was stopped on your screen. Everyone else keeps watching.',
+  },
+  no_start: {
+    testId: 'build-no-start',
+    text: 'This build couldn’t start on your screen (its sandbox never answered). Everyone else keeps watching.',
+  },
+  // T-032: with the package CDN down, a package this browser never loaded can't load.
+  no_packages: {
+    testId: 'build-no-packages',
+    text: 'This build’s packages couldn’t load on your screen (the package server isn’t answering), so here is its screenshot. Everyone else keeps watching.',
+  },
+};
 
 interface RevealStageProps {
   battle: SoloController;
@@ -147,7 +168,7 @@ export function RevealStage({
   // Builds this viewer chose to run live (a touch device starts each one as a still image).
   const [tapped, setTapped] = useState<readonly string[]>([]);
   const view = spotlightView(showState, buildId, { stillFirst, tapped, removed });
-  const stopped = view === 'skipped' || view === 'frozen' || view === 'no_start';
+  const stopped = isStopped(view);
   const image = buildImage(fallback, buildId ? (showState.thumbs[buildId] ?? null) : null);
   const isHost = snapshot.me.is_host === true;
   const hostName = snapshot.players.find(
@@ -281,7 +302,7 @@ export function RevealStage({
             <div className="relative min-h-0 flex-1 bg-white">
               {view === 'removed' ? (
                 <RemovedCard />
-              ) : stopped ? (
+              ) : isStopped(view) ? (
                 <StillImage
                   image={image}
                   name={name}
@@ -310,6 +331,9 @@ export function RevealStage({
                   health={show.previewHealth}
                   onCrash={(id, crash) => {
                     show.previewCrashed(id, crash);
+                  }}
+                  onPackagesFailed={(id) => {
+                    show.packagesFailed(id);
                   }}
                 />
               ) : view === 'unavailable' ? (
@@ -377,6 +401,7 @@ function LiveBuild({
   title,
   health,
   onCrash,
+  onPackagesFailed,
 }: {
   buildId: string;
   build: PreviewBuild;
@@ -384,16 +409,20 @@ function LiveBuild({
   health: PreviewHealth;
   /** The watchdog stopped the build: it froze, or it never started. */
   onCrash: (buildId: string, crash: PreviewCrash) => void;
+  /** Its code or packages could not load (the shell's `module-load` error, T-032). */
+  onPackagesFailed: (buildId: string) => void;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const onCrashRef = useRef(onCrash);
+  const onPackagesFailedRef = useRef(onPackagesFailed);
   const titleRef = useRef(title);
   const healthRef = useRef(health);
   useEffect(() => {
     onCrashRef.current = onCrash;
+    onPackagesFailedRef.current = onPackagesFailed;
     titleRef.current = title;
     healthRef.current = health;
-  }, [onCrash, title, health]);
+  }, [onCrash, onPackagesFailed, title, health]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -413,12 +442,18 @@ function LiveBuild({
     const offCrash = preview.on('crash', (crash) => {
       onCrashRef.current(buildId, crash);
     });
+    // A package that can't load (or still hasn't after 8 s) while the package CDN is down:
+    // the screenshot is more use to the room than a blank frame (T-032).
+    const offError = preview.on('error', (m) => {
+      if (m.kind === 'module-load') onPackagesFailedRef.current(buildId);
+    });
     // Wipe what an earlier build left on the sandbox origin, in a fresh iframe; the load
     // waits for the new shell, which handles the wipe first.
     void preview.resetStorage(10_000).catch(() => undefined);
     preview.load(build, 'reveal');
     return () => {
       offCrash();
+      offError();
       preview.dispose();
       stopFollowing();
     };

@@ -16,7 +16,8 @@
  * Flags: --next (run `next dev`), --start-stack (run `supabase start` when the stack is not
  * up; needs Docker), --realtime (fail when the stack runs without Realtime, which rooms need:
  * private channels, broadcasts from the database, Presence). Env: BR_APP_ORIGINS (default http://localhost:3000), SHELL_PORT (4321),
- * CDN_PORT (4322), APP_PORT (3000, with --next), CAPTURE_HMAC_SECRET (default: random per
+ * CDN_PORT (4322), CDN_CONTROL_PORT (4323: `POST /cdn-outage?mode=refuse|error|hang|off`
+ * simulates a package CDN outage, T-032 e2e), APP_PORT (3000, with --next), CAPTURE_HMAC_SECRET (default: random per
  * run), SUPABASE_INTERNAL_IMAGE_REGISTRY (passed to `supabase start`), and the stack's
  * API_URL / ANON_KEY / SERVICE_ROLE_KEY (default: `supabase status -o env`), and
  * BR_SERVICES_LOG (a file that also gets every line, each prefixed with an ISO timestamp:
@@ -29,7 +30,7 @@ import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startShellServer } from '@br/sandbox-shell/server';
 // The mock CDN lives in @br/runtime's test support (imported by path, like dev:sandbox).
-import { startMockCdn } from '../../../packages/runtime/test-support/mock-cdn';
+import { startMockCdn, startOutageControl } from '../../../packages/runtime/test-support/mock-cdn';
 
 const SUPABASE_CLI = 'supabase@2.119.0';
 // Realtime stays on: rooms need it (the solo game does not).
@@ -47,6 +48,7 @@ const appOrigins = (env['BR_APP_ORIGINS'] ?? `http://localhost:${String(appPort)
   .filter(Boolean);
 const shellPort = Number(env['SHELL_PORT'] ?? 4321);
 const cdnPort = Number(env['CDN_PORT'] ?? 4322);
+const controlPort = Number(env['CDN_CONTROL_PORT'] ?? 4323);
 
 const logFd = (() => {
   const file = env['BR_SERVICES_LOG'];
@@ -151,7 +153,8 @@ const shell = await startShellServer({
 });
 log(`sandbox shell ${shell.shellUrl}  (allows ${appOrigins.join(', ')})`);
 log(`capture page  ${shell.captureUrl}`);
-log(`mock CDN      ${cdn.url}`);
+const control = await startOutageControl(cdn, controlPort);
+log(`mock CDN      ${cdn.url}  (outages: POST ${control.url}/cdn-outage?mode=…)`);
 
 const children: ChildProcess[] = [];
 let stopping = false;
@@ -244,7 +247,7 @@ async function stop(code: number): Promise<void> {
   for (const c of children) c.kill('SIGTERM');
   // The capture worker finishes (or hands back) its current job first; cap the wait.
   await Promise.race([Promise.all(exited), new Promise((r) => setTimeout(r, 35_000))]);
-  await Promise.all([shell.close(), cdn.close()]);
+  await Promise.all([shell.close(), cdn.close(), control.close()]);
   process.exit(code);
 }
 process.on('SIGINT', () => void stop(0));

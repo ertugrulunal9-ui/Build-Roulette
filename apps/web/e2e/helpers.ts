@@ -1,4 +1,10 @@
-import { expect, type FrameLocator, type Locator, type Page } from '@playwright/test';
+import {
+  expect,
+  type APIRequestContext,
+  type FrameLocator,
+  type Locator,
+  type Page,
+} from '@playwright/test';
 
 /**
  * Clicks `target` once the browser really routes pointer input at its centre to it.
@@ -42,6 +48,25 @@ export async function clickRouted(target: Locator): Promise<void> {
   await target.click();
 }
 
+/**
+ * Starts or ends a simulated package CDN outage (T-032) through the control endpoint of
+ * scripts/sandbox-servers.ts and scripts/solo-services.ts: `refuse` (connection refused),
+ * `error` (502 without CORS headers, like an edge error page), `hang` (no answer until it
+ * ends) or `off`.
+ */
+export async function setCdnOutage(
+  via: Page | APIRequestContext,
+  mode: 'refuse' | 'error' | 'hang' | 'off',
+): Promise<void> {
+  const port = process.env['CDN_CONTROL_PORT'] ?? '4323';
+  const request = 'request' in via ? via.request : via;
+  const res = await request.post(`http://127.0.0.1:${port}/cdn-outage?mode=${mode}`);
+  expect(res.status()).toBe(200);
+}
+
+/** The package CDN's origin as the e2e servers run it (`NEXT_PUBLIC_PKG_CDN_URL`'s default). */
+export const CDN_ORIGIN = `http://localhost:${process.env['CDN_PORT'] ?? '4322'}`;
+
 /** The user's document lives in the shell's child iframe: preview iframe -> build iframe. */
 export function buildFrame(page: Page): FrameLocator {
   return page.frameLocator('[data-testid=preview-frame]').frameLocator('iframe');
@@ -78,4 +103,27 @@ export async function editorText(page: Page): Promise<string> {
   // CodeMirror renders one .cm-line per line (only visible ones, fine for short files).
   const lines = await page.locator('[data-testid=code-editor] .cm-line').allTextContents();
   return lines.join('\n');
+}
+
+/** Name entry → Spin. Returns the battle id (from `?battle=`). */
+export async function startBattle(page: Page, name: string): Promise<string> {
+  await page.goto('/');
+  await page.getByTestId('play-solo').click();
+  await expect(page).toHaveURL(/\/play$/);
+  const input = page.getByTestId('display-name');
+  await expect(input).not.toHaveValue(''); // a random fun default
+  await input.fill(name);
+  await page.getByRole('button', { name: 'Spin', exact: true }).click();
+  await expect(page.getByTestId('spin')).toBeVisible();
+  await expect(page).toHaveURL(/[?&]battle=[0-9a-f-]{36}/);
+  return new URL(page.url()).searchParams.get('battle') ?? '';
+}
+
+/** Waits until SPIN is over and the template's first preview is up. */
+export async function waitForBuild(page: Page): Promise<void> {
+  await expect(page.getByTestId('spin')).toBeHidden({ timeout: 30_000 });
+  await expect(page.getByTestId('countdown')).toHaveAttribute('data-level', /normal|low/);
+  await expect(page.getByTestId('build-status')).toHaveText(/^Built in \d+ ms$/, {
+    timeout: 30_000,
+  });
 }

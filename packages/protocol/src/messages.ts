@@ -101,6 +101,18 @@ export const LoadSchema = z.object({
   css: boundedString(LIMITS.bundleCssMaxChars),
   importMap: ImportMapSchema,
   mode: RunModeSchema,
+  /**
+   * Optional (T-032): the package CDN URLs the bundle imports directly (CDN module URLs, and
+   * the import map URLs of the entry points it imports). The shell never loads anything
+   * because of this list; it only checks these URLs (then the rest of the import map) to name
+   * the package that could not load when the module graph fails or stalls ("Package server
+   * unreachable: zustand@5.0.15"). Older shells ignore it.
+   */
+  packages: z.optional(
+    z
+      .array(z.string().check(z.maxLength(LIMITS.importMapValueMaxChars), z.regex(URL_RE)))
+      .check(z.maxLength(LIMITS.loadPackagesMax)),
+  ),
 });
 
 export const ResetStorageSchema = z.object({

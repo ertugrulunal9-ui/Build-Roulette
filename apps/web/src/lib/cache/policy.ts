@@ -9,7 +9,9 @@
  *   in the background (stale-while-revalidate);
  * - `expire`: after this, a request waits for a fresh copy (honoured by `next start` and by
  *   every `'use cache'` read; the OpenNext cache interceptor only looks at `revalidate`);
- * - `stale`: how long the browser's router may reuse the payload without asking.
+ * - `stale`: how long the browser's router may reuse the payload without asking. 30 s
+ *   everywhere: short, so a takedown does not hide behind a router cache for long, and the
+ *   least Next still treats as prefetchable.
  *
  * A `'use cache'` result lowers the lifetime of the ISR page that reads it, so the page of a
  * battle lives exactly as long as its data.
@@ -29,7 +31,7 @@ export interface CacheLifetime {
  * it, and the takedown revalidates its tag. The hour is a safety net (a takedown made with
  * SQL, or a tag write that failed), not something the page needs.
  */
-export const SETTLED_BATTLE: CacheLifetime = { stale: 300, revalidate: 3600, expire: 86_400 };
+export const SETTLED_BATTLE: CacheLifetime = { stale: 30, revalidate: 3600, expire: 86_400 };
 
 /**
  * A battle in RESULTS, or DESTROYED while its destroy job has not finished: the screenshots
@@ -94,6 +96,24 @@ export function takedownTags(battleId: unknown): string[] {
     ? [battleTag(battleId)]
     : [];
 }
+
+/**
+ * The paths a takedown in battle `battleId` expires a second time, TAKEDOWN_REEXPIRE_MS
+ * later (app/admin/actions.ts): the battle's page and its OG image.
+ */
+export function takedownPaths(battleId: unknown): string[] {
+  if (takedownTags(battleId).length === 0) return [];
+  const id = String(battleId).toLowerCase();
+  return [`/battles/${id}`, `/battles/${id}/opengraph-image`];
+}
+
+/**
+ * How long after a takedown its pages are expired a second time: longer than any render of
+ * them takes, so a copy rendered from data read just before the takedown, and stored just
+ * after it, is thrown away too. Well within the 30 s Workers keep `waitUntil` work alive
+ * after the response.
+ */
+export const TAKEDOWN_REEXPIRE_MS = 10_000;
 
 /**
  * The tags of one page of a player's history: the player's, plus one per battle listed (a

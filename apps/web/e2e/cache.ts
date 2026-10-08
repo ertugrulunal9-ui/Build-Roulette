@@ -4,7 +4,7 @@
  * both servers already send.
  */
 import { createHash } from 'node:crypto';
-import type { APIResponse } from '@playwright/test';
+import { expect, type APIRequestContext, type APIResponse } from '@playwright/test';
 
 /**
  * `HIT`, `STALE` or `MISS` for an ISR page or route, null for a dynamic one. `next start`
@@ -35,3 +35,24 @@ export async function bodyHash(res: APIResponse): Promise<string> {
 
 /** The runtime under test, for messages. */
 export const APP_SERVER = process.env['E2E_APP_SERVER'] === 'workers' ? 'workers' : 'next start';
+
+/**
+ * Requests `path` until the answer comes from the cache, and returns that answer. The first
+ * request of a page renders it; the copy is stored right after the response (on Workers in
+ * `waitUntil`), and a copy past its `revalidate` time is served once more while it
+ * regenerates, so the hit may take a request or two.
+ */
+export async function cachedCopy(request: APIRequestContext, path: string): Promise<APIResponse> {
+  let last: APIResponse | null = null;
+  await expect
+    .poll(
+      async () => {
+        last = await request.get(path);
+        return cacheStatus(last);
+      },
+      { message: `${path} served from the cache`, timeout: 15_000, intervals: [250] },
+    )
+    .toBe('HIT');
+  if (!last) throw new Error('unreachable');
+  return last;
+}

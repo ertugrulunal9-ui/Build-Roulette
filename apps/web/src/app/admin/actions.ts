@@ -10,10 +10,11 @@
  * the battle's page, its OG image and the history pages that list it. Dismissing reports
  * changes nothing public (reports are never shown).
  */
-import { updateTag } from 'next/cache';
+import { revalidatePath, updateTag } from 'next/cache';
 import { cookies, headers } from 'next/headers';
 import { notFound, redirect } from 'next/navigation';
-import { takedownTags } from '../../lib/cache/policy';
+import { after } from 'next/server';
+import { TAKEDOWN_REEXPIRE_MS, takedownPaths, takedownTags } from '../../lib/cache/policy';
 import {
   ACCESS_COOKIE,
   REFRESH_COOKIE,
@@ -92,6 +93,28 @@ export async function signOutAction(): Promise<void> {
   redirect('/');
 }
 
+/**
+ * Expires every cached copy that shows battle `battleId` (its page, its OG image, the history
+ * pages that list it): the next visitor waits for a fresh render instead of getting the old
+ * copy while it regenerates. The id comes from the RPC's answer, not from the form.
+ *
+ * A render that read the battle just before the takedown can store its copy just after
+ * this, and that copy would look newer than the expiry. So the battle's page and OG image
+ * are expired once more a little later, after the response (`after`: `waitUntil` on
+ * Workers), by path: OpenNext writes a tag only once per request, and a path expiry also
+ * reaches the cached data those two read. (A history's data is at most a minute old anyway.)
+ */
+function expirePublicCopies(battleId: unknown): void {
+  const tags = takedownTags(battleId);
+  if (tags.length === 0) return;
+  for (const tag of tags) updateTag(tag);
+  const paths = takedownPaths(battleId);
+  after(async () => {
+    await new Promise((resolve) => setTimeout(resolve, TAKEDOWN_REEXPIRE_MS));
+    for (const path of paths) revalidatePath(path);
+  });
+}
+
 function backTo(formData: FormData, params: Record<string, string>): string {
   const view = field(formData, 'view');
   const q = new URLSearchParams(params);
@@ -126,10 +149,8 @@ export async function takeDownAction(formData: FormData): Promise<void> {
     'admin_take_down_build',
     { p_build_id: buildId, p_note: note || null },
   );
-  // The battle id comes from the server's answer, not from the form. `updateTag` expires the
-  // copies at once: the next visitor waits for a fresh render instead of getting the cached
-  // one while it regenerates. Also on a retry (cheap, and it repairs a missed revalidation).
-  if (res.data) for (const tag of takedownTags(res.data.battle_id)) updateTag(tag);
+  // Also on a retry: cheap, and it repairs a revalidation that went missing.
+  if (res.data) expirePublicCopies(res.data.battle_id);
   redirect(
     backTo(
       formData,

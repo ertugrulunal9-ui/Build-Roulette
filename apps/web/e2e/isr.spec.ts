@@ -1,5 +1,5 @@
 import { expect, test, type APIRequestContext, type Browser } from '@playwright/test';
-import { APP_SERVER, bodyHash, cacheStatus, sMaxAge } from './cache';
+import { APP_SERVER, bodyHash, cacheStatus, cachedCopy, sMaxAge } from './cache';
 import { anonymousUserId, assertUuid, seedAdmin, sql, uploadScreenshot } from './stack';
 
 /**
@@ -112,18 +112,17 @@ test('a settled battle is served from the cache until a takedown revalidates it'
   // ─── First visits fill the cache; the second request is a hit ───────────────────
   const first = await get(request, battlePath);
   expect(first.status()).toBe(200);
+  expect(cacheStatus(first)).toBe('MISS');
   expect(await first.text()).toContain('Probe One');
-  const second = await get(request, battlePath);
-  expect(cacheStatus(second)).toBe('HIT');
+  const second = await cachedCopy(request, battlePath);
+  expect(second.headers()['set-cookie']).toBeUndefined();
   // Settled: an hour (SETTLED_BATTLE in lib/cache/policy.ts).
   expect(sMaxAge(second)).toBeGreaterThan(3500);
 
   const og1 = await get(request, ogPath);
   expect(og1.headers()['content-type']).toBe('image/png');
   const ogBefore = await bodyHash(og1);
-  const og2 = await get(request, ogPath);
-  expect(cacheStatus(og2)).toBe('HIT');
-  expect(await bodyHash(og2)).toBe(ogBefore);
+  expect(await bodyHash(await cachedCopy(request, ogPath))).toBe(ogBefore);
 
   const history1 = await get(request, historyPath);
   expect(await history1.text()).toContain('Probe One');
@@ -158,6 +157,7 @@ test('a settled battle is served from the cache until a takedown revalidates it'
   await item.getByTestId('admin-take-down').click();
   await item.getByTestId('admin-take-down-confirm').click();
   await expect(admin.getByTestId('admin-flash')).toHaveAttribute('data-done', 'taken_down');
+  const takenDownAt = Date.now();
   await context.close();
 
   // ─── At once, on the very next request of each: fresh copies ────────────────────
@@ -179,10 +179,24 @@ test('a settled battle is served from the cache until a takedown revalidates it'
   expect(historyAfter).not.toContain('Probe One');
 
   // ─── …and the fresh copies are cached again ─────────────────────────────────────
-  const again = await get(request, battlePath);
-  expect(cacheStatus(again)).toBe('HIT');
-  expect(await again.text()).toContain('Removed by moderators');
-  expect(cacheStatus(await get(request, ogPath))).toBe('HIT');
+  expect(await (await cachedCopy(request, battlePath)).text()).toContain('Removed by moderators');
+  expect(await bodyHash(await cachedCopy(request, ogPath))).not.toBe(ogBefore);
+
+  // ─── The second expiry, TAKEDOWN_REEXPIRE_MS (10 s) after the takedown ──────────
+  // It throws away a copy rendered from data read just before the takedown and stored just
+  // after it. Here: the copies cached right after the takedown, and the data under them,
+  // are thrown away once more, so a change made since then shows up. That proves `after()`
+  // runs on this server, and that a path expiry reaches the page's cached data too.
+  sql(`update public.builds set name = 'Probe Two (late)' where id = '${fx.juno.build}'`);
+  expect(await (await get(request, battlePath)).text()).not.toContain('(late)');
+  await expect
+    .poll(async () => (await get(request, battlePath)).text(), {
+      timeout: 30_000,
+      intervals: [1_000],
+    })
+    .toContain('Probe Two (late)');
+  expect(Date.now() - takenDownAt).toBeGreaterThanOrEqual(9_000);
+  expect(await (await get(request, battlePath)).text()).toContain('Removed by moderators');
 });
 
 test('a battle that is not public yet is not cached as a 404 for good', async ({ request }) => {
@@ -191,9 +205,8 @@ test('a battle that is not public yet is not cached as a 404 for good', async ({
 
   const missing = await get(request, battlePath);
   expect(missing.status()).toBe(404);
-  const cachedMissing = await get(request, battlePath);
+  const cachedMissing = await cachedCopy(request, battlePath);
   expect(cachedMissing.status()).toBe(404);
-  expect(cacheStatus(cachedMissing)).toBe('HIT');
   // Seconds, not the hour of a settled battle. (`next start` says so in s-maxage; OpenNext
   // sends `no-store` with every 404, whatever its own copy's lifetime.)
   if (APP_SERVER === 'next start') expect(sMaxAge(cachedMissing)).toBe(5);

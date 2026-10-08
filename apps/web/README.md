@@ -10,7 +10,7 @@ The Next.js app (App Router). Routes:
 | `/playground` | Single-player editor and live preview, no game. |
 | `/r/[code]` | A room (M3): join → lobby → SPIN → BUILD → SHIP → REVEAL → VOTE → RESULTS → DESTROY → lobby (rematch). |
 | `/u/[id]` | A player's history (M4): their finished battles, newest first, server-rendered from `get_player_history` with the anon key, paginated (`?before=…&before_battle=…`). Rendered per request from data at most a minute old. |
-| `/admin` | Moderation (M5, T-024), server-rendered: the report queue (dismiss, take down), the battle / room event logs (`?q={battle id or room code}`) and the admin log. **A plain 404 for everyone who is not a signed-in admin.** |
+| `/admin` | Moderation (M5, T-024), server-rendered: the report queue (dismiss, take down), the battle / room event logs (`?q={battle id or room code}`), the admin log, and **Health** (T-030: `admin_ops_health`, the signals of docs/runbooks/). **A plain 404 for everyone who is not a signed-in admin.** |
 | `/admin/sign-in` | The moderators' email/password sign-in (not linked, not indexed). |
 
 ## Caching (T-026)
@@ -36,6 +36,35 @@ side (R2, D1, Durable Object queue) in [DEPLOY.md](DEPLOY.md), "Caching".
   about its viewer.
 - Needs `experimental.useCache` (deprecated in Next 16 in favour of `cacheComponents`, which
   would change every route; see DEPLOY.md).
+
+## Observability (T-030)
+
+Error reporting (Sentry) and product analytics (PostHog), both **off unless configured**
+(DEPLOY.md "Observability" has the setup; `src/lib/telemetry/`):
+
+- **Browser errors:** `src/instrumentation-client.ts` starts `client-errors.ts` only with
+  `NEXT_PUBLIC_SENTRY_DSN`: two listeners keep the page's first errors, and when the browser
+  is idle the Sentry chunk (`sentry-browser.ts`, ~28 KiB gzip, never loaded without a DSN)
+  takes over with an allowlist of integrations (no breadcrumbs, no console, no session
+  pings, no `addEventListener` wrapping) and `allowUrls` = the page's own origin, so the
+  sandbox iframe's errors (another origin) and build code can never be reported.
+  `app/global-error.tsx` reports render errors the window never sees.
+- **Server errors:** `src/instrumentation.ts` → `onRequestError` → `lib/telemetry/server.ts`
+  (`@br/telemetry`'s reporter on `@sentry/core`: the same code on `next start` and on
+  Workers, `waitUntil` there), with `SENTRY_DSN` (runtime) or the public DSN.
+- **Privacy:** every event goes through `scrubSentryEvent` (`packages/telemetry`): no query
+  strings or fragments, route templates instead of paths (`/r/[code]`), UUIDs, emails and
+  tokens masked in messages, no breadcrumbs, `extra`, cookies, headers or bodies; the user is
+  `hashUserId(anonymous user id)` (32 hex) and only when Do Not Track / GPC is off. Tags:
+  `phase`, `mode`, `room_id`, `battle_id` (random UUIDs), `route`, the release.
+- **Analytics:** `analytics.ts`, a typed event module posting to PostHog's capture API (no
+  SDK): `room_created`, `room_joined`, `battle_started`, `rematch`, `build_shipped`
+  (manual/auto), `vote_cast`, `battle_completed`, `report_filed`, and `sync_health` once per
+  battle and client from the sync engine's counters (`RoomSync.stats`: missed events,
+  refetches, gaps, degraded time, rejoins, server-closed channels, channel errors). No
+  autocapture, no replay, no cookies or storage, no person profiles; off with DNT/GPC.
+- `/admin` → Health has "Send a test error to Sentry" (it throws in a server action, so the
+  error takes the real path and the screen shows its digest).
 
 ## Moderation (T-024)
 
@@ -210,6 +239,12 @@ after changing them. The defaults are the local setup above.
 | `NEXT_PUBLIC_PKG_CDN_URL` | `http://localhost:4322` | esm.sh-compatible package CDN |
 | `NEXT_PUBLIC_SITE_URL` | `http://localhost:3000` | The app's public origin (`metadataBase`, absolute OG image URLs) |
 | `NEXT_PUBLIC_TURNSTILE_SITE_KEY` | unset (no Turnstile) | Cloudflare Turnstile site key for anonymous sign-ups. Set it only together with Turnstile in Supabase Auth (the matching secret), or every sign-up fails. |
+| `NEXT_PUBLIC_SENTRY_DSN` | unset (no error reporting) | Sentry DSN for browser errors (and the server's, unless `SENTRY_DSN` is set at runtime) |
+| `NEXT_PUBLIC_SENTRY_ENVIRONMENT` | `production` | Sentry environment |
+| `NEXT_PUBLIC_POSTHOG_KEY` | unset (no analytics) | PostHog project API key |
+| `NEXT_PUBLIC_POSTHOG_HOST` | `https://eu.i.posthog.com` | PostHog ingest host (`https://us.i.posthog.com` for a US project) |
+| `BR_RELEASE` | the git commit | The release reported with errors and events |
+| `SENTRY_DSN`, `SENTRY_ENVIRONMENT` | unset | **Runtime** (not inlined): the server's DSN and environment |
 
 The web app never holds the service-role key: players sign in anonymously
 (`signInAnonymously`), every write goes through RPCs and storage RLS, and the results page
@@ -292,6 +327,8 @@ CDN (T-006) replaces it.
 | Moderation: report dialog, "Removed by moderators" | `src/components/moderation/*`, `src/lib/moderation/report.ts` |
 | Admin page, sign-in, session cookies, server actions | `src/app/admin/*`, `src/lib/admin/*` |
 | Turnstile on anonymous sign-up | `src/lib/supabase/turnstile.ts`, `src/lib/supabase/browser.ts` |
+| Error reporting and analytics (env-gated), the hashed user and tags | `src/instrumentation*.ts`, `src/lib/telemetry/*`, `src/app/global-error.tsx`, `packages/telemetry` |
+| Admin Health section, its findings | `src/app/admin/health-view.tsx`, `src/lib/admin/health.ts` |
 
 ## Tests
 
@@ -305,7 +342,18 @@ pnpm --filter @br/web test:e2e:multi   # rooms: 3+ browser contexts (and phones)
 pnpm --filter @br/web test:e2e:mobile  # only the phone spec of the above
 pnpm --filter @br/web test:e2e:chaos   # rooms under chaos (~14 min), same stack
 CHAOS_SHARD=2 pnpm --filter @br/web test:e2e:chaos   # one of its 3 shards (~5 min each)
+pnpm --filter @br/web test:e2e:telemetry      # error reporting + analytics against a fake ingest, on and off (REAL stack)
+pnpm --filter @br/web test:e2e:cf:telemetry   # the "on" half against the Workers preview
 ```
+
+- `test:e2e:telemetry` (`playwright.telemetry.config.ts`) builds twice. First with the
+  Sentry DSN and the PostHog host pointing at a local fake ingest (`@br/telemetry/testing`,
+  port 4399, started by the spec): a browser error, the admin's server test error and the
+  `room_created` / `room_joined` events arrive scrubbed (no query, room code, name, email or
+  raw user id; one hashed id); with GPC no analytics and no user; nothing from the sandbox
+  iframe (`e2e/telemetry-on.spec.ts`). Then the plain build: no Sentry chunk is loaded and no
+  request goes to any host but the app, Supabase and the sandbox servers
+  (`e2e/telemetry-off.spec.ts`). It leaves the plain build in `.next`.
 
 - `test:e2e` runs `next build`, then Playwright starts `next start -p 3100` and
   `scripts/sandbox-servers.ts` (allowing `http://localhost:3100`) and runs `e2e/` except the

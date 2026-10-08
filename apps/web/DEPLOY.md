@@ -39,8 +39,9 @@ placeholder geo data.
 1. **Create a Cloudflare account** at <https://dash.cloudflare.com/sign-up>.
 2. **Choose the Workers Paid plan** (Workers & Pages → Plans, about US$5/month). The free
    plan allows only 10 ms of CPU per request, which server rendering React pages can exceed,
-   and caps the Worker at 3 MB compressed. Today's Worker is about 2.1 MB compressed
-   (`wrangler deploy --dry-run`, T-026; 1.9 MB before the cache), and a `proxy.ts`
+   and caps the Worker at 3 MB compressed. Today's Worker is about 2.2 MB compressed
+   (`wrangler deploy --dry-run`, T-030; 2.1 MB before error reporting, 1.9 MB before the
+   cache), and a `proxy.ts`
    (middleware) would add about 1.2 MB (measured in the T-012 spike). Paid allows 10 MB.
 3. **Log in from your machine** (opens a browser once):
    ```sh
@@ -105,6 +106,77 @@ pnpm --filter @br/web cf:deploy
 - **Non-secret runtime settings** go in `wrangler.jsonc` under `"vars": { ... }`.
 - **Locally**, put runtime secrets in `apps/web/.dev.vars` (`NAME=value` lines). It is
   gitignored. `cf:preview` reads it.
+
+## Observability (T-030)
+
+Error reporting (Sentry) and product analytics (PostHog) are **off until you configure
+them**: without the variables below no SDK is loaded, no listener is installed and nothing
+is sent (checked by `pnpm --filter @br/web test:e2e:telemetry`). What is sent, and what never
+is, is in `apps/web/README.md` "Observability" and `packages/telemetry/src/scrub.ts`.
+
+### Accounts
+
+1. **Sentry** (<https://sentry.io>, the free Developer plan is enough to start; pick the EU
+   data region if you prefer). Create one project, platform *JavaScript*: browser errors,
+   server errors (`service: web`), the capture worker and the package CDN all report to it,
+   told apart by the `service` and `runtime` tags. Copy its DSN (Project → Settings →
+   Client Keys). Then, in Project → Settings:
+   - Security & Privacy: turn on **Prevent Storing of IP Addresses**; keep the default data
+     scrubbers on;
+   - Client Keys → the key → **Allowed Domains**: your app origin (the DSN is public by
+     design; this stops other sites from posting to it).
+2. **PostHog** (<https://posthog.com>, EU Cloud recommended). Create a project and copy its
+   **Project API key** (`phc_…`). Project settings: turn on **Discard client IP data**. The
+   app does not use posthog-js, so autocapture, session replay and surveys never run; leave
+   them off.
+
+### Variables
+
+| Variable | Where | When | What |
+|---|---|---|---|
+| `NEXT_PUBLIC_SENTRY_DSN` | the shell running `cf:build` | build time | browser errors; also the server's DSN unless `SENTRY_DSN` is set |
+| `NEXT_PUBLIC_SENTRY_ENVIRONMENT` | `cf:build` | build time | optional, default `production` (e.g. `staging`) |
+| `NEXT_PUBLIC_POSTHOG_KEY` | `cf:build` | build time | product analytics |
+| `NEXT_PUBLIC_POSTHOG_HOST` | `cf:build` | build time | default `https://eu.i.posthog.com`; `https://us.i.posthog.com` for a US project |
+| `BR_RELEASE` | `cf:build` | build time | optional; default the git commit (`build-roulette-web@<sha>` in Sentry) |
+| `SENTRY_DSN` | `wrangler secret put SENTRY_DSN` (or `"vars"`) | runtime | optional: a different DSN for server errors |
+| `SENTRY_ENVIRONMENT` | `"vars"` in `wrangler.jsonc` | runtime | optional: the server's environment |
+| `SENTRY_DSN`, `SENTRY_ENVIRONMENT`, `SENTRY_RELEASE` | the capture worker's and the package CDN's environment | runtime | their error reporting (`apps/capture-worker/.env.example`, `apps/pkg-cdn/README.md`) |
+
+```sh
+NEXT_PUBLIC_SENTRY_DSN=https://<key>@<org>.ingest.de.sentry.io/<project> \
+NEXT_PUBLIC_POSTHOG_KEY=phc_<key> \
+NEXT_PUBLIC_POSTHOG_HOST=https://eu.i.posthog.com \
+  pnpm --filter @br/web cf:build        # plus the variables of "Deploying"
+pnpm --filter @br/web cf:deploy
+```
+
+### Check it after a deploy
+
+- `/admin` → Health → **Send a test error to Sentry**: the page shows the error screen with
+  an error code; Sentry gets "Build Roulette test error (thrown from /admin on purpose)"
+  with `runtime: workerd` and that code as its `digest` tag. "Server error reporting is off"
+  means no DSN reached the Worker.
+- Create a room: PostHog → Activity shows `room_created` and `room_joined` within seconds,
+  with a 32-character `distinct_id` and no person profile.
+
+### What it costs
+
+Measured with `cf:build` + `wrangler deploy --dry-run` and the build's chunks (T-030):
+
+| | Before | After |
+|---|---|---|
+| Worker (gzip) | 2161.7 KiB | 2197.8 KiB (+36 KiB: the server reporter on `@sentry/core`) |
+| JS of `/` (gzip), no DSN or key | 177.5 KiB | 178.4 KiB (+0.9 KiB: settings, the error screen) |
+| JS of `/` (gzip), with DSN and key | 177.5 KiB | 178.9 KiB, plus the Sentry chunk (27.8 KiB) loaded when the browser is idle |
+
+### Not done (yet)
+
+- Source maps are not uploaded, so browser stack traces in Sentry point into minified
+  chunks (the server's are readable). Uploading them needs a Sentry auth token at build time
+  (`sentry-cli sourcemaps upload` on `.next/static`); add it when the traces are needed.
+- No Sentry alerts are created by the code: add an alert rule on new issues for
+  `service:web` and on `service:capture-worker` `claim.failed`.
 
 ## Custom domain
 
@@ -203,7 +275,7 @@ lives for seconds.
 
 | Limit | Value | Us today |
 |---|---|---|
-| Worker size (compressed) | 3 MB free / 10 MB paid | ~2.1 MB (T-026) |
+| Worker size (compressed) | 3 MB free / 10 MB paid | ~2.2 MB (T-030) |
 | One static asset | 25 MiB | `esbuild.wasm` is 13.3 MiB |
 | Static asset count | 20,000 per version | ~25 |
 | CPU per request | 10 ms free / 30 s default on paid | SSR pages are small |

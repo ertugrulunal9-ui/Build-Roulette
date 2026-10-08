@@ -37,7 +37,9 @@ supabase/
 │   ├── 20261008120500_takedown.sql                    takedown job, taken-down builds in every read (T-024)
 │   ├── 20261008130000_takedown_awards.sql             a build taken down after RESULTS loses its awards in every
 │   │                                                    public read and through RLS; rows kept (T-028)
-│   └── 20261008140000_heartbeat_battle_version.sql    heartbeat also returns battle_id and battle_version (T-029)
+│   ├── 20261008140000_heartbeat_battle_version.sql    heartbeat also returns battle_id and battle_version (T-029)
+│   └── 20261008150000_ops_health.sql                  admin_ops_health: the signals of /admin Health and the
+│                                                        runbooks; two indexes for its windows (T-030)
 ├── tests/                       pgTAP tests (*.test.sql), one transaction each, rolled back
 │   ├── 00_schema.test.sql       tables/enums exist, RLS on every table, policies, table privileges
 │   ├── 01_constraints.test.sql  room codes, time limits, one build per player, vote PK, cascades
@@ -70,8 +72,10 @@ supabase/
 │   ├── 23_takedown_awards.test.sql  a rank-1 build with vote and auto awards taken down in RESULTS: no awards in
 │   │                            get_public_battle / get_player_history / get_battle_snapshot / RLS, the others
 │   │                            keep theirs, nothing reassigned or re-ranked, rows untouched, solo too (T-028)
-│   └── 24_heartbeat_battle_version.test.sql  heartbeat's battle_id / battle_version (none, running, moved on,
-│                                live, after the battle, with a host migration), members only, same errors (T-029)
+│   ├── 24_heartbeat_battle_version.test.sql  heartbeat's battle_id / battle_version (none, running, moved on,
+│   │                            live, after the battle, with a host migration), members only, same errors (T-029)
+│   └── 25_ops_health.test.sql   admin_ops_health: admins only (anon, service_role, players refused), counts on
+│                                fixtures as before/after differences (overdue vs stuck, jobs, cron, TTL) (T-030)
 └── scripts/
     ├── e2e-solo.mjs             the solo loop through the real HTTP APIs (Auth, PostgREST, Storage, pg_cron)
     ├── e2e-multiplayer.mjs      a 3-player battle + late spectator through supabase-js, with Realtime reception
@@ -81,6 +85,8 @@ supabase/
     │                            email admin → takedown, not_admin (T-024); the taken-down build's award is gone
     │                            from the public reads and RLS, the row stays (T-028)
     ├── seed-admin.mjs           creates or resets a LOCAL email/password admin (T-024)
+    ├── check-runbooks.mjs       runs every SQL block of docs/runbooks/ on fixtures (rolled back), checks the
+    │                            shell blocks; `--sh` also runs the local ones (T-030)
     └── lib.mjs                  shared helpers of the supabase-js scripts above (supabase-js from apps/web)
 ```
 
@@ -107,6 +113,7 @@ node supabase/scripts/e2e-realtime.mjs       # Realtime authorization and orderi
 node supabase/scripts/e2e-reveal-vote.mjs    # REVEAL and VOTING through the real APIs (same needs)
 node supabase/scripts/e2e-moderation.mjs     # rate limits, name filter, reports, admin (same needs)
 node supabase/scripts/seed-admin.mjs [email] [password]   # a local admin for /admin
+node supabase/scripts/check-runbooks.mjs     # the SQL of docs/runbooks/ still runs (T-030)
 
 npx -y supabase@2.119.0 stop --no-backup
 ```
@@ -172,7 +179,7 @@ CI (`.github/workflows/ci.yml`, job `db`) runs the same steps on a fresh stack w
   (`reveal_next`, `skip_to_vote`, `cast_vote`, `get_my_votes`, `get_reveal_builds`),
   `report_build`, `is_admin` and the admin RPCs (`admin_report_queue`,
   `admin_dismiss_reports`, `admin_take_down_build`, `admin_battle_log`, `admin_room_log`,
-  `admin_action_log`, each of which refuses non-admins itself), and the
+  `admin_action_log`, `admin_ops_health`, each of which refuses non-admins itself), and the
   RLS helpers `is_room_member`, `is_battle_member`, `can_view_battle`, `can_write_build_object`,
   `can_read_revealed_object`, `can_use_realtime_topic`. Worker and sweep functions are
   `service_role` only.
@@ -436,6 +443,27 @@ like `advance_battle`, so a double click is harmless. SQLSTATEs: `not_a_voter` 4
 | `admin_battle_log(p_battle_id uuid)` | the battle row, challenge, room, roster, builds (original names), `battle_events` (oldest first, latest 2000) with actor names, jobs | `battle_not_found` |
 | `admin_room_log(p_code text)` | the room, members, battles, `room_events` (oldest first, latest 2000) | `room_not_found` (closed rooms are purged after 7 days) |
 | `admin_action_log(p_limit int default 50)` | the latest admin actions, newest first, with the admin's email | – |
+| `admin_ops_health(p_grace_s int default 30)` | the operations signals (T-030, below) | – |
+
+### Operations health (T-030)
+
+`admin_ops_health(grace_s)` is what `/admin` → Health shows and what the runbooks
+(`docs/runbooks/`) start from. Read-only, admins only (anon has no EXECUTE; `service_role`
+neither), not logged in `admin_actions` (it holds no player data). Answer:
+
+| Key | What |
+|---|---|
+| `battles.overdue[]` | per phase: battles past `phase_ends_at` by more than `grace_s` (default 30 s, clamped 0–3600; the sweep runs every 5 s), how many are **stuck** and how many are RESULTS **waiting for screenshots** (a pending capture of a final build, capture deadline not reached: not stuck), the oldest age and id; `overdue_total`, `stuck_total` |
+| `battles.running`, `battles.destroy_pending` | battles not over, by phase; battles DESTROYED/ABANDONED for more than `grace_s` whose files are not deleted yet (`destroyed_at` null) |
+| `jobs[]` | per kind (`capture`, `destroy`, `takedown`): queued, running, ready to claim, running with an expired lease, the oldest pending job's age and ref, done and failed in the last hour, failed in the last 24 h, the latest failure (`at`, `ref_id`, error) |
+| `captures_last_day` | `captured` / `fallback` / `failed` of the capture jobs that finished in the last 24 h |
+| `cron` | `available` (false without pg_cron, or when `cron.*` is not readable, with `error`), and per pg_cron job: schedule, active, the last run (start, status, duration), runs and failures in the last hour, the latest failure message |
+| `ttl` | battles older than 24 h whose files are not deleted, the oldest of them; objects in `ephemeral-builds` (all, older than 24 h, the oldest's age) and objects of battles already destroyed |
+
+Cost: every part is bounded by an index or a small set: `jobs_kind_updated_idx (kind,
+updated_at desc)` and `battles_not_destroyed_idx (created_at) where destroyed_at is null` are
+added for its windows (the second also serves `sweep_ttl`'s scan); the ephemeral bucket only
+holds running battles; `cron.job_run_details` keeps two days.
 
 ### Takedown
 

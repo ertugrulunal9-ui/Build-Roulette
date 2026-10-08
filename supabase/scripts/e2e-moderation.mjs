@@ -7,7 +7,10 @@
 //   * the name filter answers `name_not_allowed` (HTTP 400);
 //   * a player reports a public build; an email admin (seed-admin.mjs) signs in with a
 //     password, sees the report in the queue and takes the build down; the anon-key
-//     results page data hide it; a non-admin and an anonymous user get `not_admin`.
+//     results page data hide it; a non-admin and an anonymous user get `not_admin`;
+//   * T-028: the build (rank 1, with an award) keeps its rank but its award is gone from
+//     get_public_battle, get_player_history and a direct read of `awards` (RLS); the row
+//     itself stays.
 //
 //   node supabase/scripts/e2e-moderation.mjs
 //
@@ -106,8 +109,17 @@ const ids = JSON.parse(
             u as (insert into public.builds (battle_id, builder_id, name, status, final_rank, capture_status,
                                              screenshot_path, shipped_at, completion_ms)
                   select battle_id, '${host.id}', 'Free Gift Card', 'shipped', 1, 'captured',
-                         battle_id || '/x.webp', now(), 1000 from p returning id, battle_id)
+                         battle_id || '/x.webp', now(), 1000 from p returning id, battle_id),
+            a as (insert into public.awards (battle_id, build_id, award, source)
+                  select battle_id, id, 'speedrun', 'auto' from u returning id)
        select json_build_object('battle', battle_id, 'build', id) from u`),
+);
+const awardRows = async (who) =>
+  (await who.client.from('awards').select('award').eq('build_id', ids.build)).data;
+check(
+  'before the takedown its award is readable (RLS) by a signed-in visitor',
+  JSON.stringify(await awardRows(reporter)) === '[{"award":"speedrun"}]',
+  await awardRows(reporter),
 );
 
 const rep = await call(reporter, 'report_build', {
@@ -177,6 +189,30 @@ check(
     shown?.screenshot_path === null &&
     shown?.final_rank === 1,
   shown,
+);
+check(
+  'T-028: the public results keep its rank but drop its award',
+  shown?.final_rank === 1 && JSON.stringify(pub.data?.awards) === '[]',
+  pub.data?.awards,
+);
+const hist = await call(anonClient, 'get_player_history', { p_user_id: host.id });
+const entry = hist.data?.battles?.find((x) => x.battle_id === ids.battle);
+check(
+  "T-028: the builder's history too (rank 1, no awards)",
+  entry?.build?.final_rank === 1 &&
+    entry?.build?.taken_down === true &&
+    JSON.stringify(entry?.awards) === '[]',
+  entry,
+);
+check(
+  'T-028: a direct read of `awards` (RLS) no longer returns it…',
+  JSON.stringify(await awardRows(reporter)) === '[]' &&
+    JSON.stringify(await awardRows(host)) === '[]',
+  await awardRows(reporter),
+);
+check(
+  '…but the row is still stored (permanent data)',
+  sql(`select count(*) from public.awards where build_id = '${ids.build}'`) === '1',
 );
 check(
   'a takedown job is queued for the worker',

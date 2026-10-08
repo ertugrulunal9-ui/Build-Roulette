@@ -22,7 +22,10 @@ The Next.js app (App Router). Routes:
   session is signed in anonymously first (`report_build` needs a user).
 - **Removed by moderators:** a taken-down build shows that label instead of its name and
   screenshot everywhere (`/battles/[id]`, RESULTS, the REVEAL spotlight and strip, where it
-  never runs, `/u/[id]`, the OG card). The rank, time, votes and awards stay.
+  never runs, `/u/[id]`, the OG card). The rank, time and votes stay. Removed after
+  RESULTS (T-028), it also has no Winner banner, gold ring, medal or awards, and nobody
+  inherits them: if it was rank 1, no build is the winner (`isWinner`, `awardsOf` and
+  `rankMedal` in `src/lib/solo/format.ts`; the OG card's text in `src/lib/solo/og-card.ts`).
 - **Admin:** `/admin/sign-in` signs in with Supabase Auth (email + password) in a server
   action; only an account that `is_admin()` accepts gets the session, kept in httpOnly,
   SameSite=Strict cookies scoped to `/admin` (`src/lib/admin/session.ts`). The admin RPCs
@@ -304,7 +307,10 @@ CHAOS_SHARD=2 pnpm --filter @br/web test:e2e:chaos   # one of its 3 shards (~5 m
   visitor without a session and after a wrong password; an email admin (seeded with
   `supabase/scripts/seed-admin.mjs`) signs in, sees the report with its reason and details,
   takes the build down and opens the battle's event log; the public page shows "Removed by
-  moderators" without the screenshot (rank kept), and the worker deletes the object. A
+  moderators" without the screenshot (rank kept), and the worker deletes the object. The
+  reported build had won the (voted) battle: afterwards it has no Winner banner and no award
+  chips on `/battles/[id]` and on the builder's `/u/[id]`, its vote counts stay, and the
+  runner-up keeps its own award without becoming the winner (T-028). A
   second test: a blocked display name on Create room and `/play` shows the friendly error.
   `MODERATION_SCREENSHOT_DIR=/dir` saves the UI screenshots.
 - `test:e2e:multi` (`playwright.multi.config.ts`) needs the local stack running **with

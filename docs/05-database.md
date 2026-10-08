@@ -407,8 +407,12 @@ migrations in `supabase/migrations/` are the source of truth.
   - **Takedown:** the admin RPC hides the build at once (it sets `taken_down_at` and clears
     `name` and `screenshot_path`; the originals go to `private.build_takedowns`). A
     `takedown` job then deletes the screenshot through the Storage API.
-    - **What stays visible:** the builder's display name, rank, status, time, stats, vote
-      counts and awards, shown as "Removed by moderators".
+    - **What stays visible:** the builder's display name, rank, status, time, stats and
+      vote counts, shown as "Removed by moderators".
+    - **After RESULTS (T-028):** the build keeps its rank (nothing is re-ranked) but loses
+      the Winner highlight and all its awards, vote and auto, on every public surface. The
+      public RPCs and the `awards` RLS policy leave them out; the stored rows stay. Nothing
+      is reassigned: if the rank-1 build is removed, no build is the winner.
     - **During a running battle** it is treated like disqualified: its reveal slot is
       skipped, votes for it are deleted (voters re-vote), and it gets no rank or award.
   - **Name filter:** `private.blocked_terms` (an editable English + Turkish starter list),

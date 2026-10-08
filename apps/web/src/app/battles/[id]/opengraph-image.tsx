@@ -1,17 +1,15 @@
 import { ImageResponse } from 'next/og';
-import {
-  awardInfo,
-  formatCompletion,
-  formatTimeLimit,
-  isVoteAward,
-} from '../../../lib/solo/format';
+import { formatTimeLimit } from '../../../lib/solo/format';
+import { ogTopBuild } from '../../../lib/solo/og-card';
 import { fetchPublicBattle } from '../../../lib/solo/public-battle';
 import { screenshotUrl } from '../../../lib/supabase/config';
 
 /**
  * The social card of a battle (docs/01 §1.3): the challenge, the top build, and its
  * screenshot. With voting (M4): the winner's votes and its category awards (text only:
- * satori would fetch emoji images from a CDN).
+ * satori would fetch emoji images from a CDN). A top build a moderator removed after
+ * RESULTS (T-028) has no WINNER chip and no awards, only its rank and votes; the next
+ * build is not promoted (lib/solo/og-card.ts).
  *
  * `next/og` (satori + resvg) decodes only PNG, JPEG and GIF. The capture worker stores
  * WebP locally (sharp), and the planned Browser Rendering path may store PNG
@@ -86,17 +84,12 @@ export default async function Image({ params }: { params: Promise<{ id: string }
     );
   }
 
-  const top = data.builds[0] ?? null;
-  const shot = top?.screenshot_path ? await embeddableScreenshot(top.screenshot_path) : null;
-  const awards = top ? data.awards.filter((a) => a.build_id === top.id) : [];
-  // Category awards first (with their votes), then the auto-awards.
-  const awardText = [
-    ...awards
-      .filter((a) => isVoteAward(a.award))
-      .map((a) => `${awardInfo(a.award).title}${a.votes !== null ? ` (${String(a.votes)})` : ''}`),
-    ...awards.filter((a) => !isVoteAward(a.award)).map((a) => awardInfo(a.award).title),
-  ];
-  const voted = data.builds.some((b) => b.votes !== null && b.votes !== undefined);
+  const card = ogTopBuild(data);
+  const top = card?.build ?? null;
+  const shot =
+    top?.screenshot_path && top.taken_down !== true
+      ? await embeddableScreenshot(top.screenshot_path)
+      : null;
   const { challenge } = data;
 
   return new ImageResponse(
@@ -138,15 +131,15 @@ export default async function Image({ params }: { params: Promise<{ id: string }
           </div>
         ))}
         <div style={{ display: 'flex', flex: 1 }} />
-        {top && (
+        {card && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            {voted && top.final_rank === 1 && (
+            {card.chip && (
               <div
                 style={{
                   display: 'flex',
                   alignSelf: 'flex-start',
-                  background: '#fbbf24',
-                  color: '#1c1917',
+                  background: card.chip.tone === 'winner' ? '#fbbf24' : '#3f3f46',
+                  color: card.chip.tone === 'winner' ? '#1c1917' : '#e4e4e7',
                   fontSize: 18,
                   fontWeight: 900,
                   letterSpacing: 4,
@@ -154,21 +147,14 @@ export default async function Image({ params }: { params: Promise<{ id: string }
                   borderRadius: 6,
                 }}
               >
-                {`WINNER · ${String(top.total_votes)} ${top.total_votes === 1 ? 'VOTE' : 'VOTES'}`}
+                {card.chip.text}
               </div>
             )}
-            <div style={{ display: 'flex', fontSize: 34, fontWeight: 900 }}>
-              {top.taken_down ? 'Removed by moderators' : (top.name ?? 'Did not finish')}
-            </div>
-            <div style={{ display: 'flex', fontSize: 24, color: '#d4d4d8' }}>
-              by {top.builder_name}
-              {top.completion_ms !== null && top.name
-                ? ` · ${formatCompletion(top.completion_ms)}`
-                : ''}
-            </div>
-            {awardText.length > 0 && (
+            <div style={{ display: 'flex', fontSize: 34, fontWeight: 900 }}>{card.title}</div>
+            <div style={{ display: 'flex', fontSize: 24, color: '#d4d4d8' }}>{card.byline}</div>
+            {card.awards.length > 0 && (
               <div style={{ display: 'flex', fontSize: 22, color: '#fcd34d' }}>
-                {awardText.join(' · ')}
+                {card.awards.join(' · ')}
               </div>
             )}
           </div>

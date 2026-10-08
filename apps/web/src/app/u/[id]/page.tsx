@@ -9,7 +9,13 @@ import {
   parseCursor,
   type HistoryBattle,
 } from '../../../lib/history/player-history';
-import { formatCompletion, formatTimeLimit } from '../../../lib/solo/format';
+import {
+  awardsOf,
+  formatCompletion,
+  formatTimeLimit,
+  isWinner,
+  rankMedal,
+} from '../../../lib/solo/format';
 import { REMOVED_TEXT, RemovedCard } from '../../../components/moderation/Removed';
 import { screenshotUrl } from '../../../lib/supabase/config';
 
@@ -18,7 +24,8 @@ import { screenshotUrl } from '../../../lib/supabase/config';
  * `get_player_history` with the anon key: only permanent data of their own build (the
  * challenge, the build name, rank out of N, the time, awards, the screenshot) and a link
  * to each battle's results page. Only battles in RESULTS or DESTROYED. Paginated with the
- * server's keyset cursor (`?before=…&before_battle=…`).
+ * server's keyset cursor (`?before=…&before_battle=…`). A build a moderator removed after
+ * RESULTS (T-028) keeps its rank and votes but is not a win: no gold ring, medal or awards.
  *
  * The id is the player's (anonymous) auth user id: clearing the browser's storage loses
  * the way back here, but not the page. Account linking (docs/06 M6) will keep it across
@@ -46,7 +53,7 @@ export async function generateMetadata(props: PlayerPageProps): Promise<Metadata
   const page = await load(props);
   if (!page) return { title: 'Player not found', robots: { index: false } };
   const { player, data } = page;
-  const wins = data.battles.filter((b) => b.build.final_rank === 1).length;
+  const wins = data.battles.filter((b) => isWinner(b.build)).length;
   const title = `${player.display_name}'s battles`;
   const latest = data.battles[0];
   const description = latest
@@ -132,8 +139,6 @@ export default async function PlayerPage(props: PlayerPageProps) {
   );
 }
 
-const MEDALS = ['🥇', '🥈', '🥉'];
-
 function rankText(b: HistoryBattle): string {
   const { status, final_rank } = b.build;
   if (final_rank !== null) return `#${String(final_rank)} of ${String(b.players_count)}`;
@@ -144,7 +149,7 @@ function rankText(b: HistoryBattle): string {
 function HistoryItem({ battle: b }: { battle: HistoryBattle }) {
   const shipped = b.build.status === 'shipped' || b.build.status === 'auto_shipped';
   const voted = b.build.votes !== null;
-  const winner = b.build.final_rank === 1 && b.players_count > 1;
+  const winner = isWinner(b.build) && b.players_count > 1;
   const removed = b.build.taken_down === true;
   const name = removed
     ? REMOVED_TEXT
@@ -161,6 +166,7 @@ function HistoryItem({ battle: b }: { battle: HistoryBattle }) {
       data-rank={b.build.final_rank ?? ''}
       data-status={b.build.status}
       data-removed={removed ? 'true' : 'false'}
+      data-winner={winner ? 'true' : 'false'}
     >
       <div className="relative aspect-[16/10] bg-zinc-100 sm:aspect-auto dark:bg-zinc-800">
         {removed ? (
@@ -188,10 +194,7 @@ function HistoryItem({ battle: b }: { battle: HistoryBattle }) {
             </time>
           </p>
           <p className="font-mono text-sm font-bold" data-testid="history-rank">
-            <span aria-hidden="true">
-              {b.build.final_rank !== null ? (MEDALS[b.build.final_rank - 1] ?? '🏅') : '·'}
-            </span>{' '}
-            {rankText(b)}
+            <span aria-hidden="true">{rankMedal(b.build)}</span> {rankText(b)}
           </p>
         </div>
         <h2
@@ -216,7 +219,12 @@ function HistoryItem({ battle: b }: { battle: HistoryBattle }) {
             <span className="text-zinc-500"> · auto-shipped</span>
           )}
         </p>
-        <AwardBadges awards={b.awards.map((a) => ({ ...a, build_id: b.build.id }))} />
+        <AwardBadges
+          awards={awardsOf(
+            b.awards.map((a) => ({ ...a, build_id: b.build.id })),
+            b.build,
+          )}
+        />
         {voted && shipped && (
           <VoteTally votes={b.build.votes} total={b.build.total_votes} compact />
         )}

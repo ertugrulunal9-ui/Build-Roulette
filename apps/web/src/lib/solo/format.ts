@@ -57,6 +57,42 @@ export function awardInfo(award: AwardKind): { emoji: string; title: string; tex
   return AWARD_INFO[award] ?? { emoji: '🏆', title: award.replaceAll('_', ' '), text: '' };
 }
 
+// ─── Builds removed by moderators after RESULTS (T-028) ──────────────────────────────
+// User decision 2026-10-08: a build taken down after RESULTS keeps its rank (results are
+// permanent, nothing is re-ranked) but loses the Winner highlight and all its awards on
+// every surface. Nothing is reassigned: when the rank-1 build is removed, no build is "the
+// winner". Its vote counts stay (they are the result its rank comes from). The server
+// already leaves the awards out (supabase/README.md "Takedown"); these helpers make the
+// clients agree with it, also on an answer from an older server.
+
+/** A build as far as the results highlights care. */
+interface RankedBuildLike {
+  final_rank: number | null;
+  /** T-024: removed by moderators. */
+  taken_down?: boolean;
+}
+
+/** The Winner highlight (banner, gold ring, OG chip): rank 1, unless it was removed. */
+export function isWinner(build: RankedBuildLike): boolean {
+  return build.final_rank === 1 && build.taken_down !== true;
+}
+
+/** The awards a build shows: its own, and none once it was removed. */
+export function awardsOf<A extends { build_id: string }>(
+  awards: readonly A[],
+  build: { id: string; taken_down?: boolean },
+): A[] {
+  return build.taken_down === true ? [] : awards.filter((a) => a.build_id === build.id);
+}
+
+const MEDALS = ['🥇', '🥈', '🥉'];
+
+/** The medal next to a rank: a dot without a rank, and for a removed build. */
+export function rankMedal(build: RankedBuildLike): string {
+  if (build.final_rank === null || build.taken_down === true) return '·';
+  return MEDALS[build.final_rank - 1] ?? '🏅';
+}
+
 export const STATUS_TEXT: Record<BuildStatus, string> = {
   draft: 'Building',
   shipped: 'Shipped',

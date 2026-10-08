@@ -1,4 +1,4 @@
-import { expect, test, type Browser, type Page } from '@playwright/test';
+import { expect, test, type Browser, type Locator, type Page } from '@playwright/test';
 import {
   anonymousUserId,
   assertUuid,
@@ -16,12 +16,18 @@ import {
  *   report and takes the build down → the public page shows "Removed by moderators" and no
  *   screenshot → the capture worker's takedown job deletes the screenshot object.
  *
+ * The reported build won the (voted) battle: rank 1, the Winner banner, Best Build and two
+ * more vote awards, speedrun and fastest ship. After the takedown (T-028) it keeps rank 1
+ * and its vote counts but has no Winner banner and no award chips on /battles/[id] and on
+ * the builder's /u/[id]; the runner-up keeps its own award and does not become the winner.
+ *
  * Plus: /admin is a plain 404 for a player (and without a session, and after a failed
  * sign-in), and a blocked display name gets the friendly error.
  *
  * The finished battle is inserted with psql (two builds with real PNG screenshots in the
  * public bucket), so the test does not need a whole game. MODERATION_SCREENSHOT_DIR=/dir
- * saves the UI screenshots (report dialog, admin queue, battle log, removed build).
+ * saves the UI screenshots (report dialog, admin queue, battle log, removed build, the
+ * removed winner).
  */
 
 const SHOTS = process.env['MODERATION_SCREENSHOT_DIR'];
@@ -29,11 +35,12 @@ const ADMIN_EMAIL = `mod-${String(Date.now())}@moderation.e2e`;
 const ADMIN_PASSWORD = `pw-${Math.random().toString(36).slice(2)}-Aa1`;
 
 async function snap(page: Page, name: string, fullPage = false): Promise<void> {
-  if (SHOTS) await page.screenshot({ path: `${SHOTS}/t024-${name}.png`, fullPage });
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/${name}.png`, fullPage });
 }
 
 interface Fixture {
   battle: string;
+  mallory: string;
   scam: { id: string; path: string };
   timer: { id: string; path: string };
 }
@@ -62,7 +69,7 @@ async function createFixture(browser: Browser): Promise<Fixture> {
       b as (
         insert into public.battles (challenge_id, host_id, settings, phase, version, finished_at,
                                     is_complete, building_started_at, building_ends_at, phase_ends_at)
-        select c.id, '${ana}', '{"mode":"multiplayer","reveal_vote":false}', 'results', 8, now(), true,
+        select c.id, '${ana}', '{"mode":"multiplayer","reveal_vote":true}', 'results', 8, now(), true,
                now() - interval '6 minutes', now() - interval '1 minute', now() + interval '1 hour'
         from c returning id),
       r as (
@@ -70,12 +77,18 @@ async function createFixture(browser: Browser): Promise<Fixture> {
         select b.id, u.id, u.name from b,
           (values ('${mallory}'::uuid, 'Mallory'), ('${ana}'::uuid, 'Ana')) u(id, name)
         returning battle_id),
+      -- Ana voted Mallory's build in three categories, Mallory voted Ana's in two: the
+      -- Best Build tie (1-1) goes to more votes in all, so Mallory's build ranks first.
       x as (
         insert into public.builds (battle_id, builder_id, name, status, shipped_at, completion_ms,
-                                   final_rank, capture_status)
-        select b.id, u.id, u.name, 'shipped', now() - interval '2 minutes', u.ms, u.rank, 'captured'
-        from b, (values ('${mallory}'::uuid, 'Free Gift Card', 150000, 1),
-                        ('${ana}'::uuid, 'Pomodoro Pal', 210000, 2)) u(id, name, ms, rank)
+                                   final_rank, capture_status, vote_counts, total_votes)
+        select b.id, u.id, u.name, 'shipped', now() - interval '2 minutes', u.ms, u.rank, 'captured',
+               u.votes, u.total
+        from b, (values ('${mallory}'::uuid, 'Free Gift Card', 150000, 1,
+                         '{"overall":1,"rule":1,"style":0,"chaos":1}'::jsonb, 3),
+                        ('${ana}'::uuid, 'Pomodoro Pal', 210000, 2,
+                         '{"overall":1,"rule":0,"style":1,"chaos":0}'::jsonb, 2))
+             u(id, name, ms, rank, votes, total)
         returning id, builder_id, battle_id)
       select json_build_object(
         'battle', (select id from b),
@@ -85,12 +98,21 @@ async function createFixture(browser: Browser): Promise<Fixture> {
   const battle = assertUuid(row.battle);
   const fx: Fixture = {
     battle,
+    mallory: assertUuid(mallory),
     scam: { id: assertUuid(row.scam), path: `${battle}/${row.scam}.png` },
     timer: { id: assertUuid(row.timer), path: `${battle}/${row.timer}.png` },
   };
   sql(`update public.builds set screenshot_path = case id
          when '${fx.scam.id}' then '${fx.scam.path}' else '${fx.timer.path}' end
        where battle_id = '${battle}'`);
+  // The awards, as private.finalize_votes and award_auto would store them.
+  sql(`insert into public.awards (battle_id, build_id, award, source, votes) values
+    ('${battle}', '${fx.scam.id}', 'overall', 'vote', 1),
+    ('${battle}', '${fx.scam.id}', 'rule', 'vote', 1),
+    ('${battle}', '${fx.scam.id}', 'chaos', 'vote', 1),
+    ('${battle}', '${fx.scam.id}', 'speedrun', 'auto', null),
+    ('${battle}', '${fx.scam.id}', 'fastest_ship', 'auto', null),
+    ('${battle}', '${fx.timer.id}', 'style', 'vote', 1)`);
   // A battle_events timeline like a real battle's (for the admin event log).
   sql(`insert into public.battle_events (battle_id, version, type, actor_id, payload, created_at) values
     ('${battle}', 1, 'phase', '${ana}', '{"from":null,"to":"spinning","mode":"multiplayer"}', now() - interval '7 minutes'),
@@ -123,6 +145,13 @@ async function createFixture(browser: Browser): Promise<Fixture> {
   return fx;
 }
 
+/** The award slugs on a build card, in display order. */
+async function awardChips(card: Locator): Promise<(string | null)[]> {
+  return card
+    .getByTestId('award')
+    .evaluateAll((els) => els.map((e) => e.getAttribute('data-award')));
+}
+
 function screenshotObjects(path: string): number {
   return Number(
     sql(
@@ -142,8 +171,20 @@ test('report → admin takedown → "Removed by moderators" and the screenshot i
   const page = await player.newPage();
   await page.goto(`/battles/${fx.battle}`);
   const scamCard = page.locator(`[data-testid=public-build][data-build="${fx.scam.id}"]`);
+  const timerCard = page.locator(`[data-testid=public-build][data-build="${fx.timer.id}"]`);
   await expect(scamCard.getByTestId('public-build-name')).toContainText('Free Gift Card');
   await expect(scamCard.getByTestId('public-screenshot')).toBeVisible();
+  // Before the takedown it is the winner, with its awards.
+  await expect(scamCard).toHaveAttribute('data-winner', 'true');
+  await expect(scamCard.getByTestId('public-winner')).toBeVisible();
+  expect(await awardChips(scamCard)).toEqual([
+    'overall',
+    'rule',
+    'chaos',
+    'fastest_ship',
+    'speedrun',
+  ]);
+  expect(await awardChips(timerCard)).toEqual(['style']);
   await scamCard.getByTestId('report-build').click();
   // Every report button has its own dialog; the open one is the scam build's.
   const dialog = page.locator('dialog[open][data-testid=report-dialog]');
@@ -153,7 +194,7 @@ test('report → admin takedown → "Removed by moderators" and the screenshot i
   await dialog
     .getByTestId('report-details')
     .fill('Asks for my email password to "claim" a gift card.');
-  await snap(page, 'report-dialog');
+  await snap(page, 't024-report-dialog');
   await dialog.getByTestId('report-submit').click();
   await expect(page.getByTestId('report-thanks')).toContainText('Thanks for the report');
   await page.getByTestId('report-close').click();
@@ -195,7 +236,7 @@ test('report → admin takedown → "Removed by moderators" and the screenshot i
   await expect(item.getByTestId('report-item-reasons')).toContainText('Phishing or scam × 1');
   await expect(item.getByTestId('report-item-reports')).toContainText('to "claim" a gift card');
   await expect(item.getByTestId('report-item-screenshot')).toBeVisible();
-  await snap(admin, 'admin-queue');
+  await snap(admin, 't024-admin-queue');
 
   // ─── Take it down ───────────────────────────────────────────────────────────────
   await item.getByTestId('admin-take-down').click();
@@ -222,7 +263,7 @@ test('report → admin takedown → "Removed by moderators" and the screenshot i
   await expect(
     log.locator(`[data-testid=admin-build][data-build="${fx.scam.id}"]`),
   ).toHaveAttribute('data-taken-down', 'true');
-  await snap(admin, 'admin-battle-log', true);
+  await snap(admin, 't024-admin-battle-log', true);
 
   // ─── The public page: "Removed by moderators", no screenshot ────────────────────
   await page.goto(`/battles/${fx.battle}`);
@@ -234,7 +275,34 @@ test('report → admin takedown → "Removed by moderators" and the screenshot i
   await expect(scamCard.getByTestId('report-build')).toHaveCount(0);
   await expect(scamCard).toHaveAttribute('data-rank', '1'); // the results stay consistent
   await expect(page.getByTestId('public-screenshot')).toHaveCount(1); // Ana's is untouched
-  await snap(page, 'removed-build');
+  await snap(page, 't024-removed-build');
+
+  // ─── T-028: no Winner banner and no awards for it; nobody inherits them ─────────
+  await expect(scamCard).toHaveAttribute('data-winner', 'false');
+  await expect(page.getByTestId('public-winner')).toHaveCount(0);
+  await expect(scamCard.getByTestId('award')).toHaveCount(0);
+  await expect(scamCard.getByTestId('public-build-name')).toHaveText('#1Removed by moderators');
+  await expect(scamCard.getByTestId('vote-tally')).toHaveAttribute('data-total', '3'); // kept
+  await expect(timerCard).toHaveAttribute('data-winner', 'false');
+  await expect(timerCard).toHaveAttribute('data-rank', '2');
+  expect(await awardChips(timerCard)).toEqual(['style']);
+  await expect(page.locator('[data-award=overall], [data-award=speedrun]')).toHaveCount(0);
+  await scamCard.scrollIntoViewIfNeeded();
+  await snap(page, 't028-removed-winner');
+  const og = await page.request.get(`/battles/${fx.battle}/opengraph-image`);
+  expect(og.status()).toBe(200);
+  expect(og.headers()['content-type']).toContain('image/png');
+
+  // ─── …and on the builder's history ──────────────────────────────────────────────
+  await page.goto(`/u/${fx.mallory}`);
+  const entry = page.locator(`[data-testid=history-battle][data-battle="${fx.battle}"]`);
+  await expect(entry).toHaveAttribute('data-removed', 'true');
+  await expect(entry).toHaveAttribute('data-rank', '1');
+  await expect(entry).toHaveAttribute('data-winner', 'false');
+  await expect(entry.getByTestId('history-rank')).toContainText('#1 of 2');
+  await expect(entry.getByTestId('history-build-name')).toHaveText('Removed by moderators');
+  await expect(entry.getByTestId('award')).toHaveCount(0);
+  await expect(entry.getByTestId('vote-tally')).toHaveAttribute('data-total', '3');
 
   // ─── The capture worker deletes the screenshot object ───────────────────────────
   await expect.poll(() => screenshotObjects(fx.scam.path), { timeout: 60_000 }).toBe(0);

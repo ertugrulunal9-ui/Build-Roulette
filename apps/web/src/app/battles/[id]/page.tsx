@@ -8,8 +8,10 @@ import { AwardBadges, ChallengeCards, VoteTally } from '../../../components/resu
 import {
   CAPTURE_TEXT,
   STATUS_TEXT,
+  awardsOf,
   formatCompletion,
   formatTimeLimit,
+  isWinner,
 } from '../../../lib/solo/format';
 import { getPublicBattle } from '../../../lib/solo/public-battle';
 import { screenshotUrl } from '../../../lib/supabase/config';
@@ -18,6 +20,10 @@ import { screenshotUrl } from '../../../lib/supabase/config';
  * The permanent, shareable results page (docs/01 §1.3). Server-rendered from
  * `get_public_battle` with the anon key: only permanent data, no code. Rendered per
  * request for now (ISR on the R2 incremental cache is a follow-up, see DEPLOY.md).
+ *
+ * A build a moderator removed after RESULTS (T-028) keeps its place and rank ("#1 Removed
+ * by moderators") and its vote counts, but no Winner banner, gold ring or awards; the next
+ * build does not become the winner.
  */
 
 interface BattlePageProps {
@@ -76,8 +82,8 @@ export default async function BattlePage({ params }: BattlePageProps) {
         {builds.map((b) => {
           const shipped = b.status === 'shipped' || b.status === 'auto_shipped';
           const removed = b.taken_down === true;
-          const buildAwards = awards.filter((a) => a.build_id === b.id);
-          const winner = b.final_rank === 1;
+          const buildAwards = awardsOf(awards, b);
+          const winner = isWinner(b);
           return (
             <li
               key={b.id}

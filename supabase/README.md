@@ -34,7 +34,9 @@ supabase/
 │   ├── 20261008120200_name_filter.sql                 blocked terms, normalisation, check_display_name (T-024)
 │   ├── 20261008120300_rpc_limits_and_names.sql        the filter and the limits in the client RPCs (T-024)
 │   ├── 20261008120400_reports_and_admin.sql           report_build, admins, admin RPCs, takedown (T-024)
-│   └── 20261008120500_takedown.sql                    takedown job, taken-down builds in every read (T-024)
+│   ├── 20261008120500_takedown.sql                    takedown job, taken-down builds in every read (T-024)
+│   └── 20261008130000_takedown_awards.sql             a build taken down after RESULTS loses its awards in every
+│                                                        public read and through RLS; rows kept (T-028)
 ├── tests/                       pgTAP tests (*.test.sql), one transaction each, rolled back
 │   ├── 00_schema.test.sql       tables/enums exist, RLS on every table, policies, table privileges
 │   ├── 01_constraints.test.sql  room codes, time limits, one build per player, vote PK, cascades
@@ -62,15 +64,19 @@ supabase/
 │   ├── 20_rate_limits.test.sql  the sliding window, retry_after, every limited RPC, failed join codes only
 │   ├── 21_reports_and_admin.test.sql  every report_build guard, admin gating (non-admin, anonymous, admin),
 │   │                            queue, dismiss, take down, retry, battle and room logs, admin log
-│   └── 22_takedown.test.sql     REVEAL slot skipped, on-screen takedown, VOTING votes deleted, finished results
+│   ├── 22_takedown.test.sql     REVEAL slot skipped, on-screen takedown, VOTING votes deleted, finished results
 │                                keep the rank, the takedown job's ordering with the capture job
+│   └── 23_takedown_awards.test.sql  a rank-1 build with vote and auto awards taken down in RESULTS: no awards in
+│                                get_public_battle / get_player_history / get_battle_snapshot / RLS, the others
+│                                keep theirs, nothing reassigned or re-ranked, rows untouched, solo too (T-028)
 └── scripts/
     ├── e2e-solo.mjs             the solo loop through the real HTTP APIs (Auth, PostgREST, Storage, pg_cron)
     ├── e2e-multiplayer.mjs      a 3-player battle + late spectator through supabase-js, with Realtime reception
     ├── e2e-realtime.mjs         private topics, gap-free versions, presence, refused subscriptions
     ├── e2e-reveal-vote.mjs      REVEAL + VOTING: storage reads, host controls, ballots, tallies, events
     ├── e2e-moderation.mjs       failed join codes committed + rate-limited (HTTP 429), name filter, report →
-    │                            email admin → takedown, not_admin (T-024)
+    │                            email admin → takedown, not_admin (T-024); the taken-down build's award is gone
+    │                            from the public reads and RLS, the row stays (T-028)
     ├── seed-admin.mjs           creates or resets a LOCAL email/password admin (T-024)
     └── lib.mjs                  shared helpers of the supabase-js scripts above (supabase-js from apps/web)
 ```
@@ -187,7 +193,7 @@ PT429 `rate_limited` (T-024; PostgREST answers HTTP 429, `hint` = `{"retry_after
 | `advance_battle(p_battle_id uuid, p_expected_version int)` | battle member, service role | `{changed, version, phase, phase_ends_at}` |
 | `ship_build(p_battle_id uuid, p_name text, p_stats jsonb default '{}')` | roster player | `{build: {id, status, name, shipped_at, completion_ms, stats}, battle: {version, phase, phase_ends_at}}` |
 | `get_battle_snapshot(p_battle_id uuid)` | member, or anyone signed in once RESULTS/DESTROYED | `{server_now, me, battle, challenge, players, builds, awards}` (+ reveal/vote fields for multiplayer, see M4) |
-| `get_public_battle(p_battle_id uuid)` | anyone, including `anon`; RESULTS/DESTROYED only, otherwise `battle_not_found` | `{battle, challenge, players, builds, awards}`: permanent data only (display names, no user ids, no ephemeral paths; screenshot path only once captured; `builds[].votes` = per-category counts, never ballots) |
+| `get_public_battle(p_battle_id uuid)` | anyone, including `anon`; RESULTS/DESTROYED only, otherwise `battle_not_found` | `{battle, challenge, players, builds, awards}`: permanent data only (display names, no user ids, no ephemeral paths; screenshot path only once captured; `builds[].votes` = per-category counts, never ballots; no awards of taken-down builds, T-028) |
 | `claim_job(p_kind job_kind)` | service role | `jobs` row, or all-null when there is nothing to do |
 | `complete_capture(p_build_id uuid, p_status capture_status, p_path text)` | service role | void |
 | `fail_job(p_job_id bigint, p_error text)` | service role | `jobs` row |
@@ -354,8 +360,9 @@ like `advance_battle`, so a double click is harmless. SQLSTATEs: `not_a_voter` 4
   player's `display_name` in it, the challenge texts and time limit, `players_count` (N
   in "rank k of N": the builds the public results page lists), the player's own `build`
   (`id`, `name`, `status`, `completion_ms`, `final_rank`, `total_votes`, `votes` per
-  category, `capture_status`, `screenshot_path` only once captured or fallback) and that
-  build's `awards` (`award`, `source`, `votes`).
+  category, `capture_status`, `screenshot_path` only once captured or fallback,
+  `taken_down`) and that build's `awards` (`award`, `source`, `votes`; none once the build
+  was taken down, T-028).
 - **Privacy** (as `get_public_battle`): no user id (not even `p_user_id` is echoed), no
   other player's build or name, no ephemeral storage path, no ballot, no room, settings or
   version. `player.display_name` is the name of the newest public battle (the permanent
@@ -437,17 +444,32 @@ like `advance_battle`, so a double click is harmless. SQLSTATEs: `not_a_voter` 4
 - **What a taken-down build shows** (`get_public_battle`, `get_player_history`,
   `get_battle_snapshot`, `get_reveal_builds`): `taken_down: true`, `name: null`,
   `screenshot_path: null`; the app writes "Removed by moderators". **Still visible:** the
-  builder's display name, the rank, the status, the completion time, the stats, the vote
-  counts and the awards, so a finished battle's results stay consistent. Its revealed files
-  are no longer readable (`can_read_revealed_object`), and `get_reveal_builds` keeps its
-  position with no file names.
+  builder's display name, the rank, the status, the completion time, the stats and the vote
+  counts, so a finished battle's results stay consistent. Its revealed files are no longer
+  readable (`can_read_revealed_object`), and `get_reveal_builds` keeps its position with no
+  file names.
+- **No awards, no Winner** (T-028, user decision 2026-10-08): a build taken down in a
+  finished battle loses all its awards, the vote awards and the auto-awards, on every
+  public read: `get_public_battle`, `get_player_history` and `get_battle_snapshot` leave
+  them out of `awards`, and the `awards_select` RLS policy hides them from direct table
+  reads. The clients drop its "Winner" banner, gold ring and medal (`isWinner`, `awardsOf`
+  and `rankMedal` in `apps/web/src/lib/solo/format.ts`; the OG card shows a neutral
+  "#1 · n VOTES" chip instead of "WINNER"). It **keeps its rank** (nothing is re-ranked) and
+  **its vote counts** (`builds[].votes`, `total_votes`: they are the result its rank comes
+  from, cast before the removal; only the honours go). **Nothing is reassigned:** the other
+  builds keep exactly their own awards, and when the rank-1 build is removed no build is
+  the winner (the page reads "#1 Removed by moderators", with no banner and no award chips,
+  then #2 as before). The stored `awards` rows are **not touched** (permanent data,
+  auditability); SECURITY DEFINER code such as the admin RPCs still reads them, and
+  `private.build_takedowns` keeps the original name and screenshot path.
 - **In a running battle** (any phase before RESULTS) the build is also `disqualified`,
   like a kicked player's: its REVEAL slot is skipped (`reveal_move`; if it is on screen the
   reveal moves on at once, reason `takedown`), it cannot receive votes (`not_votable`),
   votes already cast for it are deleted (those voters vote again in that category; the
   `vote_progress` drops and is broadcast), it gets no tally, rank or award, and the public
   results and histories leave it out, as for every disqualified build. In a finished battle
-  (RESULTS, DESTROYED) nothing about the results changes.
+  (RESULTS, DESTROYED) the ranks, tallies and stored awards do not change; only what is shown
+  does (above).
 - A takedown cannot be undone from the admin page.
 
 ### Name filter

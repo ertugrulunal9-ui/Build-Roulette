@@ -195,9 +195,10 @@ All measured on the machine above. "Phase p95" = battle `phase` events, server
 players)** when Realtime has the quotas of Supabase Pro **without** a spend cap (1,000
 presence messages/s), and **not met** with the presence quota we assume for Pro with a spend
 cap (50/s). **After T-029** it is met in both cases (p95 152.8 and 128.5 ms), but with the
-cap's quota the room channels are still closed now and then at 50 rooms (§7.2.2). Conditions: phases compressed about 10× (§7.1.3), everything on one 4-vCPU
-machine that ran 69 % busy on average and 95–99 % during the ramp, the capture worker
-falling behind (backlog up to 331 jobs).
+cap's quota the room channels are still closed now and then at 50 rooms (§7.2.2).
+Conditions: phases compressed about 10× (§7.1.3), everything on one 4-vCPU machine that ran
+69 % busy on average and 95–99 % during the ramp, the capture worker falling behind (backlog
+up to 331 jobs).
 
 ### 7.2.1 The full run in detail (`20261008t001944-full`, measured)
 
@@ -484,10 +485,10 @@ Ordered by when they bite. "Battles/month" assumes the §7.4.2 behaviour.
    to** (the dispatcher adds the fan-out to the tenant's counter), averaged per second over
    the last minute. A track in an 8-player room therefore costs 9. A room in BUILD costs
    P × s / 60 × (1 + P) per second for s sends per player-minute: 8 players at 2.4–3.0 →
-   2.9–3.6/s, so 50/s holds ~14–17 such rooms; 6 players → ~24–30. Measured (T-029, §7.2.2):
-   10 rooms × 8: 4,571 closes → 0; 50 rooms × 8: 17,726 (T-025) → 1,703, and the harder
-   rejoin backoff keeps them from feeding themselves (p95 128.5 ms, no RPC timeouts). With
-   the cap off (1,000/s) the full run had 0 closes. **Limit: spend cap on → ~15 busy
+   2.9–3.6/s, so 50/s holds ~14–17 such rooms; 6 players → ~24–30. Measured (T-029,
+   §7.2.2): 10 rooms × 8: 4,571 closes → 0; 50 rooms × 8: 17,726 (T-025) → 1,703, and the
+   harder rejoin backoff keeps them from feeding themselves (p95 128.5 ms, no RPC
+   timeouts). With the cap off (1,000/s) the full run had 0 closes. **Limit: spend cap on → ~15 busy
    8-player rooms.**
 2. **Included Browser Rendering hours: ~1,000 battles/month** (10 h ÷ 36 s). Cheap beyond
    ($0.09/hour). Concurrency: 10 browsers included; one capture takes 1–6 s, so ~100–600

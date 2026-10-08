@@ -448,8 +448,10 @@ child frame (`about:blank`, same origin) and the `blob:` module use the shell's 
 the import map's URLs are cached like any other module URL. Every import map URL is an exact
 version (`react@19.3.0`, `react-dom@19.3.0/client?…`) served `public, max-age=31536000,
 immutable`, so there is no `302` hop that would expire after 300 s (a unit test checks the
-map). esbuild-wasm and the bundler worker are content-hashed `immutable` assets on the app
-origin, unaffected by the CDN.
+map). The real `@br/pkg-cdn`'s React modules import nothing but bare `react` / `react-dom`
+(through the map; checked against the npm registry's React 19.3.0), so no other URL hides
+behind them. esbuild-wasm and the bundler worker are content-hashed `immutable` assets on
+the app origin, unaffected by the CDN.
 
 **Decision: the browser's HTTP cache only; no Service Worker, no Cache Storage.** The build
 runs on the shell origin with `allow-same-origin`, so build code can write to everything that
@@ -477,8 +479,8 @@ this task.
 - **Warm-up:** after a build ran (`live` and `reveal`), the shell fetches every URL of its
   import map once per shell realm with `cache: 'force-cache'`, 1 s after `ready`. During
   SPIN the BUILD stage already runs the template's preview, so the whole React set
-  (including `react/jsx-dev-runtime` and the `react-dom` root, which the template doesn't
-  import) is in the partition before BUILD starts. A cached URL costs no request.
+  (including `react/jsx-dev-runtime`, which the template never imports) is in the partition
+  before BUILD starts. A cached URL costs no request.
 - **Naming the failure:** the `<script>` `error` event doesn't say which URL failed. The shell
   checks the build's own CDN URLs (the load's `packages` hint, from the bundler), then the
   rest of the import map, with `force-cache` and a 3 s timeout each. A cached one answers at
@@ -500,9 +502,9 @@ this task.
 - **A new uncached package:** an import this browser never loaded (for example
   `react-dom/server`; React's own entry points are warmed), or any non-React package after a
   dependency change (adding one changes every CDN URL's `deps=` list). The overlay "The
-  build failed to load" names the package within
-  about 0.2 s in the runtime e2e and 0.7 s in the web e2e (edit → message). No watchdog crash,
-  and the last good build keeps running.
+  build failed to load" names the package within about 0.2 s in the runtime e2e and
+  0.7–1.0 s in the web e2e (edit → message). No watchdog crash, and the last good build keeps
+  running.
 - **Autosave and ship:** both work. They need Storage and the RPCs, not the CDN (solo e2e).
   The production build's React comes from the same cached URLs.
 - **The last look / REVEAL:** they run from the viewer's cache too. A build whose packages

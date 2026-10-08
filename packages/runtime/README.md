@@ -212,7 +212,8 @@ cache and CDN outages". In short:
 - **No Service Worker or Cache Storage:** build code runs on the shell origin and could write
   to both, so one build could poison React for the next. The shell keeps wiping them.
 - **Warm-up** (shell): after a build ran, its import map's URLs are fetched once per shell
-  realm with `cache: 'force-cache'`, so React's other entry points are cached too.
+  realm with `cache: 'force-cache'`, so React's other entry points are cached too. The web
+  app's room lobby triggers it with an empty bundle (`TemplateWarmup`).
 - **Naming failures** (shell): when the module graph fails, or still waits after 8 s, the
   build's `packages` and then the rest of the import map are checked the same way (3 s
   each). The `module-load` error says `Package server unreachable: zustand@5.0.15`, `…not

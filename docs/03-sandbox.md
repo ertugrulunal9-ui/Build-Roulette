@@ -477,10 +477,17 @@ this task.
 
 **What the shell does** (`apps/sandbox-shell/src/packages.ts`):
 - **Warm-up:** after a build ran (`live` and `reveal`), the shell fetches every URL of its
-  import map once per shell realm with `cache: 'force-cache'`, 1 s after `ready`. During
-  SPIN the BUILD stage already runs the template's preview, so the whole React set
-  (including `react/jsx-dev-runtime`, which the template never imports) is in the partition
-  before BUILD starts. A cached URL costs no request.
+  import map once per shell realm with `cache: 'force-cache'`, 1 s after `ready`. A cached
+  URL costs no request. Two moments trigger it before BUILD:
+  - **the room lobby** (and the spectator view), desktop only: `TemplateWarmup`
+    (`apps/web/src/components/playground`) loads an empty bundle with the default
+    template's import map in a hidden reveal-mode preview of the same shell URL. So the CDN
+    can go down before SPIN and BUILD still runs React (e2e `multiplayer-outage`), and a
+    spectator has React for REVEAL;
+  - **SPIN**, where the BUILD stage already runs the template's preview (solo and rooms).
+
+  Either way the whole React set (including `react/jsx-dev-runtime`, which the template never
+  imports) is in the partition before BUILD starts.
 - **Naming the failure:** the `<script>` `error` event doesn't say which URL failed. The shell
   checks the build's own CDN URLs (the load's `packages` hint, from the bundler), then the
   rest of the import map, with `force-cache` and a 3 s timeout each. A cached one answers at
@@ -508,8 +515,8 @@ this task.
 - **Autosave and ship:** both work. They need Storage and the RPCs, not the CDN (solo e2e).
   The production build's React comes from the same cached URLs.
 - **The last look / REVEAL:** they run from the viewer's cache too. A build whose packages
-  this browser never loaded (another player's `zustand`, or a spectator who never ran a
-  preview) shows its screenshot with "This build's packages couldn't load on your screen
+  this browser never loaded (another player's `zustand`, or React for a viewer whose
+  browser never warmed it, such as a spectator on a phone) shows its screenshot with "This build's packages couldn't load on your screen
   (the package server isn't answering)" and **Run it again**. The solo last look says the
   same over its frame.
 - **Screenshots:** the capture renderer is a fresh browser without the cache, so it falls
@@ -520,8 +527,8 @@ this task.
   top-level site. Whether Firefox's `Clear-Site-Data: "cache"` keeps another origin's
   entries in a third-party partition is not measured.
 - **Per-build sites** (stage 2 with the Public Suffix List entry, finding F1) put each
-  build on its own frame site, so its own partition. Then the warm-up only helps the build
-  (and the preview) on that site. The BUILD preview of your own build keeps working, but
+  build on its own frame site, so its own partition. Then a warm-up only helps the build
+  (and the preview) on that site, and the lobby warm-up would have to target those sites. The BUILD preview of your own build keeps working, but
   another player's build in REVEAL starts from an empty partition. Revisit when the
   usercontent domain arrives: for example, warm the next spotlight's URLs through its own
   frame during the reveal prefetch.

@@ -7,9 +7,9 @@ only bundles packages nobody asked for yet. It depends on the npm registry for t
 
 What players see while it is down (T-032, docs/03-sandbox.md "Package cache and CDN
 outages"): every package their browser already loaded keeps working from the browser's
-HTTP cache. That covers the template's React for anyone whose BUILD preview ran during SPIN
-(the shell also fetches React's other entry points then), so edits, preview restarts,
-reloads, autosave, ship and the last look go on. Only packages a browser never loaded fail.
+HTTP cache. That covers the template's React for anyone who waited in a room lobby on a
+desktop or whose BUILD preview ran during SPIN, so edits, preview restarts, reloads,
+autosave, ship and the last look go on. Only packages a browser never loaded fail.
 
 ## Symptoms
 
@@ -20,7 +20,7 @@ reloads, autosave, ship and the last look go on. Only packages a browser never l
   the package server after 8 s: …" instead. Package CSS shows the same words in Problems.
 - In REVEAL, a build whose packages this viewer never loaded shows its screenshot with
   "This build's packages couldn't load on your screen (the package server isn't
-  answering)". Spectators, who never ran a preview, see this most.
+  answering)". Spectators on phones (no warm-up) see this most.
 - Screenshots fall back to client thumbnails (the capture renderer is a fresh browser that
   imports React from the CDN), see [capture-backlog.md](capture-backlog.md).
 - Sentry (`service: pkg-cdn`): `code: internal` (500, a CDN bug) or `code: registry-error`

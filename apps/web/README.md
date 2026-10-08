@@ -384,7 +384,9 @@ pnpm --filter @br/web test:e2e:cf:telemetry   # the "on" half against the Worker
     checked in the screenshot).
   - **package CDN down mid-BUILD** (`e2e/solo-outage.spec.ts`, T-032): edit, autosave, ship
     and the last look still work from the browser's cache; the screenshot is the client
-    thumbnail (`fallback`), because the renderer has no cache.
+    thumbnail (`fallback`), because the renderer has no cache. The rooms suite has
+    `e2e/multiplayer-outage.spec.ts`: the CDN goes down in the lobby, and the lobby's
+    warm-up (`TemplateWarmup`) still gives both players a running template in BUILD.
 
   The tests commit data (anonymous users, battles), like `supabase/scripts/e2e-solo.mjs`.
   `SOLO_SCREENSHOT_DIR=/dir` saves UI screenshots; `E2E_REUSE_SERVERS=1` reuses servers that

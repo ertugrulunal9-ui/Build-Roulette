@@ -194,9 +194,9 @@ dependency on esm.sh. Exact-version URLs are `immutable`, so the edge keeps serv
 already requested while the origin container is down (setup and assumptions:
 `apps/pkg-cdn/README.md` "Origin outages").
 
-**In the browser (T-032):** the template's packages (React) stay in the browser's HTTP
-cache after the preview that runs during SPIN. The shell also fetches the rest of the
-template's import map into that cache. With the CDN down, edits, preview restarts, reloads,
+**In the browser (T-032):** the template's packages (React) are fetched into the
+browser's HTTP cache in the room lobby (desktop) and by the preview that runs during SPIN,
+including the template's other React entry points. With the CDN down, edits, preview restarts, reloads,
 autosave, ship and the last look keep working (measured and covered by e2e). A package the
 browser never loaded fails within about a second with "Package server unreachable: x@1.2.3"
 instead of a blank preview. In REVEAL such a build shows its screenshot.
@@ -205,8 +205,9 @@ instead of a blank preview. In REVEAL such a build shows its screenshot.
   registrations. A module cache there would let one build poison React for every build a
   viewer sees next, so the shell keeps wiping them. Page script can't write the HTTP cache,
   only the CDN's responses land there.
-- **Residual:** a viewer who never ran a preview (a spectator), or another player's
-  non-template packages, can't load while the CDN is down: the screenshot shows instead.
+- **Residual:** another player's non-template packages, and React for a browser that never
+  warmed it (a phone spectator, a solo player whose CDN was down before SPIN), can't load
+  while the CDN is down: the screenshot shows instead.
   Screenshots fall back to the client thumbnail, because the renderer has no cache. Details
   and limits: [03-sandbox](03-sandbox.md) "Package cache and CDN outages".
 

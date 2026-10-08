@@ -17,7 +17,7 @@
  * Plain functions without dependencies, so the browser, Next on Node and on Workers, the
  * capture worker and the package CDN all apply the same rules.
  */
-import type { Event, Exception, StackFrame } from '@sentry/core';
+import type { ClientOptions, Event, Exception, StackFrame } from '@sentry/core';
 
 const UUID_RE = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
 const UUID_EXACT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -105,6 +105,25 @@ export function scrubText(text: string, max: number = MAX_TEXT): string {
 }
 
 // ─── Sentry events ────────────────────────────────────────────────────────────────────
+
+/**
+ * Sentry's `dataCollection` with every category off (it replaces the deprecated
+ * `sendDefaultPii: false`): no user info, cookies, headers, bodies, query strings, GraphQL or
+ * AI payloads, database data, local variables or source lines. `scrubSentryEvent` drops all
+ * of these again in case an integration ignores the setting.
+ */
+export const NO_DATA_COLLECTION = {
+  userInfo: false,
+  cookies: false,
+  httpHeaders: false,
+  httpBodies: [],
+  urlQueryParams: false,
+  graphQL: { document: false, variables: false },
+  genAI: { inputs: false, outputs: false },
+  databaseQueryData: false,
+  stackFrameVariables: false,
+  frameContextLines: 0,
+} satisfies NonNullable<ClientOptions['dataCollection']>;
 
 /** Tags that may be sent. The `*_id` ones must be UUIDs (random ids, never user ids). */
 export const ALLOWED_TAGS: readonly string[] = [

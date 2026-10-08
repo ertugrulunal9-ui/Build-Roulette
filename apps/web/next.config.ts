@@ -42,10 +42,10 @@ const nextConfig: NextConfig = {
   // a DSN or key drops the code behind it (the bundler removes `if ('')` branches).
   env: {
     NEXT_PUBLIC_BR_RELEASE: release(),
-    NEXT_PUBLIC_SENTRY_DSN: process.env['NEXT_PUBLIC_SENTRY_DSN'] ?? '',
-    NEXT_PUBLIC_SENTRY_ENVIRONMENT: process.env['NEXT_PUBLIC_SENTRY_ENVIRONMENT'] ?? '',
-    NEXT_PUBLIC_POSTHOG_KEY: process.env['NEXT_PUBLIC_POSTHOG_KEY'] ?? '',
-    NEXT_PUBLIC_POSTHOG_HOST: process.env['NEXT_PUBLIC_POSTHOG_HOST'] ?? '',
+    NEXT_PUBLIC_SENTRY_DSN: process.env.NEXT_PUBLIC_SENTRY_DSN ?? '',
+    NEXT_PUBLIC_SENTRY_ENVIRONMENT: process.env.NEXT_PUBLIC_SENTRY_ENVIRONMENT ?? '',
+    NEXT_PUBLIC_POSTHOG_KEY: process.env.NEXT_PUBLIC_POSTHOG_KEY ?? '',
+    NEXT_PUBLIC_POSTHOG_HOST: process.env.NEXT_PUBLIC_POSTHOG_HOST ?? '',
   },
   poweredByHeader: false,
   // `next dev` would otherwise write AGENTS.md and CLAUDE.md into apps/web when it detects an

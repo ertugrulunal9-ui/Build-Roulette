@@ -28,7 +28,7 @@ import {
   type SeverityLevel,
   type Transport,
 } from '@sentry/core';
-import { scrubSentryEvent, scrubUrl, type ScrubEventOptions } from './scrub';
+import { NO_DATA_COLLECTION, scrubSentryEvent, scrubUrl, type ScrubEventOptions } from './scrub';
 
 export type TagValue = string | number | boolean | null | undefined;
 
@@ -117,7 +117,7 @@ export function createServerReporter(opts: ServerReporterOptions): ErrorReporter
     environment: opts.environment ?? 'production',
     platform: 'node',
     ...(opts.runtime ? { runtime: opts.runtime } : {}),
-    sendDefaultPii: false,
+    dataCollection: NO_DATA_COLLECTION,
     stackParser: createStackParser(nodeStackLineParser()),
     integrations: [dedupeIntegration(), linkedErrorsIntegration()],
     transport: makeFetchTransport(fetchImpl, opts.timeoutMs ?? 5_000),

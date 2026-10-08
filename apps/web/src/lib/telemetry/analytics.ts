@@ -97,7 +97,7 @@ const TOKEN = /^[a-z][a-z0-9_]{0,39}$/;
  */
 export function sanitizeProps(props: object): Record<string, PropValue> {
   const out: Record<string, PropValue> = {};
-  for (const [key, value] of Object.entries(props)) {
+  for (const [key, value] of Object.entries(props) as [string, unknown][]) {
     if (value === null || typeof value === 'boolean') out[key] = value;
     else if (typeof value === 'number') {
       if (Number.isFinite(value)) out[key] = Math.round(value * 1000) / 1000;

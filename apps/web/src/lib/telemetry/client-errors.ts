@@ -14,8 +14,9 @@
  * output is captured.
  */
 import { telemetryConfig, type TelemetryConfig } from './config';
+import type * as SentryBrowser from './sentry-browser';
 
-type Loaded = typeof import('./sentry-browser');
+type Loaded = typeof SentryBrowser;
 
 export interface ClientErrorDeps {
   config?: TelemetryConfig;
@@ -34,10 +35,11 @@ let api: Loaded | null = null;
 
 function idle(win: Window): (fn: () => void) => void {
   return (fn) => {
-    const ric = (win as Window & { requestIdleCallback?: typeof requestIdleCallback })
-      .requestIdleCallback;
-    if (typeof ric === 'function') ric(fn, { timeout: 3_000 });
-    else win.setTimeout(fn, 1_000);
+    if (typeof win.requestIdleCallback === 'function') {
+      win.requestIdleCallback(fn, { timeout: 3_000 });
+    } else {
+      win.setTimeout(fn, 1_000);
+    }
   };
 }
 

@@ -7,7 +7,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { realClock } from '../solo/controller';
 import { GameError } from '../solo/errors';
-import { RoomSync, normalizePresence, type SyncNotice, type SyncTimings } from './sync';
+import {
+  RoomSync,
+  normalizePresence,
+  type BattleSyncHealth,
+  type SyncNotice,
+  type SyncTimings,
+} from './sync';
 import {
   BATTLE_1,
   BATTLE_2,
@@ -1047,7 +1053,7 @@ describe('stop', () => {
     api.room = roomSnapshot({ battleId: BATTLE_1 });
     api.battles.set(BATTLE_1, battleSnapshot());
     const s = await started();
-    expect(env.size).toBe(2); // resume + offline
+    expect(env.size).toBe(3); // resume + offline + pagehide
     s.stop();
     expect(rt.topics.every((t) => t.closed)).toBe(true);
     expect(vi.getTimerCount()).toBe(0);
@@ -1059,5 +1065,121 @@ describe('stop', () => {
     env.fire('visible');
     await flush();
     expect(api.calls).toEqual([]);
+  });
+});
+
+describe('health (T-030)', () => {
+  let reports: BattleSyncHealth[];
+
+  async function healthEngine(): Promise<RoomSync> {
+    reports = [];
+    const s = new RoomSync({
+      api,
+      realtime: rt,
+      env,
+      userId: ME,
+      clock: { ...realClock, random: () => random },
+      onBattleHealth: (r) => reports.push(r),
+    });
+    await s.start(ROOM);
+    rt.open(ROOM_TOPIC).status('SUBSCRIBED');
+    await flush();
+    return s;
+  }
+
+  const phaseEvent = (version: number, phase: string) => ({
+    type: 'phase',
+    version,
+    phase,
+    phase_started_at: new Date().toISOString(),
+    phase_ends_at: null,
+  });
+
+  it('counts missed events, degraded time, rejoins, server closes and channel errors, and reports them once per battle at DESTROYED', async () => {
+    api.room = roomSnapshot({ battleId: BATTLE_1, version: 3 });
+    api.battles.set(BATTLE_1, battleSnapshot({ version: 10, phase: 'building' }));
+    const s = await healthEngine();
+    rt.open(B1_TOPIC).status('SUBSCRIBED');
+    await flush();
+
+    // A lost broadcast, caught by the heartbeat.
+    api.battles.set(BATTLE_1, battleSnapshot({ version: 11, phase: 'shipping' }));
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(s.stats.missed).toBe(1);
+
+    // The server closes the room topic: degraded for 5 s, then rejoined.
+    rt.open(ROOM_TOPIC).status('CLOSED');
+    expect(s.getSnapshot().connection).toBe('degraded');
+    await vi.advanceTimersByTimeAsync(5_000);
+    rt.open(ROOM_TOPIC).status('SUBSCRIBED');
+    await flush();
+    expect(s.getSnapshot().connection).toBe('live');
+    expect(s.stats).toMatchObject({ serverClosed: 1, rejoins: 1, degradedMs: 5_000 });
+
+    // A channel error on the battle topic (supabase-js retries it).
+    rt.open(B1_TOPIC).status('CHANNEL_ERROR');
+    rt.open(B1_TOPIC).status('SUBSCRIBED');
+    await flush();
+    expect(reports).toEqual([]);
+
+    // The battle ends.
+    api.battles.set(BATTLE_1, battleSnapshot({ version: 12, phase: 'destroyed' }));
+    rt.open(B1_TOPIC).send(phaseEvent(12, 'destroyed'));
+    await flush();
+    expect(reports).toHaveLength(1);
+    const r = reports[0];
+    expect(r).toMatchObject({ battleId: BATTLE_1, roomId: ROOM, ended: 'destroyed' });
+    expect(r?.stats).toMatchObject({
+      missed: 1,
+      rejoins: 1,
+      serverClosed: 1,
+      channelErrors: 1,
+      degradedMs: 5_000,
+    });
+    expect(r?.stats.fetches).toBeGreaterThan(2);
+    expect(r?.durationMs).toBe(15_000);
+
+    // Once: nothing more at stop.
+    s.stop();
+    expect(reports).toHaveLength(1);
+  });
+
+  it('nothing for a battle this client never saw running (the lobby after a battle)', async () => {
+    api.room = roomSnapshot({ battleId: BATTLE_1, version: 3 });
+    api.battles.set(BATTLE_1, battleSnapshot({ version: 20, phase: 'destroyed' }));
+    const s = await healthEngine();
+    env.fire('pagehide');
+    s.stop();
+    expect(reports).toEqual([]);
+  });
+
+  it('a rematch reports the old battle as switched; a stop with a reason reports left', async () => {
+    api.room = roomSnapshot({ battleId: BATTLE_1, version: 3 });
+    api.battles.set(BATTLE_1, battleSnapshot({ version: 5, phase: 'voting' }));
+    const s = await healthEngine();
+    api.room = roomSnapshot({ battleId: BATTLE_2, version: 4 });
+    api.battles.set(BATTLE_2, battleSnapshot({ id: BATTLE_2, version: 1, phase: 'spinning' }));
+    await s.refetchRoom();
+    await flush();
+    expect(reports.map((r) => [r.battleId, r.ended])).toEqual([[BATTLE_1, 'switched']]);
+    s.stop('kicked');
+    expect(reports.map((r) => [r.battleId, r.ended])).toEqual([
+      [BATTLE_1, 'switched'],
+      [BATTLE_2, 'left'],
+    ]);
+  });
+
+  it('the page going away reports the running battle (closed), once', async () => {
+    api.room = roomSnapshot({ battleId: BATTLE_1, version: 3 });
+    api.battles.set(BATTLE_1, battleSnapshot({ version: 5, phase: 'building' }));
+    const s = await healthEngine();
+    env.fire('offline'); // still degraded at the time of the report: counted up to then
+    await vi.advanceTimersByTimeAsync(2_000);
+    env.fire('pagehide');
+    expect(reports).toHaveLength(1);
+    expect(reports[0]).toMatchObject({ ended: 'closed' });
+    expect(reports[0]?.stats.degradedMs).toBe(2_000);
+    s.stop();
+    expect(reports).toHaveLength(1);
   });
 });

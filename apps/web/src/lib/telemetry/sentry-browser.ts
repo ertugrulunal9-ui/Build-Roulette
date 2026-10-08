@@ -27,7 +27,7 @@ import {
   type BrowserOptions,
   type ErrorEvent,
 } from '@sentry/browser';
-import { routeTemplate, scrubSentryEvent } from '@br/telemetry/scrub';
+import { NO_DATA_COLLECTION, routeTemplate, scrubSentryEvent } from '@br/telemetry/scrub';
 import { webRelease, type TelemetryConfig } from './config';
 import { currentUserHash, telemetryContext } from './context';
 import { privacySignal } from './privacy';
@@ -72,7 +72,7 @@ export function browserSentryOptions(
       httpContextIntegration(),
     ],
     allowUrls: [origin],
-    sendDefaultPii: false,
+    dataCollection: NO_DATA_COLLECTION,
     sendClientReports: false,
     maxBreadcrumbs: 0,
     beforeBreadcrumb: () => null,

@@ -36,11 +36,12 @@ function getReporter(env: Record<string, string | undefined>): ErrorReporter {
   if (reporter) return reporter;
   const dsn = serverSentryDsn(env);
   if (dsn === null) return disabledReporter; // looked up again next time (a runtime var)
+  const environment = env['SENTRY_ENVIRONMENT']?.trim() ?? '';
   reporter = createServerReporter({
     dsn,
     service: 'web',
     release: webRelease(),
-    environment: env['SENTRY_ENVIRONMENT']?.trim() || telemetryConfig.sentryEnvironment,
+    environment: environment === '' ? telemetryConfig.sentryEnvironment : environment,
     runtime: { name: serverRuntime() },
   });
   return reporter;

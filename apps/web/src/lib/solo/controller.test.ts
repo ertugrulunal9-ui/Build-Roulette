@@ -4,6 +4,7 @@
  * scheduling, the ship flow, results and destroy, and the error mapping.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { AnalyticsEventName } from '../telemetry/analytics';
 import { SoloController, battleWorkspaceId, realClock, type SoloState } from './controller';
 import { GameError } from './errors';
 import { BATTLE, FakeApi, FakeBridge, FakeLocalWorkspaces, USER, snapshotAt } from './test-support';
@@ -749,5 +750,79 @@ describe('restoreWorkspace', () => {
     api.files.set(`${BATTLE}/${USER}/autosave/source.json`, '{"files": {"a": 1}}');
     expect(await c.restoreWorkspace()).toBeNull();
     c.dispose();
+  });
+});
+
+describe('analytics (T-030)', () => {
+  let events: [AnalyticsEventName, Record<string, unknown>][];
+  const tracked = (): SoloController =>
+    new SoloController({
+      api,
+      cdnBaseUrl: 'https://pkg.test',
+      localWorkspaces: local,
+      clock: { ...realClock, random: () => 0 },
+      track: (name, props) => {
+        events.push([name, props as Record<string, unknown>]);
+      },
+    });
+  beforeEach(() => {
+    events = [];
+  });
+
+  it('a solo start, a manual ship and the battle completing', async () => {
+    const c = tracked();
+    await c.start('Turbo Otter');
+    expect(events).toEqual([
+      ['battle_started', { battle_id: BATTLE, mode: 'solo', room_id: null, rematch: false }],
+    ]);
+    api.snapshot = snapshotAt('building', { endsInMs: 300_000, version: 2 });
+    c.receive(api.snapshot); // the battle moves on to BUILDING
+    c.attachWorkspace(new FakeBridge());
+    await c.ship('Snack Overflow');
+    await flush();
+    expect(events.slice(1)).toEqual([
+      ['build_shipped', { battle_id: BATTLE, mode: 'solo', how: 'manual', completion_ms: 1000 }],
+      [
+        'battle_completed',
+        {
+          battle_id: BATTLE,
+          mode: 'solo',
+          role: 'player',
+          outcome: 'results',
+          build: 'manual',
+          rank: null,
+          builds: 1,
+        },
+      ],
+    ]);
+    c.dispose();
+  });
+
+  it('an auto-ship seen live counts as shipped (auto); reopening a finished battle counts nothing', async () => {
+    api.snapshot = snapshotAt('shipping', { endsInMs: 1_000, version: 3 });
+    const c = tracked();
+    c.init(BATTLE);
+    await flush();
+    api.onAdvance = (v) => {
+      api.snapshot = snapshotAt('results', {
+        version: v + 2,
+        endsInMs: 60_000,
+        status: 'auto_shipped',
+      });
+      return { changed: true, version: v + 2, phase: 'results', phase_ends_at: null };
+    };
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(events.map((e) => [e[0], e[1]['how'] ?? e[1]['build']])).toEqual([
+      ['build_shipped', 'auto'],
+      ['battle_completed', 'auto'],
+    ]);
+    c.dispose();
+
+    events = [];
+    const again = tracked();
+    again.init(BATTLE);
+    await flush();
+    expect(events).toEqual([]);
+    again.dispose();
   });
 });

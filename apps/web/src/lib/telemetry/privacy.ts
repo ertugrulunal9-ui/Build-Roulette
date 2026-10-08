@@ -12,9 +12,7 @@ interface PrivacyNavigator {
 }
 
 export function privacySignal(
-  nav: PrivacyNavigator | undefined = typeof navigator === 'undefined'
-    ? undefined
-    : (navigator as PrivacyNavigator),
+  nav: PrivacyNavigator | undefined = typeof navigator === 'undefined' ? undefined : navigator,
   win: { doNotTrack?: string | null } | undefined = typeof window === 'undefined'
     ? undefined
     : (window as { doNotTrack?: string | null }),

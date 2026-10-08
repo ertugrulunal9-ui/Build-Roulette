@@ -31,6 +31,8 @@ declare namespace NodeJS {
     readonly NEXT_PUBLIC_POSTHOG_HOST?: string;
     /** The release (set by next.config.ts from `BR_RELEASE` or the commit). */
     readonly NEXT_PUBLIC_BR_RELEASE?: string;
+    /** Set by Next.js per compilation: `nodejs` or `edge` (src/instrumentation.ts). */
+    readonly NEXT_RUNTIME?: 'nodejs' | 'edge';
   }
 }
 

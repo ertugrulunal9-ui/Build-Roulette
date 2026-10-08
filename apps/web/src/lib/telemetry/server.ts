@@ -106,16 +106,6 @@ export function reportRequestError(
   }
 }
 
-/** True when server errors are reported (a usable DSN is configured). */
-export function serverReportingEnabled(
-  env: Record<string, string | undefined> = process.env,
-): boolean {
-  return getReporter(env).enabled;
-}
-
-/** The error the /admin Health button throws (its message is how to find it in Sentry). */
-export const TEST_ERROR_MESSAGE = 'Build Roulette test error (thrown from /admin on purpose)';
-
 /** Tests only. */
 export function resetServerReporter(): void {
   reporter = null;

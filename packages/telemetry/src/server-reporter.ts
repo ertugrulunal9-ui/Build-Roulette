@@ -21,13 +21,13 @@ import {
   createStackParser,
   createTransport,
   dedupeIntegration,
-  dsnFromString,
   linkedErrorsIntegration,
   nodeStackLineParser,
   type BaseTransportOptions,
   type SeverityLevel,
   type Transport,
 } from '@sentry/core';
+import { usableDsn } from './dsn';
 import { NO_DATA_COLLECTION, scrubSentryEvent, scrubUrl, type ScrubEventOptions } from './scrub';
 
 export type TagValue = string | number | boolean | null | undefined;
@@ -75,13 +75,6 @@ export interface ServerReporterOptions {
   /** Per request (default 5 s). */
   timeoutMs?: number;
   scrub?: ScrubEventOptions;
-}
-
-/** A DSN that can be used, or null (empty, whitespace or malformed: reporting stays off). */
-export function usableDsn(dsn: string | null | undefined): string | null {
-  const v = dsn?.trim() ?? '';
-  if (v === '') return null;
-  return dsnFromString(v) ? v : null;
 }
 
 /** Sentry's transport over plain fetch (Node 22, workerd and browsers all have it). */

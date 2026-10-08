@@ -3,7 +3,7 @@
  * logged: `describeConfig` is what the worker prints at startup.
  */
 import { CAPTURE_MIN_SECRET_LENGTH } from '@br/sandbox-shell/capture-sig';
-import { usableDsn } from '@br/telemetry/server';
+import { usableDsn } from '@br/telemetry/dsn';
 import { CAPTURE_VIEWPORT } from '@br/sandbox-shell/capture-gate';
 import { JOB_LEASE_MS } from './backend';
 import type { CaptureConfig } from './capture-job';

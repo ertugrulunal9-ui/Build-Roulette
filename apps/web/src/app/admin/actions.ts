@@ -19,7 +19,7 @@ import { cookies, headers } from 'next/headers';
 import { notFound, redirect } from 'next/navigation';
 import { after } from 'next/server';
 import { TAKEDOWN_REEXPIRE_MS, takedownPaths, takedownTags } from '../../lib/cache/policy';
-import { TEST_ERROR_MESSAGE, serverReportingEnabled } from '../../lib/telemetry/server';
+import { TEST_ERROR_MESSAGE, serverReportingEnabled } from '../../lib/telemetry/config';
 import {
   ACCESS_COOKIE,
   REFRESH_COOKIE,

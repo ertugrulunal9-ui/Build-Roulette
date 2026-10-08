@@ -8,7 +8,7 @@
  * in the browser), so only client errors are sent from here.
  */
 import { useEffect } from 'react';
-import { reportClientError } from '../lib/telemetry/client-errors';
+import { reportClientError } from '../lib/telemetry/error-sink';
 import './globals.css';
 
 export default function GlobalError({

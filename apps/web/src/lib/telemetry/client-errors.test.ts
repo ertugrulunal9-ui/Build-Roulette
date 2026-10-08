@@ -9,6 +9,7 @@ import {
 } from './client-errors';
 import type { TelemetryConfig } from './config';
 import { resetTelemetryContext, setTelemetryContext } from './context';
+import { reportClientError } from './error-sink';
 import { browserSentryOptions, prepareBrowserEvent } from './sentry-browser';
 import type * as SentryBrowser from './sentry-browser';
 
@@ -41,6 +42,7 @@ afterEach(() => {
 
 describe('startClientErrorReporting', () => {
   it('does nothing at all without a DSN: no listener, no chunk', () => {
+    reportClientError(new Error('nowhere to go')); // no sink: a no-op
     const load = vi.fn();
     const add = vi.spyOn(window, 'addEventListener');
     const started = startClientErrorReporting({
@@ -85,6 +87,10 @@ describe('startClientErrorReporting', () => {
     // The buffer's listeners are gone (the SDK's own handlers took over).
     window.dispatchEvent(new ErrorEvent('error', { error: new Error('later') }));
     expect(mod.reportEarlyError).toHaveBeenCalledTimes(1);
+    // Errors the app catches (global-error) now go to the SDK too.
+    const caught = new Error('caught by a boundary');
+    reportClientError(caught);
+    expect(mod.reportError).toHaveBeenCalledWith(caught);
   });
 
   it('keeps at most EARLY_ERROR_LIMIT early errors', async () => {

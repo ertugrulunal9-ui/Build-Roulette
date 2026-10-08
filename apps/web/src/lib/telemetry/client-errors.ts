@@ -14,6 +14,7 @@
  * output is captured.
  */
 import { telemetryConfig, type TelemetryConfig } from './config';
+import { setErrorSink } from './error-sink';
 import type * as SentryBrowser from './sentry-browser';
 
 type Loaded = typeof SentryBrowser;
@@ -31,7 +32,6 @@ export interface ClientErrorDeps {
 export const EARLY_ERROR_LIMIT = 10;
 
 let started = false;
-let api: Loaded | null = null;
 
 function idle(win: Window): (fn: () => void) => void {
   return (fn) => {
@@ -69,7 +69,9 @@ export function startClientErrorReporting(deps: ClientErrorDeps = {}): boolean {
     void load()
       .then((mod) => {
         mod.initBrowserSentry(dsn, config, win);
-        api = mod;
+        setErrorSink((error) => {
+          mod.reportError(error);
+        });
         win.removeEventListener('error', onError);
         win.removeEventListener('unhandledrejection', onRejection);
         for (const { error, kind } of early.splice(0)) mod.reportEarlyError(error, kind);
@@ -83,16 +85,8 @@ export function startClientErrorReporting(deps: ClientErrorDeps = {}): boolean {
   return true;
 }
 
-/**
- * Reports an error the app caught itself (an error boundary). A no-op while reporting is
- * off or not loaded yet.
- */
-export function reportClientError(error: unknown): void {
-  api?.reportError(error);
-}
-
 /** Tests only. */
 export function resetClientErrorReporting(): void {
   started = false;
-  api = null;
+  setErrorSink(null);
 }

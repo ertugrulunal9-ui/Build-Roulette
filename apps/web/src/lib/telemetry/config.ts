@@ -15,6 +15,8 @@
  * is installed, no request is made. DEPLOY.md ("Observability") has the setup.
  */
 
+import { usableDsn } from '@br/telemetry/dsn';
+
 function clean(value: string | undefined): string | null {
   const v = value?.trim() ?? '';
   return v === '' ? null : v;
@@ -48,6 +50,19 @@ export function serverSentryDsn(
 ): string | null {
   return clean(env['SENTRY_DSN']) ?? telemetryConfig.sentryDsn;
 }
+
+/**
+ * True when server errors are reported (a usable DSN). Light on purpose: a page or server
+ * action that only asks this must not bundle the Sentry client (server.ts) into its route.
+ */
+export function serverReportingEnabled(
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  return usableDsn(serverSentryDsn(env)) !== null;
+}
+
+/** The error the /admin Health button throws (its message is how to find it in Sentry). */
+export const TEST_ERROR_MESSAGE = 'Build Roulette test error (thrown from /admin on purpose)';
 
 /** The Sentry release name for the web app. */
 export function webRelease(config: TelemetryConfig = telemetryConfig): string {

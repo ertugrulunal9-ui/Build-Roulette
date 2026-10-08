@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createServerReporter, disabledReporter, usableDsn } from '../src/server-reporter';
+import { usableDsn } from '../src/dsn';
+import { createServerReporter, disabledReporter } from '../src/server-reporter';
 import { startFakeIngest, type FakeIngest } from '../src/testing/fake-ingest';
 
 const BATTLE = '3f2a8c1e-7b4d-4e2a-9c1f-0a1b2c3d4e5f';
@@ -22,6 +23,26 @@ describe('env gating', () => {
       expect(createServerReporter({ dsn, service: 'test' })).toBe(disabledReporter);
     }
     expect(usableDsn(ingest.dsn())).toBe(ingest.dsn());
+  });
+
+  it('accepts the DSN forms Sentry hands out, nothing else', () => {
+    for (const ok of [
+      'https://abc123@o12345.ingest.sentry.io/67890',
+      'https://abc123@o12345.ingest.de.sentry.io/67890',
+      'https://abc123:secret@sentry.example.com/path/42',
+      'http://public@127.0.0.1:4399/1',
+    ]) {
+      expect(usableDsn(ok), ok).toBe(ok);
+    }
+    for (const bad of [
+      'https://sentry.io/123',
+      'https://abc@o1.ingest.sentry.io/',
+      'https://abc@o1.ingest.sentry.io/project',
+      'ftp://abc@host/1',
+      'abc@host/1',
+    ]) {
+      expect(usableDsn(bad), bad).toBeNull();
+    }
   });
 
   it('sends nothing when off', async () => {

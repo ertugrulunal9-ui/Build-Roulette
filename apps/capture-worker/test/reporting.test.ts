@@ -30,7 +30,11 @@ beforeEach(() => {
 describe('configuration', () => {
   it('is off without SENTRY_DSN, and says so (without the DSN) at startup', () => {
     const off = loadConfig(ENV);
-    expect(off.telemetry).toEqual({ sentryDsn: null, environment: 'production', release: undefined });
+    expect(off.telemetry).toEqual({
+      sentryDsn: null,
+      environment: 'production',
+      release: undefined,
+    });
     expect(describeConfig(off)['errorReporting']).toBe('off');
     const on = loadConfig({ ...ENV, SENTRY_DSN: ingest.dsn(), SENTRY_RELEASE: 'abc' });
     expect(describeConfig(on)['errorReporting']).toBe('sentry');

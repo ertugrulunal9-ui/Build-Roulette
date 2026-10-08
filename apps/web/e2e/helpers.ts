@@ -1,4 +1,10 @@
-import { expect, type FrameLocator, type Locator, type Page } from '@playwright/test';
+import {
+  expect,
+  type APIRequestContext,
+  type FrameLocator,
+  type Locator,
+  type Page,
+} from '@playwright/test';
 
 /**
  * Clicks `target` once the browser really routes pointer input at its centre to it.
@@ -49,11 +55,12 @@ export async function clickRouted(target: Locator): Promise<void> {
  * ends) or `off`.
  */
 export async function setCdnOutage(
-  page: Page,
+  via: Page | APIRequestContext,
   mode: 'refuse' | 'error' | 'hang' | 'off',
 ): Promise<void> {
   const port = process.env['CDN_CONTROL_PORT'] ?? '4323';
-  const res = await page.request.post(`http://127.0.0.1:${port}/cdn-outage?mode=${mode}`);
+  const request = 'request' in via ? via.request : via;
+  const res = await request.post(`http://127.0.0.1:${port}/cdn-outage?mode=${mode}`);
   expect(res.status()).toBe(200);
 }
 

@@ -47,6 +47,12 @@ export const PRESENCE_ACTIVITY_INTERVAL_MS = 15_000;
 export const PRESENCE_LINES_STEP = 20;
 
 /**
+ * A failing build is reported in the activity once it has failed this long: the preview
+ * rebuilds 150 ms after each edit, so a half-typed line fails for a moment all the time.
+ */
+export const ACTIVITY_BUILD_ERROR_MS = 10_000;
+
+/**
  * The activity's `typing` flag means "edited recently": an edit within this long (T-029;
  * before, 3 s). With updates at most every 15 s, "typing…" would claim more than the
  * sidebar can know, so it reads "active" (docs/04 §4.10).

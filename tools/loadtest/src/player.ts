@@ -126,25 +126,6 @@ export class SimPlayer {
     }
   }
 
-  /** `select version from battles where id = …` (the T-023 check with every heartbeat). */
-  async battleVersion(battleId: string): Promise<number | null> {
-    try {
-      const res = await this.client
-        .from('battles')
-        .select('version')
-        .eq('id', battleId)
-        .maybeSingle<{ version: number }>();
-      if (res.error) {
-        this.metrics.rpcError('rest:battles', errorCode(res.error));
-        return null;
-      }
-      return res.data?.version ?? null;
-    } catch (e) {
-      this.metrics.rpcError('rest:battles', errorCode(e as Error));
-      return null;
-    }
-  }
-
   async upload(
     path: string,
     body: string | Uint8Array<ArrayBuffer>,
@@ -200,10 +181,10 @@ export class SimPlayer {
 
   subscribe(
     topic: string,
-    opts: { presence: boolean },
+    opts: { presence: boolean; onSubscribed?: () => void },
     onBroadcast: (payload: Record<string, unknown>, at: number) => void,
   ): Topic {
-    return new Topic(this, topic, opts.presence, onBroadcast);
+    return new Topic(this, topic, opts.presence, onBroadcast, opts.onSubscribed);
   }
 
   async stop(): Promise<void> {
@@ -220,19 +201,75 @@ export class SimPlayer {
   }
 }
 
+/** BUILD activity as the web client tracks it (`typing` = edited in the last 15 s). */
+export interface Activity {
+  lines: number;
+  last_build: 'ok' | 'error';
+  typing: boolean;
+}
+
 /**
- * A private topic with the web client's rules: `config.private`, a presence key on the room
- * topic only, Presence at most once per 2 s and 4 times per 30 s (Realtime closes a channel
- * after more than 5 per 30 s), and a re-subscribe with backoff when the server closes it.
+ * The web client's presence and rejoin rules (apps/web/src/lib/room/sync.ts, T-029). The
+ * numbers mirror `@br/game` (PRESENCE_*) and the sync engine's DEFAULT_SYNC_TIMINGS.
+ */
+export const CLIENT_RULES = {
+  /** Any two tracks at least this far apart. */
+  presenceThrottleMs: 2_000,
+  /** Activity updates at most this often, only during BUILDING, only when they matter. */
+  presenceActivityMs: 15_000,
+  presenceLinesStep: 20,
+  /** A failing build is reported once it has failed this long (or was already reported). */
+  buildErrorMs: 10_000,
+  /** Realtime closes a channel above 5 presence messages per 30 s; clients stay at 4. */
+  presenceMaxPerWindow: 4,
+  presenceWindowMs: 30_000,
+  /** Re-subscribe after a server close: 5, 10, 20, 30 s, plus up to half again at random. */
+  rejoinBaseMs: 5_000,
+  rejoinMaxMs: 30_000,
+  rejoinJitter: 0.5,
+  /** One backoff level down per this long subscribed (a SUBSCRIBED alone resets nothing). */
+  rejoinDecayMs: 60_000,
+} as const;
+
+/** `activityMatters` of @br/game: active on/off, the build failing or fixed, ±20 lines. */
+export function activityMatters(sent: Activity | null, next: Activity): boolean {
+  if (sent === null) return true;
+  return (
+    sent.typing !== next.typing ||
+    sent.last_build !== next.last_build ||
+    Math.abs(next.lines - sent.lines) >= CLIENT_RULES.presenceLinesStep
+  );
+}
+
+/** The rejoin delay for backoff level `n` and a random number in [0, 1). */
+export function rejoinDelayMs(n: number, random: number): number {
+  const { rejoinBaseMs, rejoinMaxMs, rejoinJitter } = CLIENT_RULES;
+  const base = Math.min(rejoinBaseMs * 2 ** n, rejoinMaxMs);
+  return Math.round(base * (1 + rejoinJitter * random));
+}
+
+/**
+ * A private topic with the web client's rules (T-029): `config.private`, a presence key on
+ * the room topic only; presence claimed after every SUBSCRIBED, BUILD activity sent only
+ * during BUILDING, only when it matters, at most once per 15 s (the latest wins), any two
+ * tracks 2 s apart and at most 4 per 30 s; a re-subscribe with backoff (5 s, 10 s, 20 s,
+ * 30 s + jitter, decaying one level per 60 s subscribed) when the server closes it.
  */
 export class Topic {
   private channel: RealtimeChannel | null = null;
   private closed = false;
   private subscribedOnce = false;
-  private resubscribeMs = 1000;
+  /** Rejoin backoff level (server closes in a row, minus the decay). */
+  private rejoinLevel = 0;
+  private decayTimer: NodeJS.Timeout | null = null;
   private trackTimes: number[] = [];
-  private lastTrackAt = 0;
-  private pending: object | null = null;
+  private lastTrackAt = Number.NEGATIVE_INFINITY;
+  private identity: object | null = null;
+  private activity: Activity = { lines: 0, last_build: 'ok', typing: false };
+  private sentActivity: Activity | null = null;
+  private buildErrorSince: number | null = null;
+  private lastTracked: string | null = null;
+  private claimOwed = true;
   private pendingTimer: NodeJS.Timeout | null = null;
   status = 'PENDING';
   /** Labels presence sends (the player's phase) for the per-phase presence rate. */
@@ -243,7 +280,13 @@ export class Topic {
     readonly topic: string,
     private readonly presence: boolean,
     private readonly onBroadcast: (payload: Record<string, unknown>, at: number) => void,
+    /** Called on every SUBSCRIBED (the web client refetches its snapshot then). */
+    private readonly onSubscribed: () => void = () => undefined,
   ) {}
+
+  private get kind(): string {
+    return this.topic.split(':')[0] ?? '';
+  }
 
   /** Resolves with the first decided status (SUBSCRIBED, CHANNEL_ERROR, TIMED_OUT, CLOSED). */
   subscribe(timeoutMs = 15_000): Promise<string> {
@@ -275,25 +318,30 @@ export class Topic {
       channel.subscribe((status, err) => {
         const st: string = status;
         m.channelStatus(st);
-        if (err)
-          m.count(`channel_error:${this.topic.split(':')[0] ?? ''}:${err.message.slice(0, 80)}`);
-        this.status = st;
-        if (st === 'SUBSCRIBED') {
+        if (err) m.count(`channel_error:${this.kind}:${err.message.slice(0, 80)}`);
+        if (this.channel === channel) this.status = st;
+        if (st === 'SUBSCRIBED' && this.channel === channel && !this.closed) {
           if (!this.subscribedOnce) {
-            this.player.metrics.observe(
-              `realtime:join:${this.topic.split(':')[0] ?? ''}`,
-              now() - t0,
-            );
+            this.player.metrics.observe(`realtime:join:${this.kind}`, now() - t0);
+          } else {
+            m.count(`rejoined:${this.kind}`);
           }
           this.subscribedOnce = true;
-          this.resubscribeMs = 1000;
+          this.scheduleDecay();
+          // (Re)subscribed: claim presence again, catch up on what may have been missed.
+          this.claimOwed = true;
+          this.flush();
+          this.onSubscribed();
+        } else if (this.channel === channel && this.decayTimer) {
+          clearTimeout(this.decayTimer);
+          this.decayTimer = null;
         }
         if (st === 'CLOSED' && !this.closed && this.channel === channel) {
           // Closed by the server (rate limit, expired token): supabase-js does not rejoin.
-          m.count(`channel_closed_by_server:${this.topic.split(':')[0] ?? ''}`);
+          m.count(`channel_closed_by_server:${this.kind}`);
           this.channel = null;
-          const wait = this.resubscribeMs;
-          this.resubscribeMs = Math.min(30_000, this.resubscribeMs * 2);
+          const wait = rejoinDelayMs(this.rejoinLevel, this.player.rng.next());
+          this.rejoinLevel++;
           setTimeout(() => {
             if (this.closed) return;
             void this.player.client.removeChannel(channel).finally(() => {
@@ -310,42 +358,108 @@ export class Topic {
     });
   }
 
-  /** Presence with the client's throttle (latest payload wins, deferred when over budget). */
-  track(payload: object): void {
+  /** One backoff level down per `rejoinDecayMs` the topic stays subscribed. */
+  private scheduleDecay(): void {
+    if (this.decayTimer) clearTimeout(this.decayTimer);
+    this.decayTimer = null;
+    if (this.rejoinLevel === 0 || this.closed) return;
+    this.decayTimer = setTimeout(() => {
+      this.decayTimer = null;
+      this.rejoinLevel = Math.max(0, this.rejoinLevel - 1);
+      this.scheduleDecay();
+    }, CLIENT_RULES.rejoinDecayMs);
+  }
+
+  /** Who this client is (`{user_id, display_name, device}`); claimed once subscribed. */
+  setIdentity(identity: object): void {
     if (!this.presence || this.closed) return;
-    this.pending = payload;
+    this.identity = identity;
+    this.claimOwed = true;
     this.flush();
   }
 
+  /** The BUILD activity (the web client's setActivity). */
+  setActivity(activity: Activity): void {
+    if (!this.presence || this.closed) return;
+    if (activity.last_build !== 'error') this.buildErrorSince = null;
+    else this.buildErrorSince ??= now();
+    this.activity = activity;
+    this.flush();
+  }
+
+  /** The web client's reportedActivity: a failing build only once it failed for 10 s. */
+  private reported(t: number): Activity {
+    const a = this.activity;
+    if (a.last_build !== 'error' || this.sentActivity?.last_build === 'error') return a;
+    const since = this.buildErrorSince ?? t;
+    return t - since >= CLIENT_RULES.buildErrorMs ? a : { ...a, last_build: 'ok' };
+  }
+
+  /** The battle's phase changed: activity held back outside BUILDING may go out now. */
+  phaseChanged(): void {
+    this.flush();
+  }
+
+  /** The web client's flushPresence. */
   private flush(): void {
-    if (!this.pending || this.closed || !this.channel || this.status !== 'SUBSCRIBED') return;
+    if (!this.identity || this.closed || !this.channel || this.status !== 'SUBSCRIBED') return;
     const t = now();
-    this.trackTimes = this.trackTimes.filter((x) => x > t - 30_000);
-    let wait = this.lastTrackAt + 2_000 - t;
-    const oldest = this.trackTimes[0];
-    if (this.trackTimes.length >= 4 && oldest !== undefined) {
-      wait = Math.max(wait, oldest + 30_000 - t);
-    }
-    if (wait > 0) {
-      if (!this.pendingTimer) {
-        this.player.metrics.raw.presence.deferred++;
-        this.pendingTimer = setTimeout(() => {
-          this.pendingTimer = null;
-          this.flush();
-        }, wait);
+    const activity = this.reported(t);
+    const payload = { ...this.identity, activity };
+    const json = JSON.stringify(payload);
+    const claim = this.claimOwed;
+    const building = this.phaseOf() === 'building';
+    const wanted =
+      claim ||
+      (json !== this.lastTracked && building && activityMatters(this.sentActivity, activity));
+    const wasPending = this.pendingTimer !== null;
+    if (this.pendingTimer) clearTimeout(this.pendingTimer);
+    this.pendingTimer = null;
+    if (!wanted) {
+      const since = this.buildErrorSince;
+      if (building && since !== null && activity.last_build === 'ok') {
+        this.pendingTimer = setTimeout(
+          () => {
+            this.pendingTimer = null;
+            this.flush();
+          },
+          since + CLIENT_RULES.buildErrorMs - t,
+        );
       }
       return;
     }
-    const payload = this.pending;
-    this.pending = null;
+    const r = CLIENT_RULES;
+    this.trackTimes = this.trackTimes.filter((x) => x > t - r.presenceWindowMs);
+    let wait = this.lastTrackAt + (claim ? r.presenceThrottleMs : r.presenceActivityMs) - t;
+    const oldest = this.trackTimes[0];
+    if (this.trackTimes.length >= r.presenceMaxPerWindow && oldest !== undefined) {
+      wait = Math.max(wait, oldest + r.presenceWindowMs - t);
+    }
+    if (wait > 0) {
+      if (!wasPending) this.player.metrics.raw.presence.deferred++;
+      this.pendingTimer = setTimeout(() => {
+        this.pendingTimer = null;
+        this.flush();
+      }, wait);
+      return;
+    }
+    this.claimOwed = false;
     this.lastTrackAt = t;
     this.trackTimes.push(t);
+    this.lastTracked = json;
+    this.sentActivity = activity;
     this.player.metrics.raw.presence.sent++;
     this.player.metrics.count(`presence_sent:${this.phaseOf()}`);
+    this.player.metrics.count(claim ? 'presence_sent_claim' : 'presence_sent_activity');
     const channel = this.channel;
     void channel.track(payload).then(
-      (r) => {
-        if (r !== 'ok') this.player.metrics.raw.presence.failed++;
+      (res) => {
+        if (res === 'ok') return;
+        this.player.metrics.raw.presence.failed++;
+        if (this.lastTracked === json) {
+          this.lastTracked = null;
+          this.claimOwed = true;
+        }
       },
       () => {
         this.player.metrics.raw.presence.failed++;
@@ -356,6 +470,7 @@ export class Topic {
   async close(): Promise<void> {
     this.closed = true;
     if (this.pendingTimer) clearTimeout(this.pendingTimer);
+    if (this.decayTimer) clearTimeout(this.decayTimer);
     const ch = this.channel;
     this.channel = null;
     if (ch) await this.player.client.removeChannel(ch).catch(() => undefined);

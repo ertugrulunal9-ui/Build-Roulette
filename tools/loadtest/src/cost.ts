@@ -201,7 +201,7 @@ const RATE_KEYS = new Set(['rpc:heartbeat', 'rest:battles', 'rpc:server_now']);
  *   scaled by (P / P_t)² (events grow with players and each goes to every player);
  * - **rate-driven** traffic (heartbeat, version check, clock sync) is taken per
  *   client-minute and multiplied by real online minutes × P;
- * - **presence**: sends per BUILDING minute (the throttle binds there) × real build minutes,
+ * - **presence**: sends per BUILDING minute (activity goes out only then) × real build minutes,
  *   plus the other sends per player-battle, each delivered to every member;
  * - **screenshots** are downloaded as often as measured, at the assumed real size;
  * - **captures**: final builds × the assumed browser seconds per capture.

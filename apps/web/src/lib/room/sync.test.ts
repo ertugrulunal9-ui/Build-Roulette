@@ -840,7 +840,7 @@ describe('presence', () => {
     // 20 lines more than the others saw: sent (the gap is long over).
     s.setActivity(act(32));
     expect(topic.tracked).toHaveLength(3);
-    // The build breaks 1 s later: waits for the 15 s gap, then goes out.
+    // The build breaks 1 s later (and stays broken past 10 s): out when the 15 s gap is over.
     await vi.advanceTimersByTimeAsync(1_000);
     s.setActivity(act(33, true, 'error'));
     await vi.advanceTimersByTimeAsync(13_999);
@@ -853,6 +853,36 @@ describe('presence', () => {
     s.setActivity(act(34, true, 'error'));
     await vi.advanceTimersByTimeAsync(30_000);
     expect(topic.tracked).toHaveLength(4);
+    s.stop();
+  });
+
+  it('a build that fails for a moment is not news; one that fails for 10 s is, and so is its fix', async () => {
+    building();
+    const s = await started();
+    s.setPresence('Ada');
+    const topic = rt.open(ROOM_TOPIC);
+    s.setActivity(act(10));
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(topic.tracked).toHaveLength(2); // the claim, then active
+    // A half-typed line breaks the build for 2 s, again and again: nothing is sent.
+    for (let i = 0; i < 10; i++) {
+      s.setActivity(act(10, true, 'error'));
+      await vi.advanceTimersByTimeAsync(2_000);
+      s.setActivity(act(10, true, 'ok'));
+      await vi.advanceTimersByTimeAsync(4_000);
+    }
+    expect(topic.tracked).toHaveLength(2);
+    // Now it stays broken: reported once it has failed for 10 s.
+    s.setActivity(act(11, true, 'error'));
+    await vi.advanceTimersByTimeAsync(9_999);
+    expect(topic.tracked).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(topic.tracked.at(-1)).toMatchObject({ activity: act(11, true, 'error') });
+    // Fixed: that matters at once (well, after the 15 s gap).
+    s.setActivity(act(12, true, 'ok'));
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(topic.tracked).toHaveLength(4);
+    expect(topic.tracked.at(-1)).toMatchObject({ activity: act(12, true, 'ok') });
     s.stop();
   });
 

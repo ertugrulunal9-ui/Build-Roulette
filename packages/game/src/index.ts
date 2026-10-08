@@ -40,6 +40,7 @@ export { estimateClockOffset, remainingMs } from './clock';
 export type { ClockSample } from './clock';
 
 export {
+  ACTIVITY_BUILD_ERROR_MS,
   ACTIVITY_RECENT_MS,
   AUTO_AWARDS,
   BATTLE_EVENT_TYPES,

@@ -2,21 +2,26 @@
  * One player's view of a room, modelled on the web client (apps/web/src/lib/room/sync.ts,
  * reveal-vote.ts and the solo controller in external mode):
  *
- * - **Room:** `room:{id}` with Presence (`{user_id, display_name, device, activity}`,
- *   ≤ 1 per 2 s and ≤ 4 per 30 s), `get_room_snapshot` on subscribe and on a version gap or
- *   a newer `room_version` in the heartbeat answer.
- * - **Heartbeat** every 10 s, plus the T-023 version check (`battles.version` via
- *   PostgREST) while a battle runs. **Clock:** 3 × `server_now` at start and every 60 s.
- * - **Battle:** `battle:{id}` without Presence; version rules (ignore stale, refetch on a
- *   gap); `get_battle_snapshot` after every `phase` event except a REVEAL slot step, after
- *   `capture` and `sync` events, after each deadline nudge. **Nudges:** at each deadline
- *   (+0–500 ms jitter) `advance_battle` with the snapshot's version, then a refetch; again
- *   every 5 s while the version does not move (e.g. RESULTS waiting for screenshots).
+ * - **Room:** `room:{id}` with Presence (`{user_id, display_name, device, activity}`; the
+ *   rules of player.ts `Topic`, T-029: claimed after every SUBSCRIBED, BUILD activity only
+ *   during BUILDING, only when it matters, ≤ 1 per 15 s), `get_room_snapshot` at start, on
+ *   SUBSCRIBED, on a version gap and on a newer `room_version` in the heartbeat answer.
+ *   A topic the server closes is re-subscribed after 5, 10, 20, 30 s + jitter.
+ * - **Heartbeat** every 10 s; its answer carries the battle's version (T-029), which is the
+ *   T-023 lost-broadcast check (no separate read). **Clock:** 3 × `server_now` at start,
+ *   then 1 every 60 s (ignored when its RTT is much slower; 3 ignored → 3 samples again).
+ * - **Battle:** `battle:{id}` without Presence, joined a random 0–500 ms after the battle is
+ *   known (T-029; the snapshot is fetched at once and again on SUBSCRIBED); version rules
+ *   (ignore stale, refetch on a gap); `get_battle_snapshot` after every `phase` event except
+ *   a REVEAL slot step, after `capture` and `sync` events, after each deadline nudge.
+ *   **Nudges:** at each deadline (+0–500 ms jitter) `advance_battle` with the snapshot's
+ *   version, then a refetch; while the version does not move, again after 5, 10, 20, then
+ *   every 30 s; RESULTS not at all while a final build's screenshot is pending (T-029).
  * - **BUILDING:** autosave every 30 s (`autosave/{bundle.js,bundle.css,source.json}`, plus
  *   `manifest.json` once), a final autosave 3 s before the deadline, one more in the SHIPPING
  *   grace; a ship (`source.json, bundle.js, bundle.css, manifest.json, thumb.webp` then
- *   `ship_build`) at a random time for players who ship; presence activity changes every
- *   4–8 s (the throttle keeps it at ≤ 4 per 30 s).
+ *   `ship_build`) at a random time for players who ship; editing in bursts and pauses
+ *   (`editLoop`, an assumed model) that feeds the presence activity.
  * - **REVEAL:** `get_reveal_builds` once, every build's `thumb.webp`, and the spotlighted
  *   and the next build's `bundle.js`, `bundle.css`, `manifest.json` (prefetch). The host
  *   clicks `reveal_next` in some slots (CAS, resent up to 3 times on a stale version with
@@ -112,12 +117,29 @@ interface BattleState {
   refetchAgain: boolean;
   nudgeTimer: NodeJS.Timeout | null;
   nudgeFor: number | null;
-  lastNudge: { version: number; at: number } | null;
+  /** The last nudge: at which version, when, and how many in a row at that version. */
+  lastNudge: { version: number; at: number; count: number } | null;
   timers: Set<NodeJS.Timeout>;
   finished: boolean;
   finish: (o: Outcome) => void;
   lines: number;
-  typing: boolean;
+  /** When the player last edited (the web client's "active" = an edit in the last 15 s). */
+  lastEditAt: number;
+  /** The preview's last build: a half-typed line breaks it until the next edit. */
+  buildBroken: 'no' | 'moment' | 'real';
+}
+
+/** The web client's nudge backoff (SoloController DEFAULT_TIMINGS.nudgeBackoffMs). */
+export const NUDGE_BACKOFF_MS = [5_000, 10_000, 20_000, 30_000] as const;
+/** The web client's ACTIVITY_RECENT_MS (@br/game): "active" = an edit within this long. */
+const ACTIVE_MS = 15_000;
+/** A resync sample is used when its RTT ≤ max(2 × reference, reference + 100 ms). */
+const RESYNC_RTT_SLACK_MS = 100;
+const RESYNC_MAX_IGNORED = 3;
+
+/** The delay before the next nudge at the same version, after `count` nudges. */
+export function nudgeBackoffMs(count: number): number {
+  return NUDGE_BACKOFF_MS[Math.min(count, NUDGE_BACKOFF_MS.length) - 1] ?? 0;
 }
 
 export interface SessionDeps {
@@ -143,7 +165,9 @@ export class PlayerSession {
   private timers = new Set<NodeJS.Timeout>();
   private announced = new Set<string>();
   private waiters = new Map<string, () => void>();
-  private presenceState = { lines: 0, last_build: 'ok' as const, typing: false };
+  /** The clock estimate behind the current offset, and resync samples ignored in a row. */
+  private clock: { offset: number; rtt: number } | null = null;
+  private clockIgnored = 0;
 
   constructor(
     readonly player: SimPlayer,
@@ -169,33 +193,41 @@ export class PlayerSession {
 
   async start(): Promise<void> {
     const { roomId, cfg, rng } = this.deps;
-    const topic = this.player.subscribe(`room:${roomId}`, { presence: true }, (p, at) => {
-      this.onRoomEvent(p, at);
-    });
+    const topic = this.player.subscribe(
+      `room:${roomId}`,
+      {
+        presence: true,
+        onSubscribed: () => {
+          // (Re)subscribed: anything may have been missed (the web client refetches both).
+          void this.refetchRoom();
+          const b = this.battle;
+          if (b && !b.finished) void this.refetch(b);
+        },
+      },
+      (p, at) => {
+        this.onRoomEvent(p, at);
+      },
+    );
     this.roomTopic = topic;
     topic.phaseOf = () => {
       const b = this.battle;
       return b && !b.finished && b.phase ? b.phase : 'lobby';
     };
+    topic.setIdentity({
+      user_id: this.player.id,
+      display_name: this.player.name,
+      device: 'desktop',
+    });
+    // Like the web client: the room at once, then the subscription (SUBSCRIBED refetches).
+    await this.refetchRoom();
     const status = await topic.subscribe();
     if (status !== 'SUBSCRIBED') this.m.count(`room_subscribe_${status}`);
-    this.trackPresence();
-    await this.refetchRoom();
-    await this.syncClock();
+    await this.syncClock('measure');
     this.after(rng.between(0, cfg.heartbeatMs), () => {
       this.heartbeatLoop();
     });
     this.after(cfg.clockResyncMs, () => {
       this.clockLoop();
-    });
-  }
-
-  private trackPresence(): void {
-    this.roomTopic?.track({
-      user_id: this.player.id,
-      display_name: this.player.name,
-      device: 'desktop',
-      activity: { ...this.presenceState },
     });
   }
 
@@ -241,39 +273,52 @@ export class PlayerSession {
   }
 
   private async beat(): Promise<void> {
-    const b = this.battle;
-    const check =
-      b && !b.finished && !TERMINAL.has(b.phase)
-        ? this.player.battleVersion(b.id).then((v) => {
-            if (v !== null && v > b.version && !b.finished) {
-              this.m.count('version_check_miss');
-              void this.refetch(b);
-            }
-          })
-        : Promise.resolve();
-    const hb = await this.player.rpc<{ room_version: number }>('heartbeat', {
-      p_room_id: this.deps.roomId,
-    });
-    if (hb.data && hb.data.room_version > this.roomVersion) {
+    const hb = await this.player.rpc<{
+      room_version: number;
+      battle_id?: string | null;
+      battle_version?: number | null;
+    }>('heartbeat', { p_room_id: this.deps.roomId });
+    if (!hb.data) return;
+    if (hb.data.room_version > this.roomVersion) {
       this.m.count('heartbeat_room_ahead');
       void this.refetchRoom();
     }
-    await check;
+    // The T-023 lost-broadcast check, from the heartbeat's own answer (T-029).
+    const b = this.battle;
+    const v = hb.data.battle_version;
+    if (
+      b &&
+      !b.finished &&
+      !TERMINAL.has(b.phase) &&
+      hb.data.battle_id === b.id &&
+      typeof v === 'number' &&
+      v > b.version
+    ) {
+      this.m.count('version_check_miss');
+      void this.refetch(b);
+    }
   }
 
   private clockLoop(): void {
     if (this.stopped) return;
-    void this.syncClock().finally(() => {
+    void this.syncClock('resync').finally(() => {
       this.after(this.deps.cfg.clockResyncMs, () => {
         this.clockLoop();
       });
     });
   }
 
-  /** 3 samples of server_now, keep the one with the lowest round trip (the client's rule). */
-  private async syncClock(): Promise<void> {
+  /**
+   * The web client's ServerClock (apps/web/src/lib/solo/clock-sync.ts): `measure` = 3
+   * samples of server_now, the lowest round trip wins; `resync` = 1 sample, ignored when its
+   * RTT is above max(2 × the reference, the reference + 100 ms), and after 3 ignored in a
+   * row a measurement again.
+   */
+  private async syncClock(kind: 'measure' | 'resync'): Promise<void> {
+    const current = this.clock;
+    const full = kind === 'measure' || current === null || this.clockIgnored >= RESYNC_MAX_IGNORED;
     let best: { rtt: number; offset: number } | null = null;
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < (full ? 3 : 1); i++) {
       const t0 = now();
       const r = await this.player.rpc<string>('server_now');
       const t1 = now();
@@ -282,7 +327,19 @@ export class PlayerSession {
       const sample = { rtt: t1 - t0, offset: (t0 + t1) / 2 - server };
       if (!best || sample.rtt < best.rtt) best = sample;
     }
-    if (best) this.m.raw.clockOffsetMs.push(Math.round(best.offset * 100) / 100);
+    if (!best) return;
+    if (full) {
+      this.clock = best;
+      this.clockIgnored = 0;
+    } else if (best.rtt <= Math.max(current.rtt * 2, current.rtt + RESYNC_RTT_SLACK_MS)) {
+      this.clock = { offset: best.offset, rtt: Math.min(current.rtt, best.rtt) };
+      this.clockIgnored = 0;
+    } else {
+      this.clockIgnored++;
+      this.m.count('clock_sample_ignored');
+      return;
+    }
+    this.m.raw.clockOffsetMs.push(Math.round(best.offset * 100) / 100);
   }
 
   /** Waits for the room event that names the battle (the realistic path), else asks. */
@@ -325,9 +382,18 @@ export class PlayerSession {
       phaseEndsAt: null,
       revealIndex: -1,
       snap: null,
-      topic: this.player.subscribe(`battle:${battleId}`, { presence: false }, (p, at) => {
-        this.onBattleEvent(b, p, at);
-      }),
+      topic: this.player.subscribe(
+        `battle:${battleId}`,
+        {
+          presence: false,
+          onSubscribed: () => {
+            void this.refetch(b);
+          },
+        },
+        (p, at) => {
+          this.onBattleEvent(b, p, at);
+        },
+      ),
       entered: new Set(),
       shipped: false,
       shipping: false,
@@ -352,7 +418,8 @@ export class PlayerSession {
         finish(o);
       },
       lines: 0,
-      typing: false,
+      lastEditAt: 0,
+      buildBroken: 'no',
     };
     this.battle = b;
     this.after(
@@ -362,9 +429,14 @@ export class PlayerSession {
       },
       b.timers,
     );
+    // Like the web client (T-029): the snapshot at once, the battle topic a random
+    // 0–500 ms later so a room does not hit Realtime's authorization pool in one burst;
+    // SUBSCRIBED refetches (events sent before the join are in that snapshot).
+    void this.refetch(b);
+    await sleep(rng.between(0, 500));
+    if (isOver(b)) return done;
     const status = await b.topic.subscribe();
     if (status !== 'SUBSCRIBED') this.m.count(`battle_subscribe_${status}`);
-    await this.refetch(b);
     return done;
   }
 
@@ -444,6 +516,8 @@ export class PlayerSession {
 
   private onState(b: BattleState): void {
     if (b.finished) return;
+    // Activity held back outside BUILDING may go out now that it started (the web client).
+    this.roomTopic?.phaseChanged();
     this.scheduleNudge(b);
     const phase = b.phase;
     if (!b.entered.has(phase)) {
@@ -455,14 +529,25 @@ export class PlayerSession {
     if (TERMINAL.has(phase)) b.finish(phase === 'destroyed' ? 'destroyed' : 'abandoned');
   }
 
-  /** The deadline nudge of the solo controller (also used by room battles). */
+  /**
+   * The deadline nudge of the solo controller (also used by room battles), T-029: backoff
+   * 5, 10, 20, then every 30 s while the version does not move; RESULTS only once no final
+   * build waits for its screenshot (the sweep ends it otherwise).
+   */
   private scheduleNudge(b: BattleState): void {
     if (b.finished || TERMINAL.has(b.phase) || b.phaseEndsAt === null) return;
+    if (b.phase === 'results' && this.capturePending(b)) {
+      if (b.nudgeTimer) clearTimeout(b.nudgeTimer);
+      b.nudgeTimer = null;
+      b.nudgeFor = null;
+      return;
+    }
     if (b.nudgeFor === b.version && b.nudgeTimer) return;
     if (b.nudgeTimer) clearTimeout(b.nudgeTimer);
     const t = now();
     let delay = b.phaseEndsAt - t + this.deps.rng.between(0, 500);
-    if (b.lastNudge?.version === b.version) delay = Math.max(delay, b.lastNudge.at + 5000 - t);
+    const last = b.lastNudge?.version === b.version ? b.lastNudge : null;
+    if (last) delay = Math.max(delay, last.at + nudgeBackoffMs(last.count) - t);
     b.nudgeFor = b.version;
     b.nudgeTimer = setTimeout(
       () => {
@@ -473,10 +558,19 @@ export class PlayerSession {
     );
   }
 
+  /** A final build of the snapshot still waits for its screenshot. */
+  private capturePending(b: BattleState): boolean {
+    return (b.snap?.builds ?? []).some(
+      (x) =>
+        (x.status === 'shipped' || x.status === 'auto_shipped') && x.capture_status === 'pending',
+    );
+  }
+
   private async nudge(b: BattleState): Promise<void> {
     if (b.finished) return;
     const version = b.version;
-    b.lastNudge = { version, at: now() };
+    const count = b.lastNudge?.version === version ? b.lastNudge.count + 1 : 1;
+    b.lastNudge = { version, at: now(), count };
     this.m.count('nudge');
     this.m.count(`nudge:${b.phase}`);
     await this.player.rpc('advance_battle', { p_battle_id: b.id, p_expected_version: version });
@@ -512,16 +606,7 @@ export class PlayerSession {
     const end = ms(s?.building_ends_at) ?? b.phaseEndsAt ?? start + cfg.buildS * 1000;
     const dur = Math.max(1000, end - start);
     const progress = () => Math.min(1, Math.max(0, (now() - start) / dur));
-    // Presence: activity changes while typing; the throttle keeps it within budget.
-    const activity = () => {
-      if (b.finished || b.phase !== 'building' || this.stopped) return;
-      b.typing = !b.typing;
-      b.lines += rng.int(0, 12);
-      this.presenceState = { lines: b.lines, last_build: 'ok', typing: b.typing };
-      this.trackPresence();
-      this.after(rng.between(4000, 8000), activity, b.timers);
-    };
-    this.after(rng.between(500, 3000), activity, b.timers);
+    this.editLoop(b);
     if (b.plan === 'dnf') return;
     const autosaveLoop = () => {
       if (b.finished || b.phase !== 'building' || b.shipped) return;
@@ -541,6 +626,64 @@ export class PlayerSession {
       const at = start + dur * rng.between(0.35, 0.95);
       this.after(at - now(), () => void this.ship(b), b.timers);
     }
+  }
+
+  /**
+   * The player's editing during BUILDING, an ASSUMED model (2026-10-08, no production data),
+   * feeding the presence activity the way the web client's BUILD screen does: the template
+   * on mount (30–50 lines, not active), then bursts of edits (one every 1.5–4 s for 20–90 s)
+   * and pauses (5–45 s; "active" = an edit in the last 15 s, so it goes off in most pauses).
+   * Each edit adds 0–3 lines, a paste (3 % of edits) 20–60; a half-typed line breaks the
+   * preview's build until the next edit in 30 % of edits, a real error (4 %) lasts until the
+   * edits of the next 10–60 s fix it.
+   */
+  private editLoop(b: BattleState): void {
+    const rng = this.deps.rng;
+    const topic = this.roomTopic;
+    if (!topic) return;
+    b.lines = rng.int(30, 50);
+    const emit = () => {
+      const active = b.lastEditAt > 0 && now() - b.lastEditAt < ACTIVE_MS;
+      topic.setActivity({
+        lines: b.lines,
+        last_build: b.buildBroken === 'no' ? 'ok' : 'error',
+        typing: active,
+      });
+    };
+    emit();
+    let realUntil = 0;
+    const edit = () => {
+      if (b.finished || b.phase !== 'building' || this.stopped) return;
+      b.lastEditAt = now();
+      b.lines += rng.chance(0.03) ? rng.int(20, 60) : rng.int(0, 3);
+      if (b.buildBroken === 'real' && now() >= realUntil) b.buildBroken = 'no';
+      if (b.buildBroken !== 'real') {
+        if (rng.chance(0.04)) {
+          b.buildBroken = 'real';
+          realUntil = now() + rng.between(10_000, 60_000);
+        } else {
+          b.buildBroken = rng.chance(0.3) ? 'moment' : 'no';
+        }
+      }
+      emit();
+      // The BUILD screen emits again when "active" runs out.
+      this.after(ACTIVE_MS, emit, b.timers);
+    };
+    const burst = () => {
+      if (b.finished || b.phase !== 'building' || this.stopped) return;
+      const until = now() + rng.between(20_000, 90_000);
+      const next = () => {
+        if (b.finished || b.phase !== 'building' || this.stopped) return;
+        if (now() >= until) {
+          this.after(rng.between(5_000, 45_000), burst, b.timers);
+          return;
+        }
+        edit();
+        this.after(rng.between(1_500, 4_000), next, b.timers);
+      };
+      next();
+    };
+    this.after(rng.between(500, 5_000), burst, b.timers);
   }
 
   private path(b: BattleState, file: string): string {

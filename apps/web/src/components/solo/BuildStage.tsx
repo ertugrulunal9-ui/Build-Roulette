@@ -9,6 +9,7 @@
  * The workspace is a fresh template per battle, stored in IndexedDB under `battle:{id}`
  * (restored from the remote autosave when this device has no copy).
  */
+import { ACTIVITY_RECENT_MS } from '@br/game';
 import type { Workspace } from '@br/workspace';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { WorkspacePanes } from '../playground/WorkspacePanes';
@@ -42,14 +43,17 @@ interface BuildStageProps {
   headerActions?: ReactNode;
   /** Shown next to the panes (a room's progress sidebar). */
   sidebar?: ReactNode;
-  /** The player's activity for the others (rooms): lines, last build, typing. */
+  /** The player's activity for the others (rooms): lines, last build, active. */
   onActivity?: (activity: Activity) => void;
   /** After "Shipped … Your build is locked." (a room: waiting for the others). */
   shippedNote?: ReactNode;
 }
 
-/** "Typing" lasts this long after the last edit. */
-const TYPING_MS = 3_000;
+/**
+ * "Active" (the activity's `typing` flag) lasts this long after the last edit: the others
+ * get at most one update per 15 s (T-029), so a shorter window would flicker or lie.
+ */
+const ACTIVE_MS = ACTIVITY_RECENT_MS;
 
 const headerButton =
   'rounded-md border border-zinc-300 px-2.5 py-1 text-xs font-medium hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800';
@@ -137,8 +141,8 @@ export function BuildStage({
     });
   }, [controller, sandboxController, getWorkspace, pasteCount]);
 
-  // Rooms: the activity the others see in their progress sidebar (Presence, throttled by
-  // the sync engine). "Typing" means an edit in the last 3 s.
+  // Rooms: the activity the others see in their progress sidebar (Presence, sent by the sync
+  // engine only when it matters, at most every 15 s). "Active" means an edit in the last 15 s.
   const editedAt = useRef<number | null>(null);
   const seenWorkspace = useRef<Workspace | null>(null);
   useEffect(() => {
@@ -152,7 +156,7 @@ export function BuildStage({
   useEffect(() => {
     if (!onActivity || !workspace) return;
     const emit = () => {
-      const typing = editedAt.current !== null && Date.now() - editedAt.current < TYPING_MS;
+      const typing = editedAt.current !== null && Date.now() - editedAt.current < ACTIVE_MS;
       onActivity({
         lines: countLines(workspace.files),
         last_build: buildOk ? 'ok' : 'error',
@@ -160,7 +164,7 @@ export function BuildStage({
       });
     };
     emit();
-    const id = setTimeout(emit, TYPING_MS);
+    const id = setTimeout(emit, ACTIVE_MS);
     return () => {
       clearTimeout(id);
     };

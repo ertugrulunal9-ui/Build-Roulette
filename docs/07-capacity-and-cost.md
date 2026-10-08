@@ -1,4 +1,4 @@
-# 7. Capacity and cost (M5, T-025)
+# 7. Capacity and cost (M5, T-025; re-measured after T-029)
 
 How many concurrent rooms the stack holds, what one battle uses, and what 1,000 battles
 cost. Every number is marked **measured** (with the run it comes from) or **assumed** (with
@@ -7,7 +7,43 @@ the test reaches only the npm registry, so **every price below is an assumption 
 model knowledge, dated 2026-10-07**, kept in one table (§4.1, `PRICES` in
 `tools/loadtest/src/cost.ts`) to make updating them easy.
 
+**T-029 (2026-10-08)** changed the clients after this test (Presence, the rejoin backoff,
+deadline nudges, the heartbeat, the clock resync, the battle-topic join) and re-ran it before
+and after on the same kind of machine: §7.2.2 has the comparison, §7.4 and §7.5 the updated
+cost and bottlenecks. Numbers from the original T-025 runs are marked "T-025".
+
 ## 7.0 Summary
+
+After T-029 (measured 2026-10-08, §7.2.2):
+
+- **The full target, before → after T-029** (50 rooms × 8 players × 2 battles, quotas of Pro
+  without a spend cap): phase p95 **181.4 → 152.8 ms**, every battle DESTROYED; Presence
+  sends **7.96 → 2.99 per BUILDING minute** (2.41 with 5-minute builds), none outside BUILD
+  but the lobby claim; Realtime messages per real battle **3,652 → 1,490** (÷2.5);
+  clock-driven API calls **14.7 → 7.2 per client-minute**, all API calls **34.1 → 13.0**;
+  `advance_battle` **283 → 20 per battle** and deadline nudges in RESULTS **264 → 0.02 per
+  battle** under the same capture backlog; RPC and REST timeouts **35 → 0**.
+- **Spend cap (the deploy decision): it can stay ON at launch, not at the 50-room target.**
+  With the presence quota assumed for the cap (50 events/s), 10 rooms × 8 players went from
+  4,571 room-channel closes to **0**; 50 rooms × 8 still got **1,703** (T-025: 17,726). That
+  is no longer a storm (p95 128.5 ms, every battle DESTROYED, no RPC timeouts), but lobbies
+  and BUILD sidebars lose their room channel for 5–45 s at a time while it lasts. The quota
+  counts every track, every presence join and every `presence_diff` delivered to each member
+  (§7.5.1), so it holds about **15 concurrent 8-player rooms in BUILD** (25–30 of 6
+  players). A month of 1,000 battles averages 3 concurrent players; turn the cap off (or move
+  to Team) before concurrency approaches that, and re-check the real quota numbers first
+  (assumed here).
+- **Cost per 1,000 battles** (6 players, 10-minute builds, prices assumed): **$13.75 →
+  $8.34** at 10,000 a month, marginal **$17.46 → $11.91**; still $50.59 all-in up to 1,000 a
+  month (fixed plans). The 5 M Realtime messages now last ~3,350 battles a month (was
+  ~1,370).
+- **Found on the way:** Realtime reconnects a tenant's database feed on a channel join or a
+  presence message. The constant presence traffic before T-029 used to heal the local
+  stack's 10-minute "rebalancing" within seconds; now a feed drop lasts until the next join,
+  and the heartbeat's battle version is what keeps clients in step meanwhile (765 refetches,
+  every battle DESTROYED; §7.2.2).
+
+T-025's findings (before T-029):
 
 - **M5 exit criterion (p95 phase-change propagation < 1 s): met at the full target size,
   under conditions.** 50 rooms × 8 players = 400 clients, 2 battles per room (100 battles)
@@ -40,15 +76,18 @@ model knowledge, dated 2026-10-07**, kept in one table (§4.1, `PRICES` in
 Node + TypeScript, `@supabase/supabase-js` 2.117.2 (the web app's version), no browsers.
 Each simulated player has its own supabase-js client, so its own Realtime WebSocket, and
 follows the web client's rules (`apps/web/src/lib/room/sync.ts`, `reveal-vote.ts`, the
-solo controller in external mode). The code is `tools/loadtest/src/session.ts`.
+solo controller in external mode). The code is `tools/loadtest/src/session.ts` (and the
+`Topic` in `player.ts`). The table describes the client since T-029; the T-025 runs used the
+rules given in brackets.
 
 | Area | What a simulated player does |
 |---|---|
 | Sign-in | `auth.admin.createUser` (service key, email + password, confirmed), then `signInWithPassword`, then `realtime.setAuth`. The local stack allows 300 anonymous sign-ups per hour (`supabase/config.toml`), which a 400-client run exceeds; the admin API has no limit and password sign-ins were not rate limited locally (measured: 45 in 12 s, then 400 in a run). `--auth anonymous` uses `signInAnonymously` like the app. The users are not anonymous; no game RPC treats them differently (only `is_admin` looks). |
-| Room | Host `create_room`; others `join_room` 0.2–2.5 s apart. `room:{id}` with Presence (`{user_id, display_name, device, activity}`), `get_room_snapshot` on subscribe, on a version gap and when a heartbeat shows a newer `room_version`. |
-| Presence | Throttled like the client: ≤ 1 per 2 s and ≤ 4 per 30 s, latest payload wins. During BUILDING the activity (`lines`, `typing`) changes every 4–8 s, so the throttle binds (measured: 7.95 sends per BUILDING minute, cap 8). A channel the server closes is re-subscribed after 1, 2, 4 … 30 s. |
-| Heartbeat | `heartbeat` every 10 s plus the T-023 version check (`battles.version` via PostgREST) while a battle runs; `server_now` × 3 at start and every 60 s (lowest round trip kept). |
-| Battle | Host `start_battle` (the current host, if the role moved). Every player waits for the room event that names the battle (3 s, then a snapshot), subscribes `battle:{id}` without Presence, applies the version rules (stale ignored, gap → refetch), refetches `get_battle_snapshot` after every `phase` event except REVEAL slot steps and after `capture`/`sync` events, and nudges `advance_battle` at every deadline (+0–500 ms), then refetches, again every 5 s while the version does not move. |
+| Room | Host `create_room`; others `join_room` 0.2–2.5 s apart. `room:{id}` with Presence (`{user_id, display_name, device, activity}`), `get_room_snapshot` at start and on every SUBSCRIBED, on a version gap and when a heartbeat shows a newer `room_version` [T-025: once after subscribing]. |
+| Presence | The web client's rules: claimed after every SUBSCRIBED; BUILD activity only during BUILDING, only when it matters (active on/off, a build failing for 10 s or fixed, ±20 lines), at most once per 15 s, latest wins; any two tracks 2 s apart, ≤ 4 per 30 s. A channel the server closes is re-subscribed after 5, 10, 20, 30 s plus up to 50 % jitter, one level down per 60 s subscribed. [T-025: ≤ 1 per 2 s and ≤ 4 per 30 s in every phase, the activity changing every 4–8 s, so the throttle bound (7.95 sends per BUILDING minute, cap 8); rejoin after 1, 2, 4 … 30 s, reset on SUBSCRIBED.] |
+| Editing (presence input) | **Assumed** (2026-10-08, no production data): the template on mount (30–50 lines), then bursts of edits (one every 1.5–4 s for 20–90 s) and pauses of 5–45 s; 0–3 lines per edit, a paste of 20–60 lines in 3 % of edits; a half-typed line breaks the preview's build until the next edit in 30 % of edits, a real error (4 %) lasts 10–60 s. "Active" = an edit in the last 15 s, re-emitted when it runs out (the BUILD screen does the same). |
+| Heartbeat | `heartbeat` every 10 s; its answer's `battle_version` is the T-023 lost-broadcast check [T-025: a separate `battles.version` read via PostgREST with each beat]. `server_now` × 3 at start (lowest round trip kept), then 1 every 60 s, ignored when its round trip is above max(2 ×, +100 ms) of the estimate's [T-025: × 3 every 60 s]. |
+| Battle | Host `start_battle` (the current host, if the role moved). Every player waits for the room event that names the battle (3 s, then a snapshot), fetches `get_battle_snapshot` at once and subscribes `battle:{id}` without Presence a random 0–500 ms later (and refetches on SUBSCRIBED), applies the version rules (stale ignored, gap → refetch), refetches after every `phase` event except REVEAL slot steps and after `capture`/`sync` events, and nudges `advance_battle` at every deadline (+0–500 ms), then refetches; while the version does not move, again after 5, 10, 20, then every 30 s; RESULTS not while a final build's screenshot is pending [T-025: subscribe at once; nudges every 5 s, RESULTS included]. |
 | BUILDING | Plans per player: 75 % ship by hand, 20 % auto-ship from their autosave, 5 % DNF (no uploads, a phone player). Autosave every 30 s (`autosave/bundle.js`, `bundle.css`, `source.json`, plus `manifest.json` once), a final autosave 3 s before the deadline and one in the SHIPPING grace. Ship at 35–95 % of the build time: `source.json`, `bundle.js`, `bundle.css`, `manifest.json`, `thumb.webp`, then `ship_build` with stats. |
 | File sizes | Log-normal, **assumed** (2026-10-07; no production data yet): `source.json` median 14 KB (p90 60 KB, max 1 MB = the workspace limit), `bundle.js` median 12 KB (p90 70 KB; minified, packages external, images inlined), `bundle.css` 2 KB, `thumb.webp` 18 KB (640×400), `manifest.json` 0.1 KB. Autosaves grow with build progress. The bundle is real JavaScript that renders a coloured page with the build name, so the capture worker makes real screenshots; half call `window.buildRoulette.ready()`. |
 | REVEAL | `get_reveal_builds` once, every build's `thumb.webp`, the spotlighted and the next build's `bundle.js`, `bundle.css`, `manifest.json` (prefetch). The host clicks `reveal_next` in 60 % of the slots (CAS, resent up to 3× with the same spotlight), the other slots time out. |
@@ -123,8 +162,13 @@ real battle from them.
   locally. `--realtime-db-pool 10` raises it (§7.5.4).
 - **Realtime rebalancing.** The local Realtime drops its database feed every 10 minutes
   ("Rebalancing Tenant database connection", known since T-023); broadcasts sent until the
-  next channel join are lost and clients recover through the heartbeat's version check.
-  Runs longer than 10 minutes show it (§7.2).
+  feed is back are lost and clients recover through the heartbeat's version check. Runs
+  longer than 10 minutes show it (§7.2). Realtime 2.140.3 reconnects the feed on a channel
+  join and on a private channel's presence message (`Tenants.Connect.lookup_or_start_connection`
+  in its presence handler, read in the release's code). Before T-029 some client sent
+  presence every few seconds, which healed the drop almost at once; since T-029 it lasts
+  until the next join (§7.2.2). For the T-029 runs the Realtime container was restarted
+  before each run, so the drop falls at minute 7–10 of a 12-minute run.
 
 ## 7.2 Runs and the M5 verdict
 
@@ -140,13 +184,21 @@ All measured on the machine above. "Phase p95" = battle `phase` events, server
 | `20261008t003410-full` | 50 × 8 × 2 | `pro-nocap` / 10 | 100 | 42.6 / 201.7 / 386.4 | 94.98 % | Met. Joins p95 213 ms. Realtime rebalanced at minute 10: 100 % delivered before, 0 of 1,264 events after (recovered by the version check). Storage timeouts (591) from host saturation. |
 | `20261008t004651-custom` | 10 × 6 × 2 | `pro-nocap` / 1 | 20 | 13.2 / 33.4 / 61.9 | 100 % | Cost basis (6 players, captures keep up). |
 | `20261008t005452-smoke` | 3 × 4 × 1 | local / 1 | 3 | 11.6 / 17.7 / 18.7 | 100 % | Smoke profile on a fresh stack, 2 min 19 s. |
+| `20261008t015409-full` | 50 × 8 × 2 | `pro-nocap` / 1 | 100 | 43.9 / 181.4 / 301.5 | 99.90 % | **T-029 baseline** (the client before T-029, this machine). Joins p95 336 ms. |
+| `20261008t020619-custom` | 10 × 8 × 2 | `pro` / 1 | 20 | 15.4 / 51.2 / 107.4 | 100 % | T-029 baseline: 4,571 room-channel closes for the presence quota. |
+| **`20261008t022346-full`** | **50 × 8 × 2** | **`pro-nocap` / 1** | **100** | **25.9 / 152.8 / 227.1** | **81.15 %** | **After T-029; met.** 99.92 % until Realtime's local rebalancing at minute 7.7 (§7.2.2). |
+| `20261008t023743-custom` | 10 × 8 × 2 | `pro` / 1 | 20 | 13.8 / 48.4 / 88.2 | 100 % | After T-029: **0** closes. |
+| `20261008t024306-full` | 50 × 8 × 2 | `pro` / 1 | 100 | 24.4 / 128.5 / 249.7 | 95.18 % | After T-029: met, but **1,703** room-channel closes (no storm); 99.97 % until the rebalancing at minute 10.1. |
+| `20261008t025551-custom` | 10 × 6 × 1, 5-min builds | `pro` / 1 | 10 | 13.2 / 31.0 / 48.9 | 100 % | After T-029: steady-state presence 2.41 sends per BUILDING minute, 0 closes; cost check. |
 
-**Verdict:** the M5 criterion is **met at 400 concurrent clients (50 rooms × 8 players)**
-when Realtime has the quotas of Supabase Pro **without** a spend cap (1,000 presence
-messages/s), and **not met** with the presence quota we assume for Pro with a spend cap
-(50/s). Conditions: phases compressed about 10× (§7.1.3), everything on one 4-vCPU
-machine that ran 69 % busy on average and 95–99 % during the ramp, the capture worker
-falling behind (backlog up to 331 jobs).
+**Verdict (T-025):** the M5 criterion is **met at 400 concurrent clients (50 rooms × 8
+players)** when Realtime has the quotas of Supabase Pro **without** a spend cap (1,000
+presence messages/s), and **not met** with the presence quota we assume for Pro with a spend
+cap (50/s). **After T-029** it is met in both cases (p95 152.8 and 128.5 ms), but with the
+cap's quota the room channels are still closed now and then at 50 rooms (§7.2.2).
+Conditions: phases compressed about 10× (§7.1.3), everything on one 4-vCPU machine that ran
+69 % busy on average and 95–99 % during the ramp, the capture worker falling behind (backlog
+up to 331 jobs).
 
 ### 7.2.1 The full run in detail (`20261008t001944-full`, measured)
 
@@ -209,6 +261,64 @@ Chromium at concurrency 2 (job p50 2.9 s, p95 3.7 s under load); backlog up to 3
 SHIPPING end → captured p50 206 s. The compressed run asks for about 10× the real capture
 rate (§7.5.6).
 
+### 7.2.2 T-029: before and after (measured)
+
+The same profile (`--profile full`, seed 20261007) on the same machine, the code before
+T-029 (`773c016`, only a per-phase nudge counter added) and after it. Compressed battles,
+8 players; per-battle figures are per compressed battle.
+
+| Measure | Before (`20261008t015409-full`) | After (`20261008t022346-full`) |
+|---|---|---|
+| Battles DESTROYED | 100 / 100 | 100 / 100 |
+| Phase propagation p50 / p95 / p99 | 43.9 / 181.4 / 301.5 ms | 25.9 / 152.8 / 227.1 ms |
+| … events before the rebalancing only | 41.1 / 182.1 / 314.2 ms | 25.9 / 153.5 / 227.7 ms |
+| Battle events delivered | 99.90 % | 81.15 %: 99.92 % before the rebalancing, 9.6 % after it |
+| Presence sends | 7,499: 7.96 per BUILDING minute, 1.4 per player-battle elsewhere | 2,789: 2.99 per BUILDING minute, 0.5 per player-battle elsewhere (the lobby claim) |
+| Presence messages per battle (sends + `presence_state` + `presence_diff` received) | 679 | 256 |
+| Broadcast deliveries per battle | 441 | 382 (≈ 470 without the rebalancing loss) |
+| Realtime billable messages per battle | 1,120 | 638 |
+| Inbound billable messages/s p50 / p99 / max | 112 / 582 / 743 | 104 / 375 / 470 |
+| Clock-driven API calls per client-minute | 14.69: `heartbeat` 5.86, `battles.version` 5.71, `server_now` 3.12 | 7.23: 5.96, 0, 1.27 |
+| All API calls (RPC + REST) per client-minute | 34.07 | 13.02 |
+| `advance_battle` / `get_battle_snapshot` per battle | 283 / 368 | 20 / 106 |
+| Deadline nudges in RESULTS per battle | 264.4 | 0.02 (2 in 100 battles) |
+| `heartbeat` p50 / p95 | 23.1 / 492.3 ms | 8.6 / 99.0 ms |
+| RPC and REST timeouts (504 at 10 s) | 35 | 0 |
+| Battle-topic join p50 / p95 (pool 1) | 70.9 / 335.6 ms | 20.4 / 155.6 ms |
+| Postgres container CPU mean / max | 66.4 / 125.9 % | 45.6 / 122.9 % |
+| PostgREST container CPU mean / max | 27.9 / 104.0 % | 9.8 / 44.4 % |
+| Commits/s p50 / max | 296 / 603 | 175 / 575 |
+| Capture backlog max | 365 jobs | 366 jobs |
+
+With the presence quota assumed for Pro **with** a spend cap (`--realtime-limits pro`, 50
+presence events/s):
+
+| Run | Room-channel closes ("Too many presence messages per second") | Phase p95 | Delivered | Presence per BUILDING minute |
+|---|---|---|---|---|
+| 10 × 8 × 2, before (`20261008t020619-custom`) | 4,571 | 51.2 ms | 100 % | 6.22 |
+| 10 × 8 × 2, after (`20261008t023743-custom`) | **0** | 48.4 ms | 100 % | 3.00 |
+| 50 × 8 × 2, before (T-025, `20261008t000150-full`) | 17,726 | 1,877.9 ms | 95.0 %, RPC timeouts | – |
+| 50 × 8 × 2, after (`20261008t024306-full`) | **1,703** (4.3 per client in 12 min) | 128.5 ms | 95.18 % (99.97 % before the rebalancing) | 3.44 (rejoin claims count) |
+| 10 × 6 × 1, 5-min builds, after (`20261008t025551-custom`) | 0 | 31.0 ms | 100 % | 2.41 |
+
+**The rebalancing.** Both full runs crossed the local Realtime's rebalancing (§7.1.4). Before
+T-029 the feed came back within seconds (99.65 % delivered after it) because someone always
+sent presence. After T-029 no room was in BUILD at minute 7.7, so the feed stayed down until
+minute 11 (a join): 765 heartbeats found their battle ahead of the snapshot and refetched
+it, and every battle still reached DESTROYED. Phase changes then reach a client within one
+heartbeat (≤ 10 s) instead of ~150 ms. Hosted Realtime runs the tenant in its own region, so
+this rebalancing should not happen there; any other drop of the feed (a Realtime deploy, a
+database restart) heals at the next join and costs at most one heartbeat meanwhile. Worth
+watching in production: the clients count these misses (`stats.missed` in the sync engine;
+T-026 could report it).
+
+**Presence is ~3× lower, not 4×.** The new rules allow at most 4 activity updates a minute
+(one per 15 s); with the assumed editing model a player sends 2.4 per BUILDING minute in
+5-minute builds (3.0 in the compressed 60 s builds, where the update at the start of BUILD
+weighs more). Per real battle that is ÷3.2 for presence messages (÷2.7 from the compressed
+run) and ÷2.5–2.7 for all Realtime messages. A player whose activity changes in a way that
+matters all the time hits the cap (÷2).
+
 ## 7.3 Measured per-battle resource usage
 
 From the cost-basis run `20261008t004651-custom` (10 rooms × **6** players × 2 battles,
@@ -231,6 +341,13 @@ or by its 234.1 client-minutes (rate-driven). §7.4 turns them into a real battl
 `server_now` 3.17 (14.7 calls/min, about 0.25 requests/s per connected player); presence
 sends 7.95 per BUILDING minute (the throttle's cap is 8) and 1.4 per player-battle outside
 BUILDING.
+
+**After T-029** (`20261008t025551-custom`: 10 rooms × 6 players, 5-minute builds, measured):
+`heartbeat` 5.96 and `server_now` 1.41 per client-minute, no `battles.version` (7.4 calls/min,
+about 0.12 requests/s per connected player); presence 2.41 sends per BUILDING minute and 1.0
+per player-battle elsewhere (the claim on joining); `advance_battle` 7.9 and
+`get_battle_snapshot` 88.9 per battle; Realtime 295 broadcast deliveries and 554 presence
+messages per battle (compressed REVEAL and VOTING, 5-minute BUILD).
 
 **Realtime messages per battle (measured, compressed, 6 players):** 275 broadcast
 deliveries (`binary:4` frames: battle and room events × members), 337 presence diffs
@@ -301,68 +418,88 @@ measured run and s = (P / P_t)²:
 - **Monthly cost** = fixed bases + Σ max(0, usage − included) × price
 - **Cost per 1,000 battles** = monthly cost / battles × 1,000
 
-### 7.4.4 One real battle (derived from the measured run, 6 players)
+### 7.4.4 One real battle (derived from the measured runs, 6 players)
 
-| Quantity | Per battle | Measured / assumed |
-|---|---|---|
-| Realtime messages | **3,673** (275 broadcasts + 3,398 presence) | measured rates, assumed billing rule |
-| Realtime connection-minutes | 116 | assumed timeline |
-| Supabase egress | **7.1 MB** | measured: API 498 KiB, reveal 1,606 KiB, 34 screenshot views, 1.0 KiB per client-minute; screenshots assumed 100 KB |
-| Supabase HTTP calls | 2,036 | measured: 327 event-driven + 14.7 per client-minute |
-| Screenshot storage added | 0.61 MB | assumed |
-| Browser Rendering | 36 s | assumed 6 s × 6 |
-| Worker requests / CPU | 90 / 900 ms | assumed |
+T-029 re-derived it from the two full runs with the same method (8 players measured,
+event-driven traffic scaled by (6/8)², rate-driven traffic per client-minute): before
+(`20261008t015409-full`) and after (`20261008t022346-full`); the 5-minute-build run
+(`20261008t025551-custom`, 6 players) is the check with a steadier presence rate. T-025's own
+basis (`20261008t004651-custom`) gave 3,673 messages, 7.1 MB and 2,036 calls, in line with
+the "before" column.
+
+| Quantity | Per battle, before | After | After, 5-min builds | Measured / assumed |
+|---|---|---|---|---|
+| Realtime messages | 3,652 (248 broadcasts + 3,404 presence) | **1,490** (215 + 1,275) | 1,349 | measured rates, assumed billing rule |
+| Realtime connection-minutes | 116 | 116 | 116 | assumed timeline |
+| Supabase egress | 7.0 MB | **5.4 MB** | 6.5 MB | measured, screenshots assumed 100 KB |
+| Supabase HTTP calls | 2,281 (1,022 event-driven + 14.7 per client-minute) | **1,125** (507 + 7.2) | 1,305 (450 + 7.4) | measured |
+| Screenshot storage added | 0.61 MB | 0.61 MB | 0.61 MB | assumed |
+| Browser Rendering | 36 s | 36 s | 36 s | assumed 6 s × 6 |
+| Worker requests / CPU | 90 / 900 ms | 90 / 900 ms | 90 / 900 ms | assumed |
+
+The "after" broadcast count is low by ~2 %: deliveries lost to the rebalancing (§7.2.2) are
+not counted; about +30 messages per battle.
 
 ### 7.4.5 Worked example: monthly cost and cost per 1,000 battles
 
-| Item | 100 battles | 1,000 battles | 10,000 battles |
-|---|---|---|---|
-| Supabase Pro (Micro compute) | $25.00 | $25.00 | $25.00 |
-| Realtime messages | $0 (0.37 M) | $0 (3.67 M) | $79.32 (36.7 M) |
-| Realtime peak connections | $0 (2) | $0 (11) | $0 (107) |
-| Egress | $0 (0.7 GB) | $0 (7.1 GB) | $0 (71 GB) |
-| Storage (screenshots after 12 months) | $0 (0.7 GB) | $0 (7.4 GB) | $0 (74 GB) |
-| MAU | $0 (200) | $0 (2,000) | $0 (20,000) |
-| Cloudflare Workers Paid | $5.00 | $5.00 | $5.00 |
-| Workers requests + CPU | $0 | $0 | $0 (0.9 M req) |
-| Browser Rendering | $0 (1 h) | $0 (10 h) | $8.10 (100 h) |
-| Containers (package CDN, always on) | $19.72 | $19.72 | $19.72 |
-| Pages, R2 | $0 | $0 | $0 |
-| Domain | $0.87 | $0.87 | $0.87 |
-| **Total per month** | **$50.59** | **$50.59** | **$138.01** |
-| **Per 1,000 battles** | $505.90 | **$50.59** | **$13.80** |
+`pnpm --filter @br/loadtest cost <report.json>` on the two full runs (before → after):
 
-Marginal cost per 1,000 battles once every quota is used up: **$17.53** (Realtime
-messages $9.18, MAU $6.50, Browser Rendering $0.90, egress $0.64, the rest pennies). At
-100,000 battles a month the model gives $1,432 (Realtime messages $906, MAU $325, Browser
-Rendering $89, egress $41).
+| Item | 100 battles | 1,000 battles | 10,000 battles | 100,000 battles |
+|---|---|---|---|---|
+| Supabase Pro (Micro compute) | $25.00 | $25.00 | $25.00 | $25.00 |
+| Realtime messages | $0 (0.37 → 0.15 M) | $0 (3.65 → 1.49 M) | $78.80 → **$24.75** (36.5 → 14.9 M) | $900.51 → **$360.04** |
+| Realtime peak connections | $0 (2) | $0 (11) | $0 (107) | $5.61 (1,061) |
+| Egress | $0 (0.7 → 0.5 GB) | $0 (7.0 → 5.4 GB) | $0 (70 → 54 GB) | $40.37 → **$25.77** |
+| Storage (screenshots after 12 months) | $0 (0.7 GB) | $0 (7.4 GB) | $0 (74 GB) | $13.38 |
+| MAU | $0 (200) | $0 (2,000) | $0 (20,000) | $325.00 |
+| Cloudflare Workers Paid | $5.00 | $5.00 | $5.00 | $5.00 |
+| Workers requests + CPU | $0 | $0 | $0 (0.9 M req) | $1.20 |
+| Browser Rendering | $0 (1 h) | $0 (10 h) | $8.10 (100 h) | $89.10 |
+| Containers (package CDN, always on) | $19.72 | $19.72 | $19.72 | $19.72 |
+| Pages, R2 | $0 | $0 | $0 | $0 |
+| Domain | $0.87 | $0.87 | $0.87 | $0.87 |
+| **Total per month** | **$50.59** | **$50.59** | $137.49 → **$83.44** | $1,425.76 → **$870.69** |
+| **Per 1,000 battles** | $505.90 | **$50.59** | $13.75 → **$8.34** | $14.26 → **$8.71** |
+
+With 5-minute builds (`20261008t025551-custom`): $79.92 at 10,000 battles ($7.99 per 1,000),
+marginal $11.67. T-025's table (its own basis run): $50.59 / $50.59 / $138.01, marginal
+$17.53.
+
+Marginal cost per 1,000 battles once every quota is used up: **$17.46 → $11.91** (Realtime
+messages $9.13 → $3.73, MAU $6.50, Browser Rendering $0.90, egress $0.63 → $0.48, the rest
+pennies). At 100,000 battles a month the model gives $871 (was $1,426): MAU $325, Realtime
+messages $360, Browser Rendering $89, egress $26.
 
 Not in the totals: a larger Supabase compute size (§7.5.5), and the spend cap. **With the
-spend cap on, quotas are not billed but enforced**, and the presence limit (§7.5.1) makes
-it unusable for this game; the totals above therefore assume the cap is off.
+spend cap on, quotas are not billed but enforced**: the presence limit (§7.5.1) then caps
+concurrent rooms in BUILD at about 15 (8 players); the totals above assume the cap is off.
 
 ## 7.5 Bottlenecks and scaling limits
 
 Ordered by when they bite. "Battles/month" assumes the §7.4.2 behaviour.
 
-1. **Realtime presence rate (Pro with spend cap: 50/s, assumed). First, at about 10
-   concurrent 8-player rooms.** Measured: with that quota, 10 rooms × 8 players
-   (`20261008t001559-custom`) got 2,379 room-channel closes with `system` "Too many
-   presence messages per second" (Realtime log: `PresenceRateLimitReached`); at 50 rooms
-   17,726 closes, each followed by a rejoin (an RLS check, a `presence_state`, a new
-   track), which fed the overload: p95 1.9 s, 95 % delivery, RPC timeouts. The clients
-   sent only ~4.8 presence messages/s in total, so the quota evidently counts the fan-out
-   (each track reaches every member) and the rejoins. With the spend cap off (1,000/s) the
-   same full run had 1 close. **Limit: spend cap on → ~10 busy rooms.**
+1. **Realtime presence rate (Pro with spend cap: 50/s, assumed). After T-029: about 15
+   concurrent 8-player rooms in BUILD (T-025: fewer than 10).** What counts (Realtime
+   2.140.3, read in the release's code): every client `track`, every presence-enabled
+   join's `presence_state`, and every `presence_diff` **once per member it is delivered
+   to** (the dispatcher adds the fan-out to the tenant's counter), averaged per second over
+   the last minute. A track in an 8-player room therefore costs 9. A room in BUILD costs
+   P × s / 60 × (1 + P) per second for s sends per player-minute: 8 players at 2.4–3.0 →
+   2.9–3.6/s, so 50/s holds ~14–17 such rooms; 6 players → ~24–30. Measured (T-029,
+   §7.2.2): 10 rooms × 8: 4,571 closes → 0; 50 rooms × 8: 17,726 (T-025) → 1,703, and the
+   harder rejoin backoff keeps them from feeding themselves (p95 128.5 ms, no RPC
+   timeouts). With the cap off (1,000/s) the full run had 0 closes. **Limit: spend cap on → ~15 busy
+   8-player rooms.**
 2. **Included Browser Rendering hours: ~1,000 battles/month** (10 h ÷ 36 s). Cheap beyond
    ($0.09/hour). Concurrency: 10 browsers included; one capture takes 1–6 s, so ~100–600
    captures/min, far above what 1,000 concurrent players need.
-3. **Realtime messages: ~1,360 battles/month** within 5 M; then $9.18 per 1,000 battles,
-   the largest variable cost. 92 % are presence.
-4. **Realtime messages per second: Pro with spend cap 500/s.** Measured max 937/s inbound
-   (p99 560/s) at 400 clients in the compressed run; the real rate is lower (events ~10×
-   slower), but presence is real-time: 400 building players × 8/min × 9 deliveries ≈
-   480/s on its own. **Limit: about 400 concurrent players with the cap on.**
+3. **Realtime messages: ~3,350 battles/month** within 5 M (T-025: ~1,360); then $3.73 per
+   1,000 battles (was $9.18). Presence is still 86 % of them (T-025: 92 %).
+4. **Realtime messages per second: Pro with spend cap 500/s.** Measured max 470/s inbound
+   (p99 375/s) at 400 clients in the compressed run after T-029 (T-025: 937, p99 560); the
+   real rate is lower (events ~10× slower), and presence is now 400 building players ×
+   2.4/min × 9 deliveries ≈ 145/s (was ≈ 480/s). **No longer the limit before the presence
+   quota (1.).**
 5. **Realtime peak connections: 500 included** = 83 concurrent 6-player battles, the peak
    hour of ~47,000 battles/month (peak factor 4). Then $10 per 1,000.
 6. **Egress 250 GB: ~35,000 battles/month.** Reveal downloads grow with P² (every member
@@ -380,7 +517,10 @@ the peak hour of about 37,600 battles/month at peak factor 4):
   battle-channel joins p95 23.1 s (they succeed on supabase-js's retry). With 10
   connections (`20261008t003410-full`): p95 213 ms, no errors. Events published before a
   client's join are recovered by its snapshot, so propagation stays fine, but a slow join
-  delays the first snapshot.
+  delays the first snapshot. T-029: clients join the battle topic a random 0–500 ms after
+  the battle is known (the snapshot is fetched at once). With the pool at 1, joins p95 336 →
+  156 ms on this machine, no CHANNEL_ERROR either side (the 23 s of T-025 did not
+  reproduce in the T-029 baseline run).
 - **§7.5.5 Database.** At 400 clients the Postgres container used 0.63 cores on average
   and 1.2 at peak (commits 305/s, max 603/s), 18 active backends, no deadlocks, ≤ 5
   waiting locks. Micro (shared 2 vCPU, 1 GB) is probably enough at launch volumes (the
@@ -392,35 +532,37 @@ the peak hour of about 37,600 battles/month at peak factor 4):
   about 400 × 0.95 / 19.4 min ≈ 20 captures/min, so the real rate fits; the compressed
   test asked for ~10× more and built a 331-job backlog (171 captures failed at the
   deadline). Production uses Browser Rendering; its concurrency (10 included) is the knob.
-- **§7.5.7 Deadline nudges while RESULTS waits for screenshots.** Every client nudges
-  every 5 s (`advance_battle` + `get_battle_snapshot`) while the battle cannot leave
-  RESULTS. Under the capture backlog that was **275 `advance_battle` and 361 snapshots per
-  battle** (vs 6.7 and 81 when captures keep up); the two calls made up 41 % of all
-  requests of the full run. Any capture slowdown in production multiplies API load the same way.
+- **§7.5.7 Deadline nudges while RESULTS waits for screenshots (fixed in T-029).** Every
+  client nudged every 5 s (`advance_battle` + `get_battle_snapshot`) while the battle could
+  not leave RESULTS: under the capture backlog **275 `advance_battle` and 361 snapshots per
+  battle** (vs 6.7 and 81 when captures keep up), 41 % of all requests of the full run. Now
+  RESULTS is not nudged while a final build's screenshot is pending (the 5 s sweep ends it),
+  and any other phase that does not move is nudged again after 5, 10, 20, then every 30 s.
+  Measured under the same backlog (365 jobs): nudges in RESULTS 264 → 0.02 per battle,
+  `advance_battle` 283 → 20 and snapshots 368 → 106 per battle.
 - **Local stack only:** Kong's 512 connections (fails at ~240 clients, §7.1.4) and the
   10-minute Realtime rebalancing (§7.2).
 
 ## 7.6 Recommendations
 
-1. **Launch on Supabase Pro with the spend cap off** (or Team), and set a billing alert
-   instead. With the cap on, the presence quota (§7.5.1) breaks rooms at ~10 concurrent
-   rooms. Re-check the Realtime limits page for the presence and messages-per-second
-   numbers first (assumed here).
-2. **Cut presence traffic** (most of the Realtime bill): send activity at most once per
-   15 s instead of 4 per 30 s, only on changes that matter (typing on/off, a build error),
-   and nothing during REVEAL/VOTING/RESULTS. Estimated: presence ÷ 4 → ~1,125 messages per
-   battle instead of 3,673, the 5 M quota then covers ~4,400 battles/month. Also back off
-   harder after a server-closed channel (start at 5 s, never reset to 1 s on the next
-   success), so a rate limit cannot turn into a rejoin storm.
-3. **Back off the deadline nudge** in `apps/web/src/lib/solo/controller.ts` when the
-   battle does not move: 5, 10, 20, 30 s; or do not nudge in RESULTS at all (the sweep
-   ends it). Proposed as a follow-up task; product code was not changed here.
-4. **Return the battle version from `heartbeat`** (T-023's own suggestion) and resync the
-   clock with one sample: 14.7 → ~7 calls per client-minute.
+1. **Spend cap: ON is fine at launch; OFF (or Team) before ~15 concurrent 8-player rooms
+   in BUILD** (§7.5.1; 10 × 8 measured clean, 50 × 8 still 1,703 closes). Set a billing
+   alert either way, and re-check the Realtime limits page for the presence and
+   messages-per-second numbers first (assumed here).
+2. **Cut presence traffic: done (T-029).** Activity at most once per 15 s, only during
+   BUILD and only for changes that matter; harder rejoin backoff (5 s up to 30 s, jitter,
+   no reset on SUBSCRIBED). Measured: 7.96 → 2.4–3.0 sends per BUILDING minute, 3,652 →
+   1,490 Realtime messages per battle (the estimate here was ÷4; it came out ÷3 for
+   presence with the assumed editing model). Further cuts would cost sidebar freshness: a
+   coarser line step, or a longer "active" window.
+3. **Back off the deadline nudge: done (T-029).** 5, 10, 20, 30 s; RESULTS not nudged while
+   a screenshot is pending.
+4. **Battle version from `heartbeat`, single-sample clock resync: done (T-029).** 14.7 →
+   7.2 calls per client-minute.
 5. **Realtime database pool:** check the hosted project's Realtime authorization pool
    (the tenant's `db_pool`; in the dashboard's Realtime settings as the database connection
-   pool size, as far as the author knows) and raise it above 1–2 before launch; stagger
-   battle-topic joins by a random 0–500 ms on the client.
+   pool size, as far as the author knows) and raise it above 1–2 before launch. The client
+   side (battle-topic joins staggered by 0–500 ms) is done (T-029).
 6. **Reveal downloads:** ship `bundle.js`, `bundle.css` and `manifest.json` as one object
    (3× fewer Storage reads, each an RLS check), and consider serving revealed bundles
    through signed URLs cached at the edge (they are immutable once shipped). Egress and the
@@ -432,7 +574,10 @@ the peak hour of about 37,600 battles/month at peak factor 4):
    the builds' ready signal (58 % used it in the test, half the render time).
 9. **Package CDN container:** use `sleepAfter` so it does not run 730 h/month at low volume
    ($19.72 of the $50.59 at 1,000 battles).
-10. **Repeat the test on staging** (hosted Supabase, deployed Workers) before launch with
+10. **Report lost broadcasts** (T-026): the sync engine counts heartbeats that found the
+    battle ahead of its snapshot (`stats.missed`); in production that is the signal that
+    Realtime's database feed dropped (§7.2.2).
+11. **Repeat the test on staging** (hosted Supabase, deployed Workers) before launch with
     `pnpm --filter @br/loadtest loadtest --profile full`: the local numbers are a
     pessimistic single-machine view of the server and an assumption-laden view of prices.
 
@@ -443,6 +588,7 @@ the peak hour of about 37,600 battles/month at peak factor 4):
 pnpm --filter @br/loadtest smoke                         # 3 rooms × 4 players, ~2.5 min
 pnpm --filter @br/loadtest loadtest --profile full       # 50 × 8 × 2, pro-nocap quotas, ~12 min
 pnpm --filter @br/loadtest loadtest --rooms 10 --players 6 --battles-per-room 2 --realtime-limits pro
+pnpm --filter @br/loadtest loadtest --rooms 10 --players 6 --build-s 300 --realtime-limits pro  # steady presence
 pnpm --filter @br/loadtest loadtest --help               # every option
 pnpm --filter @br/loadtest cost loadtest-results/<run>/report.json   # §7.4 for a run
 ```

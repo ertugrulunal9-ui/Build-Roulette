@@ -15,6 +15,10 @@
  *   never dropped while waiting: the newest are buffered.
  * - **Battle switch:** when `current_battle_id` changes (a rematch), the old battle topic is
  *   closed and the new one subscribed.
+ * - **Battle topic join:** a random 0–500 ms after the battle is known (T-029), so a room's
+ *   players do not all hit Realtime's authorization pool in the same instant at the start
+ *   of a battle. The snapshot is fetched at once and again on SUBSCRIBED, so events
+ *   published before the join are not missed.
  * - **Heartbeat:** `heartbeat(room_id)` every ~10 s (presence for the server and host
  *   migration). A newer `room_version` or another host in its answer refetches the room;
  *   `kicked`, `room_closed`, `not_a_member` and `room_not_found` end the session.
@@ -23,39 +27,50 @@
  *   does it every 10 minutes: Realtime drops the tenant's database connection to
  *   "rebalance" and only reconnects on the next channel join; whatever was sent meanwhile
  *   is gone). A gap is only noticed when a later event arrives, so the LAST event before
- *   such a silence (a phase change, the next REVEAL slot) would never be noticed. So every
- *   heartbeat also reads the battle's version (`battles.version`) while the battle is not
- *   over, and refetches the snapshot when the server is ahead: nothing stays stale for
- *   more than one beat.
+ *   such a silence (a phase change, the next REVEAL slot) would never be noticed. So the
+ *   heartbeat's answer also carries the room's current battle and its version (T-029;
+ *   before, a separate `battles.version` read per beat), and while the battle is not over
+ *   a server ahead of the snapshot refetches it: nothing stays stale for more than one
+ *   beat.
  * - **Recovery:** on `visibilitychange` → visible and on `online`, the clock is measured
  *   again and both snapshots are refetched. While the room topic is not subscribed
  *   (Realtime down or reconnecting) or the browser is offline, the connection reads
  *   `degraded` ("Reconnecting…") and both snapshots are polled every few seconds. (An
  *   offline browser can keep its WebSocket "open" without traffic until the Realtime
  *   heartbeat times out, so the `offline` event is the first sign, not the channel status.)
- * - **Clock:** `server_now()` sampled 3× (lowest RTT) at start, every 60 s and on recovery.
- * - **Presence:** `{user_id, display_name, device, activity}` tracked on the room topic,
- *   at most once per 2 s and 4 times per 30 s (Realtime closes the channel of a client
- *   that sends more than 5 presence messages in 30 s), again after every (re)subscribe,
- *   never while offline (they would arrive as one burst).
+ * - **Clock:** `server_now()` sampled 3× (lowest RTT) at start and on recovery; every 60 s
+ *   one sample, ignored when its round trip is much slower (T-029, clock-sync.ts).
+ * - **Presence:** `{user_id, display_name, device, activity}` tracked on the room topic.
+ *   It is claimed after every (re)subscribe (the lobby's online dots and the sidebar need
+ *   it). Activity updates (T-029) go out only during BUILDING, only for a change that
+ *   matters (`activityMatters`: active on/off, the build failing for 10 s or fixed, ±20
+ *   lines), at most once per 15 s, the latest activity winning. Any two tracks are 2 s apart and at
+ *   most 4 fall in 30 s (Realtime closes the channel of a client that sends more than 5
+ *   presence messages in 30 s); none while offline (they would arrive as one burst).
  * - **Closed channels:** a topic the server closes (CLOSED, e.g. a rate limit or an
- *   expired token; supabase-js does not rejoin those) is subscribed again after 1 s, 2 s,
- *   4 s… (at most 30 s). Errors and timeouts are left to supabase-js, which rejoins.
+ *   expired token; supabase-js does not rejoin those) is subscribed again after 5 s, 10 s,
+ *   20 s, then 30 s, each plus up to half again as random jitter (T-029). A successful
+ *   subscribe does not reset that: the backoff steps down one level per 60 s the topic
+ *   stays subscribed, so a Realtime rate limit cannot turn into a rejoin storm. Errors and
+ *   timeouts are left to supabase-js, which rejoins.
  * - **Teardown:** `stop()` closes both topics and every timer and listener.
  *
  * Plain TypeScript with injected API, Realtime, clock and environment, unit tested with
  * fakes (sync.test.ts). React reads it through the RoomController.
  */
 import {
+  ACTIVITY_BUILD_ERROR_MS,
   HEARTBEAT_INTERVAL_MS,
+  PRESENCE_ACTIVITY_INTERVAL_MS,
   PRESENCE_MAX_PER_WINDOW,
   PRESENCE_THROTTLE_MS,
   PRESENCE_WINDOW_MS,
+  activityMatters,
   battleTopic,
   isTerminalPhase,
   roomTopic,
 } from '@br/game';
-import { measureClockOffset } from '../solo/clock-sync';
+import { ServerClock } from '../solo/clock-sync';
 import { realClock, type SoloClock, type TimerHandle } from '../solo/controller';
 import { toGameError, type GameError } from '../solo/errors';
 import type { BattleSnapshot } from '../solo/types';
@@ -82,12 +97,8 @@ import type {
 export interface RoomSyncApi {
   getRoomSnapshot(roomId: string): Promise<RoomSnapshot>;
   getBattleSnapshot(battleId: string): Promise<BattleSnapshot>;
+  /** Also answers the room's current battle and its version (the lost-broadcast check). */
   heartbeat(roomId: string): Promise<HeartbeatResult>;
-  /**
-   * The battle's current version (`battles.version`; its room's members may read it), or
-   * null when the row is not visible.
-   */
-  battleVersion(battleId: string): Promise<number | null>;
   /** `server_now()` as epoch ms. */
   serverNow(): Promise<number>;
 }
@@ -152,7 +163,12 @@ export const browserEnvironment: SyncEnvironment = {
 export interface SyncTimings {
   heartbeatMs: number;
   clockResyncMs: number;
+  /** The minimum gap between any two presence tracks. */
   presenceThrottleMs: number;
+  /** BUILD activity updates at most this often (and only during BUILDING). */
+  presenceActivityMs: number;
+  /** A failing build is reported once it has failed this long (or was already reported). */
+  buildErrorMs: number;
   /** At most `presenceMaxPerWindow` tracks per `presenceWindowMs` (Realtime's limit is 5/30 s). */
   presenceMaxPerWindow: number;
   presenceWindowMs: number;
@@ -161,17 +177,33 @@ export interface SyncTimings {
   /** First retry of a snapshot that is still behind (or failed); doubles each time. */
   retryBaseMs: number;
   retryMaxMs: number;
+  /** First re-subscribe after the server closed a topic; doubles up to `rejoinMaxMs`. */
+  rejoinBaseMs: number;
+  rejoinMaxMs: number;
+  /** Each rejoin delay plus up to this share of it at random. */
+  rejoinJitter: number;
+  /** The rejoin backoff steps down one level per this long the topic stays subscribed. */
+  rejoinDecayMs: number;
+  /** The battle topic is joined this long at most (at random) after the battle is known. */
+  battleJoinStaggerMs: number;
 }
 
 export const DEFAULT_SYNC_TIMINGS: SyncTimings = {
   heartbeatMs: HEARTBEAT_INTERVAL_MS,
   clockResyncMs: 60_000,
   presenceThrottleMs: PRESENCE_THROTTLE_MS,
+  presenceActivityMs: PRESENCE_ACTIVITY_INTERVAL_MS,
+  buildErrorMs: ACTIVITY_BUILD_ERROR_MS,
   presenceMaxPerWindow: PRESENCE_MAX_PER_WINDOW,
   presenceWindowMs: PRESENCE_WINDOW_MS,
   fallbackPollMs: 5_000,
   retryBaseMs: 1_000,
   retryMaxMs: 30_000,
+  rejoinBaseMs: 5_000,
+  rejoinMaxMs: 30_000,
+  rejoinJitter: 0.5,
+  rejoinDecayMs: 60_000,
+  battleJoinStaggerMs: 500,
 };
 
 export interface RoomSyncDeps {
@@ -396,7 +428,18 @@ export class VersionedTopic<S, E extends { version: number }> {
 
 // ─── The engine ───────────────────────────────────────────────────────────────────────
 
-type TimerName = 'heartbeat' | 'clock' | 'poll' | 'presence' | 'rejoinRoom' | 'rejoinBattle';
+type TopicKind = 'room' | 'battle';
+
+type TimerName =
+  | 'heartbeat'
+  | 'clock'
+  | 'poll'
+  | 'presence'
+  | 'joinBattle'
+  | 'rejoinRoom'
+  | 'rejoinBattle'
+  | 'decayRoom'
+  | 'decayBattle';
 
 function deviceKind(): 'desktop' | 'mobile' {
   try {
@@ -480,12 +523,22 @@ export class RoomSync {
 
   private presence: Omit<PresencePayload, 'activity'> | null = null;
   private activity: Activity = IDLE_ACTIVITY;
+  /** The activity in the last track (what the others see), or null before the first. */
+  private sentActivity: Activity | null = null;
+  /** Since when the build has been failing (the activity's own `last_build`), or null. */
+  private buildErrorSince: number | null = null;
+  /** A track is owed regardless of the activity: a (re)subscribe, a new name, a refusal. */
+  private claimOwed = true;
   private lastTrackAt = Number.NEGATIVE_INFINITY;
   private lastTracked: string | null = null;
   /** When the recent tracks were sent (the 30 s budget). */
   private trackTimes: number[] = [];
-  /** Server-closed subscriptions in a row, per topic (the rejoin backoff). */
-  private rejoins = { room: 0, battle: 0 };
+  /**
+   * The rejoin backoff level per topic: raised by every server close, lowered by one per
+   * `rejoinDecayMs` the topic stays subscribed (never reset by a mere SUBSCRIBED).
+   */
+  private rejoins: Record<TopicKind, number> = { room: 0, battle: 0 };
+  private readonly serverClock: ServerClock;
 
   constructor(deps: RoomSyncDeps) {
     this.api = deps.api;
@@ -494,6 +547,10 @@ export class RoomSync {
     this.env = deps.env ?? null;
     this.timings = { ...DEFAULT_SYNC_TIMINGS, ...deps.timings };
     this.userId = deps.userId;
+    this.serverClock = new ServerClock(
+      () => this.api.serverNow(),
+      () => this.clock.now(),
+    );
   }
 
   // --- Store contract -----------------------------------------------------------------
@@ -553,7 +610,7 @@ export class RoomSync {
     this.subscribeRoom(roomId);
     // Show the room at once; the SUBSCRIBED callback refetches again (nothing is missed).
     void this.roomTopic.refetch();
-    void this.syncClock();
+    void this.syncClock('measure');
     this.scheduleHeartbeat(this.timings.heartbeatMs);
     this.scheduleClock();
     this.schedulePoll();
@@ -592,7 +649,7 @@ export class RoomSync {
   /** The tab is visible again or the network came back: catch up on everything. */
   resync(): void {
     if (this.stopped) return;
-    void this.syncClock();
+    void this.syncClock('measure');
     void this.refetchRoom();
     void this.refetchBattle();
     void this.beat();
@@ -601,11 +658,17 @@ export class RoomSync {
   /** Who this client is in the room's Presence (tracked once the topic is subscribed). */
   setPresence(displayName: string): void {
     this.presence = { user_id: this.userId, display_name: displayName, device: deviceKind() };
+    this.claimOwed = true;
     this.flushPresence();
   }
 
-  /** The player's BUILD activity (lines, last build, typing); throttled (see flushPresence). */
+  /**
+   * The player's BUILD activity (lines, last build, active); sent only during BUILDING, when
+   * it matters, at most every 15 s (see flushPresence).
+   */
   setActivity(activity: Activity): void {
+    if (activity.last_build !== 'error') this.buildErrorSince = null;
+    else this.buildErrorSince ??= this.clock.now();
     this.activity = activity;
     this.flushPresence();
   }
@@ -633,27 +696,50 @@ export class RoomSync {
     this.roomSub = sub;
   }
 
-  /** Subscribes again after the server closed a topic: 1 s, 2 s, 4 s… at most 30 s. */
-  private scheduleRejoin(topic: 'room' | 'battle', rejoin: () => void): void {
+  /**
+   * Subscribes again after the server closed a topic: 5 s, 10 s, 20 s, then 30 s, each plus
+   * up to `rejoinJitter` of it at random (a room's clients closed by the same rate limit do
+   * not come back in step).
+   */
+  private scheduleRejoin(topic: TopicKind, rejoin: () => void): void {
     const name = topic === 'room' ? 'rejoinRoom' : 'rejoinBattle';
+    this.clearTimer(topic === 'room' ? 'decayRoom' : 'decayBattle');
     if (this.stopped || this.timers.has(name)) return;
     const n = this.rejoins[topic]++;
-    const delay = Math.min(this.timings.retryBaseMs * 2 ** n, this.timings.retryMaxMs);
-    this.setTimer(name, delay, rejoin);
+    const { rejoinBaseMs, rejoinMaxMs, rejoinJitter } = this.timings;
+    const base = Math.min(rejoinBaseMs * 2 ** n, rejoinMaxMs);
+    this.setTimer(name, Math.round(base * (1 + rejoinJitter * this.clock.random())), rejoin);
+  }
+
+  /**
+   * The topic is subscribed: the rejoin backoff steps down one level per `rejoinDecayMs` it
+   * stays up (a close in between stops the countdown). A SUBSCRIBED alone does not reset it:
+   * a rate limit that closes the channel again a few seconds later must not bring the
+   * clients back at the first step.
+   */
+  private scheduleDecay(topic: TopicKind): void {
+    const name = topic === 'room' ? 'decayRoom' : 'decayBattle';
+    this.clearTimer(name);
+    if (this.rejoins[topic] === 0) return;
+    this.setTimer(name, this.timings.rejoinDecayMs, () => {
+      this.rejoins[topic] = Math.max(0, this.rejoins[topic] - 1);
+      this.scheduleDecay(topic);
+    });
   }
 
   private onRoomStatus(status: ChannelStatus, roomId: string): void {
     if (this.stopped) return;
     if (status === 'SUBSCRIBED') {
-      this.rejoins.room = 0;
+      this.scheduleDecay('room');
       this.roomSubscribed = true;
       this.patch({ connection: this.offline ? 'degraded' : 'live' });
       // (Re)subscribed: anything may have been missed. Presence must be tracked again.
       void this.roomTopic?.refetch();
       void this.refetchBattle();
-      this.lastTracked = null;
+      this.claimOwed = true;
       this.flushPresence();
     } else {
+      this.clearTimer('decayRoom');
       this.roomSubscribed = false;
       // supabase-js rejoins after an error or a timeout, not after the server closed the
       // channel: then this engine subscribes again. Poll meanwhile.
@@ -708,7 +794,10 @@ export class RoomSync {
       reduce: applyBattleEvent,
       fetch: () => this.api.getBattleSnapshot(battleId),
       onChange: (s) => {
-        if (this.battleTopic === topic) this.patch({ battle: s });
+        if (this.battleTopic !== topic) return;
+        this.patch({ battle: s });
+        // Activity held back outside BUILDING may go out now that it started.
+        this.flushPresence();
       },
       onApplied: (event, battle, previous) => {
         if (this.battleTopic === topic) this.notify({ topic: 'battle', event, battle, previous });
@@ -722,8 +811,17 @@ export class RoomSync {
       retryMaxMs: this.timings.retryMaxMs,
     });
     this.battleTopic = topic;
-    this.rejoins.battle = 0;
-    this.subscribeBattle(battleId, topic);
+    // Joined a random 0–500 ms later: at the start of a battle every player of the room learns
+    // of it within a few ms, and the joins would hit Realtime's authorization pool at once
+    // (docs/07 §7.5.4). The snapshot is fetched now and again on SUBSCRIBED, so events sent
+    // before the join are not missed. (The rejoin backoff level carries over: a rate limit
+    // does not end with the battle.)
+    const stagger = Math.floor(this.clock.random() * (this.timings.battleJoinStaggerMs + 1));
+    const join = () => {
+      if (this.battleTopic === topic) this.subscribeBattle(battleId, topic);
+    };
+    if (stagger > 0) this.setTimer('joinBattle', stagger, join);
+    else join();
     void topic.refetch();
   }
 
@@ -745,12 +843,14 @@ export class RoomSync {
         status: (status) => {
           if (this.battleSub !== sub || this.stopped) return;
           if (status === 'SUBSCRIBED') {
-            this.rejoins.battle = 0;
+            this.scheduleDecay('battle');
             void topic.refetch();
           } else if (status === 'CLOSED') {
             this.scheduleRejoin('battle', () => {
               if (this.battleTopic === topic) this.subscribeBattle(battleId, topic);
             });
+          } else {
+            this.clearTimer('decayBattle');
           }
         },
       },
@@ -759,7 +859,9 @@ export class RoomSync {
   }
 
   private closeBattle(): void {
+    this.clearTimer('joinBattle');
     this.clearTimer('rejoinBattle');
+    this.clearTimer('decayBattle');
     this.battleSub?.close();
     this.battleSub = null;
     this.battleTopic?.dispose();
@@ -780,7 +882,6 @@ export class RoomSync {
   private async beat(): Promise<void> {
     const roomId = this.state.roomId;
     if (!roomId || this.stopped) return;
-    void this.checkBattleVersion();
     let res: HeartbeatResult;
     try {
       res = await this.api.heartbeat(roomId);
@@ -799,26 +900,22 @@ export class RoomSync {
     if (room && (res.room_version > room.room.version || res.host_id !== room.room.host_id)) {
       void this.refetchRoom();
     }
+    this.checkBattleVersion(res);
   }
 
   /**
-   * The battle moved on but no event said so (see "Lost broadcasts" above): refetch. Errors
-   * are left to the next beat.
+   * The battle moved on but no event said so (see "Lost broadcasts" above): refetch. The
+   * heartbeat's answer carries the room's current battle and its version; an answer without
+   * them (a server older than T-029) checks nothing.
    */
-  private async checkBattleVersion(): Promise<void> {
+  private checkBattleVersion(res: HeartbeatResult): void {
     const topic = this.battleTopic;
-    const battleId = this.battleId;
     const snap = topic?.snapshot;
-    if (!topic || !battleId || !snap || isTerminalPhase(snap.battle.phase)) return;
-    let version: number | null;
-    try {
-      version = await this.api.battleVersion(battleId);
-    } catch {
-      return;
-    }
-    if (this.isStopped() || this.battleTopic !== topic || version === null) return;
-    // Events applied meanwhile count: only a server still ahead of them is a miss.
-    if (version > (topic.snapshot?.battle.version ?? 0)) {
+    if (!topic || !snap || isTerminalPhase(snap.battle.phase)) return;
+    const version = res.battle_version;
+    if (typeof version !== 'number' || res.battle_id !== this.battleId) return;
+    // Events applied while the beat was in flight count: only a server still ahead is a miss.
+    if (version > snap.battle.version) {
       this.stats.missed++;
       void topic.refetch();
     }
@@ -826,17 +923,19 @@ export class RoomSync {
 
   private scheduleClock(): void {
     this.setTimer('clock', this.timings.clockResyncMs, () => {
-      void this.syncClock().finally(() => {
+      void this.syncClock('resync').finally(() => {
         this.scheduleClock();
       });
     });
   }
 
-  private async syncClock(): Promise<void> {
-    const offset = await measureClockOffset(
-      () => this.api.serverNow(),
-      () => this.clock.now(),
-    );
+  /**
+   * `measure`: 3 samples, the lowest RTT wins (start, recovery); `resync`: 1 sample, used
+   * only when its RTT is about as good as the current estimate's (clock-sync.ts).
+   */
+  private async syncClock(kind: 'measure' | 'resync'): Promise<void> {
+    const offset =
+      kind === 'measure' ? await this.serverClock.measure() : await this.serverClock.resync();
     if (offset !== null && !this.stopped) this.patch({ clockOffsetMs: offset });
   }
 
@@ -853,33 +952,89 @@ export class RoomSync {
 
   // --- Presence -----------------------------------------------------------------------
 
+  /** The current battle is in BUILDING: the only phase whose activity others watch. */
+  private isBuilding(): boolean {
+    const battle = this.state.battle;
+    return (
+      battle !== null &&
+      battle.battle.phase === 'building' &&
+      battle.battle.id === this.state.room?.room.current_battle_id
+    );
+  }
+
+  /**
+   * The activity as the others should see it: a failing build only once it has failed for
+   * `buildErrorMs` (a half-typed line breaks the 150 ms rebuild for a moment; that is not
+   * news), or when they were already told it fails.
+   */
+  private reportedActivity(now: number): Activity {
+    const a = this.activity;
+    if (a.last_build !== 'error' || this.sentActivity?.last_build === 'error') return a;
+    const since = this.buildErrorSince ?? now;
+    return now - since >= this.timings.buildErrorMs ? a : { ...a, last_build: 'ok' };
+  }
+
+  /**
+   * Tracks this client's presence when something is owed (T-029):
+   * - a **claim** (after a (re)subscribe or a new name) always goes out, as soon as the 2 s
+   *   gap and the 4-per-30-s budget allow;
+   * - an **activity** change goes out only during BUILDING, only when it matters
+   *   (`activityMatters` against what the others last received), and at most once per
+   *   `presenceActivityMs` (15 s) after the previous track. A held-back change is sent when
+   *   the gap is over, as the latest activity; one that stops mattering meanwhile is not.
+   *   A failing build counts once it has failed for 10 s (`reportedActivity`).
+   * Nothing is sent while offline (it would arrive as a burst).
+   */
   private flushPresence(): void {
     if (this.stopped || !this.presence || !this.roomSub || !this.roomSubscribed) return;
     if (this.offline) return; // sent when the network is back
-    const payload: PresencePayload = { ...this.presence, activity: this.activity };
-    const json = JSON.stringify(payload);
-    if (json === this.lastTracked) return;
     const now = this.clock.now();
-    const { presenceThrottleMs, presenceMaxPerWindow, presenceWindowMs } = this.timings;
+    const activity = this.reportedActivity(now);
+    const payload: PresencePayload = { ...this.presence, activity };
+    const json = JSON.stringify(payload);
+    const claim = this.claimOwed;
+    const building = this.isBuilding();
+    const wanted =
+      claim ||
+      (json !== this.lastTracked && building && activityMatters(this.sentActivity, activity));
+    if (!wanted) {
+      const since = this.buildErrorSince;
+      if (building && since !== null && activity.last_build === 'ok') {
+        // Failing, not long enough to tell: look again when it is.
+        this.setTimer('presence', since + this.timings.buildErrorMs - now, () => {
+          this.flushPresence();
+        });
+      } else {
+        this.clearTimer('presence');
+      }
+      return;
+    }
+    const { presenceThrottleMs, presenceActivityMs, presenceMaxPerWindow, presenceWindowMs } =
+      this.timings;
     this.trackTimes = this.trackTimes.filter((t) => t > now - presenceWindowMs);
-    let wait = this.lastTrackAt + presenceThrottleMs - now;
+    let wait = this.lastTrackAt + (claim ? presenceThrottleMs : presenceActivityMs) - now;
     const oldest = this.trackTimes[0];
     if (this.trackTimes.length >= presenceMaxPerWindow && oldest !== undefined) {
       wait = Math.max(wait, oldest + presenceWindowMs - now);
     }
     if (wait > 0) {
-      if (!this.timers.has('presence')) {
-        this.setTimer('presence', wait, () => {
-          this.flushPresence();
-        });
-      }
+      // (Re)armed for the earliest moment it may go: the latest activity is read then.
+      this.setTimer('presence', wait, () => {
+        this.flushPresence();
+      });
       return;
     }
+    this.clearTimer('presence');
+    this.claimOwed = false;
     this.lastTrackAt = now;
     this.trackTimes.push(now);
     this.lastTracked = json;
+    this.sentActivity = activity;
     void this.roomSub.track(payload).then((ok) => {
-      if (!ok && this.lastTracked === json) this.lastTracked = null;
+      if (ok || this.lastTracked !== json || this.isStopped()) return;
+      // Refused (e.g. not joined yet): claim it again with the next chance.
+      this.lastTracked = null;
+      this.claimOwed = true;
     });
   }
 

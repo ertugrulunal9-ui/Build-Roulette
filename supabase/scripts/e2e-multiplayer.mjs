@@ -103,6 +103,11 @@ check('alice listens on the room topic', aRoom.status === 'SUBSCRIBED', aRoom.st
     typeof hb.data?.server_now === 'string' && hb.data?.host_id === alice.id,
     hb,
   );
+  check(
+    'heartbeat: no battle yet (battle_id and battle_version null, T-029)',
+    hb.data?.battle_id === null && hb.data?.battle_version === null,
+    hb,
+  );
   const snap = await rpc(bob, 'get_room_snapshot', { p_room_id: roomId });
   check(
     'the room snapshot lists three ready players, alice hosting',
@@ -154,6 +159,19 @@ const firstVersion = 2; // version 1 (SPINNING) happened before anyone subscribe
     'the room is in_battle with the battle summary',
     roomSnap.data?.room?.status === 'in_battle' && roomSnap.data?.battle?.roster?.length === 3,
     roomSnap,
+  );
+  // T-029: the heartbeat carries the battle's version (the client's lost-broadcast check).
+  const versionNow = () =>
+    Number(sql(`select version from public.battles where id = '${battleId}'`));
+  const before = versionNow();
+  const hb = await rpc(dave, 'heartbeat', { p_room_id: roomId });
+  const after = versionNow(); // (pg_cron may move SPINNING on meanwhile)
+  check(
+    "heartbeat (a spectator's) answers the running battle and its version",
+    hb.data?.battle_id === battleId &&
+      hb.data.battle_version >= before &&
+      hb.data.battle_version <= after,
+    { hb, before, after },
   );
 }
 

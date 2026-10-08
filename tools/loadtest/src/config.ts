@@ -5,8 +5,8 @@
  * (about 20 min). The generator shortens every phase through SQL on each battle it starts
  * (see db.ts `compressBattle`), so a battle takes a few minutes. Client cadences that are
  * wall-clock rates in the product (heartbeat 10 s, autosave 30 s, clock resync 60 s,
- * presence ≤ 4 per 30 s) are NOT compressed: the concurrent load per connected client is
- * the real one. Per-battle totals of those rate-driven items are scaled back to real battle
+ * presence activity ≤ 1 per 15 s, rejoin backoff) are NOT compressed: the concurrent load
+ * per connected client is the real one. Per-battle totals of those rate-driven items are scaled back to real battle
  * lengths in the cost model (cost.ts), not taken from the compressed run as they are.
  */
 

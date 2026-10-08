@@ -5,8 +5,9 @@
  * throttling and teardown.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { realClock } from '../solo/controller';
 import { GameError } from '../solo/errors';
-import { RoomSync, normalizePresence, type SyncNotice } from './sync';
+import { RoomSync, normalizePresence, type SyncNotice, type SyncTimings } from './sync';
 import {
   BATTLE_1,
   BATTLE_2,
@@ -25,6 +26,8 @@ let api: FakeRoomApi;
 let rt: FakeRealtime;
 let env: FakeEnvironment;
 let notices: SyncNotice[];
+/** What the engine's clock.random() returns (join stagger, rejoin jitter). */
+let random: number;
 
 const ROOM_TOPIC = `room:${ROOM}`;
 const B1_TOPIC = `battle:${BATTLE_1}`;
@@ -34,15 +37,22 @@ async function flush(): Promise<void> {
   await vi.advanceTimersByTimeAsync(0);
 }
 
-function engine(): RoomSync {
-  const s = new RoomSync({ api, realtime: rt, env, userId: ME });
+function engine(timings?: Partial<SyncTimings>): RoomSync {
+  const s = new RoomSync({
+    api,
+    realtime: rt,
+    env,
+    userId: ME,
+    clock: { ...realClock, random: () => random },
+    timings,
+  });
   s.onNotice((n) => notices.push(n));
   return s;
 }
 
 /** Starts an engine and lets the room topic subscribe. */
-async function started(): Promise<RoomSync> {
-  const s = engine();
+async function started(timings?: Partial<SyncTimings>): Promise<RoomSync> {
+  const s = engine(timings);
   await s.start(ROOM);
   rt.open(ROOM_TOPIC).status('SUBSCRIBED');
   await flush();
@@ -67,6 +77,7 @@ beforeEach(() => {
   rt = new FakeRealtime();
   env = new FakeEnvironment();
   notices = [];
+  random = 0;
 });
 afterEach(() => {
   vi.useRealTimers();
@@ -111,14 +122,70 @@ describe('start', () => {
     s.stop();
   });
 
-  it('measures the clock offset with server_now (lowest RTT)', async () => {
+  it('joins the battle topic a random 0–500 ms later (no join burst at battle start); the snapshot is fetched at once and again on SUBSCRIBED', async () => {
+    random = 0.5; // 250 ms
+    api.room = roomSnapshot({ battleId: BATTLE_1 });
+    api.battles.set(BATTLE_1, battleSnapshot({ version: 4 }));
+    const s = await started();
+    expect(rt.isOpen(B1_TOPIC)).toBe(false);
+    expect(s.getSnapshot().battle?.battle.version).toBe(4); // shown at once
+    await vi.advanceTimersByTimeAsync(249);
+    expect(rt.isOpen(B1_TOPIC)).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(rt.isOpen(B1_TOPIC)).toBe(true);
+    // An event sent before the join is not lost: the SUBSCRIBED refetch has it.
+    api.battles.set(BATTLE_1, battleSnapshot({ version: 5, phase: 'shipping' }));
+    api.clearCalls();
+    rt.open(B1_TOPIC).status('SUBSCRIBED');
+    await flush();
+    expect(api.count('getBattleSnapshot', BATTLE_1)).toBe(1);
+    expect(s.getSnapshot().battle?.battle).toMatchObject({ version: 5, phase: 'shipping' });
+    s.stop();
+
+    // Stopped (or switched) before the join: no subscription, no timer left.
+    random = 0.999;
+    const t = await started();
+    t.stop();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(rt.topics.filter((x) => x.topic === B1_TOPIC)).toHaveLength(1); // the first engine's
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('measures the clock offset with 3 server_now samples, then resyncs with 1 every 60 s', async () => {
     api.serverOffsetMs = 42_000;
     const s = await started();
     expect(api.count('serverNow')).toBe(3);
     expect(s.getSnapshot().clockOffsetMs).toBe(42_000);
-    // Again every 60 s.
+    // One sample every 60 s (T-029: was 3), and it moves the offset.
+    api.serverOffsetMs = 43_000;
     await vi.advanceTimersByTimeAsync(60_000);
+    expect(api.count('serverNow')).toBe(4);
+    expect(s.getSnapshot().clockOffsetMs).toBe(43_000);
+    await vi.advanceTimersByTimeAsync(120_000);
     expect(api.count('serverNow')).toBe(6);
+    s.stop();
+  });
+
+  it('a resync sample with a slow round trip is ignored; recovery measures with 3 again', async () => {
+    api.serverOffsetMs = 42_000;
+    const s = await started();
+    expect(s.getSnapshot().clockOffsetMs).toBe(42_000);
+    // The next sample takes 2 s and claims a different clock: not trusted.
+    const serverNow = api.serverNow.bind(api);
+    api.serverNow = async () => {
+      await new Promise((r) => setTimeout(r, 2_000));
+      return Date.now() - 1_000 + 50_000;
+    };
+    await vi.advanceTimersByTimeAsync(62_000);
+    expect(s.getSnapshot().clockOffsetMs).toBe(42_000);
+    // The page comes back: a full measurement (3 samples) is taken whatever their RTT.
+    api.serverNow = serverNow;
+    api.serverOffsetMs = 44_000;
+    api.clearCalls();
+    env.fire('visible');
+    await flush();
+    expect(api.count('serverNow')).toBe(3);
+    expect(s.getSnapshot().clockOffsetMs).toBe(44_000);
     s.stop();
   });
 });
@@ -465,17 +532,16 @@ describe('heartbeat', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it('a battle event Realtime never delivered is caught by the next beat (the battle version)', async () => {
+  it('a battle event Realtime never delivered is caught by the next beat (the version in its answer)', async () => {
     api.room = roomSnapshot({ battleId: BATTLE_1, version: 3 });
     api.battles.set(BATTLE_1, battleSnapshot({ version: 10, phase: 'reveal', revealIndex: 0 }));
     const s = await started();
     rt.open(B1_TOPIC).status('SUBSCRIBED');
     await flush();
     api.clearCalls();
-    // Up to date: the beat reads the version and fetches nothing.
+    // Up to date: one request per beat (T-029: the heartbeat answers the version), no fetch.
     await vi.advanceTimersByTimeAsync(10_000);
-    expect(api.count('battleVersion', BATTLE_1)).toBe(1);
-    expect(api.count('getBattleSnapshot')).toBe(0);
+    expect(api.calls).toEqual([['heartbeat', ROOM]]);
     // The host moves to the next build; the broadcast is lost (the channel stays subscribed).
     api.battles.set(BATTLE_1, battleSnapshot({ version: 11, phase: 'reveal', revealIndex: 1 }));
     await vi.advanceTimersByTimeAsync(10_000);
@@ -495,29 +561,48 @@ describe('heartbeat', () => {
     s.stop();
   });
 
-  it('the battle version is not read once the battle is over, nor when it is unreadable', async () => {
+  it('a heartbeat ahead of a battle that is over, of another battle, or without the fields (an older server) refetches nothing', async () => {
     api.room = roomSnapshot({ battleId: BATTLE_1, version: 3 });
     api.battles.set(BATTLE_1, battleSnapshot({ version: 20, phase: 'destroyed' }));
     const s = await started();
+    api.onBattleVersion = () => 25;
     api.clearCalls();
     await vi.advanceTimersByTimeAsync(10_000);
-    expect(api.count('battleVersion')).toBe(0);
+    expect(api.calls).toEqual([['heartbeat', ROOM]]);
     s.stop();
 
     api.battles.set(BATTLE_1, battleSnapshot({ version: 5, phase: 'building' }));
     const t = await started();
-    api.onBattleVersion = () => null;
+    const heartbeat = api.onHeartbeat;
+    // Another battle id (e.g. the answer of a rematch the room snapshot has not seen yet).
+    api.onHeartbeat = async () => ({ ...(await heartbeat()), battle_id: BATTLE_2 });
     api.clearCalls();
     await vi.advanceTimersByTimeAsync(10_000);
-    expect(api.count('battleVersion')).toBe(1);
     expect(api.count('getBattleSnapshot')).toBe(0);
-    api.onBattleVersion = () => {
-      throw new GameError('network');
+    // An older server: no battle fields at all.
+    api.onHeartbeat = async () => {
+      const { server_now, room_version, host_id, status } = await heartbeat();
+      return { server_now, room_version, host_id, status };
     };
     await vi.advanceTimersByTimeAsync(10_000);
+    expect(api.count('heartbeat')).toBe(2);
     expect(api.count('getBattleSnapshot')).toBe(0);
+    expect(t.stats.missed).toBe(0);
     expect(t.getSnapshot().ended).toBeNull();
     t.stop();
+  });
+
+  it('a RESULTS battle whose DESTROYED never arrived is caught within one beat', async () => {
+    api.room = roomSnapshot({ battleId: BATTLE_1, version: 3 });
+    api.battles.set(BATTLE_1, battleSnapshot({ version: 30, phase: 'results' }));
+    const s = await started();
+    rt.open(B1_TOPIC).status('SUBSCRIBED');
+    await flush();
+    api.battles.set(BATTLE_1, battleSnapshot({ version: 31, phase: 'destroyed' }));
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(s.getSnapshot().battle?.battle).toMatchObject({ version: 31, phase: 'destroyed' });
+    expect(s.stats.missed).toBe(1);
+    s.stop();
   });
 
   it('a network failure is retried by the next beat', async () => {
@@ -595,24 +680,24 @@ describe('recovery', () => {
     s.stop();
   });
 
-  it('a channel the server closes is subscribed again with backoff (supabase-js does not)', async () => {
+  it('a channel the server closes is subscribed again after 5 s, 10 s, 20 s, 30 s (supabase-js does not); SUBSCRIBED alone does not reset that', async () => {
     api.room = roomSnapshot({ battleId: BATTLE_1 });
     api.battles.set(BATTLE_1, battleSnapshot());
     const s = await started();
     s.setPresence('Ada');
     const first = rt.open(ROOM_TOPIC);
-    first.status('CLOSED'); // e.g. "Client presence rate limit exceeded"
+    first.status('CLOSED'); // e.g. "Too many presence messages per second"
     expect(s.getSnapshot().connection).toBe('degraded');
-    await vi.advanceTimersByTimeAsync(999);
+    await vi.advanceTimersByTimeAsync(4_999);
     expect(rt.open(ROOM_TOPIC)).toBe(first);
     await vi.advanceTimersByTimeAsync(1);
     expect(first.closed).toBe(true);
     const second = rt.open(ROOM_TOPIC);
     expect(second).not.toBe(first);
     expect(second.presenceKey).toBe(ME);
-    // Closed again before it could join: the next try waits 2 s.
+    // Closed again before it could join: the next try waits 10 s.
     second.status('CLOSED');
-    await vi.advanceTimersByTimeAsync(1_999);
+    await vi.advanceTimersByTimeAsync(9_999);
     expect(rt.open(ROOM_TOPIC)).toBe(second);
     await vi.advanceTimersByTimeAsync(1);
     const third = rt.open(ROOM_TOPIC);
@@ -623,10 +708,33 @@ describe('recovery', () => {
     await flush();
     expect(s.getSnapshot().connection).toBe('live');
     expect(third.tracked).toHaveLength(1); // presence is claimed again
-    // The battle topic too.
+    // The rate limit closes it again 3 s later: 20 s, not back to 5 s (no rejoin storm).
+    await vi.advanceTimersByTimeAsync(3_000);
+    third.status('CLOSED');
+    await vi.advanceTimersByTimeAsync(19_999);
+    expect(rt.open(ROOM_TOPIC)).toBe(third);
+    await vi.advanceTimersByTimeAsync(1);
+    const fourth = rt.open(ROOM_TOPIC);
+    fourth.status('CLOSED');
+    await vi.advanceTimersByTimeAsync(29_999); // capped at 30 s
+    expect(rt.open(ROOM_TOPIC)).toBe(fourth);
+    await vi.advanceTimersByTimeAsync(1);
+    const fifth = rt.open(ROOM_TOPIC);
+    fifth.status('SUBSCRIBED');
+    await flush();
+    // Up for 2 minutes: two levels down (4 closes: level 4 → 2), so the next wait is 20 s.
+    await vi.advanceTimersByTimeAsync(120_000);
+    fifth.status('CLOSED');
+    await vi.advanceTimersByTimeAsync(19_999);
+    expect(rt.open(ROOM_TOPIC)).toBe(fifth);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(rt.open(ROOM_TOPIC)).not.toBe(fifth);
+    // The battle topic has its own level: 5 s.
     const battle = rt.open(B1_TOPIC);
     battle.status('CLOSED');
-    await vi.advanceTimersByTimeAsync(1_000);
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(rt.open(B1_TOPIC)).toBe(battle);
+    await vi.advanceTimersByTimeAsync(1);
     expect(rt.open(B1_TOPIC)).not.toBe(battle);
     api.clearCalls();
     rt.open(B1_TOPIC).status('SUBSCRIBED');
@@ -634,6 +742,18 @@ describe('recovery', () => {
     expect(api.count('getBattleSnapshot')).toBe(1);
     s.stop();
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('rejoin delays get up to half again as random jitter', async () => {
+    random = 0.999;
+    const s = await started();
+    const first = rt.open(ROOM_TOPIC);
+    first.status('CLOSED');
+    await vi.advanceTimersByTimeAsync(7_400);
+    expect(rt.open(ROOM_TOPIC)).toBe(first);
+    await vi.advanceTimersByTimeAsync(100); // 5 s × 1.4995
+    expect(rt.open(ROOM_TOPIC)).not.toBe(first);
+    s.stop();
   });
 
   it('a dropped channel polls until Realtime rejoins, then refetches and tracks again', async () => {
@@ -666,7 +786,17 @@ describe('recovery', () => {
 });
 
 describe('presence', () => {
-  it('tracks {user_id, display_name, device, activity} once subscribed, at most every 2 s', async () => {
+  const building = () => {
+    api.room = roomSnapshot({ battleId: BATTLE_1, version: 3 });
+    api.battles.set(BATTLE_1, battleSnapshot({ version: 2, phase: 'building' }));
+  };
+  const act = (lines: number, typing = true, last_build: 'ok' | 'error' = 'ok') => ({
+    lines,
+    last_build,
+    typing,
+  });
+
+  it('claims {user_id, display_name, device, activity} once subscribed, in any phase', async () => {
     const s = engine();
     await s.start(ROOM);
     s.setPresence('Ada');
@@ -682,22 +812,133 @@ describe('presence', () => {
         activity: { lines: 0, last_build: 'ok', typing: false },
       },
     ]);
-    for (let lines = 1; lines <= 10; lines++) {
-      s.setActivity({ lines, last_build: 'ok', typing: true });
-      vi.advanceTimersByTime(150);
-    }
-    expect(topic.tracked).toHaveLength(1);
-    await vi.advanceTimersByTimeAsync(500);
-    expect(topic.tracked).toHaveLength(2);
-    expect(topic.tracked[1]).toMatchObject({ activity: { lines: 10, typing: true } });
-    // Unchanged activity is not sent again.
-    s.setActivity({ lines: 10, last_build: 'ok', typing: true });
-    await vi.advanceTimersByTimeAsync(3_000);
-    expect(topic.tracked).toHaveLength(2);
     s.stop();
   });
 
-  it("stays within Realtime's presence limit (it closes channels above 5 per 30 s): at most 4 per 30 s", async () => {
+  it('BUILD activity goes out at most once per 15 s, only when it matters, the latest winning', async () => {
+    building();
+    const s = await started();
+    s.setPresence('Ada');
+    const topic = rt.open(ROOM_TOPIC);
+    await flush();
+    expect(topic.tracked).toHaveLength(1); // the claim
+    // Starts typing: matters, but 15 s after the claim at the earliest; more lines meanwhile.
+    s.setActivity(act(5));
+    await vi.advanceTimersByTimeAsync(5_000);
+    s.setActivity(act(12));
+    await vi.advanceTimersByTimeAsync(9_999);
+    expect(topic.tracked).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(topic.tracked).toHaveLength(2);
+    expect(topic.tracked[1]).toMatchObject({ activity: act(12) });
+    // Small line changes do not matter on their own: nothing for a minute.
+    for (let lines = 13; lines <= 31; lines++) {
+      s.setActivity(act(lines));
+      await vi.advanceTimersByTimeAsync(3_000);
+    }
+    expect(topic.tracked).toHaveLength(2);
+    // 20 lines more than the others saw: sent (the gap is long over).
+    s.setActivity(act(32));
+    expect(topic.tracked).toHaveLength(3);
+    // The build breaks 1 s later (and stays broken past 10 s): out when the 15 s gap is over.
+    await vi.advanceTimersByTimeAsync(1_000);
+    s.setActivity(act(33, true, 'error'));
+    await vi.advanceTimersByTimeAsync(13_999);
+    expect(topic.tracked).toHaveLength(3);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(topic.tracked.at(-1)).toMatchObject({ activity: act(33, true, 'error') });
+    // A change that stops mattering before its turn is not sent: fixed again within 15 s.
+    s.setActivity(act(33, true, 'ok'));
+    await vi.advanceTimersByTimeAsync(5_000);
+    s.setActivity(act(34, true, 'error'));
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(topic.tracked).toHaveLength(4);
+    s.stop();
+  });
+
+  it('a build that fails for a moment is not news; one that fails for 10 s is, and so is its fix', async () => {
+    building();
+    const s = await started();
+    s.setPresence('Ada');
+    const topic = rt.open(ROOM_TOPIC);
+    s.setActivity(act(10));
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(topic.tracked).toHaveLength(2); // the claim, then active
+    // A half-typed line breaks the build for 2 s, again and again: nothing is sent.
+    for (let i = 0; i < 10; i++) {
+      s.setActivity(act(10, true, 'error'));
+      await vi.advanceTimersByTimeAsync(2_000);
+      s.setActivity(act(10, true, 'ok'));
+      await vi.advanceTimersByTimeAsync(4_000);
+    }
+    expect(topic.tracked).toHaveLength(2);
+    // Now it stays broken: reported once it has failed for 10 s.
+    s.setActivity(act(11, true, 'error'));
+    await vi.advanceTimersByTimeAsync(9_999);
+    expect(topic.tracked).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(topic.tracked.at(-1)).toMatchObject({ activity: act(11, true, 'error') });
+    // Fixed: that matters at once (well, after the 15 s gap).
+    s.setActivity(act(12, true, 'ok'));
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(topic.tracked).toHaveLength(4);
+    expect(topic.tracked.at(-1)).toMatchObject({ activity: act(12, true, 'ok') });
+    s.stop();
+  });
+
+  it('no activity updates outside BUILDING (none in SPINNING, SHIPPING, REVEAL, VOTING, RESULTS or after)', async () => {
+    api.room = roomSnapshot({ battleId: BATTLE_1, version: 3 });
+    api.battles.set(BATTLE_1, battleSnapshot({ version: 1, phase: 'spinning' }));
+    const s = await started();
+    s.setPresence('Ada');
+    const topic = rt.open(ROOM_TOPIC);
+    const battle = rt.open(B1_TOPIC);
+    await flush();
+    expect(topic.tracked).toHaveLength(1);
+    const phase = (
+      version: number,
+      to: 'building' | 'shipping' | 'reveal' | 'voting' | 'results' | 'destroyed',
+    ) => {
+      api.battles.set(BATTLE_1, battleSnapshot({ version, phase: to }));
+      battle.send({
+        type: 'phase',
+        version,
+        phase: to,
+        phase_started_at: new Date().toISOString(),
+        phase_ends_at: new Date(Date.now() + 600_000).toISOString(),
+      });
+    };
+    s.setActivity(act(40));
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(topic.tracked).toHaveLength(1); // SPINNING: held back
+    // BUILDING starts: the held-back activity goes out.
+    phase(2, 'building');
+    await flush();
+    expect(topic.tracked).toHaveLength(2);
+    expect(topic.tracked[1]).toMatchObject({ activity: act(40) });
+    for (const [v, to] of [
+      [3, 'shipping'],
+      [4, 'reveal'],
+      [5, 'voting'],
+      [6, 'results'],
+      [7, 'destroyed'],
+    ] as const) {
+      phase(v, to);
+      await flush();
+      s.setActivity(act(40 + v * 30, v % 2 === 0, v % 2 === 0 ? 'ok' : 'error'));
+      await vi.advanceTimersByTimeAsync(60_000);
+    }
+    expect(topic.tracked).toHaveLength(2);
+    // A (re)subscribe still claims presence, with the latest activity.
+    topic.status('CHANNEL_ERROR', 'socket closed');
+    topic.status('SUBSCRIBED');
+    await flush();
+    expect(topic.tracked).toHaveLength(3);
+    s.stop();
+  });
+
+  it('someone typing for two minutes: one update per 15 s at most (Realtime closes channels above 5 per 30 s), and the final count once they stop', async () => {
+    building();
     const s = await started();
     s.setPresence('Ada');
     const topic = rt.open(ROOM_TOPIC);
@@ -707,36 +948,55 @@ describe('presence', () => {
       times.push(Date.now());
       return track(p);
     };
-    // Someone typing for two minutes: the activity changes every 500 ms.
+    // A new line every 500 ms.
     for (let i = 1; i <= 240; i++) {
-      s.setActivity({ lines: i, last_build: 'ok', typing: true });
+      s.setActivity(act(i));
       await vi.advanceTimersByTimeAsync(500);
     }
-    for (const t of times) {
-      expect(times.filter((u) => u > t - 30_000 && u <= t).length).toBeLessThanOrEqual(4);
+    for (const [i, t] of times.entries()) {
+      if (i > 0) expect(t - (times[i - 1] ?? 0)).toBeGreaterThanOrEqual(15_000);
     }
-    expect(times.length).toBeGreaterThanOrEqual(15); // still about every 7.5 s
-    // The latest activity is what ends up tracked.
-    await vi.advanceTimersByTimeAsync(30_000);
-    expect(topic.tracked.at(-1)).toMatchObject({ activity: { lines: 240 } });
+    expect(times.length).toBeGreaterThanOrEqual(6);
+    expect(times.length).toBeLessThanOrEqual(9); // was 16 with 4 per 30 s
+    // They stop: no longer active, so the latest count goes out.
+    s.setActivity(act(240, false));
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(topic.tracked.at(-1)).toMatchObject({ activity: act(240, false) });
     s.stop();
   });
 
   it('holds presence back while offline and sends one update when back online', async () => {
+    building();
     const s = await started();
     s.setPresence('Ada');
     const topic = rt.open(ROOM_TOPIC);
-    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(20_000);
     const before = topic.tracked.length;
     env.fire('offline');
     for (let i = 1; i <= 10; i++) {
-      s.setActivity({ lines: i, last_build: 'ok', typing: true });
+      s.setActivity(act(i * 30));
       await vi.advanceTimersByTimeAsync(2_000);
     }
     expect(topic.tracked).toHaveLength(before);
     env.fire('online');
     expect(topic.tracked).toHaveLength(before + 1);
-    expect(topic.tracked.at(-1)).toMatchObject({ activity: { lines: 10 } });
+    expect(topic.tracked.at(-1)).toMatchObject({ activity: { lines: 300 } });
+    s.stop();
+  });
+
+  it('a refused track is claimed again at the next chance', async () => {
+    building();
+    const s = await started();
+    const topic = rt.open(ROOM_TOPIC);
+    topic.trackResult = false;
+    s.setPresence('Ada');
+    await flush();
+    expect(topic.tracked).toHaveLength(1);
+    topic.trackResult = true;
+    // Unchanged activity, but the claim is owed: it goes out after the 2 s gap.
+    s.setActivity({ lines: 0, last_build: 'ok', typing: false });
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(topic.tracked).toHaveLength(2);
     s.stop();
   });
 

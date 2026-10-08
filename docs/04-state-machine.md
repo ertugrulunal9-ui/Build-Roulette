@@ -280,6 +280,30 @@ section.
     refreshes, the host vanishing, all clients closed at T-0, abandonment, a full room,
     and a minute of steady typing. Every run ends with a DB terminal-state check. It runs
     nightly in CI.
+- **Scaling fixes (T-029, from the load test in docs/07):**
+  - **Presence:** activity (`lines`, `last_build`, `typing`, which now means "edited in
+    the last 15 s" and reads "✎ active" in the sidebar) goes out only during BUILDING,
+    only when it matters (active on/off, a build failing for 10 s or fixed, ±20 lines;
+    `activityMatters` in `@br/game`) and at most once per 15 s, the latest winning. The
+    claim after every (re)subscribe stays (the lobby's online dots and the sidebar live on
+    it); nothing else in the lobby is Presence. Realtime's tenant presence quota counts
+    every track, every join's sync and every `presence_diff` delivered to each member.
+  - **Server-closed channels** are re-subscribed after 5, 10, 20, then 30 s, plus up to half
+    again as jitter. SUBSCRIBED does not reset that; the level steps down once per 60 s the
+    topic stays up, so a rate limit cannot turn into a rejoin storm.
+  - **Heartbeat** returns `battle_id` and `battle_version`; the T-023 lost-broadcast check
+    uses them (no separate `battles.version` read per beat).
+  - **Deadline nudges** back off 5, 10, 20, then every 30 s while the version does not move
+    (reset when it moves). RESULTS is not nudged while a final build's screenshot is
+    pending: a client cannot speed a capture up, and the 5 s sweep ends RESULTS when the
+    last screenshot lands or the capture deadline passes. Clients learn of DESTROYED from
+    the `phase` event, or within one heartbeat from its battle version (solo: the 2 s
+    poll).
+  - **Clock:** best of 3 `server_now` samples on open and on visible/online; the 60 s
+    resync takes one sample and ignores it when its round trip is slower than max(2 ×, +100
+    ms) of the current estimate's (3 ignored in a row → best of 3 again).
+  - **Battle topic join** waits a random 0–500 ms (the battle-start burst on Realtime's
+    authorization pool); the snapshot is fetched at once and again on SUBSCRIBED.
 
 ## 4.11 Reveal and voting as implemented (T-019, M4)
 
@@ -352,11 +376,12 @@ section.
   - **Lost broadcasts:** `realtime.send` broadcasts can be lost while Realtime reconnects
     its database feed. The local stack does this every 10 min ("rebalancing"), and
     production may do it too. The client therefore reads `battles.version` with every
-    10 s heartbeat and refetches if the server is ahead, so a lost event costs at most one
-    beat. Ship toasts come from snapshot diffs.
+    10 s heartbeat (since T-029: from the heartbeat's own answer) and refetches if the
+    server is ahead, so a lost event costs at most one beat. Ship toasts come from
+    snapshot diffs.
   - **Host REVEAL actions** (`reveal_next`/`skip_to_vote`) use a version CAS that a burst
     of capture events can make stale. When the stale answer shows the same spotlight, the
     client resends with the returned version (at most 3 times).
-  - Server alternatives for later: return the battle version from `heartbeat`, and compare
-    on `reveal_index` instead of `version` for host actions.
+  - Server alternatives for later: return the battle version from `heartbeat` (done in
+    T-029), and compare on `reveal_index` instead of `version` for host actions.
 

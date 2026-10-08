@@ -4,11 +4,17 @@
  * Postgres decides every state; this controller only renders it and sends intents:
  * - **Sync:** it polls `get_battle_snapshot` (no Realtime in M2), faster when something is
  *   about to change, and on `visibilitychange`.
- * - **Time:** `server_now()` sampled three times (lowest RTT wins) on open and every 60 s;
- *   countdowns are `remainingMs(phase_ends_at, Date.now(), offset)` (docs/04 §4.5).
+ * - **Time:** `server_now()` sampled three times (lowest RTT wins) on open and on
+ *   `visibilitychange`, then one sample every 60 s, ignored when its round trip is much
+ *   slower (clock-sync.ts); countdowns are `remainingMs(phase_ends_at, Date.now(), offset)`
+ *   (docs/04 §4.5).
  * - **Deadlines:** when a countdown reaches 0 it calls `advance_battle(id, version)` after a
- *   random 0–500 ms jitter (compare-and-set; pg_cron is the backstop). An overdue battle
- *   that does not move (RESULTS waiting for its screenshot) is nudged again every 5 s.
+ *   random 0–500 ms jitter (compare-and-set; pg_cron is the backstop). A battle that does
+ *   not move is nudged again after 5, 10, 20, then every 30 s (T-029), starting over when
+ *   its version moves. RESULTS is only nudged once no final build waits for its screenshot:
+ *   nothing a client does makes a screenshot faster, and the 5 s sweep ends RESULTS as soon
+ *   as the last one lands or the capture deadline passes (docs/07 §7.5.7: every client
+ *   nudging every 5 s was 41 % of all requests under a capture backlog).
  * - **Autosave:** every 30 s and when the tab is hidden, the last good build and the
  *   workspace go to `autosave/{source.json,bundle.js,bundle.css,manifest.json}` (upsert). A final
  *   autosave runs 3 s before the deadline and once more during the SHIPPING grace, so a
@@ -35,7 +41,7 @@ import type { ImportMap } from '@br/protocol';
 import { buildImportMap, type PreviewBuild } from '@br/runtime';
 import type { Workspace } from '@br/workspace';
 import type { BuildFile, SoloApi } from './api';
-import { measureClockOffset } from './clock-sync';
+import { ServerClock } from './clock-sync';
 import { GameError, toGameError } from './errors';
 import { buildStats, manifestJson, parseSourceJson, sourceJson } from './stats';
 import type { BattleSnapshot, BuildStats, SnapshotBuild } from './types';
@@ -92,8 +98,11 @@ export interface SoloTimings {
   /** The final autosave runs this long before the build deadline. */
   finalAutosaveLeadMs: number;
   nudgeJitterMs: number;
-  /** An overdue battle that did not move is nudged again after this long. */
-  nudgeRetryMs: number;
+  /**
+   * A battle that did not move after a nudge is nudged again after these delays (the last
+   * one repeats), counted from the previous nudge; a new version starts over.
+   */
+  nudgeBackoffMs: readonly number[];
   clockResyncMs: number;
   /** Length of the "destroy build" moment before the local copies are wiped. */
   destroyAnimationMs: number;
@@ -108,7 +117,7 @@ export const DEFAULT_TIMINGS: SoloTimings = {
   autosaveIntervalMs: 30_000,
   finalAutosaveLeadMs: 3_000,
   nudgeJitterMs: 500,
-  nudgeRetryMs: 5_000,
+  nudgeBackoffMs: [5_000, 10_000, 20_000, 30_000],
   clockResyncMs: 60_000,
   destroyAnimationMs: 2_400,
   pollMs: {
@@ -232,7 +241,9 @@ export class SoloController {
   private epoch = 0;
   private refreshing: Promise<void> | null = null;
   private refreshAgain = false;
-  private lastNudge: { version: number; at: number } | null = null;
+  /** The last nudge: at which version, when, and how many in a row at that version. */
+  private lastNudge: { version: number; at: number; count: number } | null = null;
+  private readonly serverClock: ServerClock;
   private finalAutosaveDone = false;
   private shippingAutosaveDone = false;
   private autosaving: Promise<void> | null = null;
@@ -248,6 +259,10 @@ export class SoloController {
     this.api = deps.api;
     this.clock = deps.clock ?? realClock;
     this.timings = { ...DEFAULT_TIMINGS, ...deps.timings };
+    this.serverClock = new ServerClock(
+      () => this.api.serverNow(),
+      () => this.clock.now(),
+    );
   }
 
   // --- React store contract -----------------------------------------------------------
@@ -349,7 +364,7 @@ export class SoloController {
   onVisible(): void {
     // In external mode the room sync engine resyncs on visibility itself.
     if (this.state.stage !== 'battle' || this.disposed || this.deps.external) return;
-    void this.syncClock().then(() => this.refresh());
+    void this.syncClock('measure').then(() => this.refresh());
   }
 
   /** Autosaves now (the "Save" button and tests). */
@@ -526,7 +541,7 @@ export class SoloController {
       const userId = await this.api.ensureSession();
       if (epoch !== this.epoch) return;
       this.patch({ userId });
-      await this.syncClock();
+      await this.syncClock('measure');
       const snapshot = await this.api.getSnapshot(battleId);
       if (epoch !== this.epoch) return;
       this.patch({ stage: 'battle' });
@@ -568,13 +583,14 @@ export class SoloController {
     this.revealAttempted = false;
   }
 
-  /** Samples `server_now()` three times and keeps the lowest-RTT estimate. */
-  private async syncClock(): Promise<void> {
-    const offset = await measureClockOffset(
-      () => this.api.serverNow(),
-      () => this.clock.now(),
-    );
-    // With no successful sample, the previous offset stays.
+  /**
+   * `measure`: three `server_now()` samples, the lowest RTT wins; `resync`: one sample, used
+   * only when its RTT is about as good as the current estimate's (clock-sync.ts).
+   */
+  private async syncClock(kind: 'measure' | 'resync'): Promise<void> {
+    const offset =
+      kind === 'measure' ? await this.serverClock.measure() : await this.serverClock.resync();
+    // With no (usable) sample, the previous offset stays.
     if (offset !== null && !this.disposed) this.patch({ clockOffsetMs: offset });
   }
 
@@ -661,18 +677,25 @@ export class SoloController {
 
   /** Arms the deadline nudge, the final autosave, polling and clock resync. */
   private schedule(): void {
-    for (const name of ['deadline', 'final', 'poll', 'clock'] as const) this.clearTimer(name);
+    for (const name of ['deadline', 'final', 'poll'] as const) this.clearTimer(name);
     const snap = this.state.snapshot;
-    if (!snap || this.disposed) return;
+    if (!snap || this.disposed) {
+      this.clearTimer('clock');
+      return;
+    }
     const phase = snap.battle.phase;
     const rem = this.remainingMs();
     const now = this.clock.now();
 
-    if (!isTerminalPhase(phase) && rem !== null) {
+    if (!isTerminalPhase(phase) && rem !== null && this.mayNudge(snap)) {
       const jitter = Math.floor(this.clock.random() * (this.timings.nudgeJitterMs + 1));
       let delay = rem + jitter;
-      if (this.lastNudge?.version === snap.battle.version) {
-        delay = Math.max(delay, this.lastNudge.at + this.timings.nudgeRetryMs - now);
+      const last = this.lastNudge?.version === snap.battle.version ? this.lastNudge : null;
+      if (last) {
+        // Did not move since the last nudge: back off (5, 10, 20, 30 s…).
+        const steps = this.timings.nudgeBackoffMs;
+        const wait = steps[Math.min(last.count, steps.length) - 1] ?? 0;
+        delay = Math.max(delay, last.at + wait - now);
       }
       this.setTimer('deadline', delay, () => void this.nudge());
     }
@@ -700,26 +723,46 @@ export class SoloController {
       if (snap.battle.destroyed_at !== null || now - seen > this.timings.destroyedPollLimitMs) {
         poll = null;
       }
-    } else if (rem !== null && poll !== null) {
-      // Do not sleep through a deadline: wake up right after it, too.
+    } else if (rem !== null && rem > 0 && poll !== null) {
+      // Do not sleep through a deadline: wake up right after it, too. (Once it has passed,
+      // the phase's own interval: RESULTS waiting for its screenshot polled every 250 ms.)
       poll = Math.max(250, Math.min(poll, rem + 250));
     }
     if (poll !== null) this.setTimer('poll', poll, () => void this.refresh());
 
-    if (!isTerminalPhase(phase) && !this.deps.external) {
+    // The clock resync keeps its own 60 s rhythm: re-arming it on every snapshot (each poll)
+    // meant it never fired while the battle was polled more often than once a minute.
+    if (isTerminalPhase(phase) || this.deps.external) {
+      this.clearTimer('clock');
+    } else if (!this.timers.has('clock')) {
       this.setTimer('clock', this.timings.clockResyncMs, () => {
-        void this.syncClock().then(() => {
+        void this.syncClock('resync').then(() => {
           this.schedule();
         });
       });
     }
   }
 
+  /**
+   * RESULTS waits for the screenshots after its deadline (docs/04): while a final build's
+   * capture is pending, a nudge cannot move it, so none is sent; the sweep ends RESULTS, and
+   * a `capture` event (or the next snapshot) re-arms the nudge once the last one is in.
+   */
+  private mayNudge(snap: BattleSnapshot): boolean {
+    if (snap.battle.phase !== 'results') return true;
+    return !snap.builds.some(
+      (b) =>
+        (b.status === 'shipped' || b.status === 'auto_shipped') && b.capture_status === 'pending',
+    );
+  }
+
   private async nudge(): Promise<void> {
     const snap = this.state.snapshot;
     if (!snap || this.disposed) return;
     const epoch = this.epoch;
-    this.lastNudge = { version: snap.battle.version, at: this.clock.now() };
+    const version = snap.battle.version;
+    const count = this.lastNudge?.version === version ? this.lastNudge.count + 1 : 1;
+    this.lastNudge = { version, at: this.clock.now(), count };
     try {
       await this.api.advanceBattle(snap.battle.id, snap.battle.version);
     } catch {

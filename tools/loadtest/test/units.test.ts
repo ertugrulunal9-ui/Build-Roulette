@@ -5,8 +5,9 @@ import { parseDockerStats } from '../src/docker';
 import { bodySize, classifyRequest, frameEvent } from '../src/instrument';
 import { isBillable } from '../src/metrics';
 import { bundleJs, drawBuildSizes } from '../src/payloads';
-import { errorCode } from '../src/player';
+import { CLIENT_RULES, activityMatters, errorCode, rejoinDelayMs } from '../src/player';
 import { Rng } from '../src/rng';
+import { NUDGE_BACKOFF_MS, nudgeBackoffMs } from '../src/session';
 import { percentile, summarize } from '../src/stats';
 
 describe('stats', () => {
@@ -178,5 +179,31 @@ describe('errors and docker stats', () => {
       db: { cpu: 153.2, memMiB: 512.5 },
       realtime: { cpu: 40, memMiB: 1536 },
     });
+  });
+});
+
+describe('the web client rules mirrored by the simulated players (T-029)', () => {
+  it('presence activity matters on active on/off, a failing or fixed build, ±20 lines', () => {
+    const sent = { lines: 50, last_build: 'ok' as const, typing: true };
+    expect(activityMatters(null, sent)).toBe(true);
+    expect(activityMatters(sent, { ...sent, typing: false })).toBe(true);
+    expect(activityMatters(sent, { ...sent, last_build: 'error' })).toBe(true);
+    expect(activityMatters(sent, { ...sent, lines: 69 })).toBe(false);
+    expect(activityMatters(sent, { ...sent, lines: 70 })).toBe(true);
+    expect(CLIENT_RULES.presenceActivityMs).toBe(15_000);
+  });
+
+  it('rejoins after 5, 10, 20, then 30 s, plus up to half again as jitter', () => {
+    expect([0, 1, 2, 3, 4].map((n) => rejoinDelayMs(n, 0))).toEqual([
+      5_000, 10_000, 20_000, 30_000, 30_000,
+    ]);
+    expect(rejoinDelayMs(0, 0.999)).toBe(7_498);
+  });
+
+  it('nudges back off 5, 10, 20, then every 30 s', () => {
+    expect([1, 2, 3, 4, 5, 9].map(nudgeBackoffMs)).toEqual([
+      5_000, 10_000, 20_000, 30_000, 30_000, 30_000,
+    ]);
+    expect(NUDGE_BACKOFF_MS).toHaveLength(4);
   });
 });

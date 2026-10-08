@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  PRESENCE_LINES_STEP,
   ROOM_CODE_ALPHABET,
   ROOM_CODE_LENGTH,
   battleTopic,
@@ -7,6 +8,7 @@ import {
   normalizeRoomCode,
   roomMaxPlayers,
   roomTopic,
+  activityMatters,
 } from './rooms';
 
 describe('room codes', () => {
@@ -50,5 +52,27 @@ describe('topics', () => {
   it('names the private Realtime topics', () => {
     expect(roomTopic('r1')).toBe('room:r1');
     expect(battleTopic('b1')).toBe('battle:b1');
+  });
+});
+
+describe('activityMatters (T-029: which BUILD activity is worth a presence message)', () => {
+  const sent = { lines: 100, last_build: 'ok' as const, typing: true };
+
+  it('the first activity always goes out', () => {
+    expect(activityMatters(null, sent)).toBe(true);
+  });
+
+  it('active on/off and a build that starts or stops failing matter', () => {
+    expect(activityMatters(sent, { ...sent, typing: false })).toBe(true);
+    expect(activityMatters(sent, { ...sent, last_build: 'error' })).toBe(true);
+    expect(activityMatters({ ...sent, last_build: 'error' }, sent)).toBe(true);
+  });
+
+  it(`the line count matters once it moved by ${String(PRESENCE_LINES_STEP)} either way`, () => {
+    expect(activityMatters(sent, { ...sent, lines: 100 + PRESENCE_LINES_STEP - 1 })).toBe(false);
+    expect(activityMatters(sent, { ...sent, lines: 100 + PRESENCE_LINES_STEP })).toBe(true);
+    expect(activityMatters(sent, { ...sent, lines: 100 - PRESENCE_LINES_STEP })).toBe(true);
+    expect(activityMatters(sent, { ...sent, lines: 101 })).toBe(false);
+    expect(activityMatters(sent, { ...sent })).toBe(false);
   });
 });

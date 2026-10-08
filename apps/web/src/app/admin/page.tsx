@@ -59,7 +59,6 @@ const DONE_TEXT: Record<string, string> = {
   retried: 'The screenshot delete was queued again.',
   refreshed:
     "The cached copies of this battle's public pages were expired: the next visit renders them fresh.",
-  test_error_sent: 'Test error sent to Sentry: look for "Build Roulette test error".',
   test_error_off:
     'Server error reporting is off in this deployment (no SENTRY_DSN or NEXT_PUBLIC_SENTRY_DSN).',
 };

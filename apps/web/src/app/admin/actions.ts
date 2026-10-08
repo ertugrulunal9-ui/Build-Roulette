@@ -19,7 +19,7 @@ import { cookies, headers } from 'next/headers';
 import { notFound, redirect } from 'next/navigation';
 import { after } from 'next/server';
 import { TAKEDOWN_REEXPIRE_MS, takedownPaths, takedownTags } from '../../lib/cache/policy';
-import { sendTestError } from '../../lib/telemetry/server';
+import { TEST_ERROR_MESSAGE, serverReportingEnabled } from '../../lib/telemetry/server';
 import {
   ACCESS_COOKIE,
   REFRESH_COOKIE,
@@ -188,9 +188,14 @@ export async function refreshPublicCopiesAction(formData: FormData): Promise<voi
   );
 }
 
-/** Sends a test error to Sentry from the server (the Health section's button). */
+/**
+ * The Health section's "Send a test error": with server error reporting on, it throws, so
+ * the error takes the real path (Next's `onRequestError` → Sentry, on Node or on Workers)
+ * and the admin sees the error screen with its digest, which is also the event's `digest`
+ * tag in Sentry. With reporting off it says so instead.
+ */
 export async function sendTestErrorAction(): Promise<void> {
   await adminToken();
-  const sent = await sendTestError();
-  redirect(`/admin?done=${sent ? 'test_error_sent' : 'test_error_off'}`);
+  if (!serverReportingEnabled()) redirect('/admin?done=test_error_off');
+  throw new Error(TEST_ERROR_MESSAGE);
 }

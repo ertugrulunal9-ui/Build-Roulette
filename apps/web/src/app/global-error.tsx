@@ -28,6 +28,7 @@ export default function GlobalError({
         <main
           className="flex max-w-md flex-col items-center gap-4 text-center"
           data-testid="global-error"
+          data-digest={error.digest ?? ''}
         >
           <h1 className="text-2xl font-black">Something broke</h1>
           <p className="text-sm text-zinc-600 dark:text-zinc-400">

@@ -106,21 +106,15 @@ export function reportRequestError(
   }
 }
 
-/**
- * Sends a test error (the /admin Health button), so an operator can check the server's
- * Sentry setup after a deploy. False when server error reporting is off.
- */
-export async function sendTestError(
+/** True when server errors are reported (a usable DSN is configured). */
+export function serverReportingEnabled(
   env: Record<string, string | undefined> = process.env,
-): Promise<boolean> {
-  const r = getReporter(env);
-  if (!r.enabled) return false;
-  r.captureException(new Error('Build Roulette test error (sent from /admin)'), {
-    level: 'warning',
-    tags: { source: 'admin_test', runtime: serverRuntime() },
-  });
-  return r.flush(5_000);
+): boolean {
+  return getReporter(env).enabled;
 }
+
+/** The error the /admin Health button throws (its message is how to find it in Sentry). */
+export const TEST_ERROR_MESSAGE = 'Build Roulette test error (thrown from /admin on purpose)';
 
 /** Tests only. */
 export function resetServerReporter(): void {

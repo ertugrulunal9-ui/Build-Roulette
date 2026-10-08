@@ -576,6 +576,47 @@ describe('RoomResults with votes', () => {
     expect(within(me).queryByTestId('report-build')).toBeNull();
   });
 
+  it('a removed rank-1 build (T-028): no Winner, medal or awards, nobody inherits them', () => {
+    const snap = votedResultsSnapshot();
+    snap.builds = snap.builds.map((b) =>
+      b.builder_id === BOB ? { ...b, name: null, screenshot_path: null, taken_down: true } : b,
+    );
+    // The server leaves Bob's awards out; the screen also ignores them if an older server
+    // still sends them (this fixture keeps them).
+    expect(snap.awards.filter((a) => a.build_id === 'build-bob')).toHaveLength(4);
+    render(createElement(RoomResults, { state: soloState(snap), remaining: 30_000 }));
+    const rows = screen.getAllByTestId('ranked-build');
+    expect(rows.map((r) => [r.dataset['builder'], r.dataset['rank']])).toEqual([
+      [BOB, '1'],
+      [ME, '2'],
+      [CLEO, '3'],
+    ]);
+    expect(rows.map((r) => r.dataset['winner'])).toEqual(['false', 'false', 'false']);
+    expect(screen.queryByTestId('winner-banner')).toBeNull();
+    const bob = must(rows[0]);
+    expect(bob.className).not.toContain('ring-amber');
+    expect(bob.textContent).not.toContain('🥇');
+    expect(bob.textContent).toContain('#1');
+    expect(within(bob).queryAllByTestId('award')).toHaveLength(0);
+    // Its vote counts stay: they are the result its rank comes from.
+    expect(within(bob).getByTestId('vote-tally').dataset['total']).toBe('6');
+    // The others keep exactly their own awards; nobody gets Best Build.
+    expect(
+      within(must(rows[1]))
+        .getAllByTestId('award')
+        .map((a) => a.dataset['award']),
+    ).toEqual(['speedrun']);
+    expect(
+      within(must(rows[2]))
+        .getAllByTestId('award')
+        .map((a) => a.dataset['award']),
+    ).toEqual(['style']);
+    expect(screen.queryAllByTestId('award').map((a) => a.dataset['award'])).not.toContain(
+      'overall',
+    );
+    expect(must(rows[1]).textContent).toContain('🥈');
+  });
+
   it('a battle without votes keeps the M3 ranking text and no tallies', () => {
     const snap = battleSnapshot({ phase: 'results' });
     expect(votedResults(snap)).toBe(false);

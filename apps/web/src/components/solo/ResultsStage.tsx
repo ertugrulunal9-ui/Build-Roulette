@@ -10,6 +10,7 @@ import { myBuild, type SoloController, type SoloState } from '../../lib/solo/con
 import {
   CAPTURE_TEXT,
   STATUS_TEXT,
+  awardsOf,
   formatCompletion,
   formatCountdown,
 } from '../../lib/solo/format';
@@ -28,7 +29,8 @@ export function ResultsStage({ controller, state, remaining }: ResultsStageProps
   if (!snapshot) throw new Error('ResultsStage needs a snapshot');
   const battle = snapshot.battle;
   const mine = myBuild(snapshot);
-  const awards = snapshot.awards.filter((a) => a.build_id === mine?.id);
+  // None once a moderator removed the build (T-028).
+  const awards = mine ? awardsOf(snapshot.awards, mine) : [];
   const name = snapshot.players.find((p) => p.user_id === mine?.builder_id)?.display_name ?? '';
   const shipped = mine?.status === 'shipped' || mine?.status === 'auto_shipped';
   const destroyed = battle.phase === 'destroyed' || battle.phase === 'abandoned';

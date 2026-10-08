@@ -10,11 +10,21 @@
  * ship): each build shows its votes per category, the category awards come first, and the
  * winner is highlighted. Every category award has one winner, ties broken the same way
  * (T-022), so the Best Build award sits on the rank-1 build.
+ *
+ * A build a moderator removed after RESULTS (T-028) keeps its rank and its vote counts but
+ * has no Winner banner, gold ring, medal or awards; nobody else becomes the winner.
  */
 import { VOTE_CATEGORIES, isTerminalPhase } from '@br/game';
 import Link from 'next/link';
 import { myBuild, type SoloState } from '../../lib/solo/controller';
-import { CAPTURE_TEXT, formatCompletion, formatCountdown } from '../../lib/solo/format';
+import {
+  CAPTURE_TEXT,
+  awardsOf,
+  formatCompletion,
+  formatCountdown,
+  isWinner,
+  rankMedal,
+} from '../../lib/solo/format';
 import type { BattleSnapshot, SnapshotBuild } from '../../lib/solo/types';
 import { screenshotUrl } from '../../lib/supabase/config';
 import { REMOVED_TEXT, RemovedCard } from '../moderation/Removed';
@@ -51,8 +61,6 @@ export function lostVotesText(
     picks.length === 1 ? picks[0] : `${picks.slice(0, -1).join(', ')} and ${String(picks.at(-1))}`;
   return `Not counted: your pick${picks.length === 1 ? '' : 's'} for ${String(list)} did not reach the server before voting closed (the connection was down).`;
 }
-
-const MEDALS = ['🥇', '🥈', '🥉'];
 
 const STATUS_BADGE: Partial<Record<SnapshotBuild['status'], { text: string; tone: string }>> = {
   auto_shipped: {
@@ -183,7 +191,7 @@ function RankedBuilds({ snapshot }: { snapshot: BattleSnapshot }) {
           shipped &&
           b.screenshot_path !== null &&
           (b.capture_status === 'captured' || b.capture_status === 'fallback');
-        const winner = b.final_rank === 1;
+        const winner = isWinner(b);
         return (
           <li
             key={b.id}
@@ -213,7 +221,7 @@ function RankedBuilds({ snapshot }: { snapshot: BattleSnapshot }) {
             )}
             <div className="flex w-8 shrink-0 flex-col items-center justify-center text-center sm:w-10">
               <span className="text-2xl" aria-hidden="true">
-                {b.final_rank !== null ? (MEDALS[b.final_rank - 1] ?? '🏅') : '·'}
+                {rankMedal(b)}
               </span>
               <span className="font-mono text-xs font-bold text-zinc-500">
                 {b.final_rank !== null ? `#${String(b.final_rank)}` : '–'}
@@ -278,7 +286,7 @@ function RankedBuilds({ snapshot }: { snapshot: BattleSnapshot }) {
                     {badge.text}
                   </span>
                 )}
-                <AwardBadges awards={snapshot.awards.filter((a) => a.build_id === b.id)} />
+                <AwardBadges awards={awardsOf(snapshot.awards, b)} />
                 {shipped && !removed && !isMe && (
                   <span className="ml-auto">
                     <ReportButton

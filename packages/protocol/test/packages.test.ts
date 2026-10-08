@@ -43,7 +43,9 @@ describe('describePackageFailures', () => {
       (p, i) => `${CDN}/${p}?v=${String(i)}`,
     );
     const text = describePackageFailures(urls.map((url) => ({ url, kind: 'unreachable' })));
-    expect(text?.split('\n')[0]).toBe('Package server unreachable: a@1.0.0, b@1.0.0, c@1.0.0 (+2 more)');
+    expect(text?.split('\n')[0]).toBe(
+      'Package server unreachable: a@1.0.0, b@1.0.0, c@1.0.0 (+2 more)',
+    );
   });
 
   it('reports timeouts and HTTP errors with the server text, worst first', () => {
@@ -56,9 +58,9 @@ describe('describePackageFailures', () => {
       'Package server error (HTTP 404) for x@4.0.0: x@4.0.0 not available',
       'Packages this browser loaded before keep working; a new one needs the package server.',
     ]);
-    expect(
-      describePackageFailures([{ url: `${CDN}/x@4.0.0`, kind: 'http', status: 403 }]),
-    ).toBe('Package server error (HTTP 403) for x@4.0.0');
+    expect(describePackageFailures([{ url: `${CDN}/x@4.0.0`, kind: 'http', status: 403 }])).toBe(
+      'Package server error (HTTP 403) for x@4.0.0',
+    );
   });
 
   it('is null when nothing failed', () => {

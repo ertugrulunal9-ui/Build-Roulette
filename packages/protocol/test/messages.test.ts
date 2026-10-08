@@ -121,9 +121,7 @@ describe('parseAppToShell', () => {
     const r = parseAppToShell({ ...validLoad, packages });
     expect(r.ok && r.value.type === 'load' && r.value.packages).toEqual(packages);
     const without = parseAppToShell(validLoad);
-    expect(without.ok && without.value.type === 'load' && without.value.packages).toBe(
-      undefined,
-    );
+    expect(without.ok && without.value.type === 'load' && without.value.packages).toBe(undefined);
     for (const bad of [
       ['javascript:alert(1)'],
       ['blob:https://x/1'],

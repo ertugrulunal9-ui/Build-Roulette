@@ -214,7 +214,9 @@ test('a CDN that does not answer: a "still waiting" note, no crash, and the buil
     }, started.from);
   await expect.poll(findNote, { timeout: 20_000 }).not.toBeNull();
   const note = await findNote();
-  console.log(`[metrics] outage=hang: load → "still waiting" ${((note?.t ?? 0) - started.t0).toFixed(0)} ms`);
+  console.log(
+    `[metrics] outage=hang: load → "still waiting" ${((note?.t ?? 0) - started.t0).toFixed(0)} ms`,
+  );
   expect(note?.data.kind).toBe('module-load');
   expect(note?.data.message?.split('\n')[0]).toBe(
     'Still waiting for the package server after 8 s: zustand@5.0.15',

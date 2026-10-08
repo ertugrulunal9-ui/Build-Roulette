@@ -255,7 +255,9 @@ describe('versions and redirects', () => {
     const r = await get('/cjs-lib@^1.0.0/x?external=react,react-dom');
     expect(r.status).toBe(302);
     expect(r.h('location')).toBe('/cjs-lib@1.2.0/x?external=react,react-dom');
-    expect(r.h('cache-control')).toBe('public, max-age=300');
+    expect(r.h('cache-control')).toBe(
+      'public, max-age=300, stale-while-revalidate=60, stale-if-error=86400',
+    );
     expect(r.h('access-control-allow-origin')).toBe('*');
     expect((await get('/cjs-lib')).h('location')).toBe('/cjs-lib@1.2.0');
     expect((await get('/cjs-lib@~1.0.0')).h('location')).toBe('/cjs-lib@1.0.0');
@@ -288,6 +290,9 @@ describe('bundling', () => {
     expect(r.h('cache-control')).toBe('public, max-age=31536000, immutable');
     expect(r.h('access-control-allow-origin')).toBe('*');
     expect(r.h('x-cache')).toBe('MISS');
+    // T-032: a known length (no chunked encoding), so edge caches can keep it.
+    expect(r.h('content-length')).toBe(Buffer.byteLength(r.body).toString());
+    expect(r.h('transfer-encoding')).toBeNull();
     const mod = await evaluate(r.body);
     expect((mod['hello'] as () => string)()).toBe('hello dep-a@1.1.0');
     expect(mod['answer']).toBe(42);

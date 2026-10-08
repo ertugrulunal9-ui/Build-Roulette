@@ -108,26 +108,25 @@ export function isStopped(view: SpotlightView): view is StoppedView {
 }
 
 /** The fallback of a build this tab stopped running, by why it stopped. */
-export const STOPPED: Record<StoppedView, { testId: string; text: string }> =
-  {
-    skipped: {
-      testId: 'build-skipped',
-      text: 'You skipped this build. It keeps going for everyone else.',
-    },
-    frozen: {
-      testId: 'build-froze',
-      text: 'This build froze, so it was stopped on your screen. Everyone else keeps watching.',
-    },
-    no_start: {
-      testId: 'build-no-start',
-      text: 'This build couldn’t start on your screen (its sandbox never answered). Everyone else keeps watching.',
-    },
-    // T-032: with the package CDN down, a package this browser never loaded can't load.
-    no_packages: {
-      testId: 'build-no-packages',
-      text: 'This build’s packages couldn’t load on your screen (the package server isn’t answering), so here is its screenshot. Everyone else keeps watching.',
-    },
-  };
+export const STOPPED: Record<StoppedView, { testId: string; text: string }> = {
+  skipped: {
+    testId: 'build-skipped',
+    text: 'You skipped this build. It keeps going for everyone else.',
+  },
+  frozen: {
+    testId: 'build-froze',
+    text: 'This build froze, so it was stopped on your screen. Everyone else keeps watching.',
+  },
+  no_start: {
+    testId: 'build-no-start',
+    text: 'This build couldn’t start on your screen (its sandbox never answered). Everyone else keeps watching.',
+  },
+  // T-032: with the package CDN down, a package this browser never loaded can't load.
+  no_packages: {
+    testId: 'build-no-packages',
+    text: 'This build’s packages couldn’t load on your screen (the package server isn’t answering), so here is its screenshot. Everyone else keeps watching.',
+  },
+};
 
 interface RevealStageProps {
   battle: SoloController;

@@ -154,6 +154,7 @@ export function RoomResults({ state, remaining, lostVotes }: RoomResultsProps) {
         {lastLook && (
           <section className="flex flex-col gap-3">
             <RevealPane
+              battleId={snapshot.battle.id}
               build={state.reveal.build}
               status={state.reveal.status}
               destroy={state.destroy}

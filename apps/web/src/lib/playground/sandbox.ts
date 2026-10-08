@@ -10,18 +10,22 @@
  * arrive in floods. The PreviewHandle rate-limits them and keeps a size-capped console; this
  * controller copies that into the snapshot at most once per animation frame, so a flood costs
  * at most one React render per frame.
+ *
+ * Watchdog crashes go to the optional `PreviewHealth` (T-031): one `preview_crash` event per
+ * crash, sent once the user restarted the preview or the controller went away, and the
+ * preview's watchdog stats for the battle's `sync_health`.
  */
 import type { RuntimeErrorMessage } from '@br/protocol';
 import type {
   BuildResult,
   ConsoleEntry,
-  CrashPhase,
-  CrashReason,
   Diagnostic,
+  PreviewCrash,
   PreviewHandle,
   SandboxRuntime,
 } from '@br/runtime';
 import type { Workspace } from '@br/workspace';
+import type { PreviewHealth } from '../telemetry/sandbox-health';
 import type { PlaygroundConfig } from './config';
 import { FrameBatcher, type FrameScheduler } from './frame-batcher';
 import { createPlaygroundRuntime } from './runtime-factory';
@@ -52,8 +56,11 @@ export interface SandboxSnapshot {
   building: boolean;
   lastBuild: BuildSummary | null;
   preview: PreviewStatus;
-  /** Why the watchdog stopped the preview, and whether the latest load had finished (`phase`). */
-  crash: { reason: CrashReason; silentForMs: number; phase: CrashPhase } | null;
+  /**
+   * Why the watchdog stopped the preview, whether the latest load had finished (`phase`), and
+   * the silence it measured (app-awake time; `stalledMs` more on the wall clock).
+   */
+  crash: PreviewCrash | null;
   /** Runtime errors since the last load (newest last, at most MAX_RUNTIME_ERRORS). */
   runtimeErrors: readonly RuntimeErrorMessage[];
   /** The preview's retained console (rate-limited and size-capped by the PreviewHandle). */
@@ -92,6 +99,8 @@ export interface SandboxControllerDeps {
   runtime?: PlaygroundRuntime;
   /** Defaults to requestAnimationFrame. */
   frames?: FrameScheduler;
+  /** Watchdog telemetry (T-031): crashes, restarts and the preview's stall counters. */
+  health?: PreviewHealth;
 }
 
 function sameDependencies(a: Record<string, string>, b: Record<string, string>): boolean {
@@ -114,6 +123,7 @@ export class SandboxController {
   /** Errors received since the last frame flush. */
   private pendingErrors: RuntimeErrorMessage[] = [];
   private readonly batcher: FrameBatcher;
+  private readonly health: PreviewHealth | null;
   /** Build results received so far (the `rebuilds` stat). */
   private builds = 0;
   /**
@@ -127,6 +137,7 @@ export class SandboxController {
     this.config = config;
     this.runtime = deps.runtime ?? createPlaygroundRuntime(config);
     this.batcher = new FrameBatcher(this.flushOutput, deps.frames);
+    this.health = deps.health ?? null;
     this.offBuild = this.runtime.onBuild(this.onBuild);
   }
 
@@ -278,6 +289,7 @@ export class SandboxController {
     this.batcher.cancel();
     this.offBuild();
     this.detachPreview();
+    this.health?.close();
     void this.runtime.destroy();
     this.listeners.clear();
   }
@@ -353,6 +365,8 @@ export class SandboxController {
    */
   private freshPreview(): void {
     const preview = this.preview;
+    // A crashed preview brought back by the user (Restart, or a new project replacing it).
+    if (this.snapshot.preview === 'crashed') this.health?.restarted();
     if (preview && preview.state !== 'disposed') {
       this.batcher.cancel();
       this.pendingErrors = [];
@@ -398,6 +412,7 @@ export class SandboxController {
     this.host.replaceChildren(iframe);
     const preview = this.runtime.attachPreview(iframe, { shellUrl: this.config.shellUrl });
     this.preview = preview;
+    this.health?.follow(preview);
     this.update({ preview: 'connecting', crash: null, runtimeErrors: [], console: [] });
     this.previewOff = [
       preview.on('ready', () => {
@@ -419,6 +434,7 @@ export class SandboxController {
       }),
       preview.on('crash', (c) => {
         this.update({ preview: 'crashed', crash: c });
+        this.health?.crashed(c);
       }),
     ];
   }

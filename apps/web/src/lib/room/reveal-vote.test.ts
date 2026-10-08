@@ -3,8 +3,11 @@
  * prefetch, thumbnails, local skip / freeze, the host's compare-and-set controls (stale
  * calls are quiet), and the ballot (restore, revotes, one request per category, errors).
  */
+import type { PreviewCrash } from '@br/runtime';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { GameError } from '../solo/errors';
+import type { AnalyticsEvents } from '../telemetry/analytics';
+import { SandboxHealthTally } from '../telemetry/sandbox-health';
 import type { BattleSnapshot } from '../solo/types';
 import {
   MAX_MANIFEST_BYTES,
@@ -76,7 +79,9 @@ let api: FakeRoomApi;
 let refetches: number;
 let urls: ObjectUrls & { created: string[]; revoked: string[] };
 
-function controller(): RevealVoteController {
+function controller(
+  extra: Partial<ConstructorParameters<typeof RevealVoteController>[1]> = {},
+): RevealVoteController {
   return new RevealVoteController(BATTLE_1, {
     api,
     cdnBaseUrl: CDN,
@@ -86,6 +91,7 @@ function controller(): RevealVoteController {
     },
     objectUrls: urls,
     retryMs: 1_000,
+    ...extra,
   });
 }
 
@@ -225,6 +231,50 @@ describe('REVEAL', () => {
       api.calls.filter((x) => !['getRevealBuilds', 'downloadText', 'downloadBlob'].includes(x[0])),
     ).toEqual([]);
     c.dispose();
+  });
+
+  it('a watchdog crash of the spotlight is a preview_crash once the viewer runs it again (T-031)', async () => {
+    const sent: AnalyticsEvents['preview_crash'][] = [];
+    const tally = new SandboxHealthTally();
+    const c = controller({
+      sandboxHealth: tally,
+      track: (name, props) => {
+        if (name === 'preview_crash') sent.push(props as AnalyticsEvents['preview_crash']);
+      },
+    });
+    c.receive(reveal(1));
+    await flush();
+    const crash: PreviewCrash = {
+      reason: 'heartbeat-timeout',
+      silentForMs: 5050,
+      phase: 'running',
+      wallSilentForMs: 5050,
+      stalledMs: 0,
+      longestStallMs: 0,
+    };
+    c.previewCrashed('build-bob', crash);
+    expect(c.getSnapshot().frozen).toEqual(['build-bob']);
+    expect(sent).toEqual([]);
+    c.watch('build-cleo'); // another build: not this crash's restart
+    c.watch('build-bob');
+    expect(sent).toEqual([
+      expect.objectContaining({
+        battle_id: BATTLE_1,
+        mode: 'reveal',
+        reason: 'heartbeat_timeout',
+        silent_ms: 5050,
+        restarted: true,
+      }),
+    ]);
+    // A build that never started, and the battle ends for this controller before a rerun.
+    c.previewCrashed('build-cleo', { ...crash, reason: 'handshake-timeout', phase: 'connecting' });
+    expect(c.getSnapshot().failedToStart).toEqual(['build-cleo']);
+    c.dispose();
+    expect(sent.map((e) => [e.reason, e.restarted])).toEqual([
+      ['heartbeat_timeout', true],
+      ['handshake_timeout', false],
+    ]);
+    expect(tally.take(BATTLE_1)).toMatchObject({ crashes: 2, restarts: 1 });
   });
 
   it('a build taken down during REVEAL (T-024) loses its prefetched bundle', async () => {

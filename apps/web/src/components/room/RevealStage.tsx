@@ -27,10 +27,11 @@
  *   and never runs (the server skips its slot; this covers the moment before the next
  *   phase event arrives).
  */
-import { PreviewHandle, type CrashReason, type PreviewBuild } from '@br/runtime';
+import { PreviewHandle, type PreviewBuild, type PreviewCrash } from '@br/runtime';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useTouchPrimary } from '../../lib/device';
 import { playgroundConfig } from '../../lib/playground/config';
+import type { PreviewHealth } from '../../lib/telemetry/sandbox-health';
 import {
   spotlightBuild,
   type RevealVoteController,
@@ -306,8 +307,9 @@ export function RevealStage({
                   buildId={buildId}
                   build={bundle.build}
                   title={`${name} by ${builderName} (user-made build)`}
-                  onCrash={(id, reason) => {
-                    show.markFrozen(id, reason);
+                  health={show.previewHealth}
+                  onCrash={(id, crash) => {
+                    show.previewCrashed(id, crash);
                   }}
                 />
               ) : view === 'unavailable' ? (
@@ -366,27 +368,32 @@ export function RevealStage({
 /**
  * One fresh preview per build (the parent keys it by build id): a new iframe in reveal
  * mode, the sandbox origin's storage wiped first, then the bundle. Unmounting disposes it,
- * which removes the iframe and stops everything the build runs.
+ * which removes the iframe and stops everything the build runs. Its watchdog stats count
+ * for the battle's preview health (T-031) while it runs.
  */
 function LiveBuild({
   buildId,
   build,
   title,
+  health,
   onCrash,
 }: {
   buildId: string;
   build: PreviewBuild;
   title: string;
+  health: PreviewHealth;
   /** The watchdog stopped the build: it froze, or it never started. */
-  onCrash: (buildId: string, reason: CrashReason) => void;
+  onCrash: (buildId: string, crash: PreviewCrash) => void;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const onCrashRef = useRef(onCrash);
   const titleRef = useRef(title);
+  const healthRef = useRef(health);
   useEffect(() => {
     onCrashRef.current = onCrash;
     titleRef.current = title;
-  }, [onCrash, title]);
+    healthRef.current = health;
+  }, [onCrash, title, health]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -402,8 +409,9 @@ function LiveBuild({
       shellUrl: playgroundConfig.shellUrl,
       mode: 'reveal',
     });
-    const offCrash = preview.on('crash', ({ reason }) => {
-      onCrashRef.current(buildId, reason);
+    const stopFollowing = healthRef.current.follow(preview);
+    const offCrash = preview.on('crash', (crash) => {
+      onCrashRef.current(buildId, crash);
     });
     // Wipe what an earlier build left on the sandbox origin, in a fresh iframe; the load
     // waits for the new shell, which handles the wipe first.
@@ -412,6 +420,7 @@ function LiveBuild({
     return () => {
       offCrash();
       preview.dispose();
+      stopFollowing();
     };
     // A new build (or bundle) is a new preview; a new title alone is not.
   }, [buildId, build]);

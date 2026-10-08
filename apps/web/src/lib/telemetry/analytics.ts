@@ -28,8 +28,28 @@ export type BattleMode = 'solo' | 'multiplayer';
 /** Why a battle's sync-health report was sent. */
 export type SyncHealthEnd = 'destroyed' | 'abandoned' | 'left' | 'switched' | 'closed';
 
+/**
+ * This tab's preview watchdog over one battle (T-031, sandbox-health.ts), summed over the
+ * battle's previews (BUILD, the REVEAL spotlights, the last look).
+ */
+export interface PreviewHealthProps {
+  /** Watchdog crashes (each one is also a `preview_crash` event). */
+  preview_crashes: number;
+  /** Crashed previews the user restarted. */
+  preview_restarts: number;
+  /** App-side stalls of 1 s or more the watchdog saw: this tab itself got no CPU. */
+  preview_stalls: number;
+  /** Their total length. */
+  preview_stall_ms: number;
+  /**
+   * Silences the pre-T-031 watchdog (wall-clock time) would have reported as a crash, and
+   * which then ended with a pong: false crashes avoided.
+   */
+  preview_spared: number;
+}
+
 /** The sync engine's counters over one battle, from this client (sync.ts). */
-export interface SyncHealthProps {
+export interface SyncHealthProps extends PreviewHealthProps {
   battle_id: string;
   room_id: string;
   ended: SyncHealthEnd;
@@ -49,6 +69,30 @@ export interface SyncHealthProps {
   server_closed: number;
   /** CHANNEL_ERROR and TIMED_OUT statuses (supabase-js retries those itself). */
   channel_errors: number;
+}
+
+/**
+ * One preview watchdog crash (T-031, sandbox-health.ts), sent once its outcome is known.
+ * Silences are in app-awake time (the watchdog's own measure); `stalled_ms` is the time the
+ * tab's own timers did not run during the silence (starvation evidence, not counted).
+ */
+export interface PreviewCrashProps {
+  /** The battle the preview belongs to; null outside a battle (the playground). */
+  battle_id: string | null;
+  /** `live`: the player's own build while building; `reveal`: a REVEAL spotlight or the last look. */
+  mode: 'live' | 'reveal';
+  reason: 'heartbeat_timeout' | 'handshake_timeout';
+  /** What the preview was doing (`loading`: its latest build had not finished starting). */
+  phase: 'connecting' | 'loading' | 'running';
+  /** App-awake silence when the watchdog fired. */
+  silent_ms: number;
+  /** Wall-clock silence: `silent_ms + stalled_ms`. */
+  wall_silent_ms: number;
+  stalled_ms: number;
+  /** The longest single app-side stall within the silence. */
+  longest_stall_ms: number;
+  /** The user restarted the preview afterwards. */
+  restarted: boolean;
 }
 
 export interface AnalyticsEvents {
@@ -81,6 +125,7 @@ export interface AnalyticsEvents {
   };
   report_filed: { reason: ReportReason; surface: 'results' | 'reveal' };
   sync_health: SyncHealthProps;
+  preview_crash: PreviewCrashProps;
 }
 
 export type AnalyticsEventName = keyof AnalyticsEvents;
@@ -233,3 +278,11 @@ export type Track = <N extends AnalyticsEventName>(name: N, props: AnalyticsEven
 export const track: Track = (name, props) => {
   client.track(name, props);
 };
+
+/**
+ * Sends what is queued now, with `keepalive`: for an event recorded while the page is going
+ * away (`pagehide`) before anything else installed the client's own unload flush.
+ */
+export function flushAnalytics(): void {
+  void client.flush({ keepalive: true });
+}

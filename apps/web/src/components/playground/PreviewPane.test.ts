@@ -48,6 +48,9 @@ describe('PreviewPane crashed notice', () => {
       reason: 'heartbeat-timeout',
       silentForMs: 5120,
       phase: 'running',
+      wallSilentForMs: 5120,
+      stalledMs: 0,
+      longestStallMs: 0,
     });
     expect(note.textContent).toContain('The preview crashed');
     expect(note.textContent).toContain('stopped responding for 5 s, probably an infinite loop');
@@ -63,6 +66,9 @@ describe('PreviewPane crashed notice', () => {
       reason: 'heartbeat-timeout',
       silentForMs: 15_140,
       phase: 'loading',
+      wallSilentForMs: 15_140,
+      stalledMs: 0,
+      longestStallMs: 0,
     });
     expect(note.textContent).toContain('The preview crashed');
     expect(note.textContent).toContain('didn’t finish starting');
@@ -75,6 +81,9 @@ describe('PreviewPane crashed notice', () => {
       reason: 'handshake-timeout',
       silentForMs: 10_100,
       phase: 'connecting',
+      wallSilentForMs: 10_100,
+      stalledMs: 0,
+      longestStallMs: 0,
     });
     expect(note.textContent).toContain('The preview could not start');
     expect(note.textContent).toContain('did not answer');

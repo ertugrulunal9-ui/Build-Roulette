@@ -173,6 +173,10 @@ export class PlayerSession {
       this.onRoomEvent(p, at);
     });
     this.roomTopic = topic;
+    topic.phaseOf = () => {
+      const b = this.battle;
+      return b && !b.finished && b.phase ? b.phase : 'lobby';
+    };
     const status = await topic.subscribe();
     if (status !== 'SUBSCRIBED') this.m.count(`room_subscribe_${status}`);
     this.trackPresence();

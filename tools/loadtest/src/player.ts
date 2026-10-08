@@ -235,6 +235,8 @@ export class Topic {
   private pending: object | null = null;
   private pendingTimer: NodeJS.Timeout | null = null;
   status = 'PENDING';
+  /** Labels presence sends (the player's phase) for the per-phase presence rate. */
+  phaseOf: () => string = () => 'lobby';
 
   constructor(
     private readonly player: SimPlayer,
@@ -339,6 +341,7 @@ export class Topic {
     this.lastTrackAt = t;
     this.trackTimes.push(t);
     this.player.metrics.raw.presence.sent++;
+    this.player.metrics.count(`presence_sent:${this.phaseOf()}`);
     const channel = this.channel;
     void channel.track(payload).then(
       (r) => {

@@ -190,13 +190,21 @@ export interface Usage {
 
 const revealSlotS = (n: number) => Math.round(Math.min(60, Math.max(30, 300 / n)));
 
+/** The calls whose number grows with time online (heartbeat, version check, clock sync). */
+const RATE_KEYS = new Set(['rpc:heartbeat', 'rest:battles', 'rpc:server_now']);
+
 /**
- * Scales the measured run to one real battle:
- * - rate-driven traffic (heartbeat, version check, clock sync, presence, Realtime and API
- *   bytes per client-minute) × online minutes × players;
- * - broadcasts: measured battle/room events per player-battle → events(P) × P deliveries;
- * - reveal downloads: measured bytes per (viewer, build) pair × P × final builds;
- * - captures: final builds × the assumed browser seconds per capture.
+ * Scales a measured run to one real battle of `players` players (docs/07 §3):
+ *
+ * - **event-driven** traffic (snapshots, nudges, ship, votes, reveal downloads, broadcasts)
+ *   is taken per battle from the run; when the run had another player count P_t, it is
+ *   scaled by (P / P_t)² (events grow with players and each goes to every player);
+ * - **rate-driven** traffic (heartbeat, version check, clock sync) is taken per
+ *   client-minute and multiplied by real online minutes × P;
+ * - **presence**: sends per BUILDING minute (the throttle binds there) × real build minutes,
+ *   plus the other sends per player-battle, each delivered to every member;
+ * - **screenshots** are downloaded as often as measured, at the assumed real size;
+ * - **captures**: final builds × the assumed browser seconds per capture.
  */
 export function deriveUsage(r: Report, a = ASSUMPTIONS): Usage {
   const P = a.players.value;
@@ -210,61 +218,72 @@ export function deriveUsage(r: Report, a = ASSUMPTIONS): Usage {
     a.votingMin.value +
     a.resultsMin.value;
   const Pt = r.meta.config.players;
+  const scale = (P / Pt) ** 2;
   const battles = Math.max(1, r.battles.started);
+  const playerBattles = Math.max(1, r.battles.playerBattles);
   const clientMin = Math.max(1e-9, r.clients.clientMinutes);
-  const Ft = Math.max(1, r.battles.finalBuilds.mean || Pt);
 
-  // Broadcast deliveries: events per battle grow with players, each goes to every player.
-  const evB = r.db.rowsPerBattle['battle_events'] ?? 0;
-  const evR = r.db.rowsPerBattle['room_events'] ?? 0;
-  const fixedB = 7; // spinning, building, shipping, voting, results, destroyed phases + `destroyed`
-  const perPlayerB = Math.max(0, (evB - fixedB) / Pt);
-  const perPlayerR = evR / Pt; // joins, readies, the start and reopen spread per player
-  const eventsReal = fixedB + perPlayerB * P + perPlayerR * P;
-  const broadcastDeliveries = eventsReal * P;
-  // Presence: sends per client-minute (measured, throttled) delivered to every member.
-  const presencePerMin = (r.realtime.presence.sent || 0) / clientMin;
-  const presenceMsgs = presencePerMin * onlineMin * P * (1 + P);
-  const realtimeMessages = broadcastDeliveries + presenceMsgs;
+  let eventCalls = 0;
+  let eventBytes = 0;
+  let rateCalls = 0;
+  let rateBytes = 0;
+  for (const [k, h] of Object.entries(r.http)) {
+    if (!(k.startsWith('rpc:') || k.startsWith('rest:'))) continue;
+    if (RATE_KEYS.has(k)) {
+      rateCalls += h.n;
+      rateBytes += h.bytesDown;
+    } else {
+      eventCalls += h.n;
+      eventBytes += h.bytesDown;
+    }
+  }
+  const storageCalls = (r.http['storage:download']?.n ?? 0) + (r.http['storage:upload']?.n ?? 0);
+  const revealBytes = r.http['storage:download']?.bytesDown ?? 0;
+  const shots = r.http['storage:public']?.n ?? 0;
+  const authBytesPerPlayer =
+    (r.http['auth:token']?.bytesDown ?? 0) / Math.max(1, r.clients.created);
 
-  // Egress: API + Realtime bytes per client-minute (rate-driven and event-driven mixed,
-  // treated as time-driven), plus storage downloads per (viewer, build) pair.
-  const storageDown = Object.entries(r.storage.bytes)
-    .filter(([k]) => k.startsWith('down:') && k !== 'down:screenshot')
+  // Realtime: broadcast deliveries (binary user-broadcast frames) and presence.
+  const broadcastIn = Object.entries(r.realtime.framesIn)
+    .filter(([k]) => k.startsWith('binary:') || k === 'broadcast')
     .reduce((x, [, n]) => x + n, 0);
-  const storageDownPerPair = storageDown / battles / (Pt * Ft);
-  const shotPerPair = a.screenshotKB.value * 1024;
-  const apiDown = Object.entries(r.http)
-    .filter(([k]) => k.startsWith('rpc:') || k.startsWith('rest:') || k.startsWith('auth:token'))
-    .reduce((x, [, h]) => x + h.bytesDown, 0);
-  const apiPerClientMin = apiDown / clientMin;
-  const rtPerClientMin = r.realtime.bytesIn / clientMin;
-  const egressBytes =
-    storageDownPerPair * P * F +
-    shotPerPair * P * F +
-    (apiPerClientMin + rtPerClientMin) * onlineMin * P;
+  const framesIn = Object.values(r.realtime.framesIn).reduce((x, n) => x + n, 0);
+  const bytesPerFrame = framesIn ? r.realtime.bytesIn / framesIn : 0;
+  const buildingSends = r.sim['presence_sent:building'] ?? 0;
+  const buildMinTest = (playerBattles * r.meta.config.buildS) / 60;
+  const presencePerBuildMin = buildingSends / Math.max(1e-9, buildMinTest);
+  const presenceOtherPerPlayer = (r.realtime.presence.sent - buildingSends) / playerBattles;
+  const presenceSends = P * (presencePerBuildMin * a.buildMin.value + presenceOtherPerPlayer);
+  const presenceMsgs = presenceSends * (1 + P); // the send + one presence_diff per member
+  const broadcastMsgs = (broadcastIn / battles) * scale;
+  const realtimeMessages = broadcastMsgs + presenceMsgs;
 
-  const apiCalls = Object.entries(r.http)
-    .filter(([k]) => k.startsWith('rpc:') || k.startsWith('rest:') || k.startsWith('storage:'))
-    .reduce((x, [, h]) => x + h.n, 0);
+  const egressBytes =
+    (eventBytes / battles) * scale +
+    (rateBytes / clientMin) * onlineMin * P +
+    (revealBytes / battles) * scale +
+    (shots / battles) * scale * a.screenshotKB.value * 1024 +
+    (broadcastMsgs + presenceSends * P) * bytesPerFrame +
+    authBytesPerPlayer * P;
 
   return {
     realtimeMessages,
     realtimeConnMinutes: onlineMin * P,
     egressGB: egressBytes / 1e9,
     storageGBAdded: (F * a.screenshotKB.value * 1024) / 1e9,
-    dbBytesAdded:
-      r.battles.started > 0 ? (r.db.sizeBytes.after - r.db.sizeBytes.before) / battles : 0,
+    dbBytesAdded: (r.db.sizeBytes.after - r.db.sizeBytes.before) / battles,
     browserSeconds: F * a.browserSecPerCapture.value,
     workerRequests: P * a.workerRequestsPerPlayer.value,
     workerCpuMs: P * a.workerRequestsPerPlayer.value * a.workerCpuMsPerRequest.value,
-    apiRequests: (apiCalls / clientMin) * onlineMin * P,
+    apiRequests:
+      ((eventCalls + storageCalls) / battles) * scale + (rateCalls / clientMin) * onlineMin * P,
     onlineMin,
     sources: {
-      realtimeMessages: `measured events/player-battle (battle ${perPlayerB.toFixed(2)}, room ${perPlayerR.toFixed(2)}) + presence ${presencePerMin.toFixed(2)}/client-min; billing rule assumed`,
-      egressGB: `measured: reveal ${(storageDownPerPair / 1024).toFixed(1)} KiB per (viewer, build), API ${(apiPerClientMin / 1024).toFixed(1)} KiB and Realtime ${(rtPerClientMin / 1024).toFixed(1)} KiB per client-minute; screenshots assumed ${String(a.screenshotKB.value)} KB`,
+      realtimeMessages: `measured: ${(broadcastIn / battles).toFixed(0)} broadcast deliveries per battle at ${String(Pt)} players; presence ${presencePerBuildMin.toFixed(2)} sends per BUILDING minute + ${presenceOtherPerPlayer.toFixed(1)} other per player-battle, × (1 + P) deliveries; billing rule assumed`,
+      egressGB: `measured per battle: API ${(eventBytes / battles / 1024).toFixed(0)} KiB, reveal downloads ${(revealBytes / battles / 1024).toFixed(0)} KiB, ${(shots / battles).toFixed(0)} screenshot views; per client-minute ${(rateBytes / clientMin / 1024).toFixed(1)} KiB; screenshots assumed ${String(a.screenshotKB.value)} KB`,
       browserSeconds: `assumed ${String(a.browserSecPerCapture.value)} s per capture (local capture job p50 ${String(r.capture.jobMs['capture']?.p50 ?? 'n/a')} ms)`,
-      apiRequests: `measured ${(apiCalls / clientMin).toFixed(2)} HTTP calls per client-minute`,
+      apiRequests: `measured: ${((eventCalls + storageCalls) / battles).toFixed(0)} event-driven calls per battle + ${(rateCalls / clientMin).toFixed(2)} per client-minute`,
+      scale: `run at ${String(Pt)} players per battle; event-driven figures × (${String(P)}/${String(Pt)})² = ${scale.toFixed(2)}`,
     },
   };
 }

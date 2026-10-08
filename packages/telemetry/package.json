@@ -1,0 +1,30 @@
+{
+  "name": "@br/telemetry",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Privacy rules and the server-side error reporter shared by the web app, the capture worker and the package CDN (Sentry protocol, env-gated: off without a DSN).",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts",
+    "./scrub": "./src/scrub.ts",
+    "./server": "./src/server-reporter.ts",
+    "./testing": "./src/testing/fake-ingest.ts"
+  },
+  "scripts": {
+    "lint": "eslint . --max-warnings=0",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@sentry/core": "10.75.3"
+  },
+  "devDependencies": {
+    "@br/config": "workspace:*",
+    "@types/node": "22.20.5",
+    "eslint": "9.39.5",
+    "typescript": "6.0.3",
+    "vite": "8.3.2",
+    "vitest": "5.0.3"
+  }
+}

@@ -3,6 +3,7 @@ import {
   PREVIEW_ALLOW_BY_MODE,
   PREVIEW_SANDBOX_BY_MODE,
   PreviewHandle,
+  type PreviewEventMap,
   type PreviewOptions,
 } from '../src/preview/preview-handle';
 import { ConsoleLog, DEFAULT_PREVIEW_BUDGETS, RateWindow } from '../src/preview/budget';
@@ -596,6 +597,219 @@ describe('watchdog: load grace (T-027)', () => {
     expect(handle.state).toBe('connected');
     vi.advanceTimersByTime(400);
     expect(handle.state).toBe('crashed');
+  });
+});
+
+describe('watchdog: app starvation (T-031)', () => {
+  type Shell = ReturnType<ReturnType<typeof setup>['connect']>;
+  /**
+   * The app's own main thread does not run for `ms` (a long task of its own, or a starved
+   * machine giving the process no CPU): the clock moves on and no timer fires. The overdue
+   * ones fire after it, as in a browser.
+   */
+  const stallApp = (ms: number) => {
+    vi.setSystemTime(Date.now() + ms);
+  };
+  /** A starved shell: it answers every ping `delayMs` (timer time) after receiving it. */
+  const lagPongs = (shell: Shell, delayMs: number) => {
+    shell.autoPong = false;
+    const port = shell.port;
+    if (!port) throw new Error('the shell is not connected');
+    const record = port.onmessage;
+    port.onmessage = (event) => {
+      record?.(event);
+      const msg = event.data as { type: string; seq?: number };
+      if (msg.type !== 'ping') return;
+      setTimeout(() => {
+        shell.send({ type: 'pong', seq: msg.seq });
+      }, delayMs);
+    };
+  };
+  /** The shell's main thread is free again: the pong for the newest ping arrives. */
+  const unblock = (shell: Shell) => {
+    shell.autoPong = true;
+    shell.send({ type: 'pong', seq: shell.received('ping').at(-1)?.['seq'] });
+  };
+  const crashLog = (handle: PreviewHandle) => {
+    const crashes: (PreviewEventMap['crash'] & { at: number })[] = [];
+    handle.on('crash', (c) => crashes.push({ ...c, at: Date.now() }));
+    return crashes;
+  };
+
+  it('a starved app (one 7 s stall, then late pongs) does not crash: its own stall is not silence', () => {
+    const { handle, connect } = setup();
+    const shell = connect();
+    const crashes = crashLog(handle);
+    vi.advanceTimersByTime(2000);
+    // The whole machine is starved: the app gets no CPU for 7 s, and the shell, starved too,
+    // answers each ping 600 ms late from then on.
+    lagPongs(shell, 600);
+    stallApp(7000);
+    vi.advanceTimersByTime(3000);
+    expect(crashes).toEqual([]);
+    expect(handle.state).toBe('connected');
+    expect(handle.stats).toMatchObject({ stalls: 1, longestStallMs: 7000, stallMs: 7000 });
+    // The old wall-clock rule would have crashed (7.25 s since the last pong); a pong came.
+    expect(handle.stats.sparedSilences).toBe(1);
+    expect(handle.stats.pongs).toBeGreaterThan(3);
+  });
+
+  it('a continuously starved app (every tick 1.25 s late, pings late, pongs late) does not crash', () => {
+    const { handle, connect } = setup();
+    const shell = connect();
+    const crashes = crashLog(handle);
+    vi.advanceTimersByTime(1100);
+    lagPongs(shell, 900);
+    const pongsBefore = handle.stats.pongs;
+    const start = Date.now();
+    // 40 ticks in 60 s of wall-clock time: a ping only every 6 s, its pong 5.4 s after it.
+    for (let i = 0; i < 40; i++) {
+      stallApp(1250);
+      vi.advanceTimersByTime(250);
+    }
+    expect(Date.now() - start).toBe(60_000);
+    expect(crashes).toEqual([]);
+    expect(handle.state).toBe('connected');
+    expect(handle.stats.pongs - pongsBefore).toBeGreaterThanOrEqual(9);
+    expect(handle.stats.stalls).toBe(40);
+    expect(handle.stats.sparedSilences).toBeGreaterThan(0);
+  });
+
+  it('a loop with on-time ticks is caught as before, and its crash shows no stall', () => {
+    const { handle, connect } = setup();
+    const shell = connect();
+    const crashes = crashLog(handle);
+    vi.advanceTimersByTime(2000);
+    shell.autoPong = false; // the build loops; the app's timers run on time
+    const frozeAt = Date.now();
+    vi.advanceTimersByTime(5300);
+    expect(crashes).toHaveLength(1);
+    const c = crashes[0];
+    expect((c?.at ?? NaN) - frozeAt).toBeGreaterThanOrEqual(4000);
+    expect((c?.at ?? NaN) - frozeAt).toBeLessThanOrEqual(5250);
+    expect(c).toMatchObject({ reason: 'heartbeat-timeout', phase: 'running', stalledMs: 0 });
+    expect(c?.longestStallMs).toBe(0);
+    expect(c?.wallSilentForMs).toBe(c?.silentForMs);
+    expect(handle.stats).toMatchObject({ stalls: 0, sparedSilences: 0 });
+  });
+
+  it('a loop is caught after 5 s of app-awake time, even when the app stalls meanwhile', () => {
+    const { handle, connect } = setup();
+    const shell = connect();
+    const crashes = crashLog(handle);
+    vi.advanceTimersByTime(2000);
+    const lastPongAt = handle.stats.lastPongAt;
+    shell.autoPong = false; // the build loops
+    vi.advanceTimersByTime(1000);
+    stallApp(2000);
+    vi.advanceTimersByTime(1000);
+    stallApp(3000);
+    vi.advanceTimersByTime(1000);
+    // 8 s since the last pong by the wall clock, but only 3 s while the app was awake.
+    expect(Date.now() - lastPongAt).toBe(8000);
+    expect(handle.state).toBe('connected');
+    vi.advanceTimersByTime(2300);
+    expect(crashes).toHaveLength(1);
+    const c = crashes[0];
+    expect(c).toMatchObject({
+      reason: 'heartbeat-timeout',
+      phase: 'running',
+      longestStallMs: 3000,
+    });
+    expect(c?.silentForMs).toBeGreaterThan(5000);
+    expect(c?.silentForMs).toBeLessThanOrEqual(5250);
+    expect(c?.stalledMs).toBe(5000);
+    expect(c?.wallSilentForMs).toBe((c?.silentForMs ?? NaN) + 5000);
+    // The loop did not end with a pong: nothing was spared.
+    expect(handle.stats).toMatchObject({ stalls: 2, stallMs: 5000, sparedSilences: 0 });
+  });
+
+  it('a loop during a load is still caught 15 s (app-awake) after the send; an app stall does not eat the grace', () => {
+    const { handle, connect } = setup();
+    const shell = connect();
+    const crashes = crashLog(handle);
+    vi.advanceTimersByTime(1000);
+    shell.autoPong = false; // a loop at the module's top level: no pong, no ready
+    const sentAt = Date.now();
+    handle.load(BUILD);
+    vi.advanceTimersByTime(4000);
+    stallApp(6000);
+    vi.advanceTimersByTime(6000);
+    // 16 s after the send by the wall clock: the old wall-clock window had closed.
+    expect(Date.now() - sentAt).toBe(16_000);
+    expect(handle.state).toBe('connected');
+    vi.advanceTimersByTime(5300);
+    expect(crashes).toHaveLength(1);
+    const c = crashes[0];
+    expect(c).toMatchObject({ reason: 'heartbeat-timeout', phase: 'loading', stalledMs: 6000 });
+    expect(c?.silentForMs).toBeGreaterThan(15_000);
+    expect(c?.silentForMs).toBeLessThanOrEqual(15_250);
+    expect((c?.at ?? NaN) - sentAt - 6000).toBeLessThanOrEqual(15_250);
+  });
+
+  it('a slow load on a starved machine (8 s app stall, 10 s evaluation) is not a crash', () => {
+    const { handle, connect } = setup();
+    const shell = connect();
+    const crashes = crashLog(handle);
+    vi.advanceTimersByTime(1000);
+    const loadId = handle.load(BUILD);
+    shell.autoPong = false; // the shell evaluates the bundle
+    vi.advanceTimersByTime(2000);
+    stallApp(8000);
+    vi.advanceTimersByTime(8000); // 18 s after the send by the wall clock, 10 s awake
+    expect(handle.state).toBe('connected');
+    shell.send({ type: 'ready', loadId });
+    unblock(shell);
+    vi.advanceTimersByTime(10_000);
+    expect(crashes).toEqual([]);
+    expect(handle.stats.sparedSilences).toBe(1);
+  });
+
+  it('the handshake timeout counts app-awake time too', () => {
+    const { handle, connect } = setup();
+    const crashes = crashLog(handle);
+    vi.advanceTimersByTime(1000);
+    stallApp(11_000); // e.g. the page's own start-up work on a starved machine
+    vi.advanceTimersByTime(1000);
+    expect(crashes).toEqual([]);
+    expect(handle.state).toBe('connecting');
+    connect();
+    expect(handle.state).toBe('connected');
+
+    // A shell that never answers is still given up on after 10 s of awake time.
+    handle.restart();
+    const navigatedAt = Date.now();
+    vi.advanceTimersByTime(3000);
+    stallApp(4000);
+    vi.advanceTimersByTime(7300);
+    expect(crashes).toHaveLength(1);
+    const c = crashes[0];
+    expect(c).toMatchObject({ reason: 'handshake-timeout', phase: 'connecting', stalledMs: 4000 });
+    expect(c?.silentForMs).toBeGreaterThan(10_000);
+    expect(c?.silentForMs).toBeLessThanOrEqual(10_250);
+    expect((c?.at ?? NaN) - navigatedAt).toBeGreaterThan(14_000);
+  });
+
+  it('hidden tabs are unchanged: no check while hidden, a fresh 5 s when visible, and hidden time is no stall', () => {
+    const { handle, doc, connect } = setup();
+    const shell = connect();
+    const crashes = crashLog(handle);
+    shell.autoPong = false;
+    doc.hidden = true;
+    // A hidden tab's timers are throttled: here they run once a minute.
+    for (let i = 0; i < 5; i++) {
+      stallApp(59_750);
+      vi.advanceTimersByTime(250);
+    }
+    expect(handle.state).toBe('connected');
+    doc.hidden = false;
+    doc.dispatch('visibilitychange', {});
+    vi.advanceTimersByTime(4000);
+    expect(handle.state).toBe('connected');
+    vi.advanceTimersByTime(1500);
+    expect(handle.state).toBe('crashed');
+    expect(crashes[0]).toMatchObject({ stalledMs: 0, longestStallMs: 0 });
+    expect(handle.stats).toMatchObject({ stalls: 0, stallMs: 0, sparedSilences: 0 });
   });
 });
 

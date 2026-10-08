@@ -376,11 +376,12 @@ section.
   - **Lost broadcasts:** `realtime.send` broadcasts can be lost while Realtime reconnects
     its database feed. The local stack does this every 10 min ("rebalancing"), and
     production may do it too. The client therefore reads `battles.version` with every
-    10 s heartbeat and refetches if the server is ahead, so a lost event costs at most one
-    beat. Ship toasts come from snapshot diffs.
+    10 s heartbeat (since T-029: from the heartbeat's own answer) and refetches if the
+    server is ahead, so a lost event costs at most one beat. Ship toasts come from
+    snapshot diffs.
   - **Host REVEAL actions** (`reveal_next`/`skip_to_vote`) use a version CAS that a burst
     of capture events can make stale. When the stale answer shows the same spotlight, the
     client resends with the returned version (at most 3 times).
-  - Server alternatives for later: return the battle version from `heartbeat`, and compare
-    on `reveal_index` instead of `version` for host actions.
+  - Server alternatives for later: return the battle version from `heartbeat` (done in
+    T-029), and compare on `reveal_index` instead of `version` for host actions.
 

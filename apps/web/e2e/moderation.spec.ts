@@ -30,6 +30,11 @@ import {
  * Plus: /admin is a plain 404 for a player (and without a session, and after a failed
  * sign-in), and a blocked display name gets the friendly error.
  *
+ * T-030: the admin's Health section (admin_ops_health) shows the sweeps running, a RESULTS
+ * battle past its last look that waits for a screenshot (overdue, not stuck), a capture job
+ * that failed for good (a finding), and after the takedown the takedown job done; the
+ * battle log's "Refresh public copies" and Health's "Send a test error" (off here: no DSN).
+ *
  * The finished battle is inserted with psql (two builds with real PNG screenshots in the
  * public bucket), so the test does not need a whole game. MODERATION_SCREENSHOT_DIR=/dir
  * saves the UI screenshots (report dialog, admin queue, battle log, removed build, the
@@ -151,6 +156,42 @@ async function createFixture(browser: Browser): Promise<Fixture> {
   return fx;
 }
 
+/**
+ * Health fixtures (T-030): a RESULTS battle whose last look ended 2 min ago while a shipped
+ * build still waits for its screenshot (no capture job, capture deadline 9 min away: the
+ * sweep leaves it alone), and a capture job that failed for good just now.
+ */
+async function createHealthFixture(): Promise<{ battle: string; failedRef: string }> {
+  const user = assertUuid(await anonymousUserId());
+  const battle = sql(`
+    with c as (
+      insert into public.challenges (build_text, rule_text, style_text, time_limit_seconds)
+      values ('Health check', 'Rule', 'Style', 300) returning id),
+    p as (
+      insert into public.profiles (id, display_name) values ('${user}', 'Hal')
+      on conflict (id) do nothing returning id),
+    b as (
+      insert into public.battles (challenge_id, host_id, settings, phase, version, finished_at,
+                                  is_complete, building_started_at, building_ends_at,
+                                  shipping_ended_at, phase_started_at, phase_ends_at)
+      select c.id, '${user}', '{"mode":"solo"}', 'results', 5, now() - interval '3 minutes', true,
+             now() - interval '9 minutes', now() - interval '4 minutes', now() - interval '1 minute',
+             now() - interval '3 minutes', now() - interval '2 minutes'
+      from c returning id),
+    r as (
+      insert into public.battle_players (battle_id, user_id, display_name)
+      select b.id, '${user}', 'Hal' from b returning battle_id)
+    insert into public.builds (battle_id, builder_id, name, status, shipped_at, completion_ms,
+                               capture_status)
+    select b.id, '${user}', 'Health Build', 'shipped', now() - interval '5 minutes', 60000, 'pending'
+    from b returning battle_id`);
+  const failedRef = sql(`select gen_random_uuid()`);
+  sql(`insert into public.jobs (kind, ref_id, status, attempts, last_error, created_at, updated_at)
+       values ('capture', '${assertUuid(failedRef)}', 'failed', 5, 'health e2e: blank render',
+               now() - interval '10 minutes', now())`);
+  return { battle: assertUuid(battle), failedRef };
+}
+
 /** The award slugs on a build card, in display order. */
 async function awardChips(card: Locator): Promise<(string | null)[]> {
   return card
@@ -244,6 +285,34 @@ test('report → admin takedown → "Removed by moderators" and the screenshot i
   await expect(item.getByTestId('report-item-screenshot')).toBeVisible();
   await snap(admin, 't024-admin-queue');
 
+  // ─── T-030: Health ───────────────────────────────────────────────────────────────
+  const healthFx = await createHealthFixture();
+  await admin.goto('/admin');
+  const health = admin.getByTestId('admin-health');
+  await expect(health).toBeVisible();
+  // pg_cron runs the deadline sweep every 5 s.
+  await expect(
+    health.locator('[data-testid=health-cron-job][data-name=br-sweep-deadlines]'),
+  ).toHaveAttribute('data-last-status', 'succeeded');
+  await expect(health.getByTestId('health-job')).toHaveCount(3);
+  // The RESULTS battle is overdue but only waiting for its screenshot: not stuck.
+  const results = health.locator('[data-testid=health-overdue][data-phase=results]');
+  expect(Number(await results.getAttribute('data-waiting'))).toBeGreaterThanOrEqual(1);
+  await expect(results.getByRole('link')).toBeVisible();
+  // The failed capture job is a finding.
+  const capture = health.locator('[data-testid=health-job][data-kind=capture]');
+  expect(Number(await capture.getAttribute('data-failed-hour'))).toBeGreaterThanOrEqual(1);
+  await expect(health).toHaveAttribute('data-status', 'attention');
+  await expect(
+    health.locator('[data-testid=health-finding][data-area=jobs]').first(),
+  ).toContainText('capture-backlog');
+  await snap(admin, 't030-admin-health', true);
+  // No DSN in this build: the test-error button says reporting is off.
+  await health.getByTestId('admin-test-error').click();
+  await expect(admin.getByTestId('admin-flash')).toHaveAttribute('data-done', 'test_error_off');
+  await admin.goto('/admin');
+  sql(`update public.builds set capture_status = 'failed' where battle_id = '${healthFx.battle}'`);
+
   // ─── Right before the takedown, the public copies are cached (T-026) ────────────
   const battlePath = `/battles/${fx.battle}`;
   const ogPath = `${battlePath}/opengraph-image`;
@@ -278,6 +347,10 @@ test('report → admin takedown → "Removed by moderators" and the screenshot i
     log.locator(`[data-testid=admin-build][data-build="${fx.scam.id}"]`),
   ).toHaveAttribute('data-taken-down', 'true');
   await snap(admin, 't024-admin-battle-log', true);
+  // T-030: refresh the battle's public copies by hand (runbook: cache not revalidating).
+  await log.getByTestId('admin-refresh-copies').click();
+  await expect(admin.getByTestId('admin-flash')).toHaveAttribute('data-done', 'refreshed');
+  await expect(admin.getByTestId('admin-battle-log')).toHaveAttribute('data-battle', fx.battle);
 
   // ─── The public page: "Removed by moderators", no screenshot ────────────────────
   // Its cached copy is seconds old: by time alone it would still be served (once more, at
@@ -334,6 +407,11 @@ test('report → admin takedown → "Removed by moderators" and the screenshot i
          from public.jobs where kind = 'takedown' and ref_id = '${fx.scam.id}'`,
     ),
   ).toBe('done:true');
+
+  // T-030: Health counts the finished takedown job.
+  await admin.goto('/admin');
+  const takedownRow = admin.locator('[data-testid=health-job][data-kind=takedown]');
+  expect(Number(await takedownRow.getAttribute('data-done-hour'))).toBeGreaterThanOrEqual(1);
 
   await mod.close();
   await player.close();

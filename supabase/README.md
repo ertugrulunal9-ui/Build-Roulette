@@ -35,8 +35,9 @@ supabase/
 │   ├── 20261008120300_rpc_limits_and_names.sql        the filter and the limits in the client RPCs (T-024)
 │   ├── 20261008120400_reports_and_admin.sql           report_build, admins, admin RPCs, takedown (T-024)
 │   ├── 20261008120500_takedown.sql                    takedown job, taken-down builds in every read (T-024)
-│   └── 20261008130000_takedown_awards.sql             a build taken down after RESULTS loses its awards in every
-│                                                        public read and through RLS; rows kept (T-028)
+│   ├── 20261008130000_takedown_awards.sql             a build taken down after RESULTS loses its awards in every
+│   │                                                    public read and through RLS; rows kept (T-028)
+│   └── 20261008140000_heartbeat_battle_version.sql    heartbeat also returns battle_id and battle_version (T-029)
 ├── tests/                       pgTAP tests (*.test.sql), one transaction each, rolled back
 │   ├── 00_schema.test.sql       tables/enums exist, RLS on every table, policies, table privileges
 │   ├── 01_constraints.test.sql  room codes, time limits, one build per player, vote PK, cascades
@@ -66,9 +67,11 @@ supabase/
 │   │                            queue, dismiss, take down, retry, battle and room logs, admin log
 │   ├── 22_takedown.test.sql     REVEAL slot skipped, on-screen takedown, VOTING votes deleted, finished results
 │                                keep the rank, the takedown job's ordering with the capture job
-│   └── 23_takedown_awards.test.sql  a rank-1 build with vote and auto awards taken down in RESULTS: no awards in
-│                                get_public_battle / get_player_history / get_battle_snapshot / RLS, the others
-│                                keep theirs, nothing reassigned or re-ranked, rows untouched, solo too (T-028)
+│   ├── 23_takedown_awards.test.sql  a rank-1 build with vote and auto awards taken down in RESULTS: no awards in
+│   │                            get_public_battle / get_player_history / get_battle_snapshot / RLS, the others
+│   │                            keep theirs, nothing reassigned or re-ranked, rows untouched, solo too (T-028)
+│   └── 24_heartbeat_battle_version.test.sql  heartbeat's battle_id / battle_version (none, running, moved on,
+│                                live, after the battle, with a host migration), members only, same errors (T-029)
 └── scripts/
     ├── e2e-solo.mjs             the solo loop through the real HTTP APIs (Auth, PostgREST, Storage, pg_cron)
     ├── e2e-multiplayer.mjs      a 3-player battle + late spectator through supabase-js, with Realtime reception
@@ -211,7 +214,7 @@ PT429 `rate_limited` (T-024; PostgREST answers HTTP 429, `hint` = `{"retry_after
 | `set_ready(p_room_id uuid, p_ready boolean)` | active player, room open | void | `invalid_ready`, `room_not_found`, `not_a_member`, `kicked`, `not_a_player`, `wrong_room_state` |
 | `update_room_settings(p_room_id uuid, p_settings jsonb)` | host, room open | the new settings | `room_not_found`, `not_a_member`, `not_host`, `wrong_room_state`, `invalid_settings` |
 | `kick_member(p_room_id uuid, p_user_id uuid)` | host | void | `room_not_found`, `not_a_member`, `not_host`, `cannot_kick_self`, `member_not_found` |
-| `heartbeat(p_room_id uuid)` | active member | `{server_now, room_version, host_id, status}` | `room_not_found`, `not_a_member`, `kicked`, `room_closed` |
+| `heartbeat(p_room_id uuid)` | active member | `{server_now, room_version, host_id, status, battle_id, battle_version}` (the last two since T-029) | `room_not_found`, `not_a_member`, `kicked`, `room_closed` |
 | `get_room_snapshot(p_room_id uuid)` | member (also after leaving; not kicked) | `{server_now, me, room, members, battle}` | `room_not_found` |
 | `start_battle(p_room_id uuid)` | host, room open | battle `uuid` | `room_not_found`, `not_a_member`, `not_host`, `wrong_room_state`, `not_enough_players` |
 
@@ -234,6 +237,14 @@ snapshot is unchanged.
 - **Presence:** clients call `heartbeat` about every 10 s while the room page is open, also
   during a battle (writes are rate-limited to one per 5 s; extra calls are no-ops). Any
   member RPC counts too. Present = active and seen within 30 s.
+- **Heartbeat answer (T-029):** besides `server_now`, `room_version`, `host_id` and `status`
+  it returns `battle_id` (`rooms.current_battle_id`: the running battle, or the last one
+  back in the lobby; null before the first) and `battle_version` (that battle's
+  `battles.version`, read live; null with `battle_id`). The client compares the version with
+  its snapshot to catch a battle event Realtime never delivered (T-023), so it no longer
+  reads `battles.version` separately next to each beat. The fields are additive: old clients
+  ignore them, and a client facing a server without them skips that check. Same callers
+  (members only) and errors as before (`24_heartbeat_battle_version.test.sql`).
 - **Host migration:** when the host is not present (left, kicked, silent 30 s), the present
   member who joined earliest becomes host (players first). Done lazily by the RPCs and by
   `sweep_deadlines`; logged as `host_changed` in `room_events` and, during a battle, as
@@ -545,7 +556,8 @@ layers matter:
   - `POST /rest/v1/rpc/create_room`, `start_solo_battle`, `report_build`: about 20 per
     minute each;
   - `POST /rest/v1/rpc/*` overall: about 600 per minute (an 8-player battle's heartbeats,
-    snapshots and votes stay far below);
+    snapshots and votes stay far below; since T-029 a connected player makes about 7
+    clock-driven calls a minute: 6 heartbeats and 1 `server_now`);
   - Storage uploads (`/storage/v1/object/ephemeral-builds/*`): about 120 per minute
     (autosaves every 30 s, ship);
   - `/admin*` on the app: a managed challenge (or Cloudflare Access) in front of the

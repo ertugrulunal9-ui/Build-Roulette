@@ -86,8 +86,9 @@ The game, step by step:
    `bundle.css`, `thumb.webp`) and `ship_build` with stats. Every error code of the RPC
    contract has a message (`src/lib/solo/errors.ts`).
 5. **T-0.** Without a ship, the editor locks and the last autosave is auto-shipped by the
-   server. The client nudges `advance_battle` at each deadline (0–500 ms jitter); pg_cron
-   is the backstop.
+   server. The client nudges `advance_battle` at each deadline (0–500 ms jitter); a battle
+   that does not move is nudged again after 5, 10, 20, then every 30 s, and RESULTS is not
+   nudged while the screenshot is pending (T-029); pg_cron is the backstop.
 6. **RESULTS.** The capture worker's screenshot, the completion time, the auto-awards
    (`speedrun`, `clutch_ship`), the challenge, and the fallback/failed/DNF states. The
    shipped bundle runs in a **reveal-mode** preview for the 60 s last look.
@@ -111,8 +112,10 @@ player):
 2. **Copy invite link** and open it in window 2 (private). Pick a name, **Join the room**.
    Both lobbies show both players online (Presence) and "2/8 players".
 3. Both click **Ready up**; the host clicks **Start battle**. Everyone sees the same reels,
-   then BUILD with a sidebar of everyone's progress (lines, build status, typing, and
-   "Ada shipped 'Snack Overflow' at 3:12" badges).
+   then BUILD with a sidebar of everyone's progress (lines, build status, "✎ active" for an
+   edit in the last 15 s, and "Ada shipped 'Snack Overflow' at 3:12" badges). The activity
+   is Presence, sent only during BUILD, only when it changes in a way that matters and at
+   most every 15 s (T-029), so the sidebar can be up to ~15 s behind.
 4. Ship, or wait for the deadline (5, 10 or 15 min, drawn by the server; force it with
    psql as in `e2e/multiplayer.spec.ts` if you are impatient).
 5. **REVEAL.** Everyone (spectators too) watches the final builds one at a time, on the
@@ -374,7 +377,8 @@ CHAOS_SHARD=2 pnpm --filter @br/web test:e2e:chaos   # one of its 3 shards (~5 m
   - **random chaos (seeded):** drops, refreshes, edits and ships picked by a PRNG on skewed
     clocks; `CHAOS_SEED=n` replays a run (the seed is logged and in the report);
   - **steady typing:** a new line every ~1.5 s for a minute must not trip Realtime's
-    presence limit (5 messages per 30 s per client, or the server closes the channel);
+    presence limit (5 messages per 30 s per client, or the server closes the channel); the
+    watcher sees the final line count once the typist stops (T-029: within ~15 s);
   - **all clients closed at T-0:** pg_cron alone ends BUILD and SHIPPING, auto-ships the
     autosaves (including the final one at T-3 s), runs every REVEAL slot and VOTING (their
     deadlines moved to now), captures, RESULTS;
@@ -422,9 +426,10 @@ CHAOS_SHARD=2 pnpm --filter @br/web test:e2e:chaos   # one of its 3 shards (~5 m
   a client joins a channel. Until then every channel stays subscribed but no broadcast from
   the database arrives, and the ones sent meanwhile are lost. That made the chaos tests
   fail now and then (T-023: pages stuck on the previous REVEAL slot). The sync engine now
-  reads the battle's version with every heartbeat and refetches when the server is ahead,
-  and ship toasts come from snapshots, so a lost broadcast costs at most one heartbeat
-  (10 s); the chaos test above pins it.
+  compares the battle version in every heartbeat's answer with its snapshot (T-029; before,
+  a separate read next to each beat) and refetches when the server is ahead, and ship
+  toasts come from snapshots, so a lost broadcast costs at most one heartbeat (10 s); the
+  chaos test above pins it.
 - **The host's Next during the capture burst.** `reveal_next` / `skip_to_vote` carry the
   battle version (compare-and-set), and the capture worker finishes the builds'
   screenshots one after another right at the start of REVEAL, each one a new version. A
@@ -449,7 +454,8 @@ deploys, secrets, custom domain and caching.
   in a frame instead. Fix options: the capture worker also writes a PNG card image, or
   Cloudflare image transformations in production.
 - **The solo game polls** `get_battle_snapshot` (every 2–10 s depending on the phase, and
-  right after each deadline); rooms use Realtime.
+  right after each deadline; T-029: no longer every 250 ms once a deadline has passed);
+  rooms use Realtime.
 - **Rooms:** presence is tracked on the room topic only. A viewer's "Skip this build", the
   frozen state and a phone's "Tap to run live" are per build and per tab (not remembered
   across a refresh).

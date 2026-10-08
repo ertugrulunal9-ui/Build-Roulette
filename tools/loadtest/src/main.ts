@@ -15,6 +15,7 @@
  */
 import { fork } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { cpus, loadavg, totalmem } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -40,6 +41,18 @@ import { PLAN_LIMITS, RealtimeTenant, type TenantLimits } from './realtime-tenan
 import { buildReport, renderMarkdown } from './report';
 import { CaptureServices } from './services';
 import type { ShardMessage, ShardTask } from './worker';
+
+/** Host CPU counters from /proc/stat (Linux): idle includes iowait. */
+function procStat(): { idle: number; total: number } | null {
+  try {
+    const line = readFileSync('/proc/stat', 'utf8').split('\n')[0] ?? '';
+    const n = line.trim().split(/\s+/).slice(1).map(Number);
+    const total = n.reduce((a, b) => a + b, 0);
+    return { idle: (n[3] ?? 0) + (n[4] ?? 0), total };
+  } catch {
+    return null;
+  }
+}
 
 const log = (msg: string) => {
   process.stdout.write(`[loadtest ${new Date().toISOString().slice(11, 19)}] ${msg}\n`);
@@ -147,8 +160,17 @@ async function main(): Promise<number> {
   if (cfg.dockerStats) docker.start();
   const dbSamples: DbSample[] = [];
   const load: number[][] = [];
+  const busy: number[] = [];
+  let lastStat = procStat();
   const sampler = setInterval(() => {
     load.push(loadavg());
+    const stat = procStat();
+    if (stat && lastStat && stat.total > lastStat.total) {
+      busy.push(
+        Math.round((1 - (stat.idle - lastStat.idle) / (stat.total - lastStat.total)) * 1000) / 10,
+      );
+    }
+    lastStat = stat;
     sampleDb(adminDb, since).then(
       (s) => dbSamples.push(s),
       () => undefined,
@@ -247,6 +269,7 @@ async function main(): Promise<number> {
       memGiB: totalmem() / 2 ** 30,
       node: process.version,
       loadAvg: load,
+      cpuBusyPct: busy,
     },
     notes,
   });

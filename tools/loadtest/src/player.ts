@@ -286,7 +286,7 @@ export class Topic {
         }
         if (st === 'CLOSED' && !this.closed && this.channel === channel) {
           // Closed by the server (rate limit, expired token): supabase-js does not rejoin.
-          m.count('channel_closed_by_server');
+          m.count(`channel_closed_by_server:${this.topic.split(':')[0] ?? ''}`);
           this.channel = null;
           const wait = this.resubscribeMs;
           this.resubscribeMs = Math.min(30_000, this.resubscribeMs * 2);

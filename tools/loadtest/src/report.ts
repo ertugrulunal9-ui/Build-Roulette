@@ -36,7 +36,7 @@ export interface RunInputs {
   statements: StatementRow[];
   statementsReset: boolean;
   realtimeLimits: { before: TenantLimits | null; applied: TenantLimits | null };
-  host: { cpus: number; memGiB: number; node: string; loadAvg: number[][] };
+  host: { cpus: number; memGiB: number; node: string; loadAvg: number[][]; cpuBusyPct: number[] };
   notes: string[];
 }
 
@@ -137,7 +137,12 @@ export interface Report {
     containers: Record<string, { meanCpu: number; maxCpu: number; maxMemMiB: number }>;
     samples: number;
   };
-  generator: { procs: number; eventLoopDelayMs: RawMetrics['eventLoopDelayMs'][] };
+  generator: {
+    procs: number;
+    eventLoopDelayMs: RawMetrics['eventLoopDelayMs'][];
+    /** Mean cores used by all generator processes over the run. */
+    cores: number;
+  };
   timeseries: { t: number; ws: number; inflight: number; reqsPerSec: number; clients: number }[];
   sim: Record<string, number>;
   rates: {
@@ -472,7 +477,15 @@ export function buildReport(inp: RunInputs): Report {
       samples: inp.dbSamples,
     },
     docker: { available: inp.dockerAvailable, containers, samples: inp.docker.length },
-    generator: { procs: shards.length, eventLoopDelayMs: shards.map((s) => s.eventLoopDelayMs) },
+    generator: {
+      procs: shards.length,
+      eventLoopDelayMs: shards.map((s) => s.eventLoopDelayMs),
+      cores:
+        Math.round(
+          (shards.reduce((a, s) => a + s.cpuMs, 0) / Math.max(1, inp.endedAt - inp.startedAt)) *
+            100,
+        ) / 100,
+    },
     timeseries: [...ts.values()].sort((a, b) => a.t - b.t),
     sim,
     rates: { perClientMinute, perBattle },
@@ -612,7 +625,7 @@ export function renderMarkdown(r: Report): string {
   }
   L.push('## Generator', '');
   L.push(
-    `Event-loop delay per process (p50/p99/max ms): ${r.generator.eventLoopDelayMs.map((e) => `${f(e.p50)}/${f(e.p99)}/${f(e.max)}`).join(', ')}. Host load average samples (1 min): ${r.meta.host.loadAvg.map((l) => f(l[0] ?? 0, 2)).join(' ')}.`,
+    `Event-loop delay per process (p50/p99/max ms): ${r.generator.eventLoopDelayMs.map((e) => `${f(e.p50)}/${f(e.p99)}/${f(e.max)}`).join(', ')}. Generator CPU: ${f(r.generator.cores, 2)} cores on average. Host CPU busy % (5 s samples): ${r.meta.host.cpuBusyPct.map((x) => f(x, 0)).join(' ')}. Host load average (1 min): ${r.meta.host.loadAvg.map((l) => f(l[0] ?? 0, 1)).join(' ')}.`,
     '',
     `Client counters: \`${JSON.stringify(r.sim)}\``,
     '',

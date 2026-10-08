@@ -68,6 +68,8 @@ export interface RawMetrics {
   eventLoopDelayMs: { p50: number; p99: number; max: number };
   /** Client clock minus server clock (best of 3 `server_now` samples), one per sync. */
   clockOffsetMs: number[];
+  /** CPU time of this generator process (user + system), ms. */
+  cpuMs: number;
   timeseries: { t: number; ws: number; inflight: number; reqs: number; clients: number }[];
 }
 
@@ -123,6 +125,7 @@ export class Metrics {
       clients: { created: 0, peak: 0, clientMs: 0 },
       eventLoopDelayMs: { p50: 0, p99: 0, max: 0 },
       clockOffsetMs: [],
+      cpuMs: 0,
       timeseries: [],
     };
   }
@@ -248,6 +251,8 @@ export class Metrics {
   finish(): RawMetrics {
     for (const id of [...this.clientStarts.keys()]) this.clientStopped(id);
     this.raw.endedAt = Date.now();
+    const cpu = process.cpuUsage();
+    this.raw.cpuMs = Math.round((cpu.user + cpu.system) / 1000);
     return this.raw;
   }
 }

@@ -126,17 +126,31 @@ export function instrumentedFetch(metrics: Metrics, timeoutMs: number): typeof f
  * The Phoenix event of a Realtime frame. Protocol 2.0.0 text frames are JSON arrays
  * `[join_ref, ref, topic, event, payload]`; broadcasts can also arrive as binary frames.
  */
-export function frameEvent(data: unknown): { event: string; bytes: number } {
+export function frameEvent(data: unknown): { event: string; bytes: number; detail?: string } {
   if (typeof data === 'string') {
     let event = 'unparsed';
+    let detail: string | undefined;
     try {
       const msg: unknown = JSON.parse(data);
-      if (Array.isArray(msg)) event = String(msg[3]);
-      else if (msg && typeof msg === 'object' && 'event' in msg) event = String(msg.event);
+      let payload: unknown = null;
+      if (Array.isArray(msg)) {
+        event = String(msg[3]);
+        payload = msg[4];
+      } else if (msg && typeof msg === 'object' && 'event' in msg) {
+        event = String(msg.event);
+        payload = 'payload' in msg ? msg.payload : null;
+      }
+      // Why the server talks to us outside the protocol (rate limits, channel errors).
+      if ((event === 'system' || event === 'phx_error') && payload && typeof payload === 'object') {
+        const p = payload as { status?: string; message?: string };
+        detail = `${event}:${p.status ?? ''}:${(p.message ?? '').slice(0, 90)}`;
+      }
     } catch {
       // keep "unparsed"
     }
-    return { event, bytes: Buffer.byteLength(data) };
+    return detail
+      ? { event, bytes: Buffer.byteLength(data), detail }
+      : { event, bytes: Buffer.byteLength(data) };
   }
   if (data instanceof ArrayBuffer) {
     const kind = new Uint8Array(data)[0];
@@ -167,6 +181,7 @@ export function countingWebSocket(metrics: Metrics): typeof WebSocket {
       this.addEventListener('message', (ev: MessageEvent) => {
         const f = frameEvent(ev.data);
         metrics.wsFrame('in', f.event, f.bytes);
+        if (f.detail) metrics.count(f.detail);
       });
     }
 

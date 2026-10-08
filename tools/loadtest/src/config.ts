@@ -10,7 +10,7 @@
  * lengths in the cost model (cost.ts), not taken from the compressed run as they are.
  */
 
-export type RealtimeLimits = 'keep' | 'free' | 'pro' | 'unlimited';
+export type RealtimeLimits = 'keep' | 'free' | 'pro' | 'pro-nocap' | 'unlimited';
 export type AuthMode = 'admin' | 'anonymous';
 
 export interface LoadConfig {
@@ -114,7 +114,7 @@ export const PROFILES: Record<string, Partial<LoadConfig>> = {
     battlesPerRoom: 2,
     rampS: 60,
     procs: 4,
-    realtimeLimits: 'pro',
+    realtimeLimits: 'pro-nocap',
     captureConcurrency: 2,
   },
 };
@@ -228,8 +228,8 @@ export function validate(cfg: LoadConfig): LoadConfig {
   share('silentVoterShare');
   share('hostNextShare');
   if (cfg.shipShare + cfg.dnfShare > 1) problems.push('shipShare + dnfShare must be ≤ 1');
-  if (!['keep', 'free', 'pro', 'unlimited'].includes(cfg.realtimeLimits)) {
-    problems.push('realtimeLimits must be keep, free, pro or unlimited');
+  if (!['keep', 'free', 'pro', 'pro-nocap', 'unlimited'].includes(cfg.realtimeLimits)) {
+    problems.push('realtimeLimits must be keep, free, pro, pro-nocap or unlimited');
   }
   if (!['admin', 'anonymous'].includes(cfg.auth)) problems.push('auth must be admin or anonymous');
   if (problems.length > 0) throw new UsageError(problems.join('; '));
@@ -271,7 +271,7 @@ Options (defaults in src/config.ts):
   --heartbeat-ms MS --autosave-ms MS --clock-resync-ms MS
   --ship-share P --dnf-share P --silent-voter-share P --host-next-share P
   --capture true|false --capture-concurrency N
-  --realtime-limits keep|free|pro|unlimited   (local Realtime tenant quotas for the run)
+  --realtime-limits keep|free|pro|pro-nocap|unlimited   (local Realtime tenant quotas)
   --auth admin|anonymous
   --gateway-connections N   (local Kong nginx worker_connections; 0 keeps the default 512)
   --drain-timeout-s S --room-timeout-s S --seed N --out-dir DIR --docker-stats true|false

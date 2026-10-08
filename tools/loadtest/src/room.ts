@@ -95,6 +95,7 @@ export async function runRoom(deps: RoomDeps, roomIndex: number): Promise<void> 
     }),
   );
 
+  let starter: SimPlayer = host;
   for (let n = 0; n < cfg.battlesPerRoom; n++) {
     await Promise.all(
       sessions.map(async (s) => {
@@ -104,9 +105,17 @@ export async function runRoom(deps: RoomDeps, roomIndex: number): Promise<void> 
     );
     let battleId: string | null = null;
     for (let attempt = 0; attempt < 15 && !battleId; attempt++) {
-      const r = await host.rpc<string>('start_battle', { p_room_id: roomId });
+      const r = await starter.rpc<string>('start_battle', { p_room_id: roomId });
       if (r.data) battleId = r.data;
-      else if (
+      else if (r.error === 'not_host') {
+        // The host role moved (a silent host for 30 s): the new host starts, as in the app.
+        const snap = await starter.rpc<{ room: { host_id: string } }>('get_room_snapshot', {
+          p_room_id: roomId,
+        });
+        const next = players.find((p) => p.id === snap.data?.room.host_id);
+        if (next) starter = next;
+        metrics.count('host_moved_before_start');
+      } else if (
         r.error === 'not_enough_players' ||
         r.error === 'room_busy' ||
         r.error === 'wrong_room_state'

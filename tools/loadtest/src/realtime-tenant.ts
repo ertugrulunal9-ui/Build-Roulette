@@ -42,6 +42,15 @@ export const PLAN_LIMITS: Record<Exclude<RealtimeLimits, 'keep'>, TenantLimits> 
     max_bytes_per_second: 1_000_000,
     max_channels_per_client: 100,
   },
+  /** Pro with the spend cap turned off (usage beyond the quotas is billed). */
+  'pro-nocap': {
+    max_concurrent_users: 10_000,
+    max_events_per_second: 2_500,
+    max_joins_per_second: 2_500,
+    max_presence_events_per_second: 1_000,
+    max_bytes_per_second: 10_000_000,
+    max_channels_per_client: 100,
+  },
   unlimited: {
     max_concurrent_users: 10_000,
     max_events_per_second: 10_000,

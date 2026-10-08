@@ -136,6 +136,12 @@ jobs:
       - name: Run the moderation check
         run: node supabase/scripts/e2e-moderation.mjs
 
+      # Runbooks (T-030): every SQL block in docs/runbooks/ runs on fixtures (read-only
+      # blocks in a READ ONLY transaction, writing blocks rolled back); shell blocks are
+      # syntax-checked. Needs psql (runner image).
+      - name: Check the runbooks
+        run: node supabase/scripts/check-runbooks.mjs
+
       - name: Stop the stack
         if: always()
         run: npx -y "$SUPABASE_CLI" stop --no-backup
@@ -253,7 +259,15 @@ jobs:
       # still-first REVEAL with "Tap to run live", VOTE with taps (latest tap wins), RESULTS,
       # the /u/[id] history page, and no sideways scrolling. Needs psql.
       - name: Run the rooms e2e
+        id: rooms-e2e
         run: pnpm --filter @br/web test:e2e:multi
+
+      # Error reporting and analytics (T-030) against a local fake ingest: a build with the
+      # Sentry DSN and PostHog key set (events arrive scrubbed, nothing from the sandbox),
+      # then a build without them (nothing loaded, nothing sent).
+      - name: Run the telemetry e2e
+        if: ${{ !cancelled() && steps.rooms-e2e.outcome != 'skipped' }}
+        run: pnpm --filter @br/web test:e2e:telemetry
 
       - name: Upload Playwright output
         if: failure()

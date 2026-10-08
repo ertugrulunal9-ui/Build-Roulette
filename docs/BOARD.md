@@ -14,7 +14,9 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 | T-025 | Load test (50 rooms × 8 players), Realtime/egress mapping to plan limits, cost per 1,000 battles | `tools/loadtest/`, `docs/` input | done | Merged |
 | T-029 | Scaling fixes from the load test: ~4× fewer Presence messages (≤1 activity update / 15 s, none after BUILDING) + harder backoff after server-closed channels; no nudge storm in RESULTS (backoff / stop nudging while waiting for captures); `heartbeat` returns the battle version (drop the extra read); single-sample clock resync | `apps/web/`, `supabase/` | done | Merged |
 | T-026 | ISR for `/battles/[id]` (+ OG image) and `/u/[id]` on the R2 incremental cache; takedowns revalidate the affected pages | `apps/web/` | done | Merged (observability and runbooks split off → T-030) |
-| T-030 | Observability (Sentry/PostHog, env-gated, no PII; sync-engine missed-event and degraded-time counts), runbooks (`docs/runbooks/`) | `apps/web/`, `apps/*`, `docs/runbooks/` | in-progress | M5, task 9 |
+| T-030 | Observability (Sentry/PostHog, env-gated, no PII; sync-engine missed-event and degraded-time counts), runbooks (`docs/runbooks/`) | `apps/web/`, `apps/*`, `docs/runbooks/` | done | Merged |
+| T-031 | Preview watchdog false crash **after** `ready` under whole-machine CPU starvation (chaos shard 1, `heartbeat-timeout silentMs=5309 phase=running`): count only silence while the app itself was awake and pinging; report preview crashes (phase, silence, starvation evidence) as a sandbox-health event | `packages/runtime/`, `apps/web/` | in-progress | M5, task 10 |
+| T-032 | Template packages survive a package-CDN outage after the lobby preload (R10): measure what the browser really caches for the shell and build frames (cache partitioning, opaque origins, the shell's own wipe), choose a Service Worker, an in-shell module cache or edge-only caching, implement it, and test it with an e2e that kills the CDN mid-BUILD | `apps/sandbox-shell/`, `packages/runtime/`, `apps/web/`, `apps/pkg-cdn/` | todo | M5, after T-031 |
 | T-019 | M4 DB layer: REVEAL (order, slots, host skip) + VOTING (categories, no self-vote, revotes, secret ballots) phases, vote-based ranking + category awards, reveal-phase storage read access, realtime `vote_progress` | `supabase/`, `packages/game/` (constants), `ci.yml` | done | Merged |
 | T-020 | M4 web: synchronized REVEAL spotlight (one live build, thumbnails, prefetch, host skip), VOTE stage, vote-based results + permanent page | `apps/web/` (+ remove the CI pre-M4 switch) | done | Merged |
 | T-021 | M4 completion: mobile reveal/vote layout, player history `/u/[id]`, chaos coverage for reveal/vote, M4 exit criteria | `apps/web/`, `supabase/` (tests) | done | Merged |
@@ -51,6 +53,8 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 | At deploy: Turnstile site and secret keys; enable CAPTCHA in Supabase Auth together with `NEXT_PUBLIC_TURNSTILE_SITE_KEY` | Bot protection for anonymous sign-up |
 | At deploy: Cloudflare per-IP rate-limit rules and protection for `/admin` (numbers in `supabase/README.md`) | Abuse protection at the edge |
 | At deploy: results-page cache (T-026). Create the R2 bucket `build-roulette-web-cache` with a 30-day lifecycle rule on `incremental-cache/`. Create the D1 database `build-roulette-web-tags` near the Supabase region and put its id into `wrangler.jsonc`. Deploy only with `cf:deploy`, and put no "Cache Everything" rule or other CDN in front of the Worker. Steps are in `apps/web/DEPLOY.md`. | Cached `/battles/[id]` pages; takedowns showing at once |
+| At deploy: Sentry account with one JavaScript project. Set the DSN as `NEXT_PUBLIC_SENTRY_DSN` at `cf:build`, plus `SENTRY_DSN` for the capture worker and the package CDN. In the project, turn on "Prevent Storing of IP Addresses" and set Allowed Domains to the app origin. Optional: a build-time auth token for source maps. PostHog EU project: `NEXT_PUBLIC_POSTHOG_KEY` and `NEXT_PUBLIC_POSTHOG_HOST`, with "Discard client IP data" on. Steps are in `apps/web/DEPLOY.md` (Observability). | Error reporting and product analytics |
+| **M5 exit criterion: rehearse every runbook once on staging.** This needs the hosted Supabase project and the Cloudflare account above. | M5 sign-off |
 
 **User decisions (2026-10-04):** option A, so everything is hosted on Cloudflare and Vercel is dropped. The sandbox starts on `*.pages.dev` (already on the PSL), so there is no second domain at launch. Package CDN runs on Cloudflare Containers. Continue M2 locally.
 
@@ -597,3 +601,20 @@ Start M5.
   - moderation e2e **4/4 on `next start` and 4/4 on the Workers preview** (`test:e2e:cf:moderation`: cache HIT, takedown visible on the next request on page, OG image and `/u/[id]`);
   - solo 2/2, multiplayer 4/4, playground on Workers 14/14.
   - No SQL was touched.
+
+### T-030: accepted (M5 task 9)
+- **New package `@br/telemetry`** with the shared privacy rules: an allowlist scrubber, URL/text scrubbing, a pseudonymous user id (`sha256("br-telemetry:v1:" + id)`, 128 bits), and a fetch-based Sentry reporter on `@sentry/core` that runs on Node and on Workers. `@sentry/nextjs` was rejected because its server side doesn't fit workerd.
+- **Web:** browser reporting starts only with `NEXT_PUBLIC_SENTRY_DSN` (the check is on the inlined variable, so a build without it has no reporting code). The SDK chunk (27.8 KiB gzip) loads when idle. `allowUrls` is limited to our own origin, and `blob:`/`data:` stacks are dropped, so nothing from the sandbox is reported. Server errors go through `onRequestError`.
+- **Capture worker and package CDN:** `SENTRY_DSN`-gated; build-caused render failures are never sent.
+- **PostHog:** a typed event module (no posthog-js, no autocapture or replay). It's off under DNT/GPC. A `sync_health` event is sent per battle from the new sync-engine counters (missed, degraded time, rejoins, server closes).
+- **Admin Health:** `admin_ops_health()` (admin only, `security definer`, `search_path=''`; anon and service_role refused; pgTAP 43). It covers stuck/overdue battles, job queues, screenshot outcomes, pg_cron runs and TTL leftovers. Shown on `/admin` with links to runbooks, plus "Refresh public copies" and "Send a test error". The hub checked that both new actions verify the admin first.
+- **Runbooks:** `docs/runbooks/` has 7 runbooks plus an index. `check-runbooks.mjs` runs every SQL block on fixtures (writes rolled back) and syntax-checks the shell blocks. The hub added it to the CI db job, and the telemetry e2e to the CI multiplayer job.
+- **Size:** Worker +36 KiB gzip; page JS +0.9 KiB without a DSN.
+- **Deviation (accepted):** the bundler web worker is not instrumented, because its errors contain build code.
+- Hub re-ran on a fresh clone:
+  - pipeline green (web 374, telemetry 20, capture-worker 79, pkg-cdn 120 unit tests); `cf:build` OK;
+  - `supabase test db` **1261/1261**; `e2e-moderation.mjs` 26/26; runbook check 42/42;
+  - moderation e2e 4/4 (and 4/4 on Workers); telemetry e2e 5/5 + 1/1 (and 5/5 on Workers);
+  - solo 2/2, multiplayer 4/4; chaos shards 2 and 3 passed (2/2, 4/4).
+- **Chaos shard 1 failed once:** Eve's preview showed `heartbeat-timeout silentMs=5309 phase=running` with no loop in the code, under the 6-browser load. T-030 touches neither the runtime nor the preview, and telemetry is off in that test. The re-run passed 3/3. This is the T-027 failure mode after `ready` → **T-031**. The failure artifacts are kept in the hub scratchpad.
+- The M5 scope item "Service Worker cache for template packages" was never done. It needs a measurement first (the shell wipes its own Service Workers, and the build frame has an opaque origin) → **T-032**.

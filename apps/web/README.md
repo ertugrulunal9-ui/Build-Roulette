@@ -24,7 +24,8 @@ side (R2, D1, Durable Object queue) in [DEPLOY.md](DEPLOY.md), "Caching".
   DESTROYED with `destroyed_at` set, **5 s** before that (screenshots land, then the destroy
   job) and for a battle that is not public yet (its 404 doesn't stick). Tag `battle:{id}`.
 - **`/u/[id]`** reads its page from the query string, so it renders per request; its data
-  (`loadPlayerHistory`) is cached for at most a minute and tagged with the player and every
+  (`loadPlayerHistory`) is cached for at most a minute, and for 5 s only while it says "No
+  battles to show" or lists a battle that is not settled. Tagged with the player and every
   battle on the page.
 - **A takedown** in `/admin` expires `battle:{id}` (`updateTag`): the battle's page, its OG
   image and every history page listing it show the removal on the next request. Ten

@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import type { HistoryBattle, PlayerHistory } from '../history/player-history';
 import type { PublicBattle } from '../solo/types';
 import {
+  LIVE_HISTORY,
   LIVE_BATTLE,
   MALFORMED_ID,
   MISSING_BATTLE,
@@ -15,6 +16,7 @@ import {
   battleLifetime,
   battleTag,
   battleTags,
+  historyLifetime,
   historyTags,
   isSettled,
   playerTag,
@@ -79,7 +81,13 @@ describe('battleLifetime', () => {
   });
 
   it('uses lifetimes an ISR page can take', () => {
-    const all: CacheLifetime[] = [SETTLED_BATTLE, LIVE_BATTLE, MISSING_BATTLE, PLAYER_HISTORY];
+    const all: CacheLifetime[] = [
+      SETTLED_BATTLE,
+      LIVE_BATTLE,
+      MISSING_BATTLE,
+      PLAYER_HISTORY,
+      LIVE_HISTORY,
+    ];
     for (const life of all) {
       // 0 would make an ISR page dynamic at runtime ("Page changed from static to dynamic").
       expect(life.revalidate).toBeGreaterThan(0);
@@ -91,6 +99,50 @@ describe('battleLifetime', () => {
     expect(SETTLED_BATTLE.revalidate).toBe(3600);
     // A history is at most a minute old (no stale copy past `expire`).
     expect(PLAYER_HISTORY.expire).toBeLessThanOrEqual(60);
+  });
+});
+
+describe('historyLifetime', () => {
+  const settled = {
+    battle_id: ID,
+    phase: 'destroyed',
+    destroyed_at: '2026-10-08T12:10:00Z',
+  } as HistoryBattle;
+  const inResults = {
+    battle_id: 'b0260000-0000-4000-8000-000000000002',
+    phase: 'results',
+    destroyed_at: null,
+  } as HistoryBattle;
+
+  it('keeps a history of settled battles for up to a minute', () => {
+    const page: PlayerHistory = {
+      player: { display_name: 'Iris' },
+      battles: [settled],
+      next: null,
+    };
+    expect(historyLifetime(page)).toBe(PLAYER_HISTORY);
+  });
+
+  it('keeps one with a battle that can still change for seconds', () => {
+    const page: PlayerHistory = {
+      player: { display_name: 'Iris' },
+      battles: [inResults, settled],
+      next: null,
+    };
+    expect(historyLifetime(page)).toBe(LIVE_HISTORY);
+    expect(
+      historyLifetime({
+        ...page,
+        battles: [{ ...settled, destroyed_at: null }],
+      }),
+    ).toBe(LIVE_HISTORY);
+  });
+
+  it('never serves "no battles yet" for more than 5 s: the first battle may end right after', () => {
+    expect(historyLifetime({ player: null, battles: [], next: null })).toBe(LIVE_HISTORY);
+    expect(historyLifetime(null)).toBe(LIVE_HISTORY);
+    expect(LIVE_HISTORY.revalidate).toBeLessThanOrEqual(5);
+    expect(LIVE_HISTORY.expire).toBe(LIVE_HISTORY.revalidate);
   });
 });
 

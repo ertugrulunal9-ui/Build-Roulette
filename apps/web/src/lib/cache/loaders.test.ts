@@ -8,6 +8,7 @@ import { loadPlayerHistory, type PlayerHistory } from '../history/player-history
 import { loadPublicBattle } from '../solo/public-battle';
 import type { PublicBattle } from '../solo/types';
 import {
+  LIVE_HISTORY,
   LIVE_BATTLE,
   MALFORMED_ID,
   MISSING_BATTLE,
@@ -105,9 +106,13 @@ describe('loadPublicBattle', () => {
 describe('loadPlayerHistory', () => {
   it('caches a history page for a minute, tagged with the player and its battles', async () => {
     const other = 'b0260000-0000-4000-8000-000000000002';
+    const settled = { phase: 'destroyed', destroyed_at: '2026-10-08T12:10:00Z' } as const;
     const page: PlayerHistory = {
       player: { display_name: 'Iris' },
-      battles: [{ battle_id: ID }, { battle_id: other }] as PlayerHistory['battles'],
+      battles: [
+        { battle_id: ID, ...settled },
+        { battle_id: other, ...settled },
+      ] as PlayerHistory['battles'],
       next: null,
     };
     fetchMock.mockResolvedValue(answer(200, page));
@@ -129,6 +134,8 @@ describe('loadPlayerHistory', () => {
       p_before_battle: ID,
     });
     expect(next.cacheTag).toHaveBeenCalledExactlyOnceWith(`player:${USER}`);
+    // No player (yet): "No battles to show" lives seconds.
+    expect(next.cacheLife).toHaveBeenCalledExactlyOnceWith(LIVE_HISTORY);
   });
 });
 

@@ -50,9 +50,19 @@ export const MALFORMED_ID: CacheLifetime = SETTLED_BATTLE;
 /**
  * A player's history page: a new battle lands whenever the player finishes one (in the
  * database, not through this app), so a short lifetime; a takedown revalidates it at once
- * through the tags of the battles it lists.
+ * through the tags of the battles it lists. A battle lasts minutes, so a copy read before
+ * one (say from the lobby's link) has expired by the time it ends.
  */
 export const PLAYER_HISTORY: CacheLifetime = { stale: 30, revalidate: 30, expire: 60 };
+
+/**
+ * A history page about to change: "No battles to show" (no such player, or no finished
+ * battle yet: the lobby's "Your battle history" link can read it right before the first
+ * battle ends), or one listing a battle that is not settled (its screenshot lands, then
+ * `destroyed_at`). 5 s, and never served once more after that (`expire` = `revalidate`):
+ * the page renders per request anyway, so waiting for fresh data costs one read.
+ */
+export const LIVE_HISTORY: CacheLifetime = { stale: 30, revalidate: 5, expire: 5 };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -70,7 +80,7 @@ export function playerTag(userId: string): string {
 }
 
 /** Whether a battle's public data can still change without a takedown (see SETTLED_BATTLE). */
-export function isSettled(battle: PublicBattle['battle']): boolean {
+export function isSettled(battle: Pick<PublicBattle['battle'], 'phase' | 'destroyed_at'>): boolean {
   return battle.phase === 'destroyed' && battle.destroyed_at !== null;
 }
 
@@ -79,6 +89,12 @@ export function battleLifetime(id: string, data: PublicBattle | null): CacheLife
   if (!UUID.test(id.toLowerCase())) return MALFORMED_ID;
   if (!data) return MISSING_BATTLE;
   return isSettled(data.battle) ? SETTLED_BATTLE : LIVE_BATTLE;
+}
+
+/** The lifetime of one page of `get_player_history`'s answer. */
+export function historyLifetime(data: PlayerHistory | null): CacheLifetime {
+  if (!data?.player) return LIVE_HISTORY;
+  return data.battles.every(isSettled) ? PLAYER_HISTORY : LIVE_HISTORY;
 }
 
 /** The tags of one battle's page and OG image. */

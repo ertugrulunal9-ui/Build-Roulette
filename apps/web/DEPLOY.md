@@ -127,7 +127,7 @@ pnpm --filter @br/web cf:deploy
 | Page | How | Lifetime | Tags |
 |---|---|---|---|
 | `/battles/[id]` and `/battles/[id]/opengraph-image` | ISR: rendered on the first visit, then served from the cache (`force-static`) | **1 hour** once the battle is DESTROYED with `destroyed_at` set (it can't change by itself any more). **5 s** while it can: RESULTS (the screenshots land), or DESTROYED before the destroy job stamps `destroyed_at`. **5 s** for "no public battle" (an unknown id, or a battle not in RESULTS yet), so its 404 never sticks. 1 hour for a malformed id. | `battle:{id}` |
-| `/u/[id]` | Rendered per request (its pagination is in the query string); its data is cached | **At most 60 s**: fresh for 30 s, then served once more while it refreshes, never older than 60 s | `player:{id}`, plus `battle:{id}` of every battle on the page |
+| `/u/[id]` | Rendered per request (its pagination is in the query string); its data is cached | **At most 60 s** once every battle on the page is settled: fresh for 30 s, then served once more while it refreshes. **5 s**, never served once more, while it is "No battles to show" (the first battle may end any moment) or lists a battle that is not settled. | `player:{id}`, plus `battle:{id}` of every battle on the page |
 | `/`, `/play`, `/playground` | Prerendered at build time | Until the next deploy | — |
 
 The rules live in `src/lib/cache/policy.ts` (unit-tested). How it works:

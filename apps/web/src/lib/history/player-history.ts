@@ -3,13 +3,14 @@
  * supabase/README.md "Player history"). Used by /u/[id]. Plain fetch, like the results
  * page, so it runs the same on Node and on Cloudflare Workers.
  *
- * Cached (T-026): `loadPlayerHistory` is a `'use cache'` function (PLAYER_HISTORY in
- * lib/cache/policy.ts: at most a minute old) tagged with the player and with every battle on
- * the page, so a takedown in any of them revalidates it at once.
+ * Cached (T-026): `loadPlayerHistory` is a `'use cache'` function (lib/cache/policy.ts: at
+ * most a minute old; 5 s while the page is empty or lists a battle that is not settled)
+ * tagged with the player and with every battle on the page, so a takedown in any of them
+ * revalidates it at once.
  */
 import { cacheLife, cacheTag } from 'next/cache';
 import { cache } from 'react';
-import { PLAYER_HISTORY, historyTags } from '../cache/policy';
+import { historyLifetime, historyTags } from '../cache/policy';
 import type { AwardKind, BuildStatus, CaptureStatus, VoteCounts } from '../solo/types';
 import { supabaseConfig, type SupabaseConfig } from '../supabase/config';
 
@@ -140,7 +141,7 @@ export async function loadPlayerHistory(
     id,
     before && beforeBattle ? { before, before_battle: beforeBattle } : null,
   );
-  cacheLife(PLAYER_HISTORY);
+  cacheLife(historyLifetime(data));
   cacheTag(...historyTags(id, data));
   return data;
 }

@@ -10,7 +10,8 @@ import type {
   Plugin,
 } from 'esbuild-wasm';
 import type { BuildResult, BundleInput, Diagnostic } from '../types';
-import { cdnPlugin, vfsPlugin, type FetchText } from './plugins';
+import { errorDetail } from '@br/protocol';
+import { PackageFetchError, cdnPlugin, vfsPlugin, type FetchText } from './plugins';
 import {
   MAX_CDN_DEPS,
   buildImportMap,
@@ -96,6 +97,7 @@ export async function bundle(
     durationMs: performance.now() - started,
   });
   if (diagnostics.some((d) => d.severity === 'error')) return fail();
+  const packages = new Set<string>();
 
   try {
     const result = await esbuild.build({
@@ -123,6 +125,9 @@ export async function bundle(
           dependencies: input.manifest.dependencies,
           cdnBaseUrl: opts.cdnBaseUrl,
           fetchText: opts.fetchText,
+          onModule: (url) => {
+            packages.add(url);
+          },
         }),
         ...(opts.plugins ?? []),
       ],
@@ -134,7 +139,15 @@ export async function bundle(
       if (f.path.endsWith('.js')) js = f.text;
       else if (f.path.endsWith('.css')) css = f.text;
     }
-    return { ok: true, js, css, importMap, diagnostics, durationMs: performance.now() - started };
+    return {
+      ok: true,
+      js,
+      css,
+      importMap,
+      diagnostics,
+      durationMs: performance.now() - started,
+      packages: [...packages],
+    };
   } catch (e) {
     if (isBuildFailure(e)) {
       for (const m of e.errors) diagnostics.push(toDiagnostic(m, 'error'));
@@ -165,9 +178,22 @@ export function cachedFetchText(
   };
 }
 
-/** Default fetcher for the worker: CORS GET, non-2xx is an error. */
+/**
+ * Default fetcher for the worker: CORS GET, non-2xx is an error. The default cache mode lets
+ * the browser's HTTP cache answer (package URLs are exact versions, served `immutable`), so
+ * package CSS fetched once still builds while the CDN is unreachable (T-032). Failures are
+ * `PackageFetchError`s.
+ */
 export const fetchTextFromNetwork: FetchText = async (url) => {
-  const res = await fetch(url, { credentials: 'omit' });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  let res: Response;
+  try {
+    res = await fetch(url, { credentials: 'omit' });
+  } catch {
+    throw new PackageFetchError(null);
+  }
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new PackageFetchError(res.status, errorDetail(body) || undefined);
+  }
   return res.text();
 };

@@ -22,8 +22,10 @@ export const LIMITS = {
   bundleCssMaxChars: 2_000_000,
   /** Max import map entries. */
   importMapMaxEntries: 200,
-  /** Max characters of an import map specifier or URL. */
+  /** Max characters of an import map specifier or URL (also each `load.packages` URL). */
   importMapValueMaxChars: 2_048,
+  /** Max URLs in a `load`'s `packages` hint (T-032). */
+  loadPackagesMax: 200,
   /** Max characters of a thumbnail data URL. */
   thumbnailMaxChars: 2_000_000,
   /** Max error strings in a storage-reset ack. */

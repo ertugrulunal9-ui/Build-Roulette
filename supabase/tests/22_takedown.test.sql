@@ -11,12 +11,13 @@
 --   o3 (on screen, its capture running) is taken down → the reveal moves on to o4 at once.
 --   VOTING: votes for o4, then o4 is taken down → those votes are deleted and o4 is
 --     not votable; RESULTS rank only o1.
---   RESULTS: o1 (rank 1) is taken down → rank and awards stay, name and screenshot go.
+--   RESULTS: o1 (rank 1) is taken down → the rank stays, name and screenshot go, and
+--     (T-028) its awards are no longer shown.
 
 begin;
 create extension if not exists pgtap with schema extensions;
 
-select plan(47);
+select plan(48);
 
 \set ana '{"sub":"22a00000-0000-0000-0000-000000000001","role":"authenticated"}'
 \set ben '{"sub":"22a00000-0000-0000-0000-000000000002","role":"authenticated"}'
@@ -272,9 +273,12 @@ select is(((:'pub'::jsonb) -> 'builds' -> 0) - 'id' - 'shipped_at' - 'completion
   '{"name": null, "votes": {"rule": 0, "chaos": 0, "style": 0, "overall": 1}, "status": "shipped",
     "final_rank": 1, "taken_down": true, "total_votes": 1, "capture_status": "captured", "screenshot_path": null}'::jsonb,
   'get_public_battle: rank, status, votes kept; no name, no screenshot; taken_down');
+-- T-028 (user decision 2026-10-08): the awards go from every public read; the rows stay
+-- (23_takedown_awards.test.sql covers the rule in depth).
 select is((select count(*)::int from jsonb_array_elements((:'pub'::jsonb) -> 'awards') a
-           where a ->> 'build_id' = :'o1'),
-  (select count(*)::int from public.awards where build_id = :'o1'), 'its awards stay');
+           where a ->> 'build_id' = :'o1'), 0, 'T-028: its awards are no longer shown...');
+select ok((select count(*)::int from public.awards where build_id = :'o1') > 0,
+  '...but its award rows stay (permanent data)');
 select is((select jsonb_build_object('name', x -> 'build' -> 'name', 'shot', x -> 'build' -> 'screenshot_path',
                                      'down', x -> 'build' -> 'taken_down', 'rank', x -> 'build' -> 'final_rank')
            from jsonb_array_elements((:'hist'::jsonb) -> 'battles') x where x ->> 'battle_id' = :'b'),

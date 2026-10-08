@@ -1,6 +1,8 @@
 packages:
   - apps/*
   - packages/*
+  # Developer tools that are not part of the product (T-025: the load generator).
+  - tools/*
 
 # Dependency install scripts we deliberately do not run.
 ignoredBuiltDependencies:

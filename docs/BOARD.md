@@ -13,8 +13,8 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 | T-028 | Taken-down builds lose the Winner highlight and all awards (no re-rank, no reassignment) on results, `/battles/[id]`, `/u/[id]`, OG image, room RESULTS | `supabase/`, `apps/web/` | done | Merged |
 | T-025 | Load test (50 rooms × 8 players), Realtime/egress mapping to plan limits, cost per 1,000 battles | `tools/loadtest/`, `docs/` input | done | Merged |
 | T-029 | Scaling fixes from the load test: ~4× fewer Presence messages (≤1 activity update / 15 s, none after BUILDING) + harder backoff after server-closed channels; no nudge storm in RESULTS (backoff / stop nudging while waiting for captures); `heartbeat` returns the battle version (drop the extra read); single-sample clock resync | `apps/web/`, `supabase/` | done | Merged |
-| T-026 | ISR for `/battles/[id]` (+ OG image) and `/u/[id]` on the R2 incremental cache; takedowns revalidate the affected pages | `apps/web/` | in-progress | M5, task 8 (split: observability and runbooks → T-030) |
-| T-030 | Observability (Sentry/PostHog, env-gated, no PII; sync-engine missed-event and degraded-time counts), runbooks (`docs/runbooks/`) | `apps/web/`, `apps/*`, `docs/runbooks/` | todo | M5, after T-026 |
+| T-026 | ISR for `/battles/[id]` (+ OG image) and `/u/[id]` on the R2 incremental cache; takedowns revalidate the affected pages | `apps/web/` | done | Merged (observability and runbooks split off → T-030) |
+| T-030 | Observability (Sentry/PostHog, env-gated, no PII; sync-engine missed-event and degraded-time counts), runbooks (`docs/runbooks/`) | `apps/web/`, `apps/*`, `docs/runbooks/` | in-progress | M5, task 9 |
 | T-019 | M4 DB layer: REVEAL (order, slots, host skip) + VOTING (categories, no self-vote, revotes, secret ballots) phases, vote-based ranking + category awards, reveal-phase storage read access, realtime `vote_progress` | `supabase/`, `packages/game/` (constants), `ci.yml` | done | Merged |
 | T-020 | M4 web: synchronized REVEAL spotlight (one live build, thumbnails, prefetch, host skip), VOTE stage, vote-based results + permanent page | `apps/web/` (+ remove the CI pre-M4 switch) | done | Merged |
 | T-021 | M4 completion: mobile reveal/vote layout, player history `/u/[id]`, chaos coverage for reveal/vote, M4 exit criteria | `apps/web/`, `supabase/` (tests) | done | Merged |
@@ -50,6 +50,7 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 | At deploy: create the admin user(s) (Supabase dashboard → Add user, then the SQL insert in `supabase/README.md`) | Moderation (`/admin`) |
 | At deploy: Turnstile site and secret keys; enable CAPTCHA in Supabase Auth together with `NEXT_PUBLIC_TURNSTILE_SITE_KEY` | Bot protection for anonymous sign-up |
 | At deploy: Cloudflare per-IP rate-limit rules and protection for `/admin` (numbers in `supabase/README.md`) | Abuse protection at the edge |
+| At deploy: results-page cache (T-026). Create the R2 bucket `build-roulette-web-cache` with a 30-day lifecycle rule on `incremental-cache/`. Create the D1 database `build-roulette-web-tags` near the Supabase region and put its id into `wrangler.jsonc`. Deploy only with `cf:deploy`, and put no "Cache Everything" rule or other CDN in front of the Worker. Steps are in `apps/web/DEPLOY.md`. | Cached `/battles/[id]` pages; takedowns showing at once |
 
 **User decisions (2026-10-04):** option A, so everything is hosted on Cloudflare and Vercel is dropped. The sandbox starts on `*.pages.dev` (already on the PSL), so there is no second domain at launch. Package CDN runs on Cloudflare Containers. Continue M2 locally.
 
@@ -575,3 +576,24 @@ Start M5.
   - load-test smoke 3/3 battles, p95 19 ms, 100 % delivered.
   The full runs were not repeated by the hub (about 12 min each).
 - T-026 is split: ISR first (T-026), then observability + runbooks (T-030).
+
+### T-026: accepted (M5 task 8)
+- The worker was interrupted by a container restart. Its worktree survived with 4 commits plus uncommitted changes, and it was resumed (not re-dispatched) and finished.
+- **`/battles/[id]` + OG image are ISR** (`force-static`, `revalidate = 3600` cap). The data comes from a `'use cache'` loader whose `cacheLife` depends on the answer:
+  - a settled battle (DESTROYED with `destroyed_at`) is cached 1 h;
+  - RESULTS, not-yet-destroyed, or not public yet: 5 s (so a 404 never sticks).
+  Each is tagged `battle:{id}`.
+- **`/u/[id]` stays dynamic** (pagination in the query string); its data is cached for 30–60 s, or 5 s while it lists an unsettled battle or is empty. Tags: `player:{id}` + `battle:{id}` per listed battle.
+- **Takedown** (`takeDownAction`): `updateTag('battle:{id}')`, with the battle id taken from the RPC answer (the hub checked that both RPC return paths carry it). The page and OG image are expired again 10 s later (`after`), so a render racing the takedown can't keep the old copy.
+- **Cloudflare:** R2 incremental cache, D1 tag cache, Durable Object revalidation queue; all emulated in `cf:preview`. Production steps were added to "Blocked on the user".
+- **Caveats (accepted):**
+  - `experimental.useCache` is deprecated in Next 16 (one build warning); revisit on a Next upgrade.
+  - The Worker grew to about 2.1 MB gzip.
+  - A takedown done with plain SQL doesn't revalidate (cached up to 1 h); use `/admin`.
+  - The OG image now returns 500 on Supabase errors instead of caching a generic card.
+- Hub re-ran on a fresh clone:
+  - pipeline green (web 339 unit tests); `cf:build` OK;
+  - `e2e-moderation.mjs` 26/26;
+  - moderation e2e **4/4 on `next start` and 4/4 on the Workers preview** (`test:e2e:cf:moderation`: cache HIT, takedown visible on the next request on page, OG image and `/u/[id]`);
+  - solo 2/2, multiplayer 4/4, playground on Workers 14/14.
+  - No SQL was touched.

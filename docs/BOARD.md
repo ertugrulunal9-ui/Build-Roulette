@@ -10,8 +10,9 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 | T-023 | Test reliability: root-cause the flaky 8-player chaos test (1 in 5), shard the chaos suite for CI | `apps/web/` (e2e), `ci.yml` | done | Merged |
 | T-027 | Preview watchdog false "crashed" right after a rebuild under heavy CPU load (`heartbeat-timeout`, silent ~5.3 s): give a fresh `load` a longer grace, with tests | `packages/runtime/`, `apps/web/` | done | Merged |
 | T-024 | Abuse controls: report build, admin page (event logs + report queue + screenshot takedown), name filter, rate limits, Turnstile wiring | `supabase/`, `apps/web/`, `apps/capture-worker/` | done | Merged |
-| T-028 | Taken-down builds lose the Winner highlight and all awards (no re-rank, no reassignment) on results, `/battles/[id]`, `/u/[id]`, OG image, room RESULTS | `supabase/`, `apps/web/` | todo | After T-025 (one worker at a time) |
-| T-025 | Load test (50 rooms × 8 players), Realtime/egress mapping to plan limits, cost per 1,000 battles | `tools/loadtest/`, `docs/` input | in-progress | M5, task 5 |
+| T-028 | Taken-down builds lose the Winner highlight and all awards (no re-rank, no reassignment) on results, `/battles/[id]`, `/u/[id]`, OG image, room RESULTS | `supabase/`, `apps/web/` | in-progress | M5, task 6 |
+| T-025 | Load test (50 rooms × 8 players), Realtime/egress mapping to plan limits, cost per 1,000 battles | `tools/loadtest/`, `docs/` input | done | Merged |
+| T-029 | Scaling fixes from the load test: ~4× fewer Presence messages (≤1 activity update / 15 s, none after BUILDING) + harder backoff after server-closed channels; no nudge storm in RESULTS (backoff / stop nudging while waiting for captures); `heartbeat` returns the battle version (drop the extra read); single-sample clock resync | `apps/web/`, `supabase/` | todo | M5, after T-028 |
 | T-026 | Observability (Sentry/PostHog, env-gated), ISR for `/battles` + `/u`, runbooks | `apps/web/`, `apps/*`, `docs/runbooks/` | todo | M5 |
 | T-019 | M4 DB layer: REVEAL (order, slots, host skip) + VOTING (categories, no self-vote, revotes, secret ballots) phases, vote-based ranking + category awards, reveal-phase storage read access, realtime `vote_progress` | `supabase/`, `packages/game/` (constants), `ci.yml` | done | Merged |
 | T-020 | M4 web: synchronized REVEAL spotlight (one live build, thumbnails, prefetch, host skip), VOTE stage, vote-based results + permanent page | `apps/web/` (+ remove the CI pre-M4 switch) | done | Merged |
@@ -42,6 +43,8 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 | Cloudflare account (**Workers Paid, ~$5/month, at deploy time**: free-plan CPU and size limits are too tight for SSR per T-012) | Deploying the app, sandbox shell, package CDN and screenshots |
 | Supabase project (free plan to start) | Hosted database, auth, storage and realtime |
 | One domain for the app (optional at first; the app can run on a free Cloudflare address) | Public launch |
+| **Decision at deploy: Supabase spend cap.** With the cap ON, the assumed Realtime Presence quota (50/s) broke rooms already at 10 rooms × 8 players in the load test. With it OFF, 400 clients met the target. T-029 cuts Presence about 4×; re-measure then. See docs/07. | Realtime capacity |
+| At deploy: raise the Realtime tenant `db_pool` (1 → ~10). Battle-channel joins p95 went from 23 s to 213 ms in the load test. | Realtime join latency |
 | Later: second (usercontent) domain + Public Suffix List entry (F1) | Per-build isolation as the game grows |
 | At deploy: create the admin user(s) (Supabase dashboard → Add user, then the SQL insert in `supabase/README.md`) | Moderation (`/admin`) |
 | At deploy: Turnstile site and secret keys; enable CAPTCHA in Supabase Auth together with `NEXT_PUBLIC_TURNSTILE_SITE_KEY` | Bot protection for anonymous sign-up |
@@ -87,6 +90,7 @@ Start M5.
 - T-023 Chaos reliability + sharding
 - T-027 Watchdog load grace
 - T-024 Abuse controls + admin
+- T-025 Load test + cost model
 
 ## Review log
 
@@ -514,3 +518,24 @@ Start M5.
 - The worker hardened the T-023 lost-feed chaos test: the local Realtime restarts its tenant on a 5-min timer, and an in-flight event can arrive about 0.6 s after the cut.
 - **Product question for the user:** a build taken down after RESULTS keeps its rank and still shows the "WINNER" banner (seen in a screenshot). The hub recommends no winner banner and no awards for taken-down builds, without re-ranking.
 - Production setup items were added to "Blocked on the user".
+
+### T-025: accepted (M5 task 5)
+- `@br/loadtest`: real clients via supabase-js (no browsers). Covers rooms, Presence, heartbeats with the version check, autosave/ship uploads, REVEAL downloads, votes, the capture worker, and time compression via SQL. Smoke and full profiles; a `workflow_dispatch` CI job.
+- **Results:**
+  - **Full target 50 rooms × 8 players × 2 battles (400 clients, 100 battles):** phase propagation p95 **137.6 ms** with Realtime quotas "Pro without spend cap". **M5 criterion met.**
+  - With the assumed "Pro with spend cap" Presence quota (50/s): **not met** (p95 1.9 s, 95% delivery, 17.7k channel closes).
+  - One 4-vCPU container; battles about 10× compressed.
+- **Cost (prices *assumed* 2026-10-07; usage *measured* and extrapolated):**
+  - about $50.6/month up to about 1,000 battles/month (fixed costs dominate);
+  - about $138/month at 10,000 battles/month ($13.8 per 1,000);
+  - about $17.5 per 1,000 extra battles beyond the included quotas.
+- Bottlenecks, in order:
+  - Realtime Presence quota;
+  - Browser Rendering hours (~1,000 battles/month);
+  - Realtime messages (~1,360);
+  - the nudge storm in RESULTS while captures are backlogged (41% of requests);
+  - Realtime `db_pool = 1` (battle joins p95 23 s);
+  - storage RLS lookups on reveal downloads.
+- Test-only stack tweaks (Kong `worker_connections`, Realtime tenant quotas) are applied at runtime inside the local containers and restored. They are not committed config.
+- Hub re-ran on a fresh clone: pipeline green (loadtest 14 unit tests); **smoke profile on a fresh stack: 3/3 battles, p95 17.4 ms, 100% delivered, 0 errors**. The full 400-client run was not re-run by the hub (about 40 min).
+- Product fixes queued as **T-029**. The spend cap and `db_pool` go on the user's deploy checklist.

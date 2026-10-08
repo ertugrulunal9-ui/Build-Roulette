@@ -157,10 +157,13 @@ describe('mock CDN outages (T-032)', () => {
     expect(await status('/react@19.3.0')).toEqual({ status: 200, cors: '*' });
   });
 
-  it('holds requests open until the outage ends', async () => {
+  it('holds requests open until the outage ends, then answers them', async () => {
     await cdn.setOutage('hang');
     expect(await status('/react@19.3.0', 300)).toBe('TimeoutError');
+    const waiting = status('/react@19.3.0', 5000);
+    await new Promise((r) => setTimeout(r, 200));
     await cdn.setOutage(null);
+    expect(await waiting).toEqual({ status: 200, cors: '*' });
     expect(await status('/react@19.3.0')).toEqual({ status: 200, cors: '*' });
   });
 });

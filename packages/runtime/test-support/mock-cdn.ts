@@ -114,8 +114,9 @@ export interface MockCdnOptions {
  *   "connection refused" at once (the container is down and nothing answers for it);
  * - `error`: every request gets a `502` without CORS headers, like an error page from the
  *   edge in front of a dead origin (the browser sees a CORS failure, i.e. a network error);
- * - `hang`: requests are accepted and never answered (a black hole, or an edge waiting for
- *   an origin that does not answer).
+ * - `hang`: requests are accepted and not answered while the outage lasts (a black hole, or
+ *   an edge waiting for an origin that does not answer); when it ends they are answered
+ *   normally, like an origin that finally comes back.
  * `null` ends the outage.
  */
 export type CdnOutage = 'refuse' | 'error' | 'hang';
@@ -444,8 +445,8 @@ export async function startMockCdn(opts: MockCdnOptions = {}): Promise<MockCdn> 
   const { handle, stats } = createMockCdnHandler(opts);
   const host = opts.host ?? 'localhost';
   let outage: CdnOutage | null = null;
-  /** Requests held open by a `hang` outage, released when it ends. */
-  const held = new Set<ServerResponse>();
+  /** Requests held open by a `hang` outage, answered when it ends. */
+  const held = new Map<ServerResponse, IncomingMessage>();
   const onRequest = (req: IncomingMessage, res: ServerResponse) => {
     if (outage === 'error') {
       stats.requests++;
@@ -456,10 +457,13 @@ export async function startMockCdn(opts: MockCdnOptions = {}): Promise<MockCdn> 
     }
     if (outage === 'hang') {
       stats.requests++;
-      held.add(res);
+      held.set(res, req);
       res.on('close', () => held.delete(res));
       return;
     }
+    serve(req, res);
+  };
+  const serve = (req: IncomingMessage, res: ServerResponse) => {
     handle(req, res).catch((e: unknown) => {
       if (!res.headersSent)
         res.writeHead(500, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
@@ -496,10 +500,8 @@ export async function startMockCdn(opts: MockCdnOptions = {}): Promise<MockCdn> 
     outage: () => outage,
     async setOutage(next) {
       if (next === outage) return;
-      if (outage === 'hang') {
-        for (const res of held) res.destroy();
-        held.clear();
-      }
+      const release = outage === 'hang' ? [...held] : [];
+      held.clear();
       if (outage === 'refuse') {
         server = await listen(port);
         current = server;
@@ -510,9 +512,14 @@ export async function startMockCdn(opts: MockCdnOptions = {}): Promise<MockCdn> 
         await stop(s);
       }
       outage = next;
+      // Requests a `hang` held are served when it ends (an origin that finally answers).
+      for (const [res, req] of release) {
+        if (next === null) serve(req, res);
+        else res.destroy();
+      }
     },
     close: async () => {
-      for (const res of held) res.destroy();
+      for (const res of held.keys()) res.destroy();
       held.clear();
       if (server) await stop(server);
       server = null;

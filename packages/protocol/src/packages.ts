@@ -64,6 +64,16 @@ export function describePackageFailures(failures: readonly PackageFailure[]): st
   return lines.join('\n');
 }
 
+/**
+ * The text for a module graph that is still waiting for packages after `waitedMs`: the
+ * package server neither answered nor failed for `urls` yet. It may still answer (a package
+ * nobody asked for before can take a while to build), so this is not an error yet.
+ */
+export function describePackageStall(urls: readonly string[], waitedMs: number): string | null {
+  if (urls.length === 0) return null;
+  return `Still waiting for the package server after ${String(Math.round(waitedMs / 1000))} s: ${labels(urls)}\nThe preview starts as soon as it answers.`;
+}
+
 /** First line of an error body, trimmed and capped (the CDN's own error text). */
 export function errorDetail(body: string, max = 200): string {
   const line = body.trim().split('\n')[0]?.trim() ?? '';

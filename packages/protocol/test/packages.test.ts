@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { describePackageFailures, errorDetail, packageLabel } from '../src/index';
+import {
+  describePackageFailures,
+  describePackageStall,
+  errorDetail,
+  packageLabel,
+} from '../src/index';
 
 const CDN = 'https://pkg.example';
 
@@ -57,6 +62,15 @@ describe('describePackageFailures', () => {
 
   it('is null when nothing failed', () => {
     expect(describePackageFailures([])).toBeNull();
+  });
+});
+
+describe('describePackageStall', () => {
+  it('says what the preview still waits for, or nothing', () => {
+    expect(describePackageStall([`${CDN}/three@0.186.1?external=react,react-dom`], 8000)).toBe(
+      'Still waiting for the package server after 8 s: three@0.186.1\nThe preview starts as soon as it answers.',
+    );
+    expect(describePackageStall([], 8000)).toBeNull();
   });
 });
 

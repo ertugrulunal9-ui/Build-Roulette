@@ -42,10 +42,10 @@ export interface BuildResult {
   /** Time spent inside the bundler (worker side), in ms. */
   durationMs: number;
   /**
-   * Package CDN module URLs the bundle imports directly, in first-import order (T-032).
-   * React's entry points are in `importMap` instead. The preview hands both to the shell,
-   * which names the package that could not load when the CDN is unreachable. Absent when
-   * the bundler did not produce the result.
+   * The package CDN URLs the bundle imports directly, sorted (T-032): CDN
+   * module URLs, and the import map URLs of the React entry points it imports. The preview
+   * hands them to the shell, which names the package that could not load when the CDN is
+   * unreachable. Absent when the bundler did not produce the result.
    */
   packages?: string[];
 }

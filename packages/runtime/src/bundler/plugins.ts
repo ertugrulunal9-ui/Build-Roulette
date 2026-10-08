@@ -118,14 +118,16 @@ export function packageCssFailure(url: string, e: unknown): string {
 /**
  * `cdn-rewrite` + package `css`: bare imports become external CDN URLs (React stays bare
  * for the import map) that pin the manifest's versions of peers (`deps=`), package CSS is
- * fetched and inlined, undeclared packages are errors. `onModule` sees every CDN module
- * URL the bundle imports (the build's `packages`, T-032).
+ * fetched and inlined, undeclared packages are errors. `onModule` and `onImportMapSpecifier`
+ * see what the bundle imports from the CDN (the build's `packages`, T-032).
  */
 export function cdnPlugin(opts: {
   dependencies: Record<string, string>;
   cdnBaseUrl: string;
   fetchText: FetchText;
   onModule?: (url: string) => void;
+  /** Sees every bare specifier left for the import map (`react`, `react-dom/client`, …). */
+  onImportMapSpecifier?: (specifier: string) => void;
 }): Plugin {
   const deps = cdnDepsPins(opts.dependencies) ?? [];
   return {
@@ -149,6 +151,7 @@ export function cdnPlugin(opts: {
         const r = resolveBareImport(args.path, opts.dependencies, opts.cdnBaseUrl, deps);
         switch (r.kind) {
           case 'import-map':
+            opts.onImportMapSpecifier?.(args.path);
             return { path: args.path, external: true };
           case 'cdn':
             opts.onModule?.(r.url);

@@ -6,6 +6,9 @@
  *   mock package CDN                                  http://localhost:<cdnPort>
  *
  * Run: pnpm --filter @br/runtime playground   (ports via APP_PORT / SHELL_PORT / CDN_PORT)
+ *
+ * `POST /__test/cdn-outage?mode=refuse|error|hang|off` on the app origin starts or ends a
+ * simulated package CDN outage (T-032 e2e, `MockCdn.setOutage`). Test support only.
  */
 import { readFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
@@ -14,7 +17,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import * as esbuild from 'esbuild';
 import { startShellServer } from '@br/sandbox-shell/server';
-import { startMockCdn } from './mock-cdn';
+import { CDN_OUTAGES, startMockCdn, type CdnOutage } from './mock-cdn';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -29,7 +32,14 @@ export interface DevServers {
   shellUrl: string;
   cdnUrl: string;
   shellJsBytes: number;
+  setCdnOutage(outage: CdnOutage | null): Promise<void>;
   close(): Promise<void>;
+}
+
+/** `refuse` | `error` | `hang` | `off` (null), or undefined for anything else. */
+export function parseOutage(mode: string | null): CdnOutage | null | undefined {
+  if (mode === 'off') return null;
+  return CDN_OUTAGES.find((o) => o === mode);
 }
 
 export interface PlaygroundConfig {
@@ -124,6 +134,19 @@ export async function startDevServers(opts: DevServerOptions = {}): Promise<DevS
   };
   handler = (req, res) => {
     const url = new URL(req.url ?? '/', appOrigin);
+    if (url.pathname === '/__test/cdn-outage' && req.method === 'POST') {
+      const outage = parseOutage(url.searchParams.get('mode'));
+      if (outage === undefined) {
+        res.writeHead(400, { 'Content-Type': 'text/plain' });
+        res.end('mode must be refuse, error, hang or off');
+        return;
+      }
+      void cdn.setOutage(outage).then(() => {
+        res.writeHead(200, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' });
+        res.end(`cdn outage: ${outage ?? 'off'}\n`);
+      });
+      return;
+    }
     const route = routes[url.pathname];
     if (!route) {
       res.writeHead(404, { 'Content-Type': 'text/plain' });
@@ -143,6 +166,7 @@ export async function startDevServers(opts: DevServerOptions = {}): Promise<DevS
     shellUrl: shell.shellUrl,
     cdnUrl: cdn.url,
     shellJsBytes: shell.shellJsBytes,
+    setCdnOutage: (outage) => cdn.setOutage(outage),
     close: async () => {
       await Promise.all([
         shell.close(),

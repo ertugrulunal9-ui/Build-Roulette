@@ -89,8 +89,14 @@ describe('bundle() with esbuild-wasm', () => {
     expect(r.css).toContain('url(data:image/png;base64,');
     expect(r.importMap.imports['react']).toBe(`${CDN}/react@19.3.0`);
     expect(r.durationMs).toBeGreaterThan(0);
-    // T-032: the CDN modules the bundle imports, once each (the shell names them on failure).
-    expect(r.packages).toEqual([`${CDN}/zustand@5.0.15${q}`, `${CDN}/zustand@5.0.15/middleware${q}`]);
+    // T-032: the CDN URLs the bundle imports, once each (the shell names them on failure).
+    // React entry points as their import map URLs; not react/jsx-dev-runtime (not imported).
+    expect(r.packages).toEqual([
+      `${CDN}/react-dom@19.3.0/client?external=react,react-dom`,
+      `${CDN}/react@19.3.0/jsx-runtime?external=react,react-dom`,
+      `${CDN}/zustand@5.0.15/middleware${q}`,
+      `${CDN}/zustand@5.0.15${q}`,
+    ]);
   });
 
   it('defines NODE_ENV and minifies in production mode', async () => {

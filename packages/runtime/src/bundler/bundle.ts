@@ -128,6 +128,10 @@ export async function bundle(
           onModule: (url) => {
             packages.add(url);
           },
+          onImportMapSpecifier: (specifier) => {
+            const url = importMap.imports[specifier];
+            if (url !== undefined) packages.add(url);
+          },
         }),
         ...(opts.plugins ?? []),
       ],
@@ -146,7 +150,8 @@ export async function bundle(
       importMap,
       diagnostics,
       durationMs: performance.now() - started,
-      packages: [...packages],
+      // Sorted: esbuild resolves imports concurrently, so the insertion order varies.
+      packages: [...packages].sort(),
     };
   } catch (e) {
     if (isBuildFailure(e)) {

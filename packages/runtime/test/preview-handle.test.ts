@@ -3,6 +3,7 @@ import {
   PREVIEW_ALLOW_BY_MODE,
   PREVIEW_SANDBOX_BY_MODE,
   PreviewHandle,
+  TICK_JITTER_MS,
   type PreviewEventMap,
   type PreviewOptions,
 } from '../src/preview/preview-handle';
@@ -693,6 +694,23 @@ describe('watchdog: app starvation (T-031)', () => {
     expect(handle.stats).toMatchObject({ stalls: 0, sparedSilences: 0 });
   });
 
+  it('timer jitter (every tick 40 ms late on a busy page) is still awake time: a loop is caught as fast', () => {
+    const { handle, connect } = setup();
+    const shell = connect();
+    const crashes = crashLog(handle);
+    vi.advanceTimersByTime(2000);
+    shell.autoPong = false; // the build loops
+    const frozeAt = Date.now();
+    for (let i = 0; i < 20 && crashes.length === 0; i++) {
+      stallApp(40);
+      vi.advanceTimersByTime(250);
+    }
+    expect(crashes).toHaveLength(1);
+    expect((crashes[0]?.at ?? NaN) - frozeAt).toBeLessThanOrEqual(5300);
+    expect(crashes[0]).toMatchObject({ stalledMs: 0, longestStallMs: 40 });
+    expect(handle.stats.stalls).toBe(0); // well under STALL_MS
+  });
+
   it('a loop is caught after 5 s of app-awake time, even when the app stalls meanwhile', () => {
     const { handle, connect } = setup();
     const shell = connect();
@@ -718,8 +736,9 @@ describe('watchdog: app starvation (T-031)', () => {
     });
     expect(c?.silentForMs).toBeGreaterThan(5000);
     expect(c?.silentForMs).toBeLessThanOrEqual(5250);
-    expect(c?.stalledMs).toBe(5000);
-    expect(c?.wallSilentForMs).toBe((c?.silentForMs ?? NaN) + 5000);
+    // Each late tick still counts one interval plus the timer jitter allowance.
+    expect(c?.stalledMs).toBe(5000 - 2 * TICK_JITTER_MS);
+    expect(c?.wallSilentForMs).toBe((c?.silentForMs ?? NaN) + 5000 - 2 * TICK_JITTER_MS);
     // The loop did not end with a pong: nothing was spared.
     expect(handle.stats).toMatchObject({ stalls: 2, stallMs: 5000, sparedSilences: 0 });
   });
@@ -741,7 +760,11 @@ describe('watchdog: app starvation (T-031)', () => {
     vi.advanceTimersByTime(5300);
     expect(crashes).toHaveLength(1);
     const c = crashes[0];
-    expect(c).toMatchObject({ reason: 'heartbeat-timeout', phase: 'loading', stalledMs: 6000 });
+    expect(c).toMatchObject({
+      reason: 'heartbeat-timeout',
+      phase: 'loading',
+      stalledMs: 6000 - TICK_JITTER_MS,
+    });
     expect(c?.silentForMs).toBeGreaterThan(15_000);
     expect(c?.silentForMs).toBeLessThanOrEqual(15_250);
     expect((c?.at ?? NaN) - sentAt - 6000).toBeLessThanOrEqual(15_250);
@@ -784,10 +807,14 @@ describe('watchdog: app starvation (T-031)', () => {
     vi.advanceTimersByTime(7300);
     expect(crashes).toHaveLength(1);
     const c = crashes[0];
-    expect(c).toMatchObject({ reason: 'handshake-timeout', phase: 'connecting', stalledMs: 4000 });
+    expect(c).toMatchObject({
+      reason: 'handshake-timeout',
+      phase: 'connecting',
+      stalledMs: 4000 - TICK_JITTER_MS,
+    });
     expect(c?.silentForMs).toBeGreaterThan(10_000);
     expect(c?.silentForMs).toBeLessThanOrEqual(10_250);
-    expect((c?.at ?? NaN) - navigatedAt).toBeGreaterThan(14_000);
+    expect((c?.at ?? NaN) - navigatedAt).toBeGreaterThan(13_900); // 10 s awake + the 4 s stall
   });
 
   it('hidden tabs are unchanged: no check while hidden, a fresh 5 s when visible, and hidden time is no stall', () => {

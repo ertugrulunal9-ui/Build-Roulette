@@ -379,8 +379,9 @@ silentMs=5309 phase=running` at the start of BUILD, with no loop in the build.
     6.0 s, phase `running`.
 - **Fix: app-awake time.** Every watchdog limit (the 5 s heartbeat limit, the 15 s load grace,
   the 10 s handshake timeout) is measured on an **app-awake clock**. The 250 ms watchdog tick
-  advances it by at most one interval per run. A tick that runs late shows that the app's own
-  timers were stalled, and the stall is not counted. Events between ticks (a pong, `ready`, a
+  advances it by at most one interval plus 50 ms of timer jitter per run (a busy page runs its
+  timers a few tens of ms late, which must not slow loop detection). A tick that runs later
+  shows that the app's own timers were stalled, and the stall is not counted. Events between ticks (a pong, `ready`, a
   `load` send) read the clock capped the same way, so it never runs backwards. While the
   app's timers run on time, awake time equals wall-clock time, and nothing changes.
 - **Bounds** (awake time; wall-clock time is longer by however long the app was stalled):
@@ -393,9 +394,9 @@ silentMs=5309 phase=running` at the start of BUILD, with no loop in the build.
   - any stall of the app's own timers is tolerated, however long. A build that doesn't answer
     for 5 s while the app *is* awake is still a crash, because that's indistinguishable from
     a loop (for example, a frame that is far more starved than the app);
-  - under continuous starvation each late tick counts one interval only. If every tick runs
-    1.25 s late, 5 s of awake time is 25 s of wall-clock time. A real loop is caught that
-    much later. That's accepted: the tab itself is that slow meanwhile.
+  - under continuous starvation each late tick counts 300 ms only. If every tick runs 1.25 s
+    late (one tick per 1.5 s), 5 s of awake time is 25 s of wall-clock time. A real loop is
+    caught that much later. That's accepted: the tab itself is that slow meanwhile.
 - **Trust:** only the app's own timers advance the clock; nothing the sandbox sends does. A
   build could delay the app's timers only by keeping the app busy (message floods are
   budgeted, F4) or by starving the whole CPU. A hostile build can already answer pings from a

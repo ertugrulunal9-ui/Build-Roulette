@@ -24,8 +24,8 @@
  *   that can take seconds on a busy CPU). Only the app's own `load` opens the window; `ready`
  *   can only close it, so the sandbox can never extend it (README "Load grace").
  * - Starvation (T-031): every limit above is measured in **app-awake time**, not wall-clock
- *   time. The watchdog tick (every 250 ms) advances an awake clock by at most one interval per
- *   run, so when the app's own main thread was stalled (a long task of its own, or a starved
+ *   time. The watchdog tick (every 250 ms) advances an awake clock by at most one interval
+ *   (plus 50 ms of timer jitter) per run, so when the app's own main thread was stalled (a long task of its own, or a starved
  *   machine giving the process no CPU), the stall is not counted as the sandbox's silence:
  *   while the app is stalled it can neither send pings nor receive pongs. A loop in a
  *   site-isolated frame does not delay the app's timers, so it is still caught after 5 s of
@@ -128,7 +128,8 @@ export interface PreviewOptions {
   handshakeTimeoutMs?: number;
   /**
    * Watchdog tick. Default 250 ms. Each tick advances the app-awake clock by at most this
-   * much: a tick that runs late measures an app-side stall, which is not counted (T-031).
+   * much plus `TICK_JITTER_MS`: a tick that runs later measures an app-side stall, which is
+   * not counted (T-031).
    */
   watchdogIntervalMs?: number;
   /** Overrides for the app-side message budgets (`DEFAULT_PREVIEW_BUDGETS`). */
@@ -156,8 +157,9 @@ export type CrashPhase = 'connecting' | 'loading' | 'running';
 /**
  * A watchdog crash. Silences are measured in app-awake time (T-031): `silentForMs` is what
  * crossed the limit; the wall-clock silence is `silentForMs + stalledMs`, where `stalledMs`
- * is time the app's own timers did not run (its main thread was busy, or the process got no
- * CPU), which is starvation evidence rather than the sandbox's silence.
+ * is time the app's own timers did not run beyond normal timer jitter (its main thread was
+ * busy, or the process got no CPU), which is starvation evidence rather than the sandbox's
+ * silence.
  */
 export interface PreviewCrash {
   reason: CrashReason;
@@ -242,6 +244,12 @@ export interface PreviewStats {
 
 /** A watchdog tick at least this late is counted as an app-side stall (`stats.stalls`). */
 export const STALL_MS = 1000;
+
+/**
+ * Timer jitter a watchdog tick may have and still count fully as awake time: a page that is
+ * merely busy runs its timers a few tens of ms late, which must not slow loop detection.
+ */
+export const TICK_JITTER_MS = 50;
 
 /**
  * The handshake guard, as a pure function: is this window message a `hello` from exactly
@@ -331,8 +339,8 @@ export class PreviewHandle {
   private watchdog: ReturnType<typeof setInterval> | null = null;
   // --- The app-awake clock (T-031) -------------------------------------------------------
   // Every watchdog limit is measured on this clock. It follows the real clock while the
-  // app's own timers run, but each tick advances it by at most one `watchdogIntervalMs`: a
-  // tick that runs late shows that the app itself was stalled (its main thread was busy, or
+  // app's own timers run, but each tick advances it by at most one `watchdogIntervalMs` (plus
+  // `TICK_JITTER_MS`): a tick that runs later shows that the app itself was stalled (its main thread was busy, or
   // the process got no CPU), and that stall is not counted as the sandbox's silence. Events
   // between ticks read `awakeAt(now)`, which is capped the same way, so the clock never goes
   // backwards.
@@ -593,7 +601,11 @@ export class PreviewHandle {
 
   /** The app-awake clock at real-clock time `now` (between ticks: capped like a tick). */
   private awakeAt(now: number): number {
-    return this.awakeBase + Math.min(Math.max(0, now - this.lastTickAt), this.watchdogIntervalMs);
+    const credit = Math.min(
+      Math.max(0, now - this.lastTickAt),
+      this.watchdogIntervalMs + TICK_JITTER_MS,
+    );
+    return this.awakeBase + credit;
   }
 
   /** Brings the awake clock up to `now` and measures from there (no stall is recorded). */
@@ -909,7 +921,8 @@ export class PreviewHandle {
   private readonly tick = (): void => {
     const now = this.now();
     // How late this tick ran is how long the app's own timers were stalled: no ping could be
-    // sent and no pong received meanwhile. Only up to one interval counts as awake time.
+    // sent and no pong received meanwhile. Only up to one interval (plus jitter) counts as
+    // awake time.
     const stall = Math.max(0, now - this.lastTickAt - this.watchdogIntervalMs);
     this.awakeBase = this.awakeAt(now);
     this.lastTickAt = now;

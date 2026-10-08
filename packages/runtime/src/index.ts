@@ -22,6 +22,7 @@ export {
   PREVIEW_SANDBOX_BY_MODE,
   PreviewHandle,
   STALL_MS,
+  TICK_JITTER_MS,
   applyPreviewAttributes,
   checkHello,
   createPreview,

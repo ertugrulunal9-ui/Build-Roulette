@@ -157,8 +157,10 @@ a preview in a cross-site sandboxed iframe. It works together with:
   pings nor receive pongs, so a wall-clock silence measured the app's own stall. Now every
   limit (the 5 s heartbeat limit, the load grace, the 10 s handshake timeout) is measured on
   an **app-awake clock**:
-  - each watchdog tick advances the clock by at most one `watchdogIntervalMs`, so a tick that
-    runs late (the app was stalled) counts as 250 ms;
+  - each watchdog tick advances the clock by at most one `watchdogIntervalMs` plus
+    `TICK_JITTER_MS` (50 ms), so a tick that runs later (the app was stalled) counts as
+    300 ms. The jitter allowance keeps a merely busy page (timers a few tens of ms late) from
+    slowing loop detection;
   - events between ticks (pong, `ready`, a `load` send, the handshake) read it capped the
     same way, so it never runs backwards;
   - only the app's own timers move it. Nothing the sandbox sends does.

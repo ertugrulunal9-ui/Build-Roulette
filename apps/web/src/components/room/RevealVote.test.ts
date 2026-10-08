@@ -53,6 +53,7 @@ function fakeShow() {
     watch: vi.fn(),
     markFrozen: vi.fn(),
     previewCrashed: vi.fn(),
+    packagesFailed: vi.fn(),
     previewHealth: { follow: vi.fn(() => () => undefined) },
     next: vi.fn(() => Promise.resolve()),
     skipToVote: vi.fn(() => Promise.resolve()),
@@ -183,6 +184,20 @@ describe('RevealStage', () => {
     expect(screen.getByTestId('watch-build')).toBeTruthy();
   });
 
+  it('a build whose packages could not load (T-032): its screenshot, the reason, Run it again', () => {
+    const show = renderReveal(
+      battleSnapshot({ phase: 'reveal', revealIndex: 1 }),
+      showState({ noPackages: ['build-bob'], thumbs: { 'build-bob': 'blob:bob' } }),
+    );
+    const note = screen.getByTestId('build-no-packages');
+    expect(note.textContent).toContain('package server');
+    expect(note.textContent).not.toContain('froze');
+    expect(screen.getByTestId('fallback-thumb').getAttribute('src')).toBe('blob:bob');
+    expect(screen.queryByTestId('reveal-live')).toBeNull();
+    fireEvent.click(screen.getByTestId('watch-build'));
+    expect(show.watch).toHaveBeenCalledWith('build-bob');
+  });
+
   it('spotlightView: local stops first, then the touch still, then the bundle', () => {
     const ready = {
       status: 'ready' as const,
@@ -200,6 +215,9 @@ describe('RevealStage', () => {
     expect(spotlightView({ ...base, frozen: ['build-bob'] }, 'build-bob', phone)).toBe('frozen');
     expect(spotlightView({ ...base, failedToStart: ['build-bob'] }, 'build-bob', desktop)).toBe(
       'no_start',
+    );
+    expect(spotlightView({ ...base, noPackages: ['build-bob'] }, 'build-bob', phone)).toBe(
+      'no_packages',
     );
     expect(spotlightView(showState(), 'build-bob', desktop)).toBe('loading');
     expect(

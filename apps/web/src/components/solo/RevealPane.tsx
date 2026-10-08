@@ -8,6 +8,7 @@
  * unmounts), then the preview is disposed: nothing of the build stays in this tab.
  * A watchdog crash is a `preview_crash` analytics event (T-031, mode `reveal`; there is no
  * restart here), and the preview's watchdog stats count for the battle's preview health.
+ * A build whose packages can't load (the package CDN is down, T-032) says so over the frame.
  */
 import { PreviewHandle, type CrashReason, type PreviewBuild } from '@br/runtime';
 import { useEffect, useRef, useState } from 'react';
@@ -29,6 +30,8 @@ export function RevealPane({ battleId, build, status, destroy, caption }: Reveal
   const hostRef = useRef<HTMLDivElement>(null);
   /** Why the watchdog stopped the preview (it froze, or it never started), if it did. */
   const [crashed, setCrashed] = useState<CrashReason | null>(null);
+  /** Its code or packages could not load (T-032: the package CDN is unreachable). */
+  const [noPackages, setNoPackages] = useState(false);
   const battleIdRef = useRef(battleId);
   useEffect(() => {
     battleIdRef.current = battleId;
@@ -53,6 +56,9 @@ export function RevealPane({ battleId, build, status, destroy, caption }: Reveal
       setCrashed(crash.reason);
       health.crashed(crash);
     });
+    const offError = preview.on('error', (m) => {
+      if (m.kind === 'module-load') setNoPackages(true);
+    });
     // Wipe what an earlier build (another battle's, or a reveal in this tab) left on the
     // sandbox origin, in a fresh iframe, before this one loads: the load waits for the new
     // shell, which handles the wipe first (as in the REVEAL spotlight).
@@ -60,8 +66,10 @@ export function RevealPane({ battleId, build, status, destroy, caption }: Reveal
     preview.load(build, 'reveal');
     return () => {
       offCrash();
+      offError();
       health.close();
       setCrashed(null);
+      setNoPackages(false);
       // Wipe what the build stored on the sandbox origin, in a new iframe, then let it go.
       let wiping: Promise<unknown>;
       try {
@@ -100,6 +108,15 @@ export function RevealPane({ battleId, build, status, destroy, caption }: Reveal
         {status === 'unavailable' && (
           <p className="absolute inset-0 grid place-items-center p-6 text-center text-sm text-zinc-500">
             Nothing to show: no build was shipped.
+          </p>
+        )}
+        {noPackages && !crashed && destroy === 'none' && (
+          <p
+            className="absolute inset-x-0 bottom-0 bg-zinc-100/95 p-4 text-center text-sm dark:bg-zinc-900/95"
+            data-testid="reveal-no-packages"
+          >
+            Your build’s packages couldn’t load here: the package server isn’t answering. Its
+            screenshot and results are safe.
           </p>
         )}
         {crashed && destroy === 'none' && (

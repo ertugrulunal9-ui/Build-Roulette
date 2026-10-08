@@ -3,6 +3,7 @@ import {
   describePackageFailures,
   describePackageStall,
   errorDetail,
+  isPackageStall,
   packageLabel,
 } from '../src/index';
 
@@ -71,6 +72,10 @@ describe('describePackageStall', () => {
       'Still waiting for the package server after 8 s: three@0.186.1\nThe preview starts as soon as it answers.',
     );
     expect(describePackageStall([], 8000)).toBeNull();
+    expect(isPackageStall(describePackageStall([`${CDN}/a@1.0.0`], 8000) ?? '')).toBe(true);
+    expect(
+      isPackageStall(describePackageFailures([{ url: `${CDN}/a@1.0.0`, kind: 'timeout' }]) ?? ''),
+    ).toBe(false);
   });
 });
 

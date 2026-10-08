@@ -89,3 +89,47 @@ describe('PreviewPane crashed notice', () => {
     expect(note.textContent).toContain('did not answer');
   });
 });
+
+describe('PreviewPane package errors (T-032)', () => {
+  function renderError(message: string) {
+    const snapshot: SandboxSnapshot = {
+      bundler: 'ready',
+      bundlerError: null,
+      building: false,
+      lastBuild: null,
+      preview: 'running',
+      crash: null,
+      runtimeErrors: [{ type: 'runtime-error', kind: 'module-load', message }],
+      console: [],
+      readyCount: 1,
+    };
+    render(
+      createElement(PreviewPane, {
+        hostRef: createRef<HTMLDivElement>(),
+        snapshot,
+        shellUrl: 'http://127.0.0.1:4311/v1/',
+        onRestart: noop,
+        onDismissErrors: noop,
+        onClearConsole: noop,
+        onOpenDiagnostic: noop,
+      }),
+    );
+    return screen.getByTestId('error-overlay');
+  }
+
+  it('shows which package could not load', () => {
+    const overlay = renderError('Package server unreachable: zustand@5.0.15');
+    expect(overlay.textContent).toContain('The build failed to load');
+    expect(screen.getByTestId('error-message').textContent).toBe(
+      'Package server unreachable: zustand@5.0.15',
+    );
+  });
+
+  it('a "still waiting" note is not a failure', () => {
+    const overlay = renderError(
+      'Still waiting for the package server after 8 s: zustand@5.0.15\nThe preview starts as soon as it answers.',
+    );
+    expect(overlay.textContent).toContain('The build is still loading');
+    expect(overlay.textContent).not.toContain('failed');
+  });
+});

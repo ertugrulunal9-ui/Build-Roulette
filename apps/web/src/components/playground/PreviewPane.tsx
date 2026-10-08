@@ -1,5 +1,6 @@
 'use client';
 
+import { isPackageStall } from '@br/protocol';
 import type { Diagnostic } from '@br/runtime';
 import { useState, type RefObject } from 'react';
 import type { ConsoleEntry, SandboxSnapshot } from '../../lib/playground/sandbox';
@@ -82,7 +83,9 @@ export function PreviewPane({
               <div className="min-w-0">
                 <p className="text-xs font-semibold tracking-wide uppercase">
                   {latestError.kind === 'module-load'
-                    ? 'The build failed to load'
+                    ? isPackageStall(latestError.message)
+                      ? 'The build is still loading'
+                      : 'The build failed to load'
                     : latestError.kind === 'unhandledrejection'
                       ? 'Unhandled promise rejection'
                       : 'Runtime error'}

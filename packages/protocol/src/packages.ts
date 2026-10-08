@@ -64,6 +64,9 @@ export function describePackageFailures(failures: readonly PackageFailure[]): st
   return lines.join('\n');
 }
 
+/** How a "still waiting" note (`describePackageStall`) starts. */
+export const PACKAGE_STALL_PREFIX = 'Still waiting for the package server';
+
 /**
  * The text for a module graph that is still waiting for packages after `waitedMs`: the
  * package server neither answered nor failed for `urls` yet. It may still answer (a package
@@ -71,7 +74,15 @@ export function describePackageFailures(failures: readonly PackageFailure[]): st
  */
 export function describePackageStall(urls: readonly string[], waitedMs: number): string | null {
   if (urls.length === 0) return null;
-  return `Still waiting for the package server after ${String(Math.round(waitedMs / 1000))} s: ${labels(urls)}\nThe preview starts as soon as it answers.`;
+  return `${PACKAGE_STALL_PREFIX} after ${String(Math.round(waitedMs / 1000))} s: ${labels(urls)}\nThe preview starts as soon as it answers.`;
+}
+
+/**
+ * True for a `module-load` message that says the build is still waiting for packages rather
+ * than that it failed (display only: the message comes from the sandbox).
+ */
+export function isPackageStall(message: string): boolean {
+  return message.startsWith(PACKAGE_STALL_PREFIX);
 }
 
 /** First line of an error body, trimmed and capped (the CDN's own error text). */

@@ -54,6 +54,13 @@ function publicBattle(phase: 'results' | 'destroyed', destroyedAt: string | null
 }
 
 const fetchMock = vi.fn<typeof fetch>();
+
+/** The JSON body of the first request. */
+function sentBody(): Record<string, unknown> {
+  const body = fetchMock.mock.calls[0]?.[1]?.body;
+  if (typeof body !== 'string') throw new Error('no JSON body');
+  return JSON.parse(body) as Record<string, unknown>;
+}
 beforeEach(() => {
   vi.stubGlobal('fetch', fetchMock);
 });
@@ -111,15 +118,16 @@ describe('loadPlayerHistory', () => {
       `battle:${ID}`,
       `battle:${other}`,
     );
-    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)) as Record<string, unknown>;
-    expect(body).toMatchObject({ p_user_id: USER, p_before: null, p_before_battle: null });
+    expect(sentBody()).toMatchObject({ p_user_id: USER, p_before: null, p_before_battle: null });
   });
 
   it('passes the cursor of an older page', async () => {
     fetchMock.mockResolvedValue(answer(200, { player: null, battles: [], next: null }));
     await loadPlayerHistory(USER, '2026-10-08T12:00:00.123456Z', ID);
-    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)) as Record<string, unknown>;
-    expect(body).toMatchObject({ p_before: '2026-10-08T12:00:00.123456Z', p_before_battle: ID });
+    expect(sentBody()).toMatchObject({
+      p_before: '2026-10-08T12:00:00.123456Z',
+      p_before_battle: ID,
+    });
     expect(next.cacheTag).toHaveBeenCalledExactlyOnceWith(`player:${USER}`);
   });
 });

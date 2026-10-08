@@ -43,16 +43,16 @@ export const APP_SERVER = process.env['E2E_APP_SERVER'] === 'workers' ? 'workers
  * regenerates, so the hit may take a request or two.
  */
 export async function cachedCopy(request: APIRequestContext, path: string): Promise<APIResponse> {
-  let last: APIResponse | null = null;
+  const seen: { last?: APIResponse } = {};
   await expect
     .poll(
       async () => {
-        last = await request.get(path);
-        return cacheStatus(last);
+        seen.last = await request.get(path);
+        return cacheStatus(seen.last);
       },
       { message: `${path} served from the cache`, timeout: 15_000, intervals: [250] },
     )
     .toBe('HIT');
-  if (!last) throw new Error('unreachable');
-  return last;
+  if (!seen.last) throw new Error(`${path}: no response`);
+  return seen.last;
 }

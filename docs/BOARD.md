@@ -2,7 +2,7 @@
 
 Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 
-## Current milestone: M5 Hardening (M4 complete)
+## Current milestone: M5 Hardening (all tasks merged; sign-off waits on the staging runbook rehearsal)
 
 | ID | Task | Scope | Status | Notes |
 |---|---|---|---|---|
@@ -16,7 +16,7 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 | T-026 | ISR for `/battles/[id]` (+ OG image) and `/u/[id]` on the R2 incremental cache; takedowns revalidate the affected pages | `apps/web/` | done | Merged (observability and runbooks split off → T-030) |
 | T-030 | Observability (Sentry/PostHog, env-gated, no PII; sync-engine missed-event and degraded-time counts), runbooks (`docs/runbooks/`) | `apps/web/`, `apps/*`, `docs/runbooks/` | done | Merged |
 | T-031 | Preview watchdog false crash **after** `ready` under whole-machine CPU starvation (chaos shard 1, `heartbeat-timeout silentMs=5309 phase=running`): count only silence while the app itself was awake and pinging; report preview crashes (phase, silence, starvation evidence) as a sandbox-health event | `packages/runtime/`, `apps/web/` | done | Merged |
-| T-032 | Template packages survive a package-CDN outage after the lobby preload (R10): measure what the browser really caches for the shell and build frames (cache partitioning, opaque origins, the shell's own wipe), choose a Service Worker, an in-shell module cache or edge-only caching, implement it, and test it with an e2e that kills the CDN mid-BUILD | `apps/sandbox-shell/`, `packages/runtime/`, `apps/web/`, `apps/pkg-cdn/` | in-progress | M5, task 11 |
+| T-032 | Template packages survive a package-CDN outage after the lobby preload (R10): measure what the browser really caches for the shell and build frames (cache partitioning, opaque origins, the shell's own wipe), choose a Service Worker, an in-shell module cache or edge-only caching, implement it, and test it with an e2e that kills the CDN mid-BUILD | `apps/sandbox-shell/`, `packages/runtime/`, `apps/web/`, `apps/pkg-cdn/` | done | Merged |
 | T-019 | M4 DB layer: REVEAL (order, slots, host skip) + VOTING (categories, no self-vote, revotes, secret ballots) phases, vote-based ranking + category awards, reveal-phase storage read access, realtime `vote_progress` | `supabase/`, `packages/game/` (constants), `ci.yml` | done | Merged |
 | T-020 | M4 web: synchronized REVEAL spotlight (one live build, thumbnails, prefetch, host skip), VOTE stage, vote-based results + permanent page | `apps/web/` (+ remove the CI pre-M4 switch) | done | Merged |
 | T-021 | M4 completion: mobile reveal/vote layout, player history `/u/[id]`, chaos coverage for reveal/vote, M4 exit criteria | `apps/web/`, `supabase/` (tests) | done | Merged |
@@ -54,6 +54,7 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 | At deploy: Cloudflare per-IP rate-limit rules and protection for `/admin` (numbers in `supabase/README.md`) | Abuse protection at the edge |
 | At deploy: results-page cache (T-026). Create the R2 bucket `build-roulette-web-cache` with a 30-day lifecycle rule on `incremental-cache/`. Create the D1 database `build-roulette-web-tags` near the Supabase region and put its id into `wrangler.jsonc`. Deploy only with `cf:deploy`, and put no "Cache Everything" rule or other CDN in front of the Worker. Steps are in `apps/web/DEPLOY.md`. | Cached `/battles/[id]` pages; takedowns showing at once |
 | At deploy: Sentry account with one JavaScript project. Set the DSN as `NEXT_PUBLIC_SENTRY_DSN` at `cf:build`, plus `SENTRY_DSN` for the capture worker and the package CDN. In the project, turn on "Prevent Storing of IP Addresses" and set Allowed Domains to the app origin. Optional: a build-time auth token for source maps. PostHog EU project: `NEXT_PUBLIC_POSTHOG_KEY` and `NEXT_PUBLIC_POSTHOG_HOST`, with "Discard client IP data" on. Steps are in `apps/web/DEPLOY.md` (Observability). | Error reporting and product analytics |
+| At deploy: package CDN edge caching (T-032). Cache the immutable package URLs at the Cloudflare edge and serve the cached copy when the container fails. Use a Cache Rule if the container can be a proxied origin; otherwise use `caches.default` in the fronting Worker. Turn on Tiered Cache, consider Cache Reserve, pre-warm the template URLs after each deploy, and never purge everything during an incident. Steps are in `apps/pkg-cdn/README.md` ("Origin outages"); some are assumptions until the account exists. | Packages served through a container outage |
 | **M5 exit criterion: rehearse every runbook once on staging.** This needs the hosted Supabase project and the Cloudflare account above. | M5 sign-off |
 
 **User decisions (2026-10-04):** option A, so everything is hosted on Cloudflare and Vercel is dropped. The sandbox starts on `*.pages.dev` (already on the PSL), so there is no second domain at launch. Package CDN runs on Cloudflare Containers. Continue M2 locally.
@@ -643,3 +644,30 @@ Start M5.
   - playground 14/14, solo 2/2, multiplayer 4/4, telemetry 6/6 + 1/1;
   - **chaos shards 3/3, 2/2, 4/4, and shard 1 again 3/3.**
 - CI run 42 on GitHub (with the runbook check and the telemetry e2e added) was green.
+
+### T-032: accepted (M5 task 11)
+- **Measured in Chromium:**
+  - after the template's first preview, an edit, a preview restart, reveal mode, a storage reset, a page reload and even a browser restart all load React from the HTTP cache with the CDN down (0 CDN requests);
+  - the cache partition is (top-level app site, shell site);
+  - the shell's `Clear-Site-Data: "cache"` does not remove the CDN's entries;
+  - every import-map URL is an exact version served `immutable`.
+- **Decision: HTTP cache only, no Service Worker or Cache Storage** (the hub's constraint, confirmed by the worker). Build code runs on the shell origin and can write its Cache Storage, IndexedDB and Service Workers, so a module cache there could be poisoned for every later build a viewer sees. Page script can't write the HTTP cache. Docs 02 (R10), 03 and 06 were updated, so they no longer promise a Service Worker.
+- **Gap closed:** a CDN that accepts connections but never answers used to hang the preview silently. Now:
+  - the shell explains a failed module graph in about 0.2–1 s ("Package server unreachable / not responding / error (HTTP n): x@1.2.3", using a `fetch` captured before any build runs; at most 64 URLs, 3 s each);
+  - it posts a "Still waiting for the package server" note after 8 s;
+  - REVEAL shows the screenshot with the reason and "Run it again".
+- **Warm-up:** the shell re-fetches the import map with `force-cache` after each build runs. A hidden, empty `TemplateWarmup` preview in the lobby and spectator view (desktop only) warms React before SPIN.
+- **pkg-cdn:** 302s carry `stale-while-revalidate=60, stale-if-error=86400`; every response has `Content-Length`.
+- **Hub security read:** the warm-up and checks only fetch URLs the build itself could already fetch (`connect-src https:`), never write anything a later build reads, and error texts are capped and rendered as text. Accepted.
+- **Open limits (docs/03):**
+  - only Chromium was measured;
+  - per-build sites (F1) will need per-site warm-up;
+  - the non-template packages of the next REVEAL build aren't warmed ahead;
+  - phone spectators get no lobby warm-up.
+- Hub re-ran on a fresh clone:
+  - pipeline green (protocol 24, shell 62, runtime 130, pkg-cdn 120, web 397 unit tests);
+  - runtime e2e **32/32**, playground 17/17;
+  - runbook check 0 failed;
+  - solo 3/3 and multiplayer 5/5 (both including the new outage specs), moderation 4/4, telemetry 6/6 + 1/1;
+  - **chaos shards 3/3, 2/2, 4/4**.
+- **M5 status:** every task is merged. Sign-off (the exit criterion: every runbook rehearsed once on staging) waits on the user's accounts.

@@ -10,6 +10,7 @@
  * restart here), and the preview's watchdog stats count for the battle's preview health.
  * A build whose packages can't load (the package CDN is down, T-032) says so over the frame.
  */
+import { isPackageStall } from '@br/protocol';
 import { PreviewHandle, type CrashReason, type PreviewBuild } from '@br/runtime';
 import { useEffect, useRef, useState } from 'react';
 import { playgroundConfig } from '../../lib/playground/config';
@@ -57,7 +58,8 @@ export function RevealPane({ battleId, build, status, destroy, caption }: Reveal
       health.crashed(crash);
     });
     const offError = preview.on('error', (m) => {
-      if (m.kind === 'module-load') setNoPackages(true);
+      // A "still waiting" note is not a failure yet: the build may still start.
+      if (m.kind === 'module-load' && !isPackageStall(m.message)) setNoPackages(true);
     });
     // Wipe what an earlier build (another battle's, or a reveal in this tab) left on the
     // sandbox origin, in a fresh iframe, before this one loads: the load waits for the new

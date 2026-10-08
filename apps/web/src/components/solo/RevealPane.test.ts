@@ -115,7 +115,7 @@ describe('RevealPane', () => {
 });
 
 describe('RevealPane package errors (T-032)', () => {
-  it('says so when the build packages cannot load; other runtime errors do not', () => {
+  it('says so when the build packages cannot load; other errors and stall notes do not', () => {
     const { errorListeners } = spyPreview();
     render(
       createElement(RevealPane, {
@@ -132,6 +132,12 @@ describe('RevealPane package errors (T-032)', () => {
       });
     };
     emit({ type: 'runtime-error', kind: 'error', message: 'TypeError: x is undefined' });
+    // Not yet a failure: the build may still start.
+    emit({
+      type: 'runtime-error',
+      kind: 'module-load',
+      message: 'Still waiting for the package server after 8 s: zustand@5.0.15',
+    });
     expect(screen.queryByTestId('reveal-no-packages')).toBeNull();
     emit({
       type: 'runtime-error',

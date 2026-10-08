@@ -188,7 +188,9 @@ function runLoad(msg: LoadMessage): void {
   // T-032: the URLs to check when the module graph fails or stalls (the error event does not
   // say which one failed), and to warm up after it ran.
   const candidates = packageCandidates(msg.importMap, msg.packages);
+  let finished = false;
   const settled = () => {
+    finished = true;
     if (stallTimer !== null) clearTimeout(stallTimer);
     stallTimer = null;
   };
@@ -227,7 +229,8 @@ function runLoad(msg: LoadMessage): void {
     void explainStall(candidates, STALL_MS, shellFetch)
       .catch(() => null)
       .then((text) => {
-        if (frame === f && text !== null) reportError(undefined, 'module-load', text);
+        // Not after the load ended meanwhile (its own outcome was reported).
+        if (frame === f && !finished && text !== null) reportError(undefined, 'module-load', text);
       });
   }, STALL_MS);
   // Keyboard games: someone else's build (reveal, capture) gets the keyboard at once. Not in

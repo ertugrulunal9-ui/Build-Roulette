@@ -242,6 +242,31 @@ describe('SandboxController output batching', () => {
     expect(renders()).toBe(0);
   });
 
+  it('a "still waiting for the package server" note goes once the build runs (T-032)', async () => {
+    const { controller, preview, frames } = await setup();
+    const stall: RuntimeErrorMessage = {
+      type: 'runtime-error',
+      kind: 'module-load',
+      message: 'Still waiting for the package server after 8 s: zustand@5.0.15',
+    };
+    const failure: RuntimeErrorMessage = {
+      type: 'runtime-error',
+      kind: 'module-load',
+      message: 'Package server unreachable: zustand@5.0.15',
+    };
+    preview.error(stall);
+    frames.run();
+    expect(controller.getSnapshot().runtimeErrors).toEqual([stall]);
+    preview.emit('ready', { loadId: 1 });
+    expect(controller.getSnapshot().runtimeErrors).toEqual([]);
+    // A real failure stays: the shell reports `ready` right after it.
+    preview.error(stall); // still pending in the frame batcher when `ready` comes
+    preview.error(failure);
+    preview.emit('ready', { loadId: 2 });
+    frames.run();
+    expect(controller.getSnapshot().runtimeErrors).toEqual([failure]);
+  });
+
   it('a new load clears the console and drops a pending flush', async () => {
     const { controller, runtime, preview, frames } = await setup();
     preview.console({ type: 'console', level: 'log', args: ['old'] });

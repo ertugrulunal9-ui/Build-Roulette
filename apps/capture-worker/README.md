@@ -167,6 +167,19 @@ once.
 Logs: one JSON object per line on stdout (`t`, `level`, `msg`, plus `job`, `kind`, `build`
 or `battle`, `attempt`, `result`, `ms`, `ready`, …).
 
+## Error reporting (T-030)
+
+Off unless `SENTRY_DSN` is set (`SENTRY_ENVIRONMENT`, default `production`, and
+`SENTRY_RELEASE` are optional); the startup line says `"errorReporting": "off"` or `"sentry"`.
+With it, every `error` log line (a failing claim, an unexpected exception in a job, a
+`fail_job` that does not go through, a failed stop) and a crash of the process go to Sentry
+(`src/reporting.ts`, built on `@br/telemetry`): the log message (also the grouping key),
+the reason scrubbed (signed URLs lose their tokens, the user id in a storage path becomes
+`<id>`), and the job kind, job id, attempt and build or battle id as tags. The same message
+goes out at most once a minute. A render that fails because of the build's own code is a
+`warn` line and is never sent. The jobs queue itself is watched from `/admin` → Health
+(`admin_ops_health`) and the runbooks in `docs/runbooks/`.
+
 ## Tests
 
 ```bash

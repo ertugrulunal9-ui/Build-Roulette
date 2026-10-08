@@ -5,13 +5,18 @@
  *   node dist/main.js --once    drain the three queues once, then exit (cron-style runs, tests)
  *
  * Configuration: environment variables, see .env.example. Exit codes: 0 ok, 1 runtime error,
- * 2 configuration error.
+ * 2 configuration error. With `SENTRY_DSN` set, error log lines and a crash are reported to
+ * Sentry (reporting.ts); without it nothing is sent.
  */
+import { disabledReporter, type ErrorReporter } from '@br/telemetry';
 import { loadConfig, describeConfig, ConfigError } from './config';
 import { createLogger, errorMessage } from './log';
 import { PlaywrightRenderer } from './playwright-renderer';
+import { reportLogErrors, workerReporter } from './reporting';
 import { WorkerRunner } from './runner';
 import { SupabaseBackend } from './supabase';
+
+let reporter: ErrorReporter = disabledReporter;
 
 async function main(): Promise<number> {
   let config;
@@ -24,7 +29,12 @@ async function main(): Promise<number> {
     }
     throw e;
   }
-  const log = createLogger({ level: config.logLevel, base: { svc: 'capture-worker' } });
+  reporter = workerReporter(config.telemetry);
+  const log = createLogger({
+    level: config.logLevel,
+    base: { svc: 'capture-worker' },
+    onError: reportLogErrors(reporter),
+  });
   const backend = new SupabaseBackend({ url: config.supabaseUrl, serviceKey: config.serviceKey });
   const renderer = new PlaywrightRenderer({ log });
   const runner = new WorkerRunner(
@@ -45,6 +55,7 @@ async function main(): Promise<number> {
       });
     } finally {
       await renderer.close();
+      await reporter.flush(5_000);
     }
     return 0;
   }
@@ -63,10 +74,16 @@ async function main(): Promise<number> {
       void runner
         .stop()
         .then(() => renderer.close())
-        .then(resolve, (e: unknown) => {
-          log.error('worker.stop_failed', { error: errorMessage(e) });
-          resolve();
-        });
+        .then(() => reporter.flush(5_000))
+        .then(
+          () => {
+            resolve();
+          },
+          (e: unknown) => {
+            log.error('worker.stop_failed', { error: errorMessage(e) });
+            resolve();
+          },
+        );
     };
     process.on('SIGINT', onSignal);
     process.on('SIGTERM', onSignal);
@@ -78,8 +95,10 @@ main().then(
   (code) => {
     process.exitCode = code;
   },
-  (e: unknown) => {
+  async (e: unknown) => {
     process.stderr.write(`capture-worker: ${errorMessage(e)}\n`);
     process.exitCode = 1;
+    reporter.captureException(e, { level: 'fatal' });
+    await reporter.flush(5_000);
   },
 );

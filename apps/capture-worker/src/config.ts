@@ -3,11 +3,19 @@
  * logged: `describeConfig` is what the worker prints at startup.
  */
 import { CAPTURE_MIN_SECRET_LENGTH } from '@br/sandbox-shell/capture-sig';
+import { usableDsn } from '@br/telemetry/server';
 import { CAPTURE_VIEWPORT } from '@br/sandbox-shell/capture-gate';
 import { JOB_LEASE_MS } from './backend';
 import type { CaptureConfig } from './capture-job';
 import { isLogLevel, type LogLevel } from './log';
 import { DEFAULT_RUNNER_OPTIONS, type RunnerOptions } from './runner';
+
+/** Error reporting (T-030): off without `SENTRY_DSN`. */
+export interface TelemetrySettings {
+  sentryDsn: string | null;
+  environment: string;
+  release: string | undefined;
+}
 
 export interface WorkerConfig {
   supabaseUrl: string;
@@ -15,6 +23,7 @@ export interface WorkerConfig {
   capture: CaptureConfig;
   runner: RunnerOptions;
   logLevel: LogLevel;
+  telemetry: TelemetrySettings;
 }
 
 export class ConfigError extends Error {
@@ -106,8 +115,20 @@ export function loadConfig(env: Record<string, string | undefined>): WorkerConfi
   if (runner.idleMaxMs < runner.idleMinMs)
     problems.push('WORKER_IDLE_MAX_MS must be >= WORKER_IDLE_MIN_MS');
 
+  const optional = (name: string): string | undefined => {
+    const v = env[name]?.trim();
+    return v === undefined || v === '' ? undefined : v;
+  };
+  const sentryDsn = optional('SENTRY_DSN') ?? null;
+  if (sentryDsn !== null && !usableDsn(sentryDsn)) problems.push('SENTRY_DSN is not a valid DSN');
+  const telemetry: TelemetrySettings = {
+    sentryDsn,
+    environment: optional('SENTRY_ENVIRONMENT') ?? 'production',
+    release: optional('SENTRY_RELEASE'),
+  };
+
   if (problems.length > 0) throw new ConfigError(problems);
-  return { supabaseUrl, serviceKey, capture, runner, logLevel: level as LogLevel };
+  return { supabaseUrl, serviceKey, capture, runner, logLevel: level as LogLevel, telemetry };
 }
 
 /** The configuration without secrets, for the startup log line. */
@@ -119,5 +140,6 @@ export function describeConfig(c: WorkerConfig): Record<string, unknown> {
     signedUrlTtlSeconds: c.capture.signedUrlTtlSeconds,
     captureTimeoutMs: c.capture.captureTimeoutMs,
     ...c.runner,
+    errorReporting: c.telemetry.sentryDsn === null ? 'off' : 'sentry',
   };
 }

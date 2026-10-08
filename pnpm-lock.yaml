@@ -26,6 +26,9 @@ importers:
       '@br/sandbox-shell':
         specifier: workspace:*
         version: link:../sandbox-shell
+      '@br/telemetry':
+        specifier: workspace:*
+        version: link:../../packages/telemetry
       playwright-core:
         specifier: 1.56.1
         version: 1.56.1
@@ -63,6 +66,9 @@ importers:
 
   apps/pkg-cdn:
     dependencies:
+      '@br/telemetry':
+        specifier: workspace:*
+        version: link:../../packages/telemetry
       cjs-module-lexer:
         specifier: 2.2.1
         version: 2.2.1

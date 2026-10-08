@@ -33,6 +33,15 @@ function noLog(): void {
 
 export interface HandlerOptions {
   log?: Logger;
+  /**
+   * Called for every request that failed with a 5xx (after the response): main.ts reports
+   * the server's own failures to Sentry when a DSN is configured (reporting.ts, T-030).
+   */
+  onServerError?: (
+    error: unknown,
+    status: number,
+    request: { method: string; url: string },
+  ) => void;
 }
 
 export interface RequestStats {
@@ -247,6 +256,13 @@ export function createCdnHandler(cdn: PackageCdn, opts: HandlerOptions = {}) {
       } else {
         status = sendError(req, res, e);
         note = e instanceof CdnError ? e.code : 'internal';
+      }
+      if (status >= 500 && opts.onServerError) {
+        try {
+          opts.onServerError(e, status, { method: req.method ?? 'GET', url: req.url ?? '/' });
+        } catch {
+          // Reporting never breaks a response.
+        }
       }
     } finally {
       clearTimeout(timer);

@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import type { NextConfig } from 'next';
@@ -16,9 +17,36 @@ if (runtimePkg.dependencies['esbuild-wasm'] !== webEsbuild) {
   );
 }
 
+/**
+ * The release that error reports and analytics events carry (T-030): `BR_RELEASE` when the
+ * deploy sets it, else the commit being built, else `dev`.
+ */
+function release(): string {
+  const fromEnv = process.env['BR_RELEASE']?.trim();
+  if (fromEnv) return fromEnv;
+  try {
+    return execFileSync('git', ['rev-parse', '--short=12', 'HEAD'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {
+    return 'dev';
+  }
+}
+
 const nextConfig: NextConfig = {
   // Workspace packages ship TypeScript source (no build step), so Next compiles them.
-  transpilePackages: ['@br/game', '@br/protocol', '@br/runtime', '@br/workspace'],
+  transpilePackages: ['@br/game', '@br/protocol', '@br/runtime', '@br/telemetry', '@br/workspace'],
+  // Telemetry settings (src/lib/telemetry/config.ts), inlined like any NEXT_PUBLIC_* value.
+  // An unset one becomes '' rather than a runtime `process.env` lookup, so a build without
+  // a DSN or key drops the code behind it (the bundler removes `if ('')` branches).
+  env: {
+    NEXT_PUBLIC_BR_RELEASE: release(),
+    NEXT_PUBLIC_SENTRY_DSN: process.env['NEXT_PUBLIC_SENTRY_DSN'] ?? '',
+    NEXT_PUBLIC_SENTRY_ENVIRONMENT: process.env['NEXT_PUBLIC_SENTRY_ENVIRONMENT'] ?? '',
+    NEXT_PUBLIC_POSTHOG_KEY: process.env['NEXT_PUBLIC_POSTHOG_KEY'] ?? '',
+    NEXT_PUBLIC_POSTHOG_HOST: process.env['NEXT_PUBLIC_POSTHOG_HOST'] ?? '',
+  },
   poweredByHeader: false,
   // `next dev` would otherwise write AGENTS.md and CLAUDE.md into apps/web when it detects an
   // AI coding agent. The repository keeps its agent instructions at the root.

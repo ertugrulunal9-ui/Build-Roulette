@@ -18,6 +18,19 @@ declare namespace NodeJS {
     readonly NEXT_PUBLIC_TURNSTILE_SITE_KEY?: string;
     /** The app's public origin, for absolute OG image URLs (`metadataBase`). */
     readonly NEXT_PUBLIC_SITE_URL?: string;
+    /**
+     * Sentry DSN for browser error reporting (T-030; also the server's fallback). Unset: no
+     * error reporting, nothing loaded. See src/lib/telemetry/config.ts.
+     */
+    readonly NEXT_PUBLIC_SENTRY_DSN?: string;
+    /** Sentry environment name (default `production`). */
+    readonly NEXT_PUBLIC_SENTRY_ENVIRONMENT?: string;
+    /** PostHog project API key (T-030). Unset: no product analytics. */
+    readonly NEXT_PUBLIC_POSTHOG_KEY?: string;
+    /** PostHog ingest host (default https://eu.i.posthog.com). */
+    readonly NEXT_PUBLIC_POSTHOG_HOST?: string;
+    /** The release (set by next.config.ts from `BR_RELEASE` or the commit). */
+    readonly NEXT_PUBLIC_BR_RELEASE?: string;
   }
 }
 

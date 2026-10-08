@@ -35,16 +35,24 @@
  * battle snapshot (Realtime events + refetches) and the server clock, and pushes them in with
  * `receive()` and `setClockOffset()`. The controller then neither polls nor samples the
  * clock; everything else (deadline nudges, autosave, ship, last look, destroy) is shared.
+ *
+ * **Telemetry (T-030):** `battle_started` (solo), `build_shipped` (manual on a successful
+ * ship; auto when a snapshot shows this player's draft turned auto-shipped), and
+ * `battle_completed` when the battle reaches RESULTS (or is abandoned) while this client
+ * watches; the battle and its phase tag error reports (context.ts). No-ops while telemetry
+ * is off.
  */
 import { isTerminalPhase, remainingMs } from '@br/game';
 import type { ImportMap } from '@br/protocol';
 import { buildImportMap, type PreviewBuild } from '@br/runtime';
 import type { Workspace } from '@br/workspace';
+import { track as defaultTrack, type BattleMode, type Track } from '../telemetry/analytics';
+import { setTelemetryContext } from '../telemetry/context';
 import type { BuildFile, SoloApi } from './api';
 import { ServerClock } from './clock-sync';
 import { GameError, toGameError } from './errors';
 import { buildStats, manifestJson, parseSourceJson, sourceJson } from './stats';
-import type { BattleSnapshot, BuildStats, SnapshotBuild } from './types';
+import type { BattleSnapshot, BuildStats, ShipResult, SnapshotBuild } from './types';
 import { pruneBattleWorkspaces, type StoredBattleWorkspace } from './workspace-cleanup';
 
 // ─── Dependencies ─────────────────────────────────────────────────────────────────────
@@ -149,6 +157,8 @@ export interface SoloControllerDeps {
   timings?: Partial<SoloTimings>;
   /** Called when the open battle changes (to keep `?battle=` in the URL). */
   onBattleChange?: (battleId: string | null) => void;
+  /** Product analytics (default: analytics.ts; tests pass a spy). */
+  track?: Track;
 }
 
 // ─── State ────────────────────────────────────────────────────────────────────────────
@@ -223,6 +233,13 @@ export function myBuild(snapshot: BattleSnapshot | null): SnapshotBuild | null {
   return snapshot.builds.find((b) => b.builder_id === snapshot.me.user_id) ?? null;
 }
 
+function battleMode(snapshot: BattleSnapshot): BattleMode {
+  return snapshot.battle.mode === 'solo' ? 'solo' : 'multiplayer';
+}
+
+/** Phases after which a battle counts as completed for `battle_completed`. */
+const COMPLETED_PHASES = new Set(['results', 'destroyed', 'abandoned']);
+
 // ─── Controller ───────────────────────────────────────────────────────────────────────
 
 type TimerName = 'deadline' | 'final' | 'poll' | 'autosave' | 'clock' | 'destroy';
@@ -234,6 +251,7 @@ export class SoloController {
   private readonly clock: SoloClock;
   private readonly timings: SoloTimings;
   private readonly deps: SoloControllerDeps;
+  private readonly track: Track;
   private readonly timers = new Map<TimerName, TimerHandle>();
   private bridge: WorkspaceBridge | null = null;
   private disposed = false;
@@ -259,6 +277,7 @@ export class SoloController {
     this.api = deps.api;
     this.clock = deps.clock ?? realClock;
     this.timings = { ...DEFAULT_TIMINGS, ...deps.timings };
+    this.track = deps.track ?? defaultTrack;
     this.serverClock = new ServerClock(
       () => this.api.serverNow(),
       () => this.clock.now(),
@@ -306,6 +325,12 @@ export class SoloController {
       this.patch({ userId });
       const battleId = await this.api.startSoloBattle(displayName.trim());
       if (epoch !== this.epoch) return;
+      this.track('battle_started', {
+        battle_id: battleId,
+        mode: 'solo',
+        room_id: null,
+        rematch: false,
+      });
       await this.openBattle(battleId);
     } catch (e) {
       if (epoch !== this.epoch) return;
@@ -344,6 +369,7 @@ export class SoloController {
     this.state = { ...INITIAL_SOLO_STATE, userId: this.state.userId };
     this.emit();
     this.deps.onBattleChange?.(null);
+    setTelemetryContext({ battleId: null, phase: null, mode: null });
   }
 
   /** The BUILD screen attaches its workspace while mounted. */
@@ -447,7 +473,13 @@ export class SoloController {
     this.patch({ ship: { status: 'shipping', error: null, canShipLastGood: false } });
     const stats = buildStats(workspace, bundle, bridge.counters());
     try {
-      await this.shipWithStats(battleId, name.trim(), stats);
+      const shipped = await this.shipWithStats(battleId, name.trim(), stats);
+      this.track('build_shipped', {
+        battle_id: battleId,
+        mode: battleMode(snap),
+        how: 'manual',
+        completion_ms: shipped.build.completion_ms,
+      });
     } catch (e) {
       const err = toGameError(e);
       if (err.code !== 'already_shipped') {
@@ -639,6 +671,12 @@ export class SoloController {
     }
     const prevPhase = prev?.battle.id === snapshot.battle.id ? prev.battle.phase : null;
     const phase = snapshot.battle.phase;
+    this.trackTransitions(prev, snapshot);
+    setTelemetryContext({
+      battleId: snapshot.battle.id,
+      phase,
+      mode: battleMode(snapshot),
+    });
     this.patch({
       snapshot,
       userId: snapshot.me.user_id,
@@ -857,17 +895,60 @@ export class SoloController {
 
   // --- Ship helpers -------------------------------------------------------------------
 
-  private async shipWithStats(battleId: string, name: string, stats: BuildStats): Promise<void> {
+  private async shipWithStats(
+    battleId: string,
+    name: string,
+    stats: BuildStats,
+  ): Promise<ShipResult> {
     try {
-      await this.api.shipBuild(battleId, name, stats);
+      return await this.api.shipBuild(battleId, name, stats);
     } catch (e) {
       const err = toGameError(e);
       // Stats are display-only: never let them block a ship.
       if (err.code === 'invalid_stats' || err.code === 'stats_too_large') {
-        await this.api.shipBuild(battleId, name, {});
-        return;
+        return this.api.shipBuild(battleId, name, {});
       }
       throw err;
+    }
+  }
+
+  /**
+   * Analytics from a new snapshot of the same battle (T-030): an auto-ship of this player's
+   * draft, and the battle completing while this client watched it. Only for changes seen
+   * live, so a reload or a late open does not count them again.
+   */
+  private trackTransitions(prev: BattleSnapshot | null, next: BattleSnapshot): void {
+    if (prev?.battle.id !== next.battle.id) return;
+    const mode = battleMode(next);
+    const was = myBuild(prev);
+    const mine = myBuild(next);
+    if (was?.status === 'draft' && mine?.status === 'auto_shipped') {
+      this.track('build_shipped', {
+        battle_id: next.battle.id,
+        mode,
+        how: 'auto',
+        completion_ms: mine.completion_ms,
+      });
+    }
+    if (!COMPLETED_PHASES.has(prev.battle.phase) && COMPLETED_PHASES.has(next.battle.phase)) {
+      const status = mine?.status;
+      this.track('battle_completed', {
+        battle_id: next.battle.id,
+        mode,
+        role: next.me.role ?? (next.me.is_player ? 'player' : 'viewer'),
+        outcome: next.battle.phase === 'abandoned' ? 'abandoned' : 'results',
+        build:
+          status === 'shipped'
+            ? 'manual'
+            : status === 'auto_shipped'
+              ? 'auto'
+              : status === 'dnf' || status === 'disqualified'
+                ? status
+                : 'none',
+        rank: mine?.final_rank ?? null,
+        builds: next.builds.filter((b) => b.status === 'shipped' || b.status === 'auto_shipped')
+          .length,
+      });
     }
   }
 

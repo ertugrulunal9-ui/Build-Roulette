@@ -4,6 +4,7 @@
  * polls), so no socket is opened.
  */
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import { identifyUser } from '../telemetry/context';
 import { supabaseConfig } from './config';
 import { getCaptchaToken } from './turnstile';
 
@@ -32,7 +33,11 @@ export async function ensureSignedIn(
   captcha: () => Promise<string | undefined> = getCaptchaToken,
 ): Promise<string> {
   const { data } = await supabase.auth.getSession();
-  if (data.session) return data.session.user.id;
+  if (data.session) {
+    // Error reports and analytics carry its hash (a no-op while telemetry is off).
+    identifyUser(data.session.user.id);
+    return data.session.user.id;
+  }
   const captchaToken = await captcha();
   const { data: signedIn, error } = await supabase.auth.signInAnonymously(
     captchaToken ? { options: { captchaToken } } : undefined,
@@ -40,5 +45,6 @@ export async function ensureSignedIn(
   if (error) throw error;
   const id = signedIn.user?.id;
   if (!id) throw new Error('anonymous sign-in returned no user');
+  identifyUser(id);
   return id;
 }

@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { buildFrame, clickRouted, replaceEditorText } from './helpers';
+import { buildFrame, clickRouted, replaceEditorText, startBattle, waitForBuild } from './helpers';
 import { battleRow, ephemeralObjects, sql } from './stack';
 
 /**
@@ -13,29 +13,6 @@ const SHOTS = process.env['SOLO_SCREENSHOT_DIR'];
 
 async function snap(page: Page, name: string): Promise<void> {
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/t014-${name}.png` });
-}
-
-/** Name entry → Spin. Returns the battle id (from `?battle=`). */
-async function startBattle(page: Page, name: string): Promise<string> {
-  await page.goto('/');
-  await page.getByTestId('play-solo').click();
-  await expect(page).toHaveURL(/\/play$/);
-  const input = page.getByTestId('display-name');
-  await expect(input).not.toHaveValue(''); // a random fun default
-  await input.fill(name);
-  await page.getByRole('button', { name: 'Spin', exact: true }).click();
-  await expect(page.getByTestId('spin')).toBeVisible();
-  await expect(page).toHaveURL(/[?&]battle=[0-9a-f-]{36}/);
-  return new URL(page.url()).searchParams.get('battle') ?? '';
-}
-
-/** Waits until SPIN is over and the template's first preview is up. */
-async function waitForBuild(page: Page): Promise<void> {
-  await expect(page.getByTestId('spin')).toBeHidden({ timeout: 30_000 });
-  await expect(page.getByTestId('countdown')).toHaveAttribute('data-level', /normal|low/);
-  await expect(page.getByTestId('build-status')).toHaveText(/^Built in \d+ ms$/, {
-    timeout: 30_000,
-  });
 }
 
 async function openFile(page: Page, path: string): Promise<void> {

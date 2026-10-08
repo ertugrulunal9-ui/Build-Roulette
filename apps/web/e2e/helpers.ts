@@ -97,3 +97,26 @@ export async function editorText(page: Page): Promise<string> {
   const lines = await page.locator('[data-testid=code-editor] .cm-line').allTextContents();
   return lines.join('\n');
 }
+
+/** Name entry → Spin. Returns the battle id (from `?battle=`). */
+export async function startBattle(page: Page, name: string): Promise<string> {
+  await page.goto('/');
+  await page.getByTestId('play-solo').click();
+  await expect(page).toHaveURL(/\/play$/);
+  const input = page.getByTestId('display-name');
+  await expect(input).not.toHaveValue(''); // a random fun default
+  await input.fill(name);
+  await page.getByRole('button', { name: 'Spin', exact: true }).click();
+  await expect(page.getByTestId('spin')).toBeVisible();
+  await expect(page).toHaveURL(/[?&]battle=[0-9a-f-]{36}/);
+  return new URL(page.url()).searchParams.get('battle') ?? '';
+}
+
+/** Waits until SPIN is over and the template's first preview is up. */
+export async function waitForBuild(page: Page): Promise<void> {
+  await expect(page.getByTestId('spin')).toBeHidden({ timeout: 30_000 });
+  await expect(page.getByTestId('countdown')).toHaveAttribute('data-level', /normal|low/);
+  await expect(page.getByTestId('build-status')).toHaveText(/^Built in \d+ ms$/, {
+    timeout: 30_000,
+  });
+}

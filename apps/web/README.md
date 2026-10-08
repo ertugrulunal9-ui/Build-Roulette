@@ -6,12 +6,36 @@ The Next.js app (App Router). Routes:
 |---|---|
 | `/` | Landing page: "Play solo" (`/play`), "Create room" (a name → `create_room` → `/r/{code}`) and "Join with code" (any case, trimmed, or a pasted invite link). |
 | `/play` | The solo game: name → SPIN → BUILD → SHIP → RESULTS → DESTROY. `?battle={id}` resumes a battle after a refresh. |
-| `/battles/[id]` | The permanent, shareable results page (server-rendered), plus `/battles/[id]/opengraph-image`. |
+| `/battles/[id]` | The permanent, shareable results page (server-rendered, ISR), plus `/battles/[id]/opengraph-image`. Cached for an hour once the battle is settled, seconds before that; a takedown shows at once ("Caching" below). |
 | `/playground` | Single-player editor and live preview, no game. |
 | `/r/[code]` | A room (M3): join → lobby → SPIN → BUILD → SHIP → REVEAL → VOTE → RESULTS → DESTROY → lobby (rematch). |
-| `/u/[id]` | A player's history (M4): their finished battles, newest first, server-rendered from `get_player_history` with the anon key, paginated (`?before=…&before_battle=…`). |
+| `/u/[id]` | A player's history (M4): their finished battles, newest first, server-rendered from `get_player_history` with the anon key, paginated (`?before=…&before_battle=…`). Rendered per request from data at most a minute old. |
 | `/admin` | Moderation (M5, T-024), server-rendered: the report queue (dismiss, take down), the battle / room event logs (`?q={battle id or room code}`) and the admin log. **A plain 404 for everyone who is not a signed-in admin.** |
 | `/admin/sign-in` | The moderators' email/password sign-in (not linked, not indexed). |
+
+## Caching (T-026)
+
+The permanent pages are cached; the rules are in `src/lib/cache/policy.ts`, the Cloudflare
+side (R2, D1, Durable Object queue) in [DEPLOY.md](DEPLOY.md), "Caching".
+
+- **`/battles/[id]` and its OG image** are ISR: rendered on the first visit, then served
+  from the cache. They read `get_public_battle` through a `'use cache'` function
+  (`loadPublicBattle`) whose lifetime depends on the answer: **an hour** once the battle is
+  DESTROYED with `destroyed_at` set, **5 s** before that (screenshots land, then the destroy
+  job) and for a battle that is not public yet (its 404 doesn't stick). Tag `battle:{id}`.
+- **`/u/[id]`** reads its page from the query string, so it renders per request; its data
+  (`loadPlayerHistory`) is cached for at most a minute, and for 5 s only while it says "No
+  battles to show" or lists a battle that is not settled. Tagged with the player and every
+  battle on the page.
+- **A takedown** in `/admin` expires `battle:{id}` (`updateTag`): the battle's page, its OG
+  image and every history page listing it show the removal on the next request. Ten
+  seconds later the page and the OG image are expired once more (a copy rendered just
+  before the takedown could have landed just after it). Nothing else in `/admin` changes a
+  public page.
+- The pages read no cookies or headers (`force-static`), so a cached copy holds nothing
+  about its viewer.
+- Needs `experimental.useCache` (deprecated in Next 16 in favour of `cacheComponents`, which
+  would change every route; see DEPLOY.md).
 
 ## Moderation (T-024)
 
@@ -262,6 +286,7 @@ CDN (T-006) replaces it.
 | React binding | `src/lib/solo/use-solo-game.ts` |
 | Screens | `src/components/solo/*` |
 | Results page + OG image | `src/app/battles/[id]/*`, `src/lib/solo/public-battle.ts` |
+| Caching rules of the permanent pages (lifetimes, tags) | `src/lib/cache/policy.ts`, `open-next.config.ts`, `wrangler.jsonc` |
 | Player history page | `src/app/u/[id]/*`, `src/lib/history/player-history.ts`, `src/components/results/MyHistoryLink.tsx` |
 | Phones and tablets (touch-primary check) | `src/lib/device.ts`, `src/components/room/DesktopNeeded.tsx` |
 | Moderation: report dialog, "Removed by moderators" | `src/components/moderation/*`, `src/lib/moderation/report.ts` |
@@ -274,7 +299,8 @@ CDN (T-006) replaces it.
 pnpm --filter @br/web test             # unit (Vitest): solo + room controllers, sync engine, reducer, …
 pnpm --filter @br/web test:e2e         # /playground (Playwright), no Supabase needed
 pnpm --filter @br/web test:e2e:solo    # /play against the REAL local Supabase stack
-pnpm --filter @br/web test:e2e:moderation  # report → /admin takedown → removed (REAL stack)
+pnpm --filter @br/web test:e2e:moderation  # report → /admin takedown → removed, + the ISR cache (REAL stack)
+pnpm --filter @br/web test:e2e:cf:moderation   # the same against the Workers preview (cf:build first)
 pnpm --filter @br/web test:e2e:multi   # rooms: 3+ browser contexts (and phones), REAL stack WITH Realtime
 pnpm --filter @br/web test:e2e:mobile  # only the phone spec of the above
 pnpm --filter @br/web test:e2e:chaos   # rooms under chaos (~14 min), same stack
@@ -313,9 +339,19 @@ CHAOS_SHARD=2 pnpm --filter @br/web test:e2e:chaos   # one of its 3 shards (~5 m
   moderators" without the screenshot (rank kept), and the worker deletes the object. The
   reported build had won the (voted) battle: afterwards it has no Winner banner and no award
   chips on `/battles/[id]` and on the builder's `/u/[id]`, its vote counts stay, and the
-  runner-up keeps its own award without becoming the winner (T-028). A
-  second test: a blocked display name on Create room and `/play` shows the friendly error.
-  `MODERATION_SCREENSHOT_DIR=/dir` saves the UI screenshots.
+  runner-up keeps its own award without becoming the winner (T-028). The three public
+  surfaces are cached right before the takedown and show it on the very next request
+  (T-026). A second test: a blocked display name on Create room and `/play` shows the
+  friendly error. `MODERATION_SCREENSHOT_DIR=/dir` saves the UI screenshots.
+- The same config runs `e2e/isr.spec.ts` (T-026), against `next start` or, with
+  `E2E_APP_SERVER=workers` (`test:e2e:cf:moderation`), the OpenNext Workers preview with R2,
+  D1 and the Durable Object queue emulated. A settled battle (inserted with psql): the
+  second request of `/battles/[id]` and of its OG image is a cache HIT; renames made in the
+  database stay hidden on both and on the builder's `/u/[id]`; an admin takedown shows
+  "Removed by moderators" on all three on the next request, the fresh copies are cached
+  again, and the second expiry 10 s later picks up a later change. A battle that is not
+  public yet: its 404 is cached for seconds only, so the page appears once it reaches
+  RESULTS.
 - `test:e2e:multi` (`playwright.multi.config.ts`) needs the local stack running **with
   Realtime**; same servers as the solo e2e (`solo-services.ts --realtime`). Each player is
   its own browser context, i.e. its own anonymous user (`e2e/multiplayer.spec.ts`):
@@ -465,5 +501,7 @@ deploys, secrets, custom domain and caching.
   without ids (`get_public_battle`), so it links only the viewer's own history.
 - **Phones only tested in Chromium's mobile emulation** (no real iOS Safari / Android device
   in CI).
-- `/battles/[id]` is rendered per request; ISR on the R2 incremental cache is a follow-up
-  (DEPLOY.md, "Caching").
+- **Caching:** a takedown made outside `/admin` (SQL) revalidates nothing, so cached copies
+  show the build for up to an hour (`/u/[id]`: a minute). A copy older than its lifetime is
+  served once more while it regenerates (stale-while-revalidate), so a battle page first
+  rendered in RESULTS can show its pre-screenshot state to one more visitor later on.

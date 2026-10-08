@@ -18,13 +18,27 @@ import { screenshotUrl } from '../../../lib/supabase/config';
 
 /**
  * The permanent, shareable results page (docs/01 §1.3). Server-rendered from
- * `get_public_battle` with the anon key: only permanent data, no code. Rendered per
- * request for now (ISR on the R2 incremental cache is a follow-up, see DEPLOY.md).
+ * `get_public_battle` with the anon key: only permanent data, no code.
+ *
+ * ISR (T-026): rendered on the first visit, then served from the cache (the R2 incremental
+ * cache on Cloudflare). The page lives as long as its data (`loadPublicBattle`, see
+ * lib/cache/policy.ts): seconds while the battle can still change, an hour once it is
+ * DESTROYED with `destroyed_at` set; a takedown revalidates it at once (tag `battle:{id}`).
+ * `force-static`: the page never reads cookies or headers (the viewer's own history link is
+ * a client component), and Next would hand it empty ones anyway, so a cached copy holds
+ * nothing about the viewer.
  *
  * A build a moderator removed after RESULTS (T-028) keeps its place and rank ("#1 Removed
  * by moderators") and its vote counts, but no Winner banner, gold ring or awards; the next
  * build does not become the winner.
  */
+
+export const dynamic = 'force-static';
+/**
+ * The longest a copy is cached: SETTLED_BATTLE.revalidate, as a literal (Next reads it at
+ * build time). Also the lifetime when no `cacheLife` applies.
+ */
+export const revalidate = 3600;
 
 interface BattlePageProps {
   params: Promise<{ id: string }>;

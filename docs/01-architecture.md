@@ -86,7 +86,8 @@ static asset, which allows up to 25 MiB per file. Rules that follow from the spi
 - use **Workers Paid**, because the free plan's 10 ms CPU and 3 MB size limits are too tight;
 - avoid `proxy.ts` (middleware) unless it's really needed, since it adds about 1.2 MB gzip;
 - results pages (`/battles/[id]`) use the **R2 incremental cache** for ISR. Static pages use
-  the static-assets cache;
+  the static-assets cache. (T-026: everything cached is in R2 now, with a D1 tag cache and a
+  Durable Object revalidation queue; see "Caching of the permanent pages" below);
 - set `metadataBase` for OG images. `next/og` works.
 - Deploy with `cf:deploy`, never with plain `wrangler deploy`. See `apps/web/DEPLOY.md`.
 | Route | Rendering | Purpose |
@@ -94,8 +95,17 @@ static asset, which allows up to 25 MiB per file. Rules that follow from the spi
 | `/` | static + client | Landing page, "Create room", "Join with code" |
 | `/r/[code]` | client-heavy | Room: lobby, spin, build workspace, reveal, vote, results |
 | `/battles/[id]` | SSR + ISR | Permanent results page (shareable). Reads only persisted data. |
-| `/battles/[id]/opengraph-image` | edge | Social card built from the challenge and the winning screenshot |
-| `/u/[id]` | SSR | Player history (builds, awards) |
+| `/battles/[id]/opengraph-image` | ISR (in the Worker) | Social card built from the challenge and the winning screenshot |
+| `/u/[id]` | SSR, cached data | Player history (builds, awards) |
+
+**Caching of the permanent pages (T-026).** `/battles/[id]` and its OG image are cached
+for an hour once the battle is DESTROYED with `destroyed_at` set (nothing changes by itself
+after that), and for seconds before that (screenshots land, then the destroy job) or while
+the battle is not public yet. `/u/[id]` renders per request from data at most a minute old.
+A takedown in `/admin` revalidates the battle's page, its OG image and every history page
+that lists it at once (cache tag `battle:{id}`). The rules are in
+`apps/web/src/lib/cache/policy.ts`, the Cloudflare setup in `apps/web/DEPLOY.md`
+("Caching").
 
 Server code in Next.js stays thin. Game logic lives in Postgres functions so there's a
 single transactional authority. Route handlers are only for things that need a secret the

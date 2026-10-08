@@ -20,5 +20,24 @@
       "service": "build-roulette-web",
     },
   ],
+  // ISR and `'use cache'` (T-026, open-next.config.ts, DEPLOY.md "Caching"). The local
+  // preview emulates all of these; production needs the bucket and the database created once.
+  "r2_buckets": [
+    // The incremental cache.
+    { "binding": "NEXT_INC_CACHE_R2_BUCKET", "bucket_name": "build-roulette-web-cache" },
+  ],
+  "d1_databases": [
+    {
+      // The tag cache (one `revalidations` table, created by cf:preview / cf:deploy).
+      // Production: put the id printed by `wrangler d1 create build-roulette-web-tags` here.
+      "binding": "NEXT_TAG_CACHE_D1",
+      "database_name": "build-roulette-web-tags",
+    },
+  ],
+  "durable_objects": {
+    // The revalidation queue (stale ISR copies are regenerated in the background).
+    "bindings": [{ "name": "NEXT_CACHE_DO_QUEUE", "class_name": "DOQueueHandler" }],
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["DOQueueHandler"] }],
   "observability": { "enabled": true },
 }

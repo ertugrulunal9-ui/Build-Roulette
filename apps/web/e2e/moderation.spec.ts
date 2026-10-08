@@ -1,4 +1,5 @@
 import { expect, test, type Browser, type Locator, type Page } from '@playwright/test';
+import { bodyHash, cachedCopy } from './cache';
 import {
   anonymousUserId,
   assertUuid,
@@ -20,6 +21,11 @@ import {
  * more vote awards, speedrun and fastest ship. After the takedown (T-028) it keeps rank 1
  * and its vote counts but has no Winner banner and no award chips on /battles/[id] and on
  * the builder's /u/[id]; the runner-up keeps its own award and does not become the winner.
+ *
+ * The three public surfaces (/battles/[id], its OG image, the builder's /u/[id]) are cached
+ * (T-026) and served from the cache right up to the takedown; the takedown's revalidation
+ * makes the very next request of each show the removal (e2e/isr.spec.ts covers a settled
+ * battle, cached for an hour).
  *
  * Plus: /admin is a plain 404 for a player (and without a session, and after a failed
  * sign-in), and a blocked display name gets the friendly error.
@@ -238,6 +244,14 @@ test('report → admin takedown → "Removed by moderators" and the screenshot i
   await expect(item.getByTestId('report-item-screenshot')).toBeVisible();
   await snap(admin, 't024-admin-queue');
 
+  // ─── Right before the takedown, the public copies are cached (T-026) ────────────
+  const battlePath = `/battles/${fx.battle}`;
+  const ogPath = `${battlePath}/opengraph-image`;
+  expect(await (await cachedCopy(page.request, battlePath)).text()).toContain('Free Gift Card');
+  const ogBefore = await bodyHash(await cachedCopy(page.request, ogPath));
+  // /u/[id] renders per request from cached data (at most a minute old).
+  expect(await (await page.request.get(`/u/${fx.mallory}`)).text()).toContain('Free Gift Card');
+
   // ─── Take it down ───────────────────────────────────────────────────────────────
   await item.getByTestId('admin-take-down').click();
   await item.getByTestId('admin-take-down-note').fill('Phishing form (e2e)');
@@ -266,7 +280,10 @@ test('report → admin takedown → "Removed by moderators" and the screenshot i
   await snap(admin, 't024-admin-battle-log', true);
 
   // ─── The public page: "Removed by moderators", no screenshot ────────────────────
-  await page.goto(`/battles/${fx.battle}`);
+  // Its cached copy is seconds old: by time alone it would still be served (once more, at
+  // least: stale-while-revalidate). Only the takedown's tag revalidation shows the removal
+  // on the first request.
+  await page.goto(battlePath);
   await expect(scamCard).toHaveAttribute('data-removed', 'true');
   await expect(scamCard.getByTestId('public-build-name')).toContainText('Removed by moderators');
   await expect(scamCard.getByTestId('public-build-name')).not.toContainText('Free Gift Card');
@@ -289,9 +306,11 @@ test('report → admin takedown → "Removed by moderators" and the screenshot i
   await expect(page.locator('[data-award=overall], [data-award=speedrun]')).toHaveCount(0);
   await scamCard.scrollIntoViewIfNeeded();
   await snap(page, 't028-removed-winner');
-  const og = await page.request.get(`/battles/${fx.battle}/opengraph-image`);
+  const og = await page.request.get(ogPath);
   expect(og.status()).toBe(200);
   expect(og.headers()['content-type']).toContain('image/png');
+  // A new card (no WINNER chip, no awards, no screenshot), not the cached one.
+  expect(await bodyHash(og)).not.toBe(ogBefore);
 
   // ─── …and on the builder's history ──────────────────────────────────────────────
   await page.goto(`/u/${fx.mallory}`);

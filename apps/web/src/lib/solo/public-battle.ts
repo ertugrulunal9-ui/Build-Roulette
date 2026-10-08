@@ -2,8 +2,15 @@
  * Server-side read of a battle's permanent results (`get_public_battle`, callable with the
  * anon key). Used by /battles/[id] and its OG image. Plain fetch, so it runs the same on
  * Node and on Cloudflare Workers.
+ *
+ * Cached (T-026): `loadPublicBattle` is a `'use cache'` function whose lifetime depends on
+ * the answer (lib/cache/policy.ts: seconds while the battle can still change, an hour once
+ * it is settled) and is tagged `battle:{id}`, which a takedown revalidates. The ISR pages
+ * that read it inherit both.
  */
+import { cacheLife, cacheTag } from 'next/cache';
 import { cache } from 'react';
+import { battleLifetime, battleTags } from '../cache/policy';
 import { supabaseConfig, type SupabaseConfig } from '../supabase/config';
 import type { PublicBattle } from './types';
 
@@ -29,7 +36,7 @@ export async function fetchPublicBattle(
     method: 'POST',
     headers,
     body: JSON.stringify({ p_battle_id: battleId }),
-    // Results change while a capture is pending; ISR on the R2 cache is a follow-up.
+    // The data cache stays out of it: loadPublicBattle caches the parsed answer instead.
     cache: 'no-store',
   });
   if (res.ok) return (await res.json()) as PublicBattle;
@@ -38,5 +45,17 @@ export async function fetchPublicBattle(
   throw new Error(`get_public_battle failed: HTTP ${String(res.status)} ${body?.message ?? ''}`);
 }
 
+/**
+ * `fetchPublicBattle`, cached across requests (see the top of this file). A failed read
+ * throws and is not cached: an ISR page then keeps serving its last good copy.
+ */
+export async function loadPublicBattle(id: string): Promise<PublicBattle | null> {
+  'use cache';
+  cacheTag(...battleTags(id));
+  const data = await fetchPublicBattle(id);
+  cacheLife(battleLifetime(id, data));
+  return data;
+}
+
 /** Deduplicated per request (generateMetadata and the page both read it). */
-export const getPublicBattle = cache((id: string) => fetchPublicBattle(id));
+export const getPublicBattle = cache((id: string) => loadPublicBattle(id.toLowerCase()));

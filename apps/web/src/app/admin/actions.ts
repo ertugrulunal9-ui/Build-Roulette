@@ -5,9 +5,16 @@
  * Every action re-reads the session cookie and calls the RPC with the admin's own token, so
  * Postgres (`is_admin()`) decides, not this code. Next.js checks the Origin of server action
  * posts, and the cookies are SameSite=Strict, httpOnly and scoped to /admin.
+ *
+ * Of these, only a takedown changes public pages (T-026): it expires the cached copies of
+ * the battle's page, its OG image and the history pages that list it. Dismissing reports
+ * changes nothing public (reports are never shown).
  */
+import { revalidatePath, updateTag } from 'next/cache';
 import { cookies, headers } from 'next/headers';
 import { notFound, redirect } from 'next/navigation';
+import { after } from 'next/server';
+import { TAKEDOWN_REEXPIRE_MS, takedownPaths, takedownTags } from '../../lib/cache/policy';
 import {
   ACCESS_COOKIE,
   REFRESH_COOKIE,
@@ -86,6 +93,28 @@ export async function signOutAction(): Promise<void> {
   redirect('/');
 }
 
+/**
+ * Expires every cached copy that shows battle `battleId` (its page, its OG image, the history
+ * pages that list it): the next visitor waits for a fresh render instead of getting the old
+ * copy while it regenerates. The id comes from the RPC's answer, not from the form.
+ *
+ * A render that read the battle just before the takedown can store its copy just after
+ * this, and that copy would look newer than the expiry. So the battle's page and OG image
+ * are expired once more a little later, after the response (`after`: `waitUntil` on
+ * Workers), by path: OpenNext writes a tag only once per request, and a path expiry also
+ * reaches the cached data those two read. (A history's data is at most a minute old anyway.)
+ */
+function expirePublicCopies(battleId: unknown): void {
+  const tags = takedownTags(battleId);
+  if (tags.length === 0) return;
+  for (const tag of tags) updateTag(tag);
+  const paths = takedownPaths(battleId);
+  after(async () => {
+    await new Promise((resolve) => setTimeout(resolve, TAKEDOWN_REEXPIRE_MS));
+    for (const path of paths) revalidatePath(path);
+  });
+}
+
 function backTo(formData: FormData, params: Record<string, string>): string {
   const view = field(formData, 'view');
   const q = new URLSearchParams(params);
@@ -115,10 +144,13 @@ export async function takeDownAction(formData: FormData): Promise<void> {
   const token = await adminToken();
   const buildId = field(formData, 'build_id');
   const note = field(formData, 'note');
-  const res = await adminRpc<{ retried: boolean }>(token, 'admin_take_down_build', {
-    p_build_id: buildId,
-    p_note: note || null,
-  });
+  const res = await adminRpc<{ retried: boolean; battle_id?: unknown }>(
+    token,
+    'admin_take_down_build',
+    { p_build_id: buildId, p_note: note || null },
+  );
+  // Also on a retry: cheap, and it repairs a revalidation that went missing.
+  if (res.data) expirePublicCopies(res.data.battle_id);
   redirect(
     backTo(
       formData,

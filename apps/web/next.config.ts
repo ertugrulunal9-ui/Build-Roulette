@@ -23,6 +23,13 @@ const nextConfig: NextConfig = {
   // `next dev` would otherwise write AGENTS.md and CLAUDE.md into apps/web when it detects an
   // AI coding agent. The repository keeps its agent instructions at the root.
   agentRules: false,
+  experimental: {
+    // `'use cache'` + `cacheLife`/`cacheTag` without Cache Components (T-026): the permanent
+    // pages cache their data for as long as it can't change, and their ISR copies inherit
+    // that lifetime (lib/cache/policy.ts). Next 16 marks this flag deprecated in favour of
+    // `cacheComponents`, which would turn every route into a partial prerender; see DEPLOY.md.
+    useCache: true,
+  },
   turbopack: {
     rules: {
       // The playground imports `esbuild-wasm/esbuild.wasm` for its URL: emit it as a

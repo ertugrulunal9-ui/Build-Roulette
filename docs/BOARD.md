@@ -12,8 +12,9 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 | T-024 | Abuse controls: report build, admin page (event logs + report queue + screenshot takedown), name filter, rate limits, Turnstile wiring | `supabase/`, `apps/web/`, `apps/capture-worker/` | done | Merged |
 | T-028 | Taken-down builds lose the Winner highlight and all awards (no re-rank, no reassignment) on results, `/battles/[id]`, `/u/[id]`, OG image, room RESULTS | `supabase/`, `apps/web/` | done | Merged |
 | T-025 | Load test (50 rooms × 8 players), Realtime/egress mapping to plan limits, cost per 1,000 battles | `tools/loadtest/`, `docs/` input | done | Merged |
-| T-029 | Scaling fixes from the load test: ~4× fewer Presence messages (≤1 activity update / 15 s, none after BUILDING) + harder backoff after server-closed channels; no nudge storm in RESULTS (backoff / stop nudging while waiting for captures); `heartbeat` returns the battle version (drop the extra read); single-sample clock resync | `apps/web/`, `supabase/` | in-progress | M5, task 7 |
-| T-026 | Observability (Sentry/PostHog, env-gated), ISR for `/battles` + `/u`, runbooks | `apps/web/`, `apps/*`, `docs/runbooks/` | todo | M5 |
+| T-029 | Scaling fixes from the load test: ~4× fewer Presence messages (≤1 activity update / 15 s, none after BUILDING) + harder backoff after server-closed channels; no nudge storm in RESULTS (backoff / stop nudging while waiting for captures); `heartbeat` returns the battle version (drop the extra read); single-sample clock resync | `apps/web/`, `supabase/` | done | Merged |
+| T-026 | ISR for `/battles/[id]` (+ OG image) and `/u/[id]` on the R2 incremental cache; takedowns revalidate the affected pages | `apps/web/` | in-progress | M5, task 8 (split: observability and runbooks → T-030) |
+| T-030 | Observability (Sentry/PostHog, env-gated, no PII; sync-engine missed-event and degraded-time counts), runbooks (`docs/runbooks/`) | `apps/web/`, `apps/*`, `docs/runbooks/` | todo | M5, after T-026 |
 | T-019 | M4 DB layer: REVEAL (order, slots, host skip) + VOTING (categories, no self-vote, revotes, secret ballots) phases, vote-based ranking + category awards, reveal-phase storage read access, realtime `vote_progress` | `supabase/`, `packages/game/` (constants), `ci.yml` | done | Merged |
 | T-020 | M4 web: synchronized REVEAL spotlight (one live build, thumbnails, prefetch, host skip), VOTE stage, vote-based results + permanent page | `apps/web/` (+ remove the CI pre-M4 switch) | done | Merged |
 | T-021 | M4 completion: mobile reveal/vote layout, player history `/u/[id]`, chaos coverage for reveal/vote, M4 exit criteria | `apps/web/`, `supabase/` (tests) | done | Merged |
@@ -43,7 +44,7 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 | Cloudflare account (**Workers Paid, ~$5/month, at deploy time**: free-plan CPU and size limits are too tight for SSR per T-012) | Deploying the app, sandbox shell, package CDN and screenshots |
 | Supabase project (free plan to start) | Hosted database, auth, storage and realtime |
 | One domain for the app (optional at first; the app can run on a free Cloudflare address) | Public launch |
-| **Decision at deploy: Supabase spend cap.** With the cap ON, the assumed Realtime Presence quota (50/s) broke rooms already at 10 rooms × 8 players in the load test. With it OFF, 400 clients met the target. T-029 cuts Presence about 4×; re-measure then. See docs/07. | Realtime capacity |
+| **Decision at deploy: Supabase spend cap.** Re-measured after T-029: with the cap's assumed Presence quota (50/s), 10 rooms × 8 players went from 4,571 room-channel closes to 0, but 50 × 8 still had 1,703 (channels down 5–45 s at a time). The cap can stay ON at launch; turn it OFF (or move to Team) before about 15 concurrent 8-player rooms are in BUILD. The 50/s figure is an assumption to check. See docs/07 §7.0. | Realtime capacity |
 | At deploy: raise the Realtime tenant `db_pool` (1 → ~10). Battle-channel joins p95 went from 23 s to 213 ms in the load test. | Realtime join latency |
 | Later: second (usercontent) domain + Public Suffix List entry (F1) | Per-build isolation as the game grows |
 | At deploy: create the admin user(s) (Supabase dashboard → Add user, then the SQL insert in `supabase/README.md`) | Moderation (`/admin`) |
@@ -548,3 +549,29 @@ Start M5.
 - **Decisions:** vote counts stay visible on a removed build (the hub's recommendation); no medal either (a gold highlight, treated like the banner).
 - **Tests:** new pgTAP `23_takedown_awards` (24 tests; 11 fail on the T-024 functions); component tests (9 fail when the helpers are broken); `e2e/moderation.spec.ts` checks banner, chips, "#1 Removed by moderators", kept vote total, the runner-up not promoted, OG 200, `/u/[id]`.
 - Hub re-ran on a fresh clone: pipeline green (web 296 unit tests); `supabase test db` **1191/1191**; `e2e-moderation.mjs` **26/26**; moderation e2e 2/2; multiplayer 4/4; solo 2/2. Screenshot checked: "#1 Removed by moderators", no banner, ring or chips, 3 votes kept; #2 keeps Best Style without a banner.
+
+### T-029: accepted (M5 task 7)
+- **Presence:** activity goes out only during BUILDING, at most once per 15 s, and only on changes that matter (`activityMatters`: active on/off, a build failing for ≥ 10 s or fixed, ±20 lines). The claim after each (re)subscribe stays. The sidebar's "typing…" became "✎ active" (edited in the last 15 s); the wire name `typing` is kept, so old clients still work.
+- **Rejoin backoff** after a server-closed channel: 5, 10, 20, 30 s plus up to 50 % jitter; a SUBSCRIBED doesn't reset it, it decays one level per 60 s up.
+- **Nudges:** 5, 10, 20, then 30 s while the battle doesn't move. RESULTS is not nudged while a screenshot is pending (the sweep ends it), then nudged once. Two solo bugs were fixed along the way: a 250 ms poll after a deadline, and a clock resync that never fired.
+- **Heartbeat** (`20261008140000_heartbeat_battle_version.sql`) also returns `battle_id` and `battle_version`. The hub diffed it against T-016's: only the two fields were added. The client's extra version read is gone.
+- **Clock:** best of 3 on open and on recovery; the 60 s resync takes 1 sample and drops a slow one. **Battle-topic join** staggered 0–500 ms.
+- **Load test, before → after** (50 × 8 × 2, pro-nocap):
+  - phase p95 181 → 153 ms;
+  - Presence 7.96 → 2.99 sends per BUILDING minute;
+  - Realtime messages per real battle 3,652 → 1,490;
+  - API calls 34.1 → 13.0 per client-minute;
+  - RESULTS nudges 264 → 0.02 per battle;
+  - timeouts 35 → 0;
+  - cost per 1,000 battles at 10,000/month $13.75 → $8.34.
+- **Spend-cap quota (assumed 50/s):** 10 × 8 rooms 0 closes (was 4,571); 50 × 8 rooms 1,703 closes (T-025: 17,726), with no storm. Presence fell about 3× rather than the 4× hoped for.
+- **Finding:** local Realtime only re-opens a tenant's DB feed on a join or a presence message, so with less presence traffic the local 10-minute "rebalancing" drop now lasts until the next heartbeat (81 % live delivery in the full run; every battle still DESTROYED via the heartbeat's version, 765 refetches). This shouldn't happen on hosted Supabase. T-030 will report the missed-event count so production would show it.
+- Hub re-ran on a fresh clone:
+  - pipeline green (web 315, game 137, loadtest 17 unit tests);
+  - `supabase test db` **1218/1218**;
+  - e2e scripts 44/51/34/50/26;
+  - multiplayer 4/4, solo 2/2;
+  - **chaos shards 3/3, 2/2, 4/4**;
+  - load-test smoke 3/3 battles, p95 19 ms, 100 % delivered.
+  The full runs were not repeated by the hub (about 12 min each).
+- T-026 is split: ISR first (T-026), then observability + runbooks (T-030).

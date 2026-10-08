@@ -200,6 +200,29 @@ a preview in a cross-site sandboxed iframe. It works together with:
   report them. `apps/web` copies the console into React state at most once per animation
   frame, so a flood costs at most one render per frame.
 
+## Packages and CDN outages (T-032)
+
+Measurements, the decision and its security reasoning are in docs/03-sandbox.md "Package
+cache and CDN outages". In short:
+
+- The template's packages come from the **browser's HTTP cache** while the package CDN is
+  down. The cache partition is (top-level app site, shell site), shared by the shell, its
+  `document.write` child frame and the `blob:` module. Every import map URL is an exact
+  version served `immutable` (a `resolve` unit test checks the map), so nothing expires.
+- **No Service Worker or Cache Storage:** build code runs on the shell origin and could write
+  to both, so one build could poison React for the next. The shell keeps wiping them.
+- **Warm-up** (shell): after a build ran, its import map's URLs are fetched once per shell
+  realm with `cache: 'force-cache'`, so React's other entry points are cached too.
+- **Naming failures** (shell): when the module graph fails, or still waits after 8 s, the
+  build's `packages` and then the rest of the import map are checked the same way (3 s
+  each). The `module-load` error says `Package server unreachable: zustand@5.0.15`, `…not
+  responding…`, `Package server error (HTTP 404) for …: <CDN text>`, or `Still waiting for
+  the package server after 8 s: …`. Texts: `@br/protocol` `packages.ts`, shared with the
+  bundler's package CSS diagnostics (`PackageFetchError`).
+- A network wait never trips the watchdog: the shell keeps answering pings.
+- e2e `cdn-outage.spec.ts`: the dev server's mock CDN takes an outage on
+  `POST /__test/cdn-outage?mode=refuse|error|hang|off` (`MockCdn.setOutage`).
+
 ## Trust model
 
 The build runs same-origin with the shell (its document is the shell's child frame), so a
@@ -339,7 +362,9 @@ last two full e2e runs.
 | Watchdog: app 6.5 s + frame 7.5 s long tasks, both throttled x6 (e2e `watchdog-starvation`) | app stall 5.6–6.4 s, **no crash** (old: crash, silence 6.0 s); a loop after it: 4.3–4.7 s | no crash; loop ≤ 6 s |
 | App page during the loop (site-isolated) | evaluate RTT ≤ 9 ms, worst 50 ms timer gap ≤ 68 ms | responsive |
 | `resetStorage()` (new iframe + handshake + full wipe incl. Clear-Site-Data + ack) | 100–250 ms | |
-| `shell.js` (minified) | **39.1 KB raw, 13.0 KB gzip** (T-009) | "~5 KB" |
+| `shell.js` (minified) | **45.5 KB raw, 15.2 KB gzip** (T-032; 42.6 / 14.3 KB before it, 39.1 / 13.0 KB at T-009) | "~5 KB" |
+| CDN down (refused / 502), build imports a package this browser never loaded: `buildAndLoad` → named `module-load` error (e2e `cdn-outage`) | **155–180 ms** | fast, no crash |
+| CDN accepting connections but never answering: load → "Still waiting for the package server" | **11.3 s** (8 s stall check + 3 s per-URL check timeout) | no hang, no crash |
 | `esbuild.wasm` | 13.98 MB raw, 3.75 MB gzip, 2.71 MB brotli | preload in lobby |
 | Bundler worker JS (minified, excl. wasm) | 76.6 KB raw, 22.4 KB gzip | |
 
@@ -375,8 +400,10 @@ grace").
   {ok, errors?}` ack. `runtime-error` has an optional
   `kind: 'error' | 'unhandledrejection' | 'module-load'`. `ping {seq, t?}` is answered by
   `pong {seq}` (T-009; `seq` is required, and the version stays 1 because nothing is deployed
-  yet). `heartbeat {t?}` stays in the schema but is no longer sent. The schemas use `zod/mini`
-  so they tree-shake into the shell.
+  yet). `load` takes an optional `packages` list (T-032): the CDN URLs the bundle imports
+  (`BuildResult.packages`), which the shell checks to name a package that can't load. Older
+  shells ignore it. `heartbeat {t?}` stays in the schema but is no longer sent. The schemas
+  use `zod/mini` so they tree-shake into the shell.
 - **`SandboxRuntime` interface** changes:
   - `boot({files, manifest})` takes a manifest instead of a `template`, because templates come
     with workspace persistence.
@@ -429,7 +456,7 @@ grace").
   always be restarted. Timers in a hidden or off-screen cross-origin iframe can be throttled
   to about one per second, which still stays far below the 5 s limit; a hidden *app* tab
   pauses the check instead.
-- **The shell is 13 KB gzip, not ~5 KB.** About 27 KB of the 39 KB raw is zod's core. Options:
+- **The shell is 15 KB gzip, not ~5 KB.** About 27 KB of the 45 KB raw is zod's core. Options:
   hand-written validators in the shell only (keeping zod on the app side), or accept it, since
   the file is immutable and cacheable. Note that per-build subdomains mean each build origin
   fetches it once.
@@ -441,7 +468,9 @@ grace").
   shared by two packages is therefore duplicated, which esm.sh avoids. React stays single
   because of `external`. Only `react`, `react-dom`, `zustand` and `animate.css` are served, and
   only at their installed versions; anything else gets a 404 with the reason. It accepts and
-  ignores `deps=`, because it never emits peer URLs.
+  ignores `deps=`, because it never emits peer URLs. `setOutage('refuse' | 'error' | 'hang' |
+  null)` simulates an outage for the T-032 e2e (connection refused, a 502 without CORS
+  headers, or no answer until it ends).
 - Only the React entry points listed above are in the import map. Another `react-dom/*` subpath
   imported *from inside a CDN package* would fail to resolve (loudly).
 - Every rebuild is a full `esbuild.build()` (no incremental context yet), and there are no

@@ -236,7 +236,7 @@ extension; keep the full query string in the cache key):
 | Response                                                  | `Cache-Control`                       | At the edge                                                                                                                  |
 | --------------------------------------------------------- | ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
 | `200` module or raw file at an exact version              | `public, max-age=31536000, immutable` | Cache for a year: the bytes for a URL never change (the denylist is the exception: purge the package's URLs when you add it) |
-| `302` from a range, tag or bare name                      | `public, max-age=300`                 | Cache for 5 minutes (new releases show up after that)                                                                        |
+| `302` from a range, tag or bare name                      | `public, max-age=300, stale-while-revalidate=60, stale-if-error=86400` | Cache for 5 minutes (new releases show up after that); a stale copy may be served for a minute while revalidating, and for a day while the origin fails |
 | `4xx`/`5xx` errors, incl. `503` + `Retry-After` and `504` | `no-store`                            | Never cached; clients retry                                                                                                  |
 | `/health`                                                 | `no-store`                            | Never cached; block it from the public internet (WAF rule) or allow only monitoring IPs                                      |
 
@@ -251,6 +251,54 @@ Only cache misses reach the origin, so rate limits should count requests to the 
   packument lookup: `/name`, `/name@^1`, `/name@latest`.
 - Behind those, the origin's own limits (queue depths, `503`) protect it from many IPs at once.
   Alert on `requests.shed` and `queues.*.queued` from `/health`.
+
+Every response carries `Content-Length` (no chunked encoding).
+
+### Origin outages (T-032)
+
+Goal: when the container is down, every package somebody already requested keeps being
+served by the edge, and the browser of a player who already loaded a package keeps it.
+
+- **In the browser** this works today: exact-version responses are `immutable` for a year,
+  and the sandbox shell warms the template's React entry points into the build frame's HTTP
+  cache partition. Measurements and limits: docs/03-sandbox.md "Package cache and CDN
+  outages". No Service Worker, on purpose (same section).
+- **At the edge** (deploy checklist). *Assumption* marks what could not be checked without
+  a Cloudflare account; verify each on staging by stopping the container and requesting a
+  URL that was requested before (`cf-cache-status: HIT`, or `STALE` / `UPDATING`).
+  1. **The cache must sit in front of the container.** *Assumption:* with Cloudflare
+     Containers the request path is edge → Worker → container (a Durable Object binding).
+     Cache Rules apply to fetches from a zone to its origin, not to a Worker's own responses,
+     and a Worker runs before the cache. So the Worker in front of the container has to use
+     the Cache API itself:
+     - `caches.default.match(request)` first, keyed by the full URL including the query;
+     - on a miss, `container.fetch(request)`, then `cache.put()` for `200` (`immutable`)
+       and `302` responses (`ctx.waitUntil`);
+     - on a container error or exception, answer from `caches.default` if it has the URL,
+       otherwise with the error (`no-store`).
+
+     If the container is instead reachable as an ordinary proxied origin (a hostname with
+     a Cache Rule "Eligible for cache", origin cache headers respected, the full query string
+     in the cache key), the rules above in this section are enough. *Assumption:* the
+     Cache API in a Worker is per data center (no tiered cache), so the zone cache is the
+     better place if the container can be an origin.
+  2. **Exact-version URLs stay cached for a year:** `public, max-age=31536000, immutable`
+     (in code). Cloudflare can still evict rarely used objects from a data center. Turn on
+     **Tiered Cache** (Smart Tiered Caching) so one upper tier keeps them. *Assumption:*
+     **Cache Reserve** (paid, R2-backed) keeps cacheable objects with a TTL of at least
+     10 hours and a `Content-Length` for much longer. Both hold for every module and file
+     response. That is the strongest "origin down, still served" option.
+  3. **Serve stale on origin errors:** `302`s carry `stale-if-error=86400` and
+     `stale-while-revalidate=60` (in code). *Assumption:* the zone cache honours both for
+     origin errors and timeouts. A Worker using the Cache API does not: `match()` never
+     returns an expired entry. That Worker would need to keep its own longer-lived copy of a
+     `302` under a second key. Builds never request `302` URLs (their versions are exact), so
+     this matters for people and tools only.
+  4. **Never cache errors:** `4xx`/`5xx` are `no-store` (in code). Don't add an "Edge TTL"
+     override that would cache them.
+  5. **Pre-warm** the template packages after each deploy and after any purge, through the
+     public URL (the runbook has the command). Don't purge everything during an incident:
+     the cache is what keeps the game running.
 
 ## Commands
 

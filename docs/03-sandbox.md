@@ -152,7 +152,7 @@ flowchart TB
 
 | Direction | Message | Purpose |
 |---|---|---|
-| app → shell | `load {js, css, importMap, mode: 'live'|'reveal'|'capture'}` | Run a bundle (the shell does a full document reset, then a fresh `import()` of a blob URL) |
+| app → shell | `load {js, css, importMap, mode: 'live'|'reveal'|'capture', packages?}` | Run a bundle (the shell does a full document reset, then a fresh `import()` of a blob URL). `packages` (T-032) lists the CDN URLs the bundle imports, a hint for naming a package that can't load |
 | app → shell | `reset-storage` | Wipe `localStorage`, `sessionStorage`, IndexedDB and caches for this origin |
 | app → shell | `capture-thumbnail {width, height}` | Best-effort client thumbnail |
 | app → shell | `ping` | Watchdog probe |
@@ -416,3 +416,114 @@ silentMs=5309 phase=running` at the start of BUILD, with no loop in the build.
     nothing without the PostHog key or with DNT/GPC.
   - `preview_spared` counts the false crashes the fix avoided. A crash with a large
     `stalled_ms` or `longest_stall_ms` happened on a starved tab and deserves a look.
+
+
+### Package cache and CDN outages (T-032)
+
+R10 asked that the template's packages (React) keep working when the package CDN goes down
+after the lobby preload. The old plan was a Service Worker cache. It was **not built**: the
+browser's HTTP cache does the job, and nothing else on the shell origin would be safe.
+
+**Measured** (Chromium 141 through Playwright, the mock CDN on another site, "down" = the
+listener closed, so connections are refused; `packages/runtime/e2e/cdn-outage.spec.ts` and a
+scratch harness with two more sites):
+
+| After the template's first preview, with the CDN down | Result |
+|---|---|
+| Edit → rebuild (a new build document in the same shell) | Works, ~110 ms, no CDN request |
+| Preview restart (new preview iframe and shell realm) | Works |
+| Mode switch to `reveal` (new iframe with the reveal flags) | Works |
+| `reset-storage` (script wipe + `Clear-Site-Data: "cache", "cookies", "storage"` from the shell origin), then a load | Works: the CDN's entries are keyed by the CDN's URL, so the shell origin's `"cache"` doesn't remove them (also after a browser restart, below) |
+| Page reload (new app document, bundler worker, preview) | Works. Package CSS fetched by the bundler worker comes from the app's own partition of the HTTP cache |
+| Browser closed and started again (persistent profile, disk cache) | Works |
+| The same shell site under **another top-level site** (browser restarted) | Fails: the top-level site is part of the cache key. (Without the restart it worked, from Blink's in-memory cache of the shared renderer process: not something to rely on.) |
+| **Another shell site** (`127.0.0.2`) under the same app | Fails: the frame site is part of the cache key |
+| URLs fetched by the **app page** itself | Not used by the shell: the app is another partition |
+| URLs fetched by the shell realm with `fetch(url, {cache: 'force-cache'})` (credentials `same-origin` or `omit`) | Used by the build's module imports: same partition, same request for a cross-origin URL |
+| A package never loaded before, CDN refusing connections / answering 502 without CORS | The module graph fails in ~0.2 s (`error` event, no crash) |
+| The same, CDN accepting connections but never answering | No error, no `ready`, the preview stays "loading" (the watchdog stays quiet: the shell keeps answering pings while it waits for the network) |
+
+So the cache partition is **(top-level app site, shell frame site)**. The shell's `document.write`
+child frame (`about:blank`, same origin) and the `blob:` module use the shell's partition, and
+the import map's URLs are cached like any other module URL. Every import map URL is an exact
+version (`react@19.3.0`, `react-dom@19.3.0/client?…`) served `public, max-age=31536000,
+immutable`, so there is no `302` hop that would expire after 300 s (a unit test checks the
+map). esbuild-wasm and the bundler worker are content-hashed `immutable` assets on the app
+origin, unaffected by the CDN.
+
+**Decision: the browser's HTTP cache only; no Service Worker, no Cache Storage.** The build
+runs on the shell origin with `allow-same-origin`, so build code can write to everything that
+origin can: Cache Storage (`caches.open().put(url, new Response(evil))`), IndexedDB, and the
+service worker registrations of the origin. A cache there that feeds module code to later
+builds (another player's build in REVEAL, the next preview) could be poisoned by one build
+for every build the viewer sees next. That is why the shell wipes Cache Storage and service
+workers on every reset, and the wipe stays as it is. A worker that checks hashes would need
+the hashes somewhere build code can't write, and would need `worker-src 'self'` in the CSP.
+The HTTP cache is different: page script can't put a response into it. An entry for
+`https://pkg…/react@19.3.0` only ever holds what the CDN sent for that URL, and the CDN's
+answer depends on the URL alone (no request header changes the body). What build code *can*
+do with it:
+- **Evict entries** (fill the cache, `cache: 'reload'`): denial during an outage, never
+  poisoning.
+- **Probe timing** to learn which package URLs this viewer's partition holds: which packages
+  earlier previews used. Minor; the viewer saw those builds anyway.
+
+Poisoning the HTTP cache needs the CDN itself (or its edge) to serve bad code, which would hit
+every viewer regardless. One known consequence of `immutable`: a package version added to the
+denylist after a browser cached it keeps running in that browser. That was already true before
+this task.
+
+**What the shell does** (`apps/sandbox-shell/src/packages.ts`):
+- **Warm-up:** after a build ran (`live` and `reveal`), the shell fetches every URL of its
+  import map once per shell realm with `cache: 'force-cache'`, 1 s after `ready`. During
+  SPIN the BUILD stage already runs the template's preview, so the whole React set
+  (including `react/jsx-dev-runtime` and the `react-dom` root, which the template doesn't
+  import) is in the partition before BUILD starts. A cached URL costs no request.
+- **Naming the failure:** the `<script>` `error` event doesn't say which URL failed. The shell
+  checks the build's own CDN URLs (the load's `packages` hint, from the bundler), then the
+  rest of the import map, with `force-cache` and a 3 s timeout each. A cached one answers at
+  once, and the others fail fast or time out. The `module-load` error then reads
+  `Package server unreachable: zustand@5.0.15` (no answer), `Package server not responding:
+  …` (timed out), or `Package server error (HTTP 404) for zustand@4.0.0: <the CDN's text>`.
+  The bundler uses the same words for package CSS in Problems.
+- **Stalls:** a module graph with neither `load` nor `error` after 8 s is checked the same way.
+  If packages are pending, the overlay says `Still waiting for the package server after 8 s:
+  …`; the build still starts if the CDN answers.
+- The checks and the warm-up use the `fetch` the shell captured before any build ran. A
+  build that patches `parent.fetch` can only garble its own messages.
+
+**What the player sees with the CDN down** (all e2e):
+- **BUILD / playground:** edits, a restart after a crash, and a reload keep working.
+  Measured: 0 failed CDN requests, so everything came from the cache.
+- **A new uncached package:** an import this browser never loaded (for example
+  `react-dom/server`; React's own entry points are warmed), or any non-React package after a
+  dependency change (adding one changes every CDN URL's `deps=` list). The overlay "The
+  build failed to load" names the package within
+  about 0.2 s in the runtime e2e and 0.7 s in the web e2e (edit → message). No watchdog crash,
+  and the last good build keeps running.
+- **Autosave and ship:** both work. They need Storage and the RPCs, not the CDN (solo e2e).
+  The production build's React comes from the same cached URLs.
+- **The last look / REVEAL:** they run from the viewer's cache too. A build whose packages
+  this browser never loaded (another player's `zustand`, or a spectator who never ran a
+  preview) shows its screenshot with "This build's packages couldn't load on your screen
+  (the package server isn't answering)" and **Run it again**. The solo last look says the
+  same over its frame.
+- **Screenshots:** the capture renderer is a fresh browser without the cache, so it falls
+  back to the client thumbnail (`fallback`).
+
+**Limits:**
+- Only Chromium was measured. Firefox and Safari also partition their HTTP caches by
+  top-level site. Whether Firefox's `Clear-Site-Data: "cache"` keeps another origin's
+  entries in a third-party partition is not measured.
+- **Per-build sites** (stage 2 with the Public Suffix List entry, finding F1) put each
+  build on its own frame site, so its own partition. Then the warm-up only helps the build
+  (and the preview) on that site. The BUILD preview of your own build keeps working, but
+  another player's build in REVEAL starts from an empty partition. Revisit when the
+  usercontent domain arrives: for example, warm the next spotlight's URLs through its own
+  frame during the reveal prefetch.
+- The next REVEAL build's non-template packages are not warmed ahead (the app page's
+  prefetch is another partition). With the CDN down they show the screenshot.
+- The browser decides how long entries stay (LRU across all sites). Nothing pins them.
+- The edge side (Cloudflare in front of the package CDN container) is in
+  [apps/pkg-cdn/README.md](../apps/pkg-cdn/README.md#origin-outages-t-032) and the
+  [package CDN outage runbook](runbooks/package-cdn-outage.md).

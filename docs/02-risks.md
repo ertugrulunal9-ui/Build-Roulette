@@ -43,8 +43,9 @@ has to start in under a few seconds.
 - Package CSS (`import 'x/dist/x.css'`) is fetched by the worker and inlined.
 - `process.env.NODE_ENV` is defined at build time. Node built-ins are not supported, and
   the error says so clearly.
-- esbuild-wasm is preloaded during the lobby and cached by HTTP and a Service Worker. The
-  worker is reused across rebuilds and incremental contexts are kept warm.
+- esbuild-wasm is preloaded during the lobby and cached by HTTP (content-hashed,
+  `immutable`; no Service Worker, see R10). The worker is reused across rebuilds and
+  incremental contexts are kept warm.
 - A compatibility test suite renders a smoke test for the top ~100 frontend packages (state,
   animation, charts, 3D, audio, utility) in CI against the shell.
 
@@ -188,7 +189,27 @@ and part of the vibe. Random rules make this less useful, and stats such as edit
 paste counts are shown for fun, not as enforcement.
 
 ### R10: Third-party outage mid-battle
-The package CDN is our own service (`@br/pkg-cdn`) behind the Cloudflare cache, with no dependency on esm.sh, and the template's core packages (React)
-are cached by our Service Worker after the lobby preload. A Supabase blip has no effect
-on editing and preview, which are fully local. Ship retries with backoff, and auto-ship
-covers the deadline. If Browser Rendering is down, the client fallback thumbnail is used.
+The package CDN is our own service (`@br/pkg-cdn`) behind the Cloudflare cache, with no
+dependency on esm.sh. Exact-version URLs are `immutable`, so the edge keeps serving packages
+already requested while the origin container is down (setup and assumptions:
+`apps/pkg-cdn/README.md` "Origin outages").
+
+**In the browser (T-032):** the template's packages (React) stay in the browser's HTTP
+cache after the preview that runs during SPIN. The shell also fetches the rest of the
+template's import map into that cache. With the CDN down, edits, preview restarts, reloads,
+autosave, ship and the last look keep working (measured and covered by e2e). A package the
+browser never loaded fails within about a second with "Package server unreachable: x@1.2.3"
+instead of a blank preview. In REVEAL such a build shows its screenshot.
+- **Decision: no Service Worker or Cache Storage**, for security. Build code runs on the
+  shell origin and can write to that origin's Cache Storage, IndexedDB and Service Worker
+  registrations. A module cache there would let one build poison React for every build a
+  viewer sees next, so the shell keeps wiping them. Page script can't write the HTTP cache,
+  only the CDN's responses land there.
+- **Residual:** a viewer who never ran a preview (a spectator), or another player's
+  non-template packages, can't load while the CDN is down: the screenshot shows instead.
+  Screenshots fall back to the client thumbnail, because the renderer has no cache. Details
+  and limits: [03-sandbox](03-sandbox.md) "Package cache and CDN outages".
+
+A Supabase blip has no effect on editing and preview, which are fully local. Ship retries
+with backoff, and auto-ship covers the deadline. If Browser Rendering is down, the client
+fallback thumbnail is used.

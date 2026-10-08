@@ -370,7 +370,8 @@ pnpm --filter @br/web test:e2e:cf:telemetry   # the "on" half against the Worker
   `e2e/cdn-outage.spec.ts` (T-032) takes the mock package CDN down after the template's
   first preview (`POST http://127.0.0.1:4323/cdn-outage?mode=refuse|error|hang|off`, served by
   `sandbox-servers.ts` and `solo-services.ts`): edits, a restart after a crash and a reload
-  keep working, and an uncached import shows "Package server unreachable" without a crash.
+  keep working, an uncached import shows "Package server unreachable" without a crash, and a
+  CDN that never answers shows "still loading" until it does.
 - `test:e2e:solo` (`playwright.solo.config.ts`) needs the local Supabase stack running. It
   builds, then starts `scripts/solo-services.ts` (shell with the capture gate, mock CDN,
   capture worker) and `next start -p 3100`, and plays two battles (`e2e/solo.spec.ts`):

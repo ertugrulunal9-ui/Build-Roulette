@@ -487,8 +487,10 @@ this task.
   …` (timed out), or `Package server error (HTTP 404) for zustand@4.0.0: <the CDN's text>`.
   The bundler uses the same words for package CSS in Problems.
 - **Stalls:** a module graph with neither `load` nor `error` after 8 s is checked the same way.
-  If packages are pending, the overlay says `Still waiting for the package server after 8 s:
-  …`; the build still starts if the CDN answers.
+  If packages are pending, the overlay says "The build is still loading" with `Still waiting
+  for the package server after 8 s: …` (about 11 s after the edit, measured). The build still
+  starts if the CDN answers, and the editor then drops the note. In REVEAL the spotlight
+  shows the screenshot instead (**Run it again** retries), since a reveal slot is short.
 - The checks and the warm-up use the `fetch` the shell captured before any build ran. A
   build that patches `parent.fetch` can only garble its own messages.
 

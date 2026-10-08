@@ -478,6 +478,7 @@ export class PlayerSession {
     const version = b.version;
     b.lastNudge = { version, at: now() };
     this.m.count('nudge');
+    this.m.count(`nudge:${b.phase}`);
     await this.player.rpc('advance_battle', { p_battle_id: b.id, p_expected_version: version });
     await this.refetch(b);
     if (isOver(b)) return;

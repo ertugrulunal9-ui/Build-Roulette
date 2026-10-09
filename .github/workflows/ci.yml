@@ -14,6 +14,10 @@ on:
         description: Run the R1 package compatibility suite against the npm registry
         type: boolean
         default: true
+      compat_cdn:
+        description: Package CDN for the compatibility suite, as a base URL (e.g. https://esm.sh). Empty = our own CDN (@br/pkg-cdn, started by the suite)
+        type: string
+        default: ''
       chaos:
         description: Run the rooms chaos e2e (network drops, skewed clocks, refreshes; 3 shards of ~5 min)
         type: boolean
@@ -387,6 +391,9 @@ jobs:
       - name: Install Playwright Chromium
         run: pnpm --filter @br/runtime exec playwright install --with-deps chromium
 
+      # Every runtime suite against the mock CDN, then the render and CDN-outage suites again
+      # with the mock CDN answering like esm.sh (an entry module that re-exports an internal
+      # build path; T-035, playwright.esm-sh.config.ts).
       - name: Run runtime e2e tests
         id: runtime-e2e
         run: pnpm --filter @br/runtime test:e2e
@@ -411,11 +418,18 @@ jobs:
           retention-days: 7
 
   compat:
-    name: Package compatibility suite (R1, npm registry)
-    # Hits the npm registry for ~50 packages, so it only runs when started by hand.
+    name: Package compatibility suite (R1, ${{ inputs.compat_cdn || 'our CDN and the npm registry' }})
+    # Hits the npm registry (or the CDN given in `compat_cdn`) for ~50 packages, so it only
+    # runs when started by hand.
     if: github.event_name == 'workflow_dispatch' && inputs.compat
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      # Read by compat/run.ts (T-035): empty starts @br/pkg-cdn; a base URL such as
+      # https://esm.sh runs every case and the CDN contract checks against that CDN, and the
+      # report is RESULTS-<host>.md. Passed as an environment variable, never pasted into the
+      # script, and validated by the suite.
+      COMPAT_CDN: ${{ inputs.compat_cdn }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -444,7 +458,7 @@ jobs:
         with:
           name: compat-results
           path: |
-            apps/pkg-cdn/compat/RESULTS.md
+            apps/pkg-cdn/compat/RESULTS*.md
             apps/pkg-cdn/node_modules/.cache/pkg-cdn-compat/results.json
           if-no-files-found: ignore
           include-hidden-files: true

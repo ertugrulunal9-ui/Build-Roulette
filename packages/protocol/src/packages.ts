@@ -85,8 +85,86 @@ export function isPackageStall(message: string): boolean {
   return message.startsWith(PACKAGE_STALL_PREFIX);
 }
 
-/** First line of an error body, trimmed and capped (the CDN's own error text). */
+/**
+ * The CDN's own error text from an error body: its first line, trimmed and capped. Comment
+ * lines are skipped, and a module that only throws (esm.sh answers a failed build with
+ * `/* esm.sh - error *\/` + `throw new Error("[esm.sh] …")` and a 500) gives its message.
+ */
 export function errorDetail(body: string, max = 200): string {
-  const line = body.trim().split('\n')[0]?.trim() ?? '';
+  const lines = body
+    .trim()
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l !== '' && !/^\/\*.*\*\/$/.test(l) && !l.startsWith('//'));
+  let line = lines[0] ?? '';
+  const thrown = /^throw\s+new\s+Error\(\s*("(?:[^"\\]|\\.)*")\s*\)\s*;?$/.exec(line);
+  if (thrown?.[1] !== undefined) {
+    try {
+      const message: unknown = JSON.parse(thrown[1]);
+      if (typeof message === 'string') line = message.trim();
+    } catch {
+      // Not a JSON string: keep the line as it is.
+    }
+  }
   return line.length > max ? `${line.slice(0, max - 1)}…` : line;
+}
+
+/**
+ * A static import or re-export with a module specifier, at the start of a statement (the
+ * start of the module, or after `;`, `}`, `)` or a line break): `import x from "a"`,
+ * `import "a"`, `import*as x from"a"`, `export * from "a"`, `export{default}from"a"`. The
+ * clause before `from` never holds quotes, parentheses, `=` or `;`, so a match cannot run
+ * across code; `import("a")` (dynamic) and `import.meta` do not match.
+ */
+const STATIC_IMPORT_RE =
+  /(?:^|[;})\n])[ \t]*(?:import|export)\s*(?:[^"'`;()=]*?\bfrom\s*)?(["'])([^"'\r\n]+)\1/g;
+
+/**
+ * The specifiers of a module's static imports and re-exports, in order (at most `max`), found
+ * without a parser: CDN modules are bundler output (esbuild, for @br/pkg-cdn and esm.sh), one
+ * statement after another. esbuild puts a module's imports where that module starts, so they
+ * are not all at the top (after its CommonJS helpers, for example). Text inside a string that
+ * looks like a statement could be taken for one; callers only follow paths on the CDN's own
+ * origin (`moduleImportUrls`), so at worst that is one extra request to the CDN.
+ */
+export function staticImports(source: string, max = 64): string[] {
+  const out: string[] = [];
+  STATIC_IMPORT_RE.lastIndex = 0;
+  for (const m of source.matchAll(STATIC_IMPORT_RE)) {
+    if (out.length >= max) break;
+    if (m[2]) out.push(m[2]);
+  }
+  return out;
+}
+
+/**
+ * The modules a CDN module loads from its own origin: its static imports that are paths or
+ * URLs (`/react@19.3.0/es2022/react.mjs`, `./x.mjs`, `https://same.origin/…`), resolved
+ * against `moduleUrl`, without repeats. Bare specifiers (`react`) are the import map's, and
+ * another origin is not the CDN's. esm.sh answers an entry URL with a few lines that
+ * re-export such internal build paths; @br/pkg-cdn's peer URLs (`/three@0.186.1?external=…`)
+ * are found the same way.
+ */
+export function moduleImportUrls(source: string, moduleUrl: string, max = 64): string[] {
+  let base: URL;
+  try {
+    base = new URL(moduleUrl);
+  } catch {
+    return [];
+  }
+  const out = new Set<string>();
+  for (const spec of staticImports(source)) {
+    if (out.size >= max) break;
+    if (!/^(?:\/|\.\.?\/|https?:\/\/)/i.test(spec)) continue;
+    let url: URL;
+    try {
+      url = new URL(spec, base);
+    } catch {
+      continue;
+    }
+    if (url.origin !== base.origin) continue;
+    url.hash = '';
+    out.add(url.href);
+  }
+  return [...out];
 }

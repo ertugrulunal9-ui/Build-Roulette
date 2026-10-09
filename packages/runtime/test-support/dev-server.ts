@@ -9,6 +9,8 @@
  *
  * `POST /__test/cdn-outage?mode=refuse|error|hang|off` on the app origin starts or ends a
  * simulated package CDN outage (T-032 e2e, `MockCdn.setOutage`). Test support only.
+ * `CDN_LAYOUT=esm.sh` makes the mock CDN answer like the public esm.sh (an entry module that
+ * re-exports an internal build path, T-035; `MockCdnLayout`).
  */
 import { readFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
@@ -17,7 +19,13 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import * as esbuild from 'esbuild';
 import { startShellServer } from '@br/sandbox-shell/server';
-import { parseOutage, startMockCdn, type CdnOutage } from './mock-cdn';
+import {
+  parseLayout,
+  parseOutage,
+  startMockCdn,
+  type CdnOutage,
+  type MockCdnLayout,
+} from './mock-cdn';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -25,6 +33,7 @@ export interface DevServerOptions {
   appPort?: number;
   shellPort?: number;
   cdnPort?: number;
+  cdnLayout?: MockCdnLayout;
 }
 
 export interface DevServers {
@@ -75,7 +84,11 @@ function listen(server: Server, port: number, host: string): Promise<number> {
 }
 
 export async function startDevServers(opts: DevServerOptions = {}): Promise<DevServers> {
-  const cdn = await startMockCdn({ port: opts.cdnPort ?? 0, host: 'localhost' });
+  const cdn = await startMockCdn({
+    port: opts.cdnPort ?? 0,
+    host: 'localhost',
+    layout: opts.cdnLayout ?? 'bundle',
+  });
 
   // The app origin must be known before the shell is built (frame-ancestors, hello target),
   // so bind the app server first and fill in its handler afterwards.
@@ -183,10 +196,11 @@ if (isMain) {
     appPort: Number(env['APP_PORT'] ?? 4310),
     shellPort: Number(env['SHELL_PORT'] ?? 4311),
     cdnPort: Number(env['CDN_PORT'] ?? 4312),
+    cdnLayout: parseLayout(env['CDN_LAYOUT']),
   });
   console.log(`playground  ${servers.appUrl}`);
   console.log(`shell       ${servers.shellUrl} (shell.js ${String(servers.shellJsBytes)} B)`);
-  console.log(`mock CDN    ${servers.cdnUrl}`);
+  console.log(`mock CDN    ${servers.cdnUrl} (${parseLayout(env['CDN_LAYOUT'])} layout)`);
   const stop = () => {
     void servers.close().then(() => process.exit(0));
   };

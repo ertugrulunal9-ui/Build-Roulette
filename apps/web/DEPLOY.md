@@ -67,10 +67,17 @@ geo data.
    what it prints). `apps/web/wrangler.jsonc` is the project's configuration from then on
    (`pages_build_output_dir: ./out`, the compatibility date); Cloudflare shows those settings
    read-only in the dashboard.
-4. **The sandbox shell must allow the app's origin.** It bakes the origins that may frame it
-   into its CSP and its `postMessage` checks at build time: build it with
-   `BR_APP_ORIGINS=https://build-roulette-web.pages.dev` (and the custom domain, if any,
-   comma-separated): `apps/sandbox-shell/scripts/build.ts`.
+4. **The sandbox shell must allow the app's origin and the package CDN.** It bakes the
+   origins that may frame it into its CSP and its `postMessage` checks at build time, and the
+   one package CDN its CSP lets builds load modules from:
+   ```sh
+   BR_APP_ORIGINS=https://build-roulette-web.pages.dev \
+   BR_PKG_CDN_URL=https://esm.sh \
+     pnpm --filter @br/sandbox-shell build
+   ```
+   (`BR_APP_ORIGINS`: add the custom domain, if any, comma-separated. `BR_PKG_CDN_URL`
+   defaults to `https://esm.sh`; it must be the app's `NEXT_PUBLIC_PKG_CDN_URL` below.
+   `apps/sandbox-shell/scripts/build.ts`.)
 
 ## Deploying
 
@@ -78,7 +85,7 @@ geo data.
 NEXT_PUBLIC_SUPABASE_URL=https://<project>.supabase.co \
 NEXT_PUBLIC_SUPABASE_ANON_KEY=<anon or publishable key> \
 NEXT_PUBLIC_SANDBOX_SHELL_URL=https://<sandbox>.pages.dev/v1/ \
-NEXT_PUBLIC_PKG_CDN_URL=https://<package-cdn-host> \
+NEXT_PUBLIC_PKG_CDN_URL=https://esm.sh \
 NEXT_PUBLIC_SITE_URL=https://build-roulette-web.pages.dev \
   pnpm --filter @br/web build
 pnpm --filter @br/web pages:deploy --branch main
@@ -90,6 +97,14 @@ pnpm --filter @br/web pages:deploy --branch main
   `https://<hash>.build-roulette-web.pages.dev` address (the sandbox shell does not allow
   preview origins unless you add them to `BR_APP_ORIGINS`, so `/play` and `/playground` only
   work on production there).
+- **The package CDN is the public esm.sh** on the free plan (T-035; our own `@br/pkg-cdn`
+  needs Cloudflare Containers, a paid feature). Use the same base URL in three places:
+  `NEXT_PUBLIC_PKG_CDN_URL` here, `BR_PKG_CDN_URL` for the sandbox shell (step 4) and
+  `PKG_CDN_URL` for the screenshot jobs (`apps/capture-worker`). The app's CSP gets
+  `connect-src https://esm.sh` (the bundler fetches package CSS), the shell's `script-src
+  https://esm.sh`. If they disagree, previews load no package ("The build or one of its
+  packages failed to load", and a CSP error in the browser console). To move to another
+  CDN later, change all three and rebuild the app and the shell (docs/08-free-tier.md §4).
 - **Every setting is baked in at build time.** `NEXT_PUBLIC_*` values are inlined into the
   bundles, and the build's `_headers` allows exactly those hosts in its CSP (Supabase, the
   sandbox shell, the package CDN, Sentry, PostHog, Turnstile). The link-preview Function gets

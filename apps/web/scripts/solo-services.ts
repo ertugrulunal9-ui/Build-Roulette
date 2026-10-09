@@ -30,7 +30,11 @@ import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startShellServer } from '@br/sandbox-shell/server';
 // The mock CDN lives in @br/runtime's test support (imported by path, like dev:sandbox).
-import { startMockCdn, startOutageControl } from '../../../packages/runtime/test-support/mock-cdn';
+import {
+  parseLayout,
+  startMockCdn,
+  startOutageControl,
+} from '../../../packages/runtime/test-support/mock-cdn';
 
 const SUPABASE_CLI = 'supabase@2.119.0';
 // Realtime stays on: rooms need it (the solo game does not).
@@ -141,7 +145,12 @@ if (realtimeUp) {
 }
 
 const secret = env['CAPTURE_HMAC_SECRET'] ?? randomBytes(32).toString('hex');
-const cdn = await startMockCdn({ port: cdnPort, host: 'localhost' });
+// CDN_LAYOUT=esm.sh: the mock answers like the public esm.sh (entry modules, T-035).
+const cdn = await startMockCdn({
+  port: cdnPort,
+  host: 'localhost',
+  layout: parseLayout(env['CDN_LAYOUT']),
+});
 const shell = await startShellServer({
   port: shellPort,
   host: '127.0.0.1',

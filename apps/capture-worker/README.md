@@ -224,6 +224,14 @@ network events, console hints, timeouts). The REST screenshot API is callable fr
 cannot express the readiness rule or the navigation guard exactly. `sharp` does not run in
 workerd: WebP would come from Cloudflare Images, or the PNG is stored (the bucket allows it).
 
+**The package CDN** (T-035): set `PKG_CDN_URL` to the same base URL as the app's
+`NEXT_PUBLIC_PKG_CDN_URL` and the sandbox shell's `BR_PKG_CDN_URL`. On the free plan that is
+the public `https://esm.sh` (docs/08-free-tier.md §4). The capture page's CSP is the shell's,
+so it allows that origin only; a different value here makes every capture load nothing and
+fall back to the client thumbnail. The renderer is a fresh browser each time, so it downloads
+React from the CDN on every capture (it has no warm cache); while the CDN is down, captures
+fall back to the client thumbnail.
+
 ## Known limitations
 
 - The first capture after a browser start spends about 2 s in the page's `Clear-Site-Data`

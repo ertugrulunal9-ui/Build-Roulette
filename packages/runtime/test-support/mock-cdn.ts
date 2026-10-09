@@ -99,12 +99,52 @@ const RESERVED = new Set(
 );
 const IDENT_RE = /^[A-Za-z_$][\w$]*$/;
 
+/**
+ * How module URLs are answered:
+ * - `bundle` (default, like @br/pkg-cdn): the URL's response is the whole module;
+ * - `esm.sh` (T-035): like the public esm.sh, the URL answers with a few lines that re-export
+ *   an internal build path on the same origin (`/react@19.3.0/X-…/es2022/react.mjs`), which
+ *   holds the module. Lets the e2e suites run the T-032 cache behaviour against esm.sh's
+ *   two-step shape without reaching esm.sh.
+ */
+export type MockCdnLayout = 'bundle' | 'esm.sh';
+
+export const MOCK_CDN_LAYOUTS: readonly MockCdnLayout[] = ['bundle', 'esm.sh'];
+
+/** `bundle` | `esm.sh`, the default for empty or undefined, and an error for anything else. */
+export function parseLayout(value: string | undefined): MockCdnLayout {
+  if (value === undefined || value === '') return 'bundle';
+  const layout = MOCK_CDN_LAYOUTS.find((l) => l === value);
+  if (!layout) throw new Error(`CDN_LAYOUT must be ${MOCK_CDN_LAYOUTS.join(' or ')}, not ${value}`);
+  return layout;
+}
+
+/**
+ * The internal build path esm.sh-style entry modules re-export (pure): the build options in
+ * an `X-<base64url>` segment (only when there are externals), the target, then the subpath
+ * (or the package's own name) as `.mjs`.
+ */
+export function esmShInternalPath(
+  req: CdnRequest,
+  externals: ReadonlySet<string>,
+  dev: boolean,
+): string {
+  const ext = [...externals].sort().join(',');
+  const args = ext ? `X-${Buffer.from(`external=${ext}`).toString('base64url')}/` : '';
+  const file = req.subpath
+    ? req.subpath.replace(/\.(?:m?js|cjs)$/, '')
+    : `/${req.name.slice(req.name.lastIndexOf('/') + 1)}`;
+  return `/${req.name}@${req.version}/${args}es2022${file}${dev ? '.development' : ''}.mjs`;
+}
+
 export interface MockCdnOptions {
   port?: number;
   host?: string;
   /** Directory whose node_modules hold the served packages. Defaults to packages/runtime. */
   resolveFrom?: string;
   allowedPackages?: readonly string[];
+  /** See `MockCdnLayout`. Default `bundle`. */
+  layout?: MockCdnLayout;
   log?: (line: string) => void;
 }
 
@@ -195,8 +235,11 @@ function noLog(): void {
 export function createMockCdnHandler(opts: MockCdnOptions = {}) {
   const resolveFrom = opts.resolveFrom ?? DEFAULT_RESOLVE_FROM;
   const allowed = new Set(opts.allowedPackages ?? DEFAULT_ALLOWED_PACKAGES);
+  const layout = opts.layout ?? 'bundle';
   const log = opts.log ?? noLog;
   const cache = new Map<string, Promise<string>>();
+  /** `esm.sh` layout: internal build path → the cache key of the module it holds. */
+  const internals = new Map<string, string>();
   const stats = { builds: 0, requests: 0 };
   const lexersReady = Promise.all([initCjsLexer(), initEsmLexer()]);
 
@@ -392,6 +435,18 @@ export function createMockCdnHandler(opts: MockCdnOptions = {}) {
       send(res, 200, 'text/plain', 'mock-cdn ok');
       return;
     }
+    const internalKey = internals.get(url.pathname);
+    if (internalKey !== undefined) {
+      const code = await cache.get(internalKey);
+      if (code === undefined) {
+        send(res, 404, 'text/plain', `mock-cdn: ${url.pathname} not found`);
+        return;
+      }
+      send(res, 200, 'application/javascript; charset=utf-8', code, {
+        'Cache-Control': 'public, max-age=31536000, immutable',
+      });
+      return;
+    }
 
     const parsed = parseCdnPath(url.pathname);
     if (!parsed) {
@@ -471,7 +526,15 @@ export function createMockCdnHandler(opts: MockCdnOptions = {}) {
     }
     try {
       const code = await job;
-      send(res, 200, 'application/javascript; charset=utf-8', code, {
+      let body = code;
+      if (layout === 'esm.sh') {
+        const internal = esmShInternalPath(parsed, externals, dev);
+        internals.set(internal, key);
+        const [, exports] = parseEsm(code);
+        const s = JSON.stringify(internal);
+        body = `/* esm.sh-shaped mock - ${parsed.name}@${parsed.version}${parsed.subpath} */\nexport * from ${s};\n${exports.some((e) => e.type !== 'reexport-all' && e.name === 'default') ? `export { default } from ${s};\n` : ''}`;
+      }
+      send(res, 200, 'application/javascript; charset=utf-8', body, {
         'Cache-Control': 'public, max-age=31536000, immutable',
       });
     } catch (e) {

@@ -14,7 +14,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "playground": "tsx test-support/dev-server.ts",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test && playwright test -c playwright.esm-sh.config.ts",
+    "test:e2e:esm-sh": "playwright test -c playwright.esm-sh.config.ts"
   },
   "dependencies": {
     "@br/protocol": "workspace:*",

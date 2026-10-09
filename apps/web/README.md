@@ -320,7 +320,7 @@ runtime settings. The defaults are the local setup above.
 | `NEXT_PUBLIC_SUPABASE_URL` | `http://127.0.0.1:54321` | Supabase project URL |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | the local stack's demo anon key | Public anon key (JWT). `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` (`sb_publishable_…`) works instead. |
 | `NEXT_PUBLIC_SANDBOX_SHELL_URL` | `http://127.0.0.1:4321/v1/` | Sandbox shell |
-| `NEXT_PUBLIC_PKG_CDN_URL` | `http://localhost:4322` | esm.sh-compatible package CDN |
+| `NEXT_PUBLIC_PKG_CDN_URL` | `http://localhost:4322` | esm.sh-compatible package CDN (the local mock). Production on the free plan: `https://esm.sh`, the same value as the sandbox shell's `BR_PKG_CDN_URL` (DEPLOY.md, T-035) |
 | `NEXT_PUBLIC_SITE_URL` | `http://localhost:3000` | The app's public origin (`metadataBase`: the absolute `og:image` URL of the static card) |
 | `NEXT_PUBLIC_TURNSTILE_SITE_KEY` | unset (no Turnstile) | Cloudflare Turnstile site key for anonymous sign-ups. Set it only together with Turnstile in Supabase Auth (the matching secret), or every sign-up fails. |
 | `NEXT_PUBLIC_SENTRY_DSN` | unset (no error reporting) | Sentry DSN for browser errors (the only errors: there is no server) |

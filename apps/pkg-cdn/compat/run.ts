@@ -3,25 +3,42 @@
  *
  * For each curated package: a tiny React app that imports it, uses it, and renders a known
  * marker. Each app goes through the real pipeline: `@br/runtime` (esbuild-wasm worker,
- * cdn-rewrite, import map) -> sandbox shell (cross-site iframe, CSP) -> @br/pkg-cdn
- * (npm registry) in Chromium. A case passes when the marker shows the expected text and no
- * runtime error was reported.
+ * cdn-rewrite, import map) -> sandbox shell (cross-site iframe, CSP) -> the package CDN in
+ * Chromium. A case passes when the marker shows the expected text and no runtime error was
+ * reported.
  *
- * Needs network access to the npm registry, so it is not part of `pnpm test`.
+ * The CDN is @br/pkg-cdn (started here, resolving from the npm registry), or any
+ * esm.sh-compatible CDN given with `--cdn <baseUrl>` / `COMPAT_CDN` (T-035: production on the
+ * free plan uses https://esm.sh). Every URL a case requests, and every module those import from
+ * the CDN, is also checked against what the sandbox needs from a CDN (compat/contract.ts): 200
+ * without a redirect, a long cache lifetime, CORS, the content type, same-origin imports.
  *
- *   pnpm --filter @br/pkg-cdn compat [--only zustand,three] [--keep-cache] [--no-write]
+ * Needs network access (the npm registry, or the external CDN), so it is not part of
+ * `pnpm test`.
  *
- * Writes compat/RESULTS.md (committed) and node_modules/.cache/pkg-cdn-compat/results.json.
+ *   pnpm --filter @br/pkg-cdn compat [--cdn https://esm.sh] [--only zustand,three] [--no-write]
+ *
+ * Writes compat/RESULTS.md (our CDN; committed) or compat/RESULTS-<host>.md (another CDN), and
+ * node_modules/.cache/pkg-cdn-compat/results.json. Exit code 1 when fewer than 90% of the
+ * cases pass, or when the React import-map URLs break the CDN contract.
  */
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { chromium, type Page } from '@playwright/test';
-import { cdnModuleUrl, resolveBareImport } from '@br/runtime/bundler';
 import { APP_DIR, loadConfig } from '../src/config';
+import {
+  probeTree,
+  treeProblems,
+  type FetchFn,
+  type ProbeOptions,
+  type ProbeRecord,
+} from './contract';
 import type { CompatApi, CompatRunReport, CompatState } from './harness/page';
 import { startHarness } from './harness/server';
-import { CASES, MAIN_TSX, REACT_VERSION, type CompatCase } from './packages';
-import { renderResults, type CaseResult, type CdnTiming } from './report';
+import { CompatUsageError, parseCompatArgs, resultsFileName } from './options';
+import { CASES, MAIN_TSX, type CompatCase } from './packages';
+import { renderResults, type CaseResult, type CdnInfo, type CdnTiming } from './report';
+import { caseUrls, manifestFor, reactImportMap, shortUrl } from './urls';
 
 declare global {
   interface Window {
@@ -29,89 +46,92 @@ declare global {
   }
 }
 
-const args = process.argv.slice(2);
-const flag = (name: string) => args.includes(name);
-const option = (name: string): string | undefined => {
-  const i = args.indexOf(name);
-  return i === -1 ? undefined : args[i + 1];
-};
-
-const only = option('--only')
-  ?.split(',')
-  .map((s) => s.trim());
-const keepCache = flag('--keep-cache');
-const write = !flag('--no-write');
-const verbose = flag('--verbose');
+let options: ReturnType<typeof parseCompatArgs>;
+try {
+  options = parseCompatArgs(process.argv.slice(2), process.env);
+} catch (e) {
+  if (!(e instanceof CompatUsageError)) throw e;
+  console.error(`compat: ${e.message}`);
+  process.exit(2);
+}
+const { only, keepCache, write, verbose } = options;
 const CASE_TIMEOUT_MS = 30_000;
 
 const outDir = path.join(APP_DIR, 'node_modules', '.cache', 'pkg-cdn-compat');
-const cacheDir = option('--cache-dir') ?? path.join(outDir, `cdn-${Date.now().toString()}`);
+const cacheDir = options.cacheDir ?? path.join(outDir, `cdn-${Date.now().toString()}`);
 
-function manifestFor(c: CompatCase) {
-  return {
-    entry: 'src/main.tsx',
-    dependencies: {
-      react: REACT_VERSION,
-      'react-dom': REACT_VERSION,
-      [c.name]: c.version,
-      ...(c.deps ?? {}),
-    },
-  };
-}
+const fetchFn: FetchFn = (url, init) => fetch(url, init);
 
-/** Bare imports of the smoke app (to warm and time the CDN like the runtime will request them). */
-function importsOf(source: string): string[] {
-  const out = new Set<string>();
-  for (const m of source.matchAll(
-    /(?:import|export)\s[^'"]*?from\s*['"]([^'"]+)['"]|import\s*['"]([^'"]+)['"]/g,
-  )) {
-    const spec = m[1] ?? m[2];
-    if (spec && !spec.startsWith('.') && !spec.startsWith('/')) out.add(spec);
+/** The probed records of `roots` and of every module behind them. */
+function reachable(
+  roots: readonly string[],
+  probed: ReadonlyMap<string, ProbeRecord>,
+): ProbeRecord[] {
+  const out: ProbeRecord[] = [];
+  const seen = new Set<string>();
+  const queue = [...roots];
+  for (let url = queue.shift(); url !== undefined; url = queue.shift()) {
+    const rec = probed.get(url);
+    if (seen.has(url) || !rec) continue;
+    seen.add(url);
+    out.push(rec);
+    queue.push(...rec.imports);
   }
-  const pragma = /@jsxImportSource\s+(\S+)/.exec(source);
-  if (pragma?.[1]) out.add(`${pragma[1]}/jsx-runtime`);
-  return [...out];
+  return out;
 }
 
-async function timedFetch(
-  url: string,
-): Promise<{ ms: number; status: number; bytes: number; body: string; cache: string }> {
+async function timedGet(url: string, userAgent: string): Promise<number> {
   const started = performance.now();
-  const res = await fetch(url);
-  const body = await res.text();
-  return {
-    ms: performance.now() - started,
-    status: res.status,
-    bytes: Buffer.byteLength(body),
-    body,
-    cache:
-      res.headers.get('x-cache') ?? (res.headers.get('content-type')?.includes('css') ? 'RAW' : ''),
-  };
+  const res = await fetch(url, {
+    headers: { 'User-Agent': userAgent },
+    signal: AbortSignal.timeout(90_000),
+  });
+  await res.arrayBuffer();
+  return performance.now() - started;
 }
 
-/** Requests every CDN URL a case needs twice: cold (empty cache) and warm. */
-async function warmCase(c: CompatCase, cdnUrl: string): Promise<CdnTiming> {
-  const deps = manifestFor(c).dependencies;
+/**
+ * Requests every CDN URL a case needs twice (first: cold on an empty cache for our CDN,
+ * whatever the external CDN holds otherwise; second: warm), and checks the contract on them
+ * and on the modules behind them.
+ */
+async function probeCase(
+  c: CompatCase,
+  cdnUrl: string,
+  probe: ProbeOptions,
+  probed: Map<string, ProbeRecord>,
+): Promise<{ timing: CdnTiming; contract: CaseResult['contract'] }> {
   const timing: CdnTiming = { coldMs: 0, warmMs: 0, bytes: 0, urls: [], error: null };
-  for (const spec of importsOf(c.app)) {
-    const r = resolveBareImport(spec, deps, cdnUrl);
-    if (r.kind === 'import-map') continue;
-    if (r.kind === 'error') {
-      timing.error = `runtime rejects import "${spec}": ${r.message}`;
-      return timing;
-    }
-    timing.urls.push(r.url.slice(cdnUrl.length));
-    const cold = await timedFetch(r.url);
-    if (cold.status !== 200) {
-      timing.error = `CDN ${cold.status.toString()} for ${r.url.slice(cdnUrl.length)}: ${cold.body.trim().slice(0, 400)}`;
-      return timing;
-    }
-    const warm = await timedFetch(r.url);
-    timing.coldMs += cold.ms;
-    timing.warmMs += warm.ms;
-    timing.bytes += cold.bytes;
+  const contract: CaseResult['contract'] = { checked: 0, problems: [], notes: [] };
+  const { urls, error } = caseUrls(c, cdnUrl);
+  if (error !== null) {
+    timing.error = error;
+    return { timing, contract };
   }
-  return timing;
+  // URLs an earlier case already probed (the same package and manifest) are not requested again.
+  const fresh = await probeTree(urls, fetchFn, probe, new Set(probed.keys()));
+  for (const r of fresh) probed.set(r.url, r);
+  const records = reachable(
+    urls.map((u) => u.url),
+    probed,
+  );
+  const short = (u: string) => shortUrl(u, cdnUrl);
+  for (const u of urls) {
+    timing.urls.push(short(u.url));
+    const rec = probed.get(u.url);
+    if (!rec) continue;
+    if (rec.status !== 200) {
+      timing.error = `CDN ${rec.status === null ? 'no answer' : String(rec.status)} for ${short(u.url)}: ${(rec.error ?? rec.location ?? '').slice(0, 400)}`;
+      break;
+    }
+    timing.coldMs += rec.ms;
+    timing.bytes += rec.bytes;
+    timing.warmMs += await timedGet(u.url, probe.userAgent);
+  }
+  contract.checked = records.length;
+  contract.problems = treeProblems(records, short);
+  contract.notes = [...new Set(records.flatMap((r) => r.notes))];
+  return { timing, contract };
 }
 
 async function runCase(
@@ -166,38 +186,20 @@ async function main(): Promise<void> {
   const cases = only ? CASES.filter((c) => only.includes(c.name) || only.includes(c.id)) : CASES;
   if (cases.length === 0) throw new Error('no cases selected');
   mkdirSync(outDir, { recursive: true });
-  const config = { ...loadConfig({}), cacheDir };
   const harness = await startHarness(
-    config,
+    options.cdn === null
+      ? { config: { ...loadConfig({}), cacheDir } }
+      : { externalUrl: options.cdn },
     verbose
       ? (l) => {
           console.log(`  [cdn] ${l}`);
         }
       : undefined,
   );
-  const cdnUrl = harness.cdn.url;
-  console.log(`compat: ${cases.length.toString()} cases, CDN ${cdnUrl}, cache ${cacheDir}`);
-
-  // React for the import map (shared by every case): timed separately.
-  const reactUrls = [
-    cdnModuleUrl(cdnUrl, 'react', REACT_VERSION, '', false),
-    cdnModuleUrl(cdnUrl, 'react', REACT_VERSION, '/jsx-runtime'),
-    cdnModuleUrl(cdnUrl, 'react-dom', REACT_VERSION, ''),
-    cdnModuleUrl(cdnUrl, 'react-dom', REACT_VERSION, '/client'),
-  ];
-  const react: CdnTiming = { coldMs: 0, warmMs: 0, bytes: 0, urls: [], error: null };
-  for (const u of reactUrls) {
-    const cold = await timedFetch(u);
-    if (cold.status !== 200)
-      throw new Error(`React from the CDN failed: ${cold.status.toString()} ${cold.body}`);
-    const warm = await timedFetch(u);
-    react.coldMs += cold.ms;
-    react.warmMs += warm.ms;
-    react.bytes += cold.bytes;
-    react.urls.push(u.slice(cdnUrl.length));
-  }
+  const cdnUrl = harness.cdnUrl;
+  const cdn: CdnInfo = { url: cdnUrl, own: harness.cdn !== null };
   console.log(
-    `React import map modules: cold ${react.coldMs.toFixed(0)} ms, warm ${react.warmMs.toFixed(0)} ms`,
+    `compat: ${cases.length.toString()} cases, CDN ${cdnUrl}${cdn.own ? ` (@br/pkg-cdn, cache ${cacheDir})` : ' (external)'}`,
   );
 
   const browser = await chromium.launch({
@@ -208,22 +210,59 @@ async function main(): Promise<void> {
   });
   const results: CaseResult[] = [];
   let bootMs = 0;
+  const react: CdnTiming = { coldMs: 0, warmMs: 0, bytes: 0, urls: [], error: null };
+  let reactProbe: ProbeRecord[] = [];
+  const probed = new Map<string, ProbeRecord>();
   try {
     const page = await browser.newPage();
     const pageErrors: string[] = [];
     page.on('pageerror', (e) => pageErrors.push(e.message));
     await page.goto(harness.appUrl);
+    // The CDN answers these requests as it answers this browser (esm.sh picks its build
+    // target from the User-Agent).
+    const probe: ProbeOptions = {
+      origin: new URL(harness.appUrl).origin,
+      userAgent: await page.evaluate(() => navigator.userAgent),
+    };
+
+    // React for the import map (shared by every case), with the modules behind it.
+    const reactUrls = Object.values(reactImportMap(cdnUrl).imports);
+    reactProbe = await probeTree(
+      reactUrls.map((url) => ({ url, kind: 'module' as const })),
+      fetchFn,
+      probe,
+    );
+    for (const r of reactProbe) probed.set(r.url, r);
+    for (const u of reactUrls) {
+      const rec = reactProbe.find((r) => r.url === u);
+      if (rec?.status !== 200) {
+        throw new Error(
+          `React from the CDN failed: ${String(rec?.status ?? 'no answer')} for ${u}: ${rec?.error ?? rec?.location ?? ''}`,
+        );
+      }
+      react.coldMs += rec.ms;
+      react.bytes += rec.bytes;
+      react.warmMs += await timedGet(u, probe.userAgent);
+      react.urls.push(shortUrl(u, cdnUrl));
+    }
+    console.log(
+      `React import map modules: first ${react.coldMs.toFixed(0)} ms, second ${react.warmMs.toFixed(0)} ms, ${String(reactProbe.length)} URLs checked`,
+    );
+    for (const p of treeProblems(reactProbe, (u) => shortUrl(u, cdnUrl))) {
+      console.log(`CONTRACT (React) ${p}`);
+    }
     bootMs = (await page.evaluate(() => window.__compat.boot)).coldStartMs;
 
     for (const c of cases) {
-      const cdn = await warmCase(c, cdnUrl);
+      const { timing, contract } = await probeCase(c, cdnUrl, probe, probed);
       let result: CaseResult;
-      if (cdn.error !== null) {
+      if (timing.error !== null) {
         result = {
           case: c,
           pass: false,
-          reason: cdn.error,
-          cdn,
+          reason: timing.error,
+          cdn: timing,
+          contract,
           buildMs: 0,
           readyMs: 0,
           consoleErrors: [],
@@ -236,7 +275,8 @@ async function main(): Promise<void> {
             case: c,
             pass: reason === null,
             reason,
-            cdn,
+            cdn: timing,
+            contract,
             buildMs: report.buildMs,
             readyMs: report.readyMs,
             consoleErrors: state.consoleErrors,
@@ -246,7 +286,8 @@ async function main(): Promise<void> {
             case: c,
             pass: false,
             reason: `harness error: ${e instanceof Error ? e.message : String(e)}`,
-            cdn,
+            cdn: timing,
+            contract,
             buildMs: 0,
             readyMs: 0,
             consoleErrors: [],
@@ -254,36 +295,51 @@ async function main(): Promise<void> {
         }
       }
       results.push(result);
-      const t = `cold ${cdn.coldMs.toFixed(0)} ms / warm ${cdn.warmMs.toFixed(1)} ms`;
+      const t = `first ${timing.coldMs.toFixed(0)} ms / second ${timing.warmMs.toFixed(1)} ms`;
+      const contractText =
+        contract.problems.length > 0
+          ? `\n     contract: ${contract.problems.slice(0, 3).join(' | ')}`
+          : '';
       console.log(
-        `${result.pass ? 'PASS' : 'FAIL'} ${c.id.padEnd(28)} ${t}${result.reason ? `\n     ${result.reason}` : ''}`,
+        `${result.pass ? 'PASS' : 'FAIL'} ${c.id.padEnd(36)} ${t}, ${String(contract.checked)} URLs checked${result.reason ? `\n     ${result.reason}` : ''}${contractText}`,
       );
     }
     if (pageErrors.length > 0) console.log(`harness page errors: ${pageErrors.join(' | ')}`);
   } finally {
     await browser.close();
     await harness.close();
-    if (!keepCache && option('--cache-dir') === undefined)
+    if (cdn.own && !keepCache && options.cacheDir === null)
       rmSync(cacheDir, { recursive: true, force: true });
   }
 
   const passed = results.filter((r) => r.pass).length;
+  const reactProblems = treeProblems(reactProbe, (u) => shortUrl(u, cdnUrl));
+  const caseProblems = results.filter((r) => r.contract.problems.length > 0).length;
   console.log(
-    `\n${passed.toString()}/${results.length.toString()} passed (${((100 * passed) / results.length).toFixed(1)}%)`,
+    `\n${passed.toString()}/${results.length.toString()} passed (${((100 * passed) / results.length).toFixed(1)}%) against ${cdnUrl}`,
+  );
+  console.log(
+    `CDN contract: React import map ${reactProblems.length === 0 ? 'ok' : `${String(reactProblems.length)} problems`} (${String(reactProbe.length)} URLs); cases with problems: ${String(caseProblems)}/${String(results.length)}`,
   );
   writeFileSync(
     path.join(outDir, 'results.json'),
-    JSON.stringify({ react, bootMs, results }, null, 2),
+    JSON.stringify(
+      { cdn, react, reactProbe, probed: [...probed.values()], bootMs, results },
+      null,
+      2,
+    ),
   );
   if (write && !only) {
+    const file = resultsFileName(cdn.own ? null : cdnUrl);
     writeFileSync(
-      path.join(APP_DIR, 'compat', 'RESULTS.md'),
-      renderResults({ results, react, bootMs }),
+      path.join(APP_DIR, 'compat', file),
+      renderResults({ cdn, results, react, reactProbe, probedUrls: probed.size, bootMs }),
     );
-    console.log('wrote compat/RESULTS.md');
+    console.log(`wrote compat/${file}`);
   }
-  // Fail the process (and a CI job) when the R1 exit criterion is not met.
-  if (passed / results.length < 0.9) process.exitCode = 1;
+  // Fail the process (and a CI job) when the R1 exit criterion is not met, or when the
+  // import map's React modules would not survive a CDN outage in the browser (T-032).
+  if (passed / results.length < 0.9 || reactProblems.length > 0) process.exitCode = 1;
 }
 
 await main();

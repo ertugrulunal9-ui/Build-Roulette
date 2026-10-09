@@ -29,6 +29,18 @@ export interface CompatCase {
   app: string;
   expected: string;
   timeoutMs?: number;
+  /**
+   * A failure we know and accept (T-040): on every CDN (`any`) or on esm.sh only. The case
+   * still runs and counts; the report lists it apart from unexpected failures.
+   */
+  knownFailure?: { on: 'any' | 'esm.sh'; reason: string };
+}
+
+/** The known failure of a case on a CDN, or null (`esm.sh`: the public esm.sh host). */
+export function knownFailureOn(c: CompatCase, cdnUrl: string): string | null {
+  const k = c.knownFailure;
+  if (!k) return null;
+  return k.on === 'any' || new URL(cdnUrl).hostname === 'esm.sh' ? k.reason : null;
 }
 
 const c = (x: CompatCase): CompatCase => x;
@@ -494,6 +506,11 @@ export function App() {
     category: '3d-canvas-games',
     checks: 'named imports { Engine, Bodies } from the UMD build',
     expected: 'ok:fell',
+    knownFailure: {
+      on: 'any',
+      reason:
+        'matter-js ships a UMD bundle: its names are only known at run time, so there are no named exports (the default import works)',
+    },
     app: `import { Engine, Bodies, Composite } from 'matter-js';
 const engine = Engine.create();
 const ball = Bodies.circle(50, 0, 10);
@@ -510,6 +527,16 @@ export function App() {
     category: '3d-canvas-games',
     checks: 'instance mode sketch: createCanvas + draw',
     expected: 'ok:120x80',
+    // esm.sh resolves p5's dependency @davepagurek/bezier-path@0.0.7 with its `browser` export
+    // condition, a minified global script (`var BezierPath=…`) with no exports, ahead of
+    // `import` (build/index.js, the ES module), which comes first in the package's `exports`.
+    // @br/pkg-cdn follows the `exports` order (esbuild), so the case passes there. Not fixable
+    // from our side without overriding esm.sh's resolution for one package (T-040).
+    knownFailure: {
+      on: 'esm.sh',
+      reason:
+        "esm.sh builds @davepagurek/bezier-path from its `browser` export (a global script without exports), so p5's `createFromCommands` import fails",
+    },
     app: `import { useEffect, useRef, useState } from 'react';
 import p5 from 'p5';
 export function App() {

@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
+  caseFindings,
   contractFindings,
   probeTree,
   probeUrl,
   splitImports,
   treeProblems,
+  urlPackage,
   type FetchFn,
 } from '../compat/contract';
 
@@ -193,5 +195,108 @@ describe('CDN contract (T-032, T-035)', () => {
     expect(r.status).toBe(200);
     expect(r.bytes).toBe(19);
     expect(r.ms).toBeGreaterThanOrEqual(0);
+  });
+
+  it('reads the package and version of a CDN URL (T-040)', () => {
+    expect(urlPackage('https://esm.sh/scheduler@%5E0.28.0?target=es2022')).toEqual({
+      name: 'scheduler',
+      version: '^0.28.0',
+      exact: false,
+    });
+    expect(urlPackage('https://esm.sh/@react-spring/core@~10.1.2?target=es2022')).toEqual({
+      name: '@react-spring/core',
+      version: '~10.1.2',
+      exact: false,
+    });
+    expect(urlPackage('https://esm.sh/three@0.186.1/X-ZXh0/es2022/three.mjs')).toEqual({
+      name: 'three',
+      version: '0.186.1',
+      exact: true,
+    });
+    expect(urlPackage('https://esm.sh/three@0.186.1&external=react/examples/x.js')).toEqual({
+      name: 'three',
+      version: '0.186.1',
+      exact: true,
+    });
+    expect(urlPackage('https://esm.sh/*swr@2.2.5')).toMatchObject({ name: 'swr', exact: true });
+    expect(urlPackage('https://esm.sh/node/process.mjs')).toBe('polyfill');
+    expect(urlPackage('https://esm.sh/')).toBeNull();
+  });
+});
+
+/**
+ * T-040: esm.sh imports a package's own dependencies by range (CI run 60). For a dependency the
+ * case's manifest does not list, the short cache is a note with its outage window; a package
+ * the manifest lists reached by range is a problem (a second copy).
+ */
+describe('CDN contract for a case (T-040)', () => {
+  const SHORT = 'public, max-age=600';
+  const table = {
+    'https://esm.sh/react-chartjs-2@5.3.1?external=chart.js,react,react-dom': {
+      body: 'export * from "/react-chartjs-2@5.3.1/X-YQ/es2022/react-chartjs-2.mjs";',
+    },
+    'https://esm.sh/react-chartjs-2@5.3.1/X-YQ/es2022/react-chartjs-2.mjs': {
+      body: 'import "chart.js";import "/immer@^11.0.0?target=es2022";import "/node/process.mjs";',
+    },
+    'https://esm.sh/immer@^11.0.0?target=es2022': {
+      body: 'export * from "/immer@11.0.1/es2022/immer.mjs";',
+      headers: { 'Cache-Control': SHORT },
+    },
+    'https://esm.sh/immer@11.0.1/es2022/immer.mjs': { body: 'export const a = 1;' },
+    'https://esm.sh/node/process.mjs': {
+      body: 'export default {};',
+      headers: { 'Cache-Control': 'public, max-age=86400' },
+    },
+    'https://esm.sh/chart.js@^4.1.1?target=es2022': {
+      body: 'export * from "/chart.js@4.5.1/es2022/chart.mjs";',
+      headers: { 'Cache-Control': SHORT },
+    },
+    'https://esm.sh/chart.js@4.5.1/es2022/chart.mjs': { body: 'export const c = 1;' },
+  };
+  const short = (u: string) => u.slice('https://esm.sh'.length);
+
+  it('notes the short cache of an unlisted dependency or polyfill, with its outage window', async () => {
+    const { fetchFn } = cdn(table);
+    const records = await probeTree(
+      [
+        {
+          url: 'https://esm.sh/react-chartjs-2@5.3.1?external=chart.js,react,react-dom',
+          kind: 'module',
+        },
+      ],
+      fetchFn,
+      OPTS,
+    );
+    expect(records).toHaveLength(5);
+    // The record itself still has the problem (the React template's rule).
+    expect(treeProblems(records, short)).toHaveLength(2);
+    const f = caseFindings(
+      records,
+      new Set(['react', 'react-dom', 'chart.js', 'react-chartjs-2']),
+      short,
+    );
+    expect(f.problems).toEqual([]);
+    expect(f.notes).toEqual([
+      '/immer@^11.0.0?target=es2022: immer by range, not in the manifest; cached 600 s, so it outlasts a CDN outage by that long only',
+      '/node/process.mjs: a Node polyfill; cached 86400 s, so it outlasts a CDN outage by that long only',
+    ]);
+  });
+
+  it('keeps a manifest package reached by range a problem: a second copy (CI run 60)', async () => {
+    const { fetchFn } = cdn(table);
+    const records = await probeTree(
+      [{ url: 'https://esm.sh/chart.js@^4.1.1?target=es2022', kind: 'module' }],
+      fetchFn,
+      OPTS,
+    );
+    const f = caseFindings(
+      records,
+      new Set(['react', 'react-dom', 'chart.js', 'react-chartjs-2']),
+      short,
+    );
+    expect(f.problems).toEqual([
+      "/chart.js@^4.1.1?target=es2022: chart.js is in the manifest but imported by range (^4.1.1): a second copy, not the import map's",
+      '/chart.js@^4.1.1?target=es2022: Cache-Control "public, max-age=600": needs max-age ≥ 30 days to outlast a CDN outage',
+    ]);
   });
 });

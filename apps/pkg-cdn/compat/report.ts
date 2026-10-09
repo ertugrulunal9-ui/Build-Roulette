@@ -26,6 +26,8 @@ export interface CaseResult {
   case: CompatCase;
   pass: boolean;
   reason: string | null;
+  /** For a failure: the case's known-failure reason on this CDN (T-040), or null. */
+  known: string | null;
   cdn: CdnTiming;
   /** The CDN contract (compat/contract.ts) on the case's URLs and the modules behind them. */
   contract: { checked: number; problems: string[]; notes: string[] };
@@ -114,6 +116,10 @@ export function renderResults(run: {
   lines.push(
     `- Packages passed (primary case of each of the ${primary.length.toString()} packages): ${primaryPassed.toString()} / ${primary.length.toString()} (${((100 * primaryPassed) / primary.length).toFixed(1)}%). Variant cases probe a second usage style of a package already in the list.`,
   );
+  const knownFailed = results.filter((r) => !r.pass && r.known !== null);
+  lines.push(
+    `- Failures: **${String(results.length - passed.length - knownFailed.length)} unexpected**, ${String(knownFailed.length)} known (the case's \`knownFailure\` on this CDN, compat/packages.ts).`,
+  );
   const reactProblems = reactProbe.flatMap((r) => r.problems);
   const withProblems = results.filter((r) => r.contract.problems.length > 0);
   lines.push(
@@ -126,17 +132,29 @@ export function renderResults(run: {
     ]),
   ];
   if (notes.length > 0) {
-    lines.push(
-      `- Contract notes (not problems): ${notes
-        .slice(0, 8)
-        .map((n) => `\`${cell(n)}\``)
-        .join(', ')}${notes.length > 8 ? ', …' : ''}.`,
-    );
+    const unlisted = notes.filter((n) => /not in the manifest|Node polyfill/.test(n));
+    if (unlisted.length > 0) {
+      lines.push(
+        `- Dependencies the manifest does not list, loaded with a short cache (notes, not problems, T-040; their outage window is the CDN's cache lifetime): ${String(unlisted.length)} URLs, e.g. ${unlisted
+          .slice(0, 4)
+          .map((n) => `\`${cell(n)}\``)
+          .join(', ')}${unlisted.length > 4 ? ', …' : ''}.`,
+      );
+    }
+    const other = notes.filter((n) => !unlisted.includes(n));
+    if (other.length > 0) {
+      lines.push(
+        `- Contract notes (not problems): ${other
+          .slice(0, 8)
+          .map((n) => `\`${cell(n)}\``)
+          .join(', ')}${other.length > 8 ? ', …' : ''}.`,
+      );
+    }
   }
   const first = cdn.own ? 'cold' : 'first request';
   const second = cdn.own ? 'warm' : 'second request';
   lines.push(
-    `- React import-map modules (react, react/jsx-runtime, react/jsx-dev-runtime, react-dom, react-dom/client): ${first} ${ms(react.coldMs)} ms, ${second} ${ms(react.warmMs)} ms, ${kb(react.bytes)} KB.`,
+    `- React import-map modules (react, react/jsx-runtime, react/jsx-dev-runtime, react-dom, react-dom/client, scheduler): ${first} ${ms(react.coldMs)} ms, ${second} ${ms(react.warmMs)} ms, ${kb(react.bytes)} KB.`,
   );
   lines.push(
     cdn.own
@@ -156,10 +174,12 @@ export function renderResults(run: {
   if (failed.length > 0) {
     lines.push('## Failures');
     lines.push('');
-    lines.push('| Package | Version | Reason |');
-    lines.push('|---|---|---|');
+    lines.push('| Package | Version | Known | Reason |');
+    lines.push('|---|---|---|---|');
     for (const r of failed) {
-      lines.push(`| ${r.case.id} | ${r.case.version} | ${cell(r.reason ?? '')} |`);
+      lines.push(
+        `| ${r.case.id} | ${r.case.version} | ${r.known === null ? '**no**' : `yes: ${cell(r.known)}`} | ${cell(r.reason ?? '')} |`,
+      );
     }
     lines.push('');
   }
@@ -203,12 +223,15 @@ export function renderResults(run: {
       );
     if (r.consoleErrors.length > 0)
       notes.push(`console.error: ${r.consoleErrors[0]?.slice(0, 120) ?? ''}`);
+    const unlisted = r.contract.notes.filter((n) =>
+      /not in the manifest|Node polyfill/.test(n),
+    ).length;
     const contract =
       r.contract.problems.length > 0
         ? `**${String(r.contract.problems.length)} problems**`
-        : `ok (${String(r.contract.checked)})`;
+        : `ok (${String(r.contract.checked)}${unlisted > 0 ? `; ${String(unlisted)} unlisted by range` : ''})`;
     lines.push(
-      `| ${(i + 1).toString()} | ${r.case.id} | ${r.case.version} | ${r.case.category} | ${r.pass ? 'pass' : '**FAIL**'} | ${ms(r.cdn.coldMs)} | ${ms(r.cdn.warmMs)} | ${kb(r.cdn.bytes)} | ${ms(r.buildMs)} | ${ms(r.readyMs)} | ${contract} | ${cell(r.case.checks)} | ${cell(notes.join('; '))} |`,
+      `| ${(i + 1).toString()} | ${r.case.id} | ${r.case.version} | ${r.case.category} | ${r.pass ? 'pass' : r.known !== null ? 'fail (known)' : '**FAIL**'} | ${ms(r.cdn.coldMs)} | ${ms(r.cdn.warmMs)} | ${kb(r.cdn.bytes)} | ${ms(r.buildMs)} | ${ms(r.readyMs)} | ${contract} | ${cell(r.case.checks)} | ${cell(notes.join('; '))} |`,
     );
   });
   lines.push('');

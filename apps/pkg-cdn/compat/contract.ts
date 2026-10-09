@@ -14,7 +14,16 @@
  *
  * Notes (reported, not problems): `Vary` (esm.sh varies by `User-Agent` when no `?target=` is
  * given), a missing `immutable`, and imports the sandbox shell's own scan (`moduleImportUrls`,
- * which its warm-up and package checks follow) does not see. Imports are read with
+ * which its warm-up and package checks follow) does not see.
+ *
+ * **Dependencies the manifest does not list (T-040, `caseFindings`).** esm.sh imports a
+ * package's own dependencies by range (`/immer@^11.0.0?target=es2022`, `max-age=600`) and its
+ * Node polyfills from `/node/*.mjs` (`max-age=86400`). For a dependency the case's manifest does
+ * not list, that short cache is a note with its outage window, not a problem: the runtime
+ * cannot pin what it does not know (docs/03, "Dependencies the manifest does not list"). It
+ * stays a problem for the React template (the shell warms it for outages, T-032) and for any
+ * package the manifest lists: those must load from their exact import-map URL, and one
+ * reached by range is also a second copy. Imports are read with
  * es-module-lexer here. Requests carry the browser's User-Agent and an `Origin`, so the CDN
  * answers as it answers the browser. The fetch is injected (unit tests).
  */
@@ -274,6 +283,62 @@ export async function probeTree(
     level = next;
   }
   return out;
+}
+
+/** What a CDN URL is (pure): a package at a version (exact or not), a Node polyfill, or null. */
+export function urlPackage(
+  url: string,
+): { name: string; version: string; exact: boolean } | 'polyfill' | null {
+  let path: string;
+  try {
+    path = decodeURIComponent(new URL(url).pathname);
+  } catch {
+    return null;
+  }
+  if (path.startsWith('/node/')) return 'polyfill';
+  // esm.sh marks "every dependency external" builds with a `*` before the name.
+  const m = /^\/\*?((?:@[^/@]+\/)?[^/@&]+)@([^/&]+)/.exec(path);
+  if (!m?.[1] || m[2] === undefined) return null;
+  return { name: m[1], version: m[2], exact: /^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(m[2]) };
+}
+
+/**
+ * The contract for one case (T-040): every record's problems and notes, except that the short
+ * cache of a module the manifest does not list, reached by range or a Node polyfill, is a note
+ * with its outage window. A package the manifest lists reached by range is a problem: it is
+ * not the import map's copy.
+ */
+export function caseFindings(
+  records: readonly ProbeRecord[],
+  manifest: ReadonlySet<string>,
+  short: (url: string) => string,
+): { problems: string[]; notes: string[] } {
+  const problems: string[] = [];
+  const notes: string[] = [];
+  for (const r of records) {
+    const pkg = urlPackage(r.url);
+    const listed = pkg !== null && pkg !== 'polyfill' && manifest.has(pkg.name);
+    const unpinned = pkg === 'polyfill' || (pkg !== null && !pkg.exact);
+    if (listed && unpinned) {
+      problems.push(
+        `${short(r.url)}: ${pkg.name} is in the manifest but imported by range (${pkg.version}): a second copy, not the import map's`,
+      );
+    }
+    for (const p of r.problems) {
+      if (unpinned && !listed && p.startsWith('Cache-Control ')) {
+        const what =
+          pkg === 'polyfill' ? 'a Node polyfill' : `${pkg.name} by range, not in the manifest`;
+        const age = /max-age=(\d+)/.exec(r.cacheControl ?? '')?.[1];
+        notes.push(
+          `${short(r.url)}: ${what}; cached ${age === undefined ? 'briefly' : `${age} s`}, so it outlasts a CDN outage by that long only`,
+        );
+      } else {
+        problems.push(`${short(r.url)}: ${p}`);
+      }
+    }
+    notes.push(...r.notes);
+  }
+  return { problems, notes: [...new Set(notes)] };
 }
 
 /** The problems of a set of records, each prefixed with its short URL. */

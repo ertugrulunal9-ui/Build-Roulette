@@ -19,7 +19,7 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 | T-032 | Template packages survive a package-CDN outage after the lobby preload (R10): measure what the browser really caches for the shell and build frames (cache partitioning, opaque origins, the shell's own wipe), choose a Service Worker, an in-shell module cache or edge-only caching, implement it, and test it with an e2e that kills the CDN mid-BUILD | `apps/sandbox-shell/`, `packages/runtime/`, `apps/web/`, `apps/pkg-cdn/` | done | Merged |
 | T-033 | **Free tier, step 1 (measure first):** CPU time per request of the web app on workerd for every route class (prerendered, ISR HIT/MISS, OG image, `/u/[id]`, `/r/[code]`, `/admin` and its actions, cold vs warm isolate) against the Workers Free 10 ms limit; how Cloudflare enforces it; slim what doesn't fit (e.g. OG image without runtime rendering); GO/NO-GO for Workers Free with evidence | `apps/web/`, `docs/` | done | Merged: **NO-GO** for Next on Workers Free → static site (T-037, T-038) |
 | T-037 | **Free tier: the web app as a static site on Cloudflare Pages** (user decision, option C). `output: 'export'`; `/battles/[id]`, `/u/[id]`, `/r/[code]` become static shells served through Pages `_redirects` rewrites, and they load data in the browser through the anon RPCs. `/admin` runs client-side with the admin's own Supabase session (`is_admin()` in Postgres unchanged). Remove the ISR/R2/D1/DO setup and the server actions; security headers move to `_headers`; e2e runs against `wrangler pages dev`. | `apps/web/`, `docs/` | done | Merged |
-| T-038 | Free tier: per-battle link previews. A tiny Pages Function on `/battles/*` injects `og:*` meta (rank-1 screenshot, or the static card; T-028 rule) with `HTMLRewriter`. Its CPU is measured cold/warm with the T-033 tool against the 10 ms limit; if it doesn't fit, fall back to the static card. | `apps/web/` | in-progress | Free-tier deploy, task 3 |
+| T-038 | Free tier: per-battle link previews. A tiny Pages Function on `/battles/*` injects `og:*` meta (rank-1 screenshot, or the static card; T-028 rule) with `HTMLRewriter`. Its CPU is measured cold/warm with the T-033 tool against the 10 ms limit; if it doesn't fit, fall back to the static card. | `apps/web/` | done | Merged: **GO** (3–5 ms fresh, ~2 ms warm) |
 | T-034 | Free tier: capture + destroy/takedown jobs on a Cloudflare cron Worker with Browser Rendering (Free: 10 browser-min/day, 3 concurrent); client thumbnail fallback when the daily budget is spent | `apps/capture-worker/` (or a new Worker), `supabase/` | todo | Free-tier deploy, after T-033 |
 | T-035 | Free tier: public esm.sh as the package CDN (config, CSP, import-map URL shapes); compat suite against esm.sh in GitHub CI (this container cannot reach esm.sh) | `packages/runtime/`, `apps/sandbox-shell/`, `apps/web/`, `apps/pkg-cdn/` (compat), `ci.yml` | todo | Free-tier deploy |
 | T-036 | Free tier: Supabase Free adjustments (keep-alive against the 7-day pause, screenshot size/retention for the 1 GB storage, quotas in docs/07), deploy checklist rewritten for the free setup | `supabase/`, `docs/`, `apps/web/DEPLOY.md` | todo | Free-tier deploy |
@@ -728,3 +728,17 @@ Start M5.
   - runbook check 0 failed.
 - **Hub fix on top:** the worker saw the T-031 `preview_crash` e2e fail once (`silent_ms` 5635 > 5600). That isn't a flake, the bound was wrong: `ready` moves the deadline to ready + 5 s and the last pong can be up to one ping interval earlier, so the bound is 5000 + 1000 + 300 ms. Changed it to 6300 ms with that explanation.
 - This hub commit also updated the stale "Blocked on the user" rows (Workers Paid, the R2/D1 cache, the Containers CDN). T-036 rewrites the whole free-setup checklist.
+
+### T-038: accepted (free-tier task 3), link previews GO
+- A Pages advanced-mode `_worker.js` (13 KiB, 5.3 KiB gzip) runs only on `/battles/*` (`_routes.json`). It fetches the shell plus `get_public_battle` in parallel and rewrites the head with `HTMLRewriter`: title, `og:*`, `twitter:card`, canonical.
+- **T-028 rule:** if rank 1 was taken down, the preview shows the static card with no winner, and the runner-up is not promoted.
+- **Status codes:** unknown or not-public ids get a real 404 (still the shell's HTML); malformed ids get 404 without a Supabase call.
+- **Fail open:** a Supabase timeout (1.5 s) or error returns the unchanged shell with 200.
+- **No cache**, so a takedown reaches the preview on the next request. Settings are inlined from the same `NEXT_PUBLIC_*` build values; nothing is set on Pages. `_headers` are baked into the Function's responses, because Pages doesn't apply them to Functions.
+- **Escaping:** script and attribute injection attempts are round-tripped through a real HTML parser, and the tests fail when the escaping is weakened. The e2e uses a real build named `"><script>…`.
+- **Hub re-ran on a fresh clone:**
+  - pipeline green (web 426 unit tests);
+  - playground 22/22, moderation 8/8 (6 link-preview), solo 3/3, multiplayer 5/5, telemetry 6/6 + 1/1;
+  - runbook check 0 failed;
+  - short `measure:cpu`: Function 1.2–2.3 ms warm median, 3.2–4.9 ms fresh median (n=2), matching the worker's numbers (fresh p95 up to 7.3 ms).
+- **Caveat (accepted):** Cloudflare's CPUs may be slower than this VM; check the Functions CPU metric after the first deploy.

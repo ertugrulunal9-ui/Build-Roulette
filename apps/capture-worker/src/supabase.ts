@@ -13,6 +13,7 @@
  * legacy `service_role` key). The newer `sb_secret_…` keys are not JWTs and go in `apikey`
  * only; the hosted gateway turns them into a service_role JWT.
  */
+import type { BudgetBackend, BudgetState } from './budget';
 import {
   BackendError,
   type Backend,
@@ -26,6 +27,12 @@ import {
 export interface SupabaseBackendOptions {
   /** e.g. http://127.0.0.1:54321 or https://<ref>.supabase.co */
   url: string;
+  /**
+   * Base of the signed Storage URLs handed to the browser, when it reaches Supabase under
+   * another name than we do (the local Edge Runtime calls `http://kong:8000`, the browser
+   * `http://127.0.0.1:54321`). Default: `url`.
+   */
+  publicUrl?: string | undefined;
   serviceKey: string;
   /** Per-request timeout. */
   timeoutMs?: number;
@@ -34,14 +41,16 @@ export interface SupabaseBackendOptions {
 
 const LIST_PAGE = 1000;
 
-export class SupabaseBackend implements Backend {
+export class SupabaseBackend implements Backend, BudgetBackend {
   private readonly base: string;
+  private readonly publicBase: string;
   private readonly headers: Record<string, string>;
   private readonly timeoutMs: number;
   private readonly fetchImpl: typeof fetch;
 
   constructor(opts: SupabaseBackendOptions) {
     this.base = opts.url.replace(/\/+$/, '');
+    this.publicBase = (opts.publicUrl ?? opts.url).replace(/\/+$/, '');
     this.headers = {
       apikey: opts.serviceKey,
       ...(opts.serviceKey.startsWith('eyJ') ? { authorization: `Bearer ${opts.serviceKey}` } : {}),
@@ -98,6 +107,42 @@ export class SupabaseBackend implements Backend {
     return rows[0]?.phase ?? null;
   }
 
+  // ─── Browser Rendering budget (T-034) ───────────────────────────────────
+
+  async reserveBrowserTime(reserveMs: number, limitMs: number): Promise<BudgetState> {
+    const row = (await this.rpc('browser_budget_reserve', {
+      p_reserve_ms: reserveMs,
+      p_limit_ms: limitMs,
+    })) as {
+      granted: boolean;
+      day: string;
+      used_ms: number;
+      reserved_ms: number;
+      limit_ms: number;
+    };
+    return {
+      granted: row.granted,
+      day: row.day,
+      usedMs: row.used_ms,
+      reservedMs: row.reserved_ms,
+      limitMs: row.limit_ms,
+    };
+  }
+
+  async settleBrowserTime(
+    day: string,
+    reservedMs: number,
+    usedMs: number,
+    rateLimited: boolean,
+  ): Promise<void> {
+    await this.rpc('browser_budget_settle', {
+      p_day: day,
+      p_reserved_ms: reservedMs,
+      p_used_ms: usedMs,
+      p_rate_limited: rateLimited,
+    });
+  }
+
   // ─── Storage ────────────────────────────────────────────────────────────
 
   async createSignedUrl(
@@ -117,7 +162,7 @@ export class SupabaseBackend implements Backend {
     const body = (await this.json(res)) as { signedURL?: string };
     if (!body.signedURL)
       throw new BackendError('sign: no signedURL in the response', 500, undefined);
-    return `${this.base}/storage/v1${body.signedURL}`;
+    return `${this.publicBase}/storage/v1${body.signedURL}`;
   }
 
   async download(bucket: string, path: string): Promise<Uint8Array | null> {

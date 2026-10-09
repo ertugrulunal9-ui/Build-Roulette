@@ -317,11 +317,11 @@ depend on them. In particular:
 - **Readiness is decided by the renderer:** the build calls
   `window.buildRoulette.ready()`, *or* the network has been idle for 2 s, with a 6 s cap
   either way. A forged signal can only make the capture earlier.
-- **Renderer:** `PlaywrightRenderer` locally. It allows navigation only to the exact
-  capture URL (other navigations get a 204), closes popups, dismisses dialogs and enforces
-  a hard timeout. The output is a WebP via sharp. For production the plan is a Worker with
-  a Browser Rendering binding and `@cloudflare/playwright`, reusing the same logic, and
-  storing PNG or using Cloudflare Images because sharp doesn't run in workerd.
+- **Renderer:** `PlaywrightRenderer` in the self-hosted worker. It allows navigation only to
+  the exact capture URL (other navigations get a 204), closes popups, dismisses dialogs and
+  enforces a hard timeout. The output is a WebP via sharp. Production on the free plan
+  renders through Browser Rendering's REST API instead (T-034, next section); the
+  "Worker with a browser binding" plan was dropped (Workers Free's 10 ms CPU, docs/08 §1).
 - **Fallback:** if the render fails or is blank (pixel variance check), the client's
   `thumb.webp` is used and marked `fallback`. When neither exists, the result is `failed`.
 - **Destroy worker:** checks the battle is destroyed or abandoned, recursively deletes
@@ -330,6 +330,39 @@ depend on them. In particular:
 - **Stage-1 domains:** with the sandbox on a single `*.pages.dev` origin, every build
   shares one capture origin. Isolation then relies on the storage wipe before each run.
   Per-build origins come with the stage-2 domain.
+
+### Capture on the free plan: Browser Rendering's REST API (T-034)
+
+The `jobs` Supabase Edge Function (docs/08-free-tier.md §5) captures with one
+`POST …/browser-rendering/snapshot` per build. It sends the signed capture URL at 1280×800
+DPR 1, `waitForSelector: html[data-br-capture]` with a **6 s** timeout plus `bestAttempt`
+(this timeout **is the cap**), `actionTimeout` 10 s, and a WebP at quality 82. `/snapshot`
+returns the screenshot and the page's HTML from the same session, so the capture page
+reports on `<html>`:
+
+| Attribute | Set by | Meaning |
+|---|---|---|
+| `data-br-capture-page` | the gate's HTML (`CAPTURE_HTML`) | the gate served the page (absent: a 403 or no page → `shell-refused`) |
+| `data-br-capture="ready"` | `buildRoulette.ready()` | shoot now (the selector matches at once) |
+| `data-br-capture="failed"` + `data-br-capture-error` | `capture.js` when it cannot run the build | render failure → client thumbnail |
+| `data-br-paint` = `content` / `empty` | `capture.js` every 250 ms and at the ready signal (`paint.ts`) | `empty`: nothing in the build's frame paints → blank → client thumbnail |
+
+The function cannot decode WebP (no sharp in Deno), so `data-br-paint` takes over from the
+worker's pixel check. It looks for visible elements in the viewport that paint: text,
+replaced elements, a background, a border, a shadow, an outline or a pseudo-element with
+content. A background image on `html`/`body` also counts; a plain background colour does
+not (a single flat colour is blank, as with pixels). Like the console hints, the attributes
+come from a realm the build controls. That is acceptable for the same reason: a build can
+only make its own capture earlier, blank or thumbnail-based.
+
+**Compared with `PlaywrightRenderer`:**
+
+- no "network idle + 2 s" (a build without the ready signal waits the full 6 s);
+- no navigation guard (the CSP `sandbox` still blocks popups, modals and downloads);
+- blank detection by DOM rather than pixels.
+
+Locally and in tests, `apps/capture-worker/src/stand-in.ts` implements that REST subset on
+`PlaywrightRenderer.session()` with the guard off, like the real service.
 
 ### Watchdog load grace (T-027)
 

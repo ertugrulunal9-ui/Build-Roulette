@@ -24,7 +24,7 @@ const SERVICES_LOG = (process.env['BR_SERVICES_LOG'] ??= fileURLToPath(
 export default defineConfig({
   testDir: './e2e',
   testMatch: /multiplayer.*\.spec\.ts$/,
-  // One stack, one capture worker, one job queue: run serially.
+  // One stack, one job queue: run serially.
   workers: 1,
   fullyParallel: false,
   timeout: 420_000,

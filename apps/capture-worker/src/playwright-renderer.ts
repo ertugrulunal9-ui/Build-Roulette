@@ -13,6 +13,9 @@
  * - dialogs are dismissed and downloads refused;
  * - a hard timer closes the context after `timeoutMs`, which also ends a page stuck in an
  *   infinite loop (its evaluate/screenshot calls reject).
+ *
+ * `session()` is that context on its own: `render()` runs the worker's capture in it, and the
+ * Browser Rendering stand-in (stand-in.ts, T-034) runs the REST API's steps in it.
  */
 import {
   chromium,
@@ -37,6 +40,31 @@ export interface PlaywrightRendererOptions {
   settleMs?: number;
   launch?: LaunchOptions;
   log?: Logger;
+}
+
+export interface SessionRequest {
+  /** The URL the navigation guard lets through (the capture page). */
+  url: string;
+  viewport: { width: number; height: number };
+  /** Hard limit: the context is closed at this point, whatever the page does. */
+  timeoutMs: number;
+  signal?: AbortSignal | undefined;
+  /** Default true. The Browser Rendering stand-in turns it off, like the real REST API. */
+  navigationGuard?: boolean;
+}
+
+export interface CaptureSession {
+  page: Page;
+  context: BrowserContext;
+  /** `Date.now()` when the session started. */
+  started: number;
+  notes: string[];
+  blocked: { navigations: number; popups: number };
+  /** Ms left before the hard timeout (at least 1). */
+  remaining(): number;
+  /** Why the session was stopped (hard timeout, abort), or null while it runs. */
+  stopped(): 'timeout' | 'aborted' | null;
+  note(text: string): void;
 }
 
 /** Origin only: never log full URLs (signed URLs carry tokens). */
@@ -112,10 +140,15 @@ export class PlaywrightRenderer implements Renderer {
     if (b) await (await b.catch(() => null))?.close();
   }
 
-  async render(req: RenderRequest): Promise<RenderResult> {
+  /**
+   * Runs `fn` in a fresh browser context with the protections above, then tears it down.
+   * Errors become `RenderError`s: `timeout` / `aborted` when the hard timer or the signal
+   * ended the session, `shell-refused` when the capture page answered non-200, otherwise
+   * `timeout`, `screenshot` or `navigation` from Playwright's error.
+   */
+  async session<T>(req: SessionRequest, fn: (s: CaptureSession) => Promise<T>): Promise<T> {
     const started = Date.now();
     const deadline = started + req.timeoutMs;
-    const remaining = () => Math.max(1, deadline - Date.now());
     if (req.signal?.aborted) throw new RenderError('aborted', 'aborted before start');
 
     let browser: Browser;
@@ -166,29 +199,31 @@ export class PlaywrightRenderer implements Renderer {
 
     try {
       const page: Page = await context.newPage();
-      let navigated = false;
-      await context.route('**/*', async (route, request) => {
-        if (!request.isNavigationRequest()) {
-          await route.continue();
-          return;
-        }
-        let isMain = false;
-        try {
-          isMain = request.frame() === page.mainFrame();
-        } catch {
-          // a request without a frame (e.g. from a popup that is already gone)
-        }
-        if (isMain && !navigated && request.url() === req.url) {
-          navigated = true;
-          await route.continue();
-          return;
-        }
-        blocked.navigations++;
-        note(`blocked navigation to ${originOf(request.url())}`);
-        // A 204 answer cancels a navigation and leaves the current document in place
-        // (HTML spec), so the capture page stays; aborting would commit an error page.
-        await route.fulfill({ status: 204, body: '' });
-      });
+      if (req.navigationGuard !== false) {
+        let navigated = false;
+        await context.route('**/*', async (route, request) => {
+          if (!request.isNavigationRequest()) {
+            await route.continue();
+            return;
+          }
+          let isMain = false;
+          try {
+            isMain = request.frame() === page.mainFrame();
+          } catch {
+            // a request without a frame (e.g. from a popup that is already gone)
+          }
+          if (isMain && !navigated && request.url() === req.url) {
+            navigated = true;
+            await route.continue();
+            return;
+          }
+          blocked.navigations++;
+          note(`blocked navigation to ${originOf(request.url())}`);
+          // A 204 answer cancels a navigation and leaves the current document in place
+          // (HTML spec), so the capture page stays; aborting would commit an error page.
+          await route.fulfill({ status: 204, body: '' });
+        });
+      }
       context.on('page', (p) => {
         if (p === page) return;
         blocked.popups++;
@@ -197,7 +232,51 @@ export class PlaywrightRenderer implements Renderer {
       page.on('dialog', (d) => {
         void d.dismiss().catch(() => undefined);
       });
+      page.on('response', (r) => {
+        const request = r.request();
+        if (request.isNavigationRequest() && request.frame() === page.mainFrame()) {
+          nav.status ??= r.status();
+        }
+      });
 
+      return await fn({
+        page,
+        context,
+        started,
+        notes,
+        blocked,
+        remaining: () => Math.max(1, deadline - Date.now()),
+        stopped: () => stop.reason,
+        note,
+      });
+    } catch (e) {
+      if (stop.reason) {
+        throw new RenderError(
+          stop.reason,
+          `capture stopped after ${String(Date.now() - started)} ms`,
+        );
+      }
+      if (e instanceof RenderError) throw e;
+      // Chromium turns an empty 4xx page into net::ERR_HTTP_RESPONSE_CODE_FAILURE.
+      if (nav.status !== null && nav.status !== 200) {
+        throw new RenderError('shell-refused', `the capture page answered HTTP ${nav.status}`);
+      }
+      const message = redactUrls(
+        e instanceof Error ? (e.message.split('\n')[0] ?? e.message) : String(e),
+      );
+      if (e instanceof Error && e.name === 'TimeoutError')
+        throw new RenderError('timeout', message);
+      throw new RenderError(/screenshot/i.test(message) ? 'screenshot' : 'navigation', message);
+    } finally {
+      clearTimeout(timer);
+      req.signal?.removeEventListener('abort', onAbort);
+      closeContext();
+    }
+  }
+
+  async render(req: RenderRequest): Promise<RenderResult> {
+    return this.session(req, async (s) => {
+      const { page } = s;
       const tracker = new ReadinessTracker(this.readiness);
       const pageState = { failed: null as string | null };
       page.on('request', (r) => {
@@ -215,19 +294,13 @@ export class PlaywrightRenderer implements Renderer {
         const hint = text.slice(CAPTURE_HINT_PREFIX.length);
         if (hint === 'ready') tracker.readySignal();
         else if (hint.startsWith('failed')) pageState.failed = hint;
-        note(redactUrls(hint));
+        s.note(redactUrls(hint));
       });
       page.on('pageerror', (e) => {
-        note(`pageerror: ${redactUrls(e.message)}`);
-      });
-      page.on('response', (r) => {
-        const request = r.request();
-        if (request.isNavigationRequest() && request.frame() === page.mainFrame()) {
-          nav.status ??= r.status();
-        }
+        s.note(`pageerror: ${redactUrls(e.message)}`);
       });
 
-      const response = await page.goto(req.url, { waitUntil: 'load', timeout: remaining() });
+      const response = await page.goto(req.url, { waitUntil: 'load', timeout: s.remaining() });
       if (!response) throw new RenderError('navigation', 'no response for the capture page');
       if (response.status() !== 200) {
         throw new RenderError(
@@ -241,7 +314,8 @@ export class PlaywrightRenderer implements Renderer {
       while (!decision) {
         if (pageState.failed !== null)
           throw new RenderError('navigation', `capture page: ${pageState.failed}`);
-        if (stop.reason) throw new RenderError(stop.reason, 'stopped while waiting');
+        const stopped = s.stopped();
+        if (stopped) throw new RenderError(stopped, 'stopped while waiting');
         await sleep(POLL_MS);
         decision = tracker.decide(Date.now());
       }
@@ -268,7 +342,7 @@ export class PlaywrightRenderer implements Renderer {
               .catch(() => undefined),
           ),
         ),
-        sleep(Math.min(this.settleMs, remaining())),
+        sleep(Math.min(this.settleMs, s.remaining())),
       ]);
 
       if (page.url() !== req.url) {
@@ -276,7 +350,7 @@ export class PlaywrightRenderer implements Renderer {
       }
       const png = await page.screenshot({
         type: 'png',
-        timeout: remaining(),
+        timeout: s.remaining(),
         animations: 'allow',
         caret: 'initial',
       });
@@ -284,34 +358,13 @@ export class PlaywrightRenderer implements Renderer {
         throw new RenderError('navigation', 'the page left the capture URL during the screenshot');
       }
       return {
-        png: new Uint8Array(png),
+        image: new Uint8Array(png),
+        format: 'png',
         ready: { reason: decision.reason, afterMs: decision.afterMs },
-        durationMs: Date.now() - started,
-        blocked,
-        notes,
+        durationMs: Date.now() - s.started,
+        blocked: s.blocked,
+        notes: s.notes,
       };
-    } catch (e) {
-      if (stop.reason) {
-        throw new RenderError(
-          stop.reason,
-          `capture stopped after ${String(Date.now() - started)} ms`,
-        );
-      }
-      if (e instanceof RenderError) throw e;
-      // Chromium turns an empty 4xx page into net::ERR_HTTP_RESPONSE_CODE_FAILURE.
-      if (nav.status !== null && nav.status !== 200) {
-        throw new RenderError('shell-refused', `the capture page answered HTTP ${nav.status}`);
-      }
-      const message = redactUrls(
-        e instanceof Error ? (e.message.split('\n')[0] ?? e.message) : String(e),
-      );
-      if (e instanceof Error && e.name === 'TimeoutError')
-        throw new RenderError('timeout', message);
-      throw new RenderError(/screenshot/i.test(message) ? 'screenshot' : 'navigation', message);
-    } finally {
-      clearTimeout(timer);
-      req.signal?.removeEventListener('abort', onAbort);
-      closeContext();
-    }
+    });
   }
 }

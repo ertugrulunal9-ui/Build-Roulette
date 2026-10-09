@@ -10,6 +10,7 @@
  */
 import { disabledReporter, type ErrorReporter } from '@br/telemetry';
 import { loadConfig, describeConfig, ConfigError } from './config';
+import { sharpImaging } from './image';
 import { createLogger, errorMessage } from './log';
 import { PlaywrightRenderer } from './playwright-renderer';
 import { reportLogErrors, workerReporter } from './reporting';
@@ -38,7 +39,7 @@ async function main(): Promise<number> {
   const backend = new SupabaseBackend({ url: config.supabaseUrl, serviceKey: config.serviceKey });
   const renderer = new PlaywrightRenderer({ log });
   const runner = new WorkerRunner(
-    { backend, renderer, capture: config.capture, log },
+    { backend, renderer, imaging: sharpImaging, capture: config.capture, log },
     config.runner,
   );
   log.info('worker.config', describeConfig(config));

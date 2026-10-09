@@ -220,12 +220,24 @@ export class FakeRenderer implements Renderer {
 
 export function rendered(png: Uint8Array): RenderResult {
   return {
-    png,
+    image: png,
+    format: 'png',
     ready: { reason: 'signal', afterMs: 120 },
     durationMs: 900,
     blocked: { navigations: 0, popups: 0 },
     notes: [],
   };
+}
+
+/** The URL of a `fetch` call's input (fake fetch implementations). */
+export function urlOf(input: string | URL | Request): string {
+  if (typeof input === 'string') return input;
+  return input instanceof URL ? input.href : input.url;
+}
+
+/** The body of a `fetch` call when it is a string (JSON requests). */
+export function bodyText(init: RequestInit | undefined): string {
+  return typeof init?.body === 'string' ? init.body : '';
 }
 
 interface Rgb {

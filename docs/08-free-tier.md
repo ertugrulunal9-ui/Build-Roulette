@@ -4,8 +4,9 @@ The user decided on 2026-10-09 to deploy on free plans only (docs/BOARD.md, T-03
 This document collects what that takes. §1 is the web app on Workers Free (T-033: it does
 not fit); §2 is what replaced it, the web app as a static site on Cloudflare Pages (T-037);
 §3 is the one piece of edge code left, the per-battle link previews (T-038: a Pages Function
-that fits); §4 is the package CDN, the public esm.sh instead of our own (T-035); the other
-free-tier tasks add their own sections.
+that fits); §4 is the package CDN, the public esm.sh instead of our own (T-035); §5 is the
+screenshots and the delete jobs without an always-on server (T-034: a Supabase Edge
+Function and Browser Rendering's REST API); the other free-tier tasks add their own sections.
 
 ## 1. Web app on Workers Free (T-033)
 
@@ -621,8 +622,8 @@ until the takedown job deletes it (seconds), plus up to 5 minutes in Storage's C
 ### 3.5 Limits and failure modes
 
 - **Requests:** every view of `/battles/{id}` (people and crawlers) is one Function request,
-  counted in Workers Free's **100,000 a day**, shared with every Worker of the account (T-034's
-  cron Worker included) and reset at 00:00 UTC. Static requests are not counted
+  counted in Workers Free's **100,000 a day**, shared with every Worker of the account (T-034
+  ended up with no Worker: its jobs run as a Supabase Edge Function, §5) and reset at 00:00 UTC. Static requests are not counted
   (`_routes.json`). Past the allowance, Pages Functions **fail open by default**: the request
   skips the Function and gets the static shell through `_redirects`, i.e. the page as in
   T-037 (the generic preview, 200 for an unknown battle). "Fail closed" (Error 1027) is the
@@ -718,4 +719,219 @@ pnpm --filter @br/runtime test:e2e     # render + CDN outage again against an es
 pnpm --filter @br/pkg-cdn compat       # our CDN: 56/57, contract ok
 # GitHub Actions → CI → Run workflow: compat=true, compat_cdn=https://esm.sh (chaos and
 # loadtest off) → artifact compat-results/RESULTS-esm.sh.md
+```
+
+## 5. Screenshots and jobs (T-034)
+
+**Question:** the capture worker (`apps/capture-worker`: Playwright Chromium + sharp) is an
+always-on Node process that claims capture, destroy and takedown jobs. No free host runs one.
+What runs those jobs on free plans?
+
+Sources are marked like §1: **confirmed** (Cloudflare's OpenAPI schema in the official
+`cloudflare` npm SDK 7.3.0 of 2026-10-03; Supabase's and Cloudflare's docs as found by search on
+2026-10-09, since this container cannot open either site), **measured** (here), or
+**assumed**.
+
+### 5.1 Verdict
+
+**A Supabase Edge Function, started by pg_cron, rendering through Cloudflare Browser
+Rendering's REST API.** No server, no Worker. Production uses it; the Node worker stays as the
+self-hosted (paid) option against the same job contract (§5.6).
+
+- The function `supabase/functions/jobs` processes all three kinds. Destroy and takedown are
+  Storage API calls, and capture is one REST call per screenshot. Its code is
+  `apps/capture-worker/src/edge`: the worker's capture, destroy and takedown jobs, unchanged,
+  with a REST renderer and a WebP path without sharp. esbuild bundles it into
+  `supabase/functions/jobs/core.js` (60 KiB, committed; a unit test fails when it is stale).
+- A **Cloudflare cron Worker** with the browser binding was the alternative. It would face
+  Workers Free's 10 ms CPU per invocation (§1), and a capture's own work (signing, JSON,
+  base64, Storage calls) has no reason to fit that. Nothing in the REST design needed it.
+
+### 5.2 Who calls what
+
+```
+pg_cron 'br-jobs-run' (every minute)
+  └─ private.run_jobs_function()            only when a job is due; URL + cron secret from Vault
+       └─ pg_net POST https://<ref>.supabase.co/functions/v1/jobs   x-br-cron-secret: …
+            └─ the function: 202 at once, then in the background (EdgeRuntime.waitUntil):
+                 claim_job round robin (capture, destroy, takedown) for ≤ 50 s
+                 capture:  browser_budget_reserve ─► Browser Rendering POST /snapshot
+                           (the signed capture URL; Cloudflare's browser opens the shell's
+                           capture page, which loads the bundle from Storage and React from
+                           esm.sh) ─► WebP ─► screenshots/{battle}/{build}.webp
+                           ─► complete_capture ─► browser_budget_settle
+                 destroy / takedown: Storage list + delete ─► complete_destroy / complete_takedown
+```
+
+- **Secrets.** The function's: `JOBS_CRON_SECRET`, `CAPTURE_HMAC_SECRET` (the shell's capture
+  gate secret), `BROWSER_RENDERING_ACCOUNT_ID`, `BROWSER_RENDERING_API_TOKEN`, plus
+  `CAPTURE_SHELL_URL` and `PKG_CDN_URL` (`supabase secrets set`; `SUPABASE_URL` and
+  `SUPABASE_SERVICE_ROLE_KEY` come from Supabase). The database's: the function URL and the
+  same cron secret, in **Vault** (`br_jobs_function_url`, `br_jobs_cron_secret`). Steps:
+  `apps/web/DEPLOY.md` "Screenshots and jobs".
+- **Why a cron secret in Vault, not the service key in SQL:** pg_cron has to send something
+  that the public function URL checks. Vault keeps it encrypted at rest and out of the
+  migration, `cron.job` and `cron.job_run_details`, which is Supabase's documented pattern.
+  The cron secret is a narrow capability: it starts a run, and a run only processes jobs that
+  are due anyway, so a leak costs invocations, never data. The service key would expose the
+  whole database wherever SQL or request logs show it. The function compares the header in
+  constant time; `verify_jwt = false` for this one function (`supabase/config.toml`). One
+  place the secret does appear in clear: pg_net keeps each request, header included, in
+  `net.http_request_queue` until its background worker sends it (about a second). Supabase's
+  pg_net grants that table to every role, but the Data API exposes only `public` and
+  `graphql_public`, so players cannot read it (measured locally: the grants, and the
+  `config.toml` schemas).
+- **Wall time.** New jobs are claimed for 50 s (`JOBS_RUN_WINDOW_MS`), so runs rarely overlap
+  the next minute's. When they do, `claim_job`'s SKIP LOCKED keeps them apart and the budget
+  is atomic. A capture job ends within 72 s (35 s REST timeout, pacing, one short 429 wait,
+  Storage), inside its 2-minute lease. At 140 s (`JOBS_RUN_HARD_STOP_MS`), under the free
+  plan's 150 s, jobs still in flight are aborted and handed back with `fail_job`. If the
+  platform kills the run first (wall clock, the 2 s CPU limit, a deploy), the lease expires
+  and the next run claims the job again. The integration test kills the runtime mid-capture
+  to show it.
+
+### 5.3 The capture over REST
+
+One `POST /accounts/{id}/browser-rendering/snapshot?cacheTTL=0` (confirmed: the endpoint
+and every field below are in Cloudflare's schema):
+
+| Field | Value | Why |
+|---|---|---|
+| `viewport` | 1280×800, `deviceScaleFactor` 1 | capture mode (docs/03 §3.7) |
+| `gotoOptions` | `waitUntil: 'load'`, 10 s | the capture page itself; the build loads after |
+| `waitForSelector` | `html[data-br-capture]`, **6 s** | the build's ready signal (or a page failure); the timeout **is the 6 s cap** |
+| `bestAttempt` | `true` | the cap passing is not an error: shoot anyway ("proceed when awaited events fail or time out") |
+| `actionTimeout` | 10 s | a frozen page cannot hold the screenshot forever |
+| `screenshotOptions` | `type: 'webp'`, `quality: 82` | the worker's quality; nothing to encode, so no sharp |
+
+**Why `/snapshot`, not `/screenshot`:** it takes the same options and returns the
+screenshot **and the capture page's HTML from the same browser session**. The function
+cannot decode WebP (no sharp in Deno), so it cannot look at pixels for the worker's blank
+check. Instead the capture page reports on its `<html>` element: `data-br-capture-page`
+(served by the gate, not a 403), `data-br-capture` (`ready` / `failed`, with
+`data-br-capture-error`), and `data-br-paint` (`content` / `empty`: does anything in the build's
+frame paint? `apps/sandbox-shell/src/paint.ts`). An `empty` frame (the build threw before
+rendering) or a failed page falls back to the client thumbnail, as the worker does. The
+attributes are untrusted, but a build can only change its own screenshot with them.
+
+**What the size can't tell (measured):** Chromium's WebP at quality 82 is 2,364 bytes for a
+blank 1280×800 page and 2,512 bytes for a full-page gradient (max channel std dev 14.7, not
+blank), so the size cannot replace the pixel check.
+
+**The client thumbnail without sharp:** the worker decodes and re-encodes it. The function
+rebuilds its container instead (`src/webp.ts`): one still image, lossy or lossless, keeping
+alpha. It drops EXIF, XMP, ICC and unknown chunks and refuses animations and images larger
+than 1280×800 (thumbnails are 640×400). A broken bitstream fails to decode like any corrupt
+image.
+
+**Differences from the Playwright renderer (accepted):**
+
+- **No "network idle + 2 s" rule:** the REST API can't express "first of". The starter
+  templates call `buildRoulette.ready()` after the first paint; a build that never calls it
+  waits the full 6 s cap.
+- **No navigation guard:** the capture page's CSP sandbox still blocks popups, modals and
+  downloads. A build that navigates its own page gets a shot of what it navigated to, which it
+  could have painted itself.
+- **Blank check by DOM, not pixels:** see above. White-on-white or a blank canvas counts as
+  content.
+
+### 5.4 The daily budget
+
+Workers Free includes **10 browser-minutes a day** (confirmed, Cloudflare's limits page as
+found by search; the docs also call the REST endpoints "Quick Actions" and the product
+"Browser Run"). The function stops at **9.5 min** (`BROWSER_BUDGET_MS_PER_DAY` = 570,000):
+
+- `private.browser_budget` keeps one row per **UTC day**: used, reserved, renders, refusals,
+  429s.
+- Before a render, `browser_budget_reserve(20000, 570000)` is granted only while used +
+  reserved + 20 s ≤ 9.5 min. Afterwards `browser_budget_settle` releases the 20 s and adds
+  what the render was billed.
+- **Billed time:** the `X-Browser-Ms-Used` response header when present (reported by
+  Cloudflare since 2025-08 per third-party guides; **not in the API schema, so assumed**).
+  Otherwise the call's wall time, which is at least the browser time.
+- A reservation not settled within 2 minutes (the run died) counts as used.
+- **Spent:** captures fall back to the client thumbnail at once (`capture_status = fallback`;
+  without a thumbnail the job retries with backoff and fails on the 5th attempt, as before).
+  Everything else is unchanged: destroys and takedowns need no browser, and the capture
+  deadline (10 min) and the destroy gate apply as before.
+
+**Rate limits:** REST requests on Workers Free are limited to **6 a minute, enforced as one
+every 10 s** (confirmed, same source). The function spaces its calls 10 s apart
+(`BROWSER_RENDERING_MIN_INTERVAL_MS`). A 429 with `Retry-After` ≤ 12 s is waited out once in
+place. Otherwise the job is handed back (`fail_job`, 10 s then 20 s backoff) and falls back to
+the thumbnail on its 3rd attempt (`SERVICE_FALLBACK_ATTEMPT`), so an outage costs about 2–3
+minutes, well inside the capture deadline. The same holds for 5xx answers, network errors, no
+answer, and a refused token (logged as an error). Other free limits (3 concurrent browsers,
+60 s per browser): one capture at a time per run, at most ~35 s.
+
+**Budget math.**
+
+- Browser time per capture, **measured** with the local stand-in (local Chromium, no
+  network): **0.9 s** for a React build that calls `ready()` in a warm browser (the solo
+  e2e), **3.1 s** for the same kind of build when the capture also starts the browser (the
+  first capture of `test:function`; Cloudflare starts a browser for every REST call), and
+  **6.5–6.6 s** for one that never paints (the 6 s cap; the solo CDN-outage e2e and
+  `test:function`).
+- **Assumed** for Cloudflare: about **3 s** with the ready signal (browser start + page + React
+  from esm.sh + shot) and about **8–9 s** without it (the 6 s cap). Check `used_ms / renders`
+  in `private.browser_budget` after the first days (runbook below).
+
+| Seconds per capture | Captures a day (570 s) | Solo battles a day | 4-player battles | 8-player battles |
+|---|---|---|---|---|
+| 3 (assumed, ready signal) | 190 | 190 | 47 | 23 |
+| 5 | 114 | 114 | 28 | 14 |
+| 9 (no ready signal: 6 s cap) | 63 | 63 | 15 | 7 |
+
+Beyond that, every screenshot of the day is the client thumbnail (640×400, from the player's
+own preview). Battles still finish on time. The pacing (one call per 10 s) caps a burst at
+about 5 captures a minute, so an 8-player battle's screenshots take about 2 minutes, inside
+the 10-minute capture deadline (RESULTS waits for them as before).
+
+**Supabase Free** (confirmed by search: 500,000 Edge Function invocations a month, 2 s CPU per
+request, 150 s wall clock, 256 MB): pg_cron calls the function only in minutes with a due job,
+so at most 43,200 invocations a month (8.6%). A run's CPU is JSON, base64 and HMAC over
+kilobytes. The local Edge Runtime enforces the same 2 s CPU limit, and every integration run
+stayed under it (not measured in production).
+
+### 5.5 Local and test path
+
+`apps/capture-worker/src/stand-in.ts` is a stand-in for the REST API. It implements the
+`/snapshot` subset above on Playwright Chromium (`PlaywrightRenderer.session()`, with no
+navigation guard, like the real service). Each step works as in Puppeteer (goto, wait for
+the selector, `bestAttempt`, the CDP WebP screenshot, the page's HTML), and it refuses any
+other field. `BROWSER_RENDERING_API_URL` points the function at it. Test controls inject
+429s, 5xx and hangs; `minIntervalMs` emulates the free plan's fill rate. Its page-side error
+statuses and `X-Browser-Ms-Used` (wall time here) are guesses where Cloudflare documents
+nothing.
+
+- **The e2e suites** (solo, moderation, rooms, chaos, telemetry) now run the production path:
+  `apps/web/scripts/solo-services.ts` serves the function (`supabase functions serve`), starts
+  the stand-in, puts the function URL (`http://kong:8000/…`) and a fresh cron secret in Vault,
+  and schedules `e2e-jobs-run` every 2 s next to the production `br-jobs-run`. All of that is
+  undone on stop. `--worker` (or `BR_JOBS=worker`) runs the Node worker instead.
+- **Integration** (`pnpm --filter @br/capture-worker test:function`): function → stand-in →
+  shell capture page → Storage, with 11 tests (§5.7).
+- The stack must run **with the Edge Runtime**: drop `edge-runtime` from `supabase start -x`.
+
+### 5.6 Which one production uses, and how to switch
+
+- **Production (free plan): the function.** After `supabase db push`, `supabase functions
+  deploy jobs` and the secrets (DEPLOY.md), pg_cron starts it every minute.
+- **The self-hosted worker** (`apps/capture-worker`, a paid or own host): run it with its
+  `.env` (README). To switch, stop the trigger with
+  `select cron.unschedule('br-jobs-run');` (or delete the Vault secret
+  `br_jobs_cron_secret`); to switch back,
+  `select cron.schedule('br-jobs-run', '* * * * *', 'select private.run_jobs_function()');`.
+  Both can also run at once: `claim_job` never hands a job to two of them. The worker renders
+  with its own Chromium, so it ignores the daily budget.
+
+### 5.7 Verification
+
+```sh
+pnpm --filter @br/capture-worker test             # unit: webp, browser-rendering, capture-function, budget, edge, function-bundle, stand-in
+pnpm --filter @br/sandbox-shell test              # paint.test: the capture page's paint check
+supabase db reset && supabase test db             # 26_jobs_function: budget, trigger, grants (+ 04, 09)
+pnpm --filter @br/capture-worker test:function    # the function in the local Edge Runtime: 11 tests
+pnpm --filter @br/web test:e2e:solo               # and :moderation, :multi: with the function in place of the worker
+pnpm --filter @br/capture-worker test:integration # the self-hosted worker, unchanged
 ```

@@ -13,8 +13,9 @@
  * - `db.json`: a snapshot of every battle and room created during the test (battles, their
  *   events with timestamps, players, builds, votes per voter, room members with
  *   last_seen_at, the job queue) and the pg_cron runs that failed or were slow meanwhile;
- * - `services.log`: what the e2e services (capture worker, shell) printed during the test
- *   (scripts/solo-services.ts writes it with `BR_SERVICES_LOG`);
+ * - `services.log`: what the e2e services (the jobs function and its Browser Rendering
+ *   stand-in, the shell) printed during the test (scripts/solo-services.ts writes it with
+ *   `BR_SERVICES_LOG`);
  * - `docker-*.log`: the Supabase containers' logs (Realtime, Postgres, Auth) during the test.
  *
  * On CI the job uploads `test-results/` (the configs' output directory) on failure.

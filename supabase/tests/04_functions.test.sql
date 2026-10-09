@@ -106,7 +106,10 @@ from unnest(array[
   'public.complete_takedown(uuid)',
   'public.sweep_deadlines()',
   'public.sweep_ttl()',
-  'public.advance_battle(uuid, integer)']) as f;
+  'public.advance_battle(uuid, integer)',
+  -- the jobs Edge Function's Browser Rendering budget (T-034)
+  'public.browser_budget_reserve(integer, integer)',
+  'public.browser_budget_settle(date, integer, integer, boolean)']) as f;
 
 select is_empty(
   $$ select signature from our_functions

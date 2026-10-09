@@ -1,7 +1,9 @@
 /**
- * The polling loops. Supabase has no push to the workers yet (docs/05 §5.7: no pg_net), so
- * each loop calls `claim_job` and, when there is nothing to do, sleeps with exponential
- * backoff (idleMinMs → idleMaxMs, reset by the next job).
+ * The self-hosted worker's polling loops: each loop calls `claim_job` and, when there is
+ * nothing to do, sleeps with exponential backoff (idleMinMs → idleMaxMs, reset by the next
+ * job). The `jobs` Edge Function (T-034, edge/run.ts) has no loops of its own: pg_cron starts
+ * a run every minute, which claims jobs and calls `runJob` here until the queue is empty or
+ * its time is up.
  *
  * - `captureConcurrency` capture loops (default 1), one destroy loop and one takedown loop
  *   (T-024: moderation takedowns delete a build's screenshot).
@@ -13,9 +15,11 @@
  *   is retried after its backoff instead of waiting for the lease to expire.
  */
 import type { Backend, Job, JobKind } from './backend';
+import type { CaptureBudget } from './budget';
 import { processCaptureJob, type CaptureConfig, type CaptureOutcome } from './capture-job';
 import { processDestroyJob, type DestroyOutcome } from './destroy-job';
 import { processTakedownJob, type TakedownOutcome } from './takedown-job';
+import type { CaptureImaging } from './imaging';
 import { errorMessage, type Logger } from './log';
 import type { Renderer } from './renderer';
 
@@ -40,6 +44,10 @@ export const DEFAULT_RUNNER_OPTIONS: RunnerOptions = {
 export interface RunnerDeps {
   backend: Backend;
   renderer: Renderer;
+  /** `sharpImaging` (worker) or `webpImaging` (Edge Function). */
+  imaging: CaptureImaging;
+  /** The daily Browser Rendering budget (Edge Function only). */
+  budget?: CaptureBudget | undefined;
   capture: CaptureConfig;
   log: Logger;
 }
@@ -109,6 +117,14 @@ export class WorkerRunner {
   }
 
   /**
+   * Aborts every job in flight now; each records the abort with `fail_job` and is retried
+   * after its backoff. The `jobs` Edge Function calls this before its wall-clock limit.
+   */
+  abortInflight(reason: string): void {
+    for (const f of this.inflight) f.ctrl.abort(new Error(reason));
+  }
+
+  /**
    * Processes jobs of one kind until the queue has none ready (or `max` were processed).
    * For `--once` runs and tests; independent of `start()`.
    */
@@ -140,6 +156,8 @@ export class WorkerRunner {
               {
                 backend: this.deps.backend,
                 renderer: this.deps.renderer,
+                imaging: this.deps.imaging,
+                budget: this.deps.budget,
                 config: this.deps.capture,
                 log: this.deps.log,
               },

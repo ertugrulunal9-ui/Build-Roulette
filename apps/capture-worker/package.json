@@ -3,19 +3,22 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Capture and destroy workers: claims jobs from Supabase, renders shipped builds in the signed shell capture page, stores WebP screenshots, deletes ephemeral build files.",
+  "description": "Capture, destroy and takedown jobs: the self-hosted worker (Playwright + sharp), and the code of the jobs Edge Function (Browser Rendering REST, T-034) with its local Browser Rendering stand-in.",
   "exports": {
     ".": "./src/index.ts"
   },
   "scripts": {
-    "build": "esbuild src/main.ts --bundle --platform=node --target=node22 --format=esm --external:sharp --external:playwright-core --outfile=dist/main.js --log-level=warning",
+    "build": "esbuild src/main.ts --bundle --platform=node --target=node22 --format=esm --external:sharp --external:playwright-core --outfile=dist/main.js --log-level=warning && tsx scripts/build-function.ts",
+    "build:function": "tsx scripts/build-function.ts",
     "start": "node dist/main.js",
     "dev": "tsx src/main.ts",
     "dev:shell": "tsx scripts/local-shell.ts",
+    "stand-in": "tsx scripts/browser-rendering-stand-in.ts",
     "lint": "eslint . --max-warnings=0",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:integration": "vitest run --config vitest.integration.config.ts"
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "test:function": "vitest run --config vitest.function.config.ts"
   },
   "dependencies": {
     "@br/runtime": "workspace:*",

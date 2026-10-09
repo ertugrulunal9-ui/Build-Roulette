@@ -1,8 +1,11 @@
 /**
- * Image handling: blank detection (pure, unit tested), and WebP encoding with `sharp`
- * (prebuilt libvips from npm; no build step).
+ * Image handling for the self-hosted worker: blank detection (pure, unit tested), and WebP
+ * encoding with `sharp` (prebuilt libvips from npm; no build step). `sharpImaging` is the
+ * worker's `CaptureImaging` (imaging.ts); the `jobs` Edge Function uses `webpImaging`
+ * instead, since sharp does not run in Deno.
  */
 import sharp from 'sharp';
+import { MAX_SCREENSHOT_BYTES, SCREENSHOT_WEBP_QUALITY, type CaptureImaging } from './imaging';
 
 export interface RawImage {
   data: Uint8Array;
@@ -89,8 +92,6 @@ export async function decodeRaw(input: Uint8Array): Promise<RawImage> {
 
 /** Decompression-bomb guard for images we did not make (client thumbnails). */
 export const MAX_INPUT_PIXELS = 4096 * 4096;
-/** The `screenshots` bucket's file size limit. */
-export const MAX_SCREENSHOT_BYTES = 2 * 1024 * 1024;
 
 /**
  * Encodes to WebP, stepping the quality down until it fits the bucket limit. Metadata is
@@ -100,7 +101,7 @@ export async function encodeWebp(
   input: Uint8Array,
   opts: { fit?: { width: number; height: number } } = {},
 ): Promise<Uint8Array> {
-  for (const quality of [82, 70, 55, 40]) {
+  for (const quality of [SCREENSHOT_WEBP_QUALITY, 70, 55, 40]) {
     let img = sharp(input, { limitInputPixels: MAX_INPUT_PIXELS }).removeAlpha();
     if (opts.fit) {
       img = img.resize({
@@ -115,3 +116,23 @@ export async function encodeWebp(
   }
   throw new Error('the screenshot does not fit the bucket limit even at low quality');
 }
+
+/**
+ * The worker's imaging: the render's pixels decide whether it is blank (`isBlank`), then
+ * WebP; a thumbnail is decoded, scaled to fit and re-encoded.
+ */
+export const sharpImaging: CaptureImaging = {
+  async screenshot(render) {
+    const stats = pixelStats(await decodeRaw(render.image));
+    if (isBlank(stats)) {
+      return {
+        ok: false,
+        reason: `blank render (max channel std dev ${stats.maxStdDev.toFixed(2)})`,
+      };
+    }
+    return { ok: true, webp: await encodeWebp(render.image) };
+  },
+  thumbnail(bytes, fit) {
+    return encodeWebp(bytes, { fit });
+  },
+};

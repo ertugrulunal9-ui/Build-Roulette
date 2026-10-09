@@ -38,7 +38,9 @@ export function createLogger(
   const write =
     opts.write ??
     ((line: string) => {
-      process.stdout.write(`${line}\n`);
+      // Node: stdout. Elsewhere (the Edge Function passes its own `write`): the console.
+      if (typeof process === 'undefined') console.log(line);
+      else process.stdout.write(`${line}\n`);
     });
   const now = opts.now ?? (() => new Date());
   const base = opts.base ?? {};

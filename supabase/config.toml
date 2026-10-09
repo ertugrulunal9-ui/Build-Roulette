@@ -36,6 +36,21 @@ port = 54323
 enabled = true
 file_size_limit = "50MiB"
 
+# Edge Functions (T-034: the `jobs` function processes captures, destroys and takedowns).
+# Locally the e2e and the function tests serve it with `supabase functions serve`, so drop
+# `edge-runtime` from `supabase start -x …` (supabase/README.md "Jobs").
+[edge_runtime]
+enabled = true
+# Background tasks (EdgeRuntime.waitUntil: the function answers pg_net at once and keeps
+# working) need per_worker; the oneshot policy ends the worker with the response.
+policy = "per_worker"
+
+[functions.jobs]
+# pg_cron calls it with the x-br-cron-secret header, not a user JWT. The function checks
+# the secret itself (supabase/functions/jobs/index.ts). Applies to `supabase functions
+# deploy jobs` too.
+verify_jwt = false
+
 [auth]
 enabled = true
 site_url = "http://127.0.0.1:3000"

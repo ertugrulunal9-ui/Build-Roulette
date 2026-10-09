@@ -21,9 +21,11 @@ export const CAPTURE_VIEWPORT = { width: 1280, height: 800 } as const;
 /**
  * The capture page. Static: it embeds no parameter. `capture.js` reads them from
  * `location.search`, which the gate verified before serving this document.
+ * `data-br-capture-page` tells a renderer that reads the HTML (Browser Rendering's REST
+ * `/snapshot`, T-034) that the gate served this page, rather than an empty 403.
  */
 export const CAPTURE_HTML = `<!doctype html>
-<html lang="en">
+<html lang="en" data-br-capture-page="1">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=${String(CAPTURE_VIEWPORT.width)}" />

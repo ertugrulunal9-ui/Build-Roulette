@@ -13,12 +13,12 @@ import {
 } from './stack';
 
 /**
- * Moderation end to end (T-024) against the real local stack, with the capture worker
+ * Moderation end to end (T-024) against the real local stack, with the jobs function
  * running (playwright.moderation.config.ts):
  *
  *   a player reports a build on /battles/[id] → the admin signs in at /admin, sees the
  *   report and takes the build down → the public page shows "Removed by moderators" and no
- *   screenshot → the capture worker's takedown job deletes the screenshot object.
+ *   screenshot → the jobs function's takedown job deletes the screenshot object.
  *
  * The reported build won the (voted) battle: rank 1, the Winner banner, Best Build and two
  * more vote awards, speedrun and fastest ship. After the takedown (T-028) it keeps rank 1
@@ -486,7 +486,7 @@ test('report → admin takedown → "Removed by moderators" and the screenshot i
   await expect(entry.getByTestId('award')).toHaveCount(0);
   await expect(entry.getByTestId('vote-tally')).toHaveAttribute('data-total', '3');
 
-  // ─── The capture worker deletes the screenshot object ───────────────────────────
+  // ─── The jobs function deletes the screenshot object ───────────────────────────
   await expect.poll(() => screenshotObjects(fx.scam.path), { timeout: 60_000 }).toBe(0);
   expect(screenshotObjects(fx.timer.path)).toBe(1);
   const gone = await fetch(publicScreenshotUrl(fx.scam.path));

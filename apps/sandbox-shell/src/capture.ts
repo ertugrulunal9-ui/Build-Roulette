@@ -16,6 +16,15 @@
  * the build calls `window.buildRoulette.ready()`; the renderer then waits for that, or for
  * network idle + 2 s, capped at 6 s (apps/capture-worker).
  *
+ * For renderers that can only wait for a selector and read the page's HTML (T-034: Browser
+ * Rendering's REST `/snapshot`, used by the `jobs` Edge Function), the same facts are
+ * attributes of `<html>`:
+ *   data-br-capture-page   in the served HTML (capture-gate.ts): the gate served this page
+ *   data-br-capture        `ready` (the build's signal) or `failed` (this page could not run
+ *                          the build), with `data-br-capture-error` (short text)
+ *   data-br-paint          `content` or `empty`: whether the build's frame shows anything
+ *                          (paint.ts), kept current every 250 ms and at the ready signal
+ *
  * The page response carries a CSP `sandbox` directive (no popups, no modals, no downloads),
  * and the renderer aborts any top-level navigation away from the capture URL.
  */
@@ -23,6 +32,7 @@ import { ImportMapSchema, LIMITS, type ImportMap } from '@br/protocol';
 import { createChildFrame, injectBuild, installBuildApi, openBuildDocument } from './build-frame';
 import { CAPTURE_VIEWPORT } from './capture-gate';
 import { RESET_ENDPOINT } from './headers';
+import { paintState, type PaintState } from './paint';
 import { wipeOriginStorage } from './wipe';
 
 /** Prefix of every console line the renderer listens for. */
@@ -30,6 +40,7 @@ const MARK = '[br-capture]';
 const WIPE_TIMEOUT_MS = 4000;
 const FETCH_TIMEOUT_MS = 10_000;
 const FRAME_ALLOW = 'autoplay; fullscreen; gamepad';
+const PAINT_INTERVAL_MS = 250;
 const FRAME_CSS = `position:fixed;left:0;top:0;width:${String(CAPTURE_VIEWPORT.width)}px;height:${String(CAPTURE_VIEWPORT.height)}px;border:0;margin:0;padding:0;display:block;background:transparent`;
 
 // Keep our own reference: the build may later replace `console.info` in this realm. That
@@ -37,6 +48,22 @@ const FRAME_CSS = `position:fixed;left:0;top:0;width:${String(CAPTURE_VIEWPORT.w
 const info = console.info.bind(console);
 function signal(kind: string, detail?: string): void {
   info(detail === undefined ? `${MARK} ${kind}` : `${MARK} ${kind} ${detail.slice(0, 500)}`);
+}
+
+const root = document.documentElement;
+root.setAttribute('data-br-paint', 'empty');
+let buildFrame: HTMLIFrameElement | null = null;
+
+/** Refreshes `data-br-paint` from the build's frame (never throws). */
+function updatePaint(): void {
+  let state: PaintState;
+  try {
+    // null when the build navigated its frame away (another origin): something else shows.
+    state = buildFrame ? paintState(buildFrame.contentDocument, CAPTURE_VIEWPORT) : 'empty';
+  } catch {
+    state = 'content';
+  }
+  if (root.getAttribute('data-br-paint') !== state) root.setAttribute('data-br-paint', state);
 }
 
 function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
@@ -106,12 +133,15 @@ async function main(): Promise<void> {
   ]);
 
   const f = createChildFrame(document, FRAME_ALLOW, FRAME_CSS);
+  buildFrame = f;
+  setInterval(updatePaint, PAINT_INTERVAL_MS);
   const opened = openBuildDocument(f, (w) => {
     installBuildApi(w, () => {
       signal('ready');
-      // Also as an attribute, for renderers that can only wait for a selector
-      // (e.g. a Browser Rendering REST call: `html[data-br-capture=ready]`).
-      document.documentElement.setAttribute('data-br-capture', 'ready');
+      // Also as attributes, for renderers that can only wait for a selector and read the
+      // HTML (Browser Rendering's REST API: `html[data-br-capture]`).
+      updatePaint();
+      root.setAttribute('data-br-capture', 'ready');
     });
     w.addEventListener('error', (ev: ErrorEvent) => {
       signal('error', ev.message || 'Script error');
@@ -136,5 +166,8 @@ async function main(): Promise<void> {
 }
 
 main().catch((e: unknown) => {
-  signal('failed', e instanceof Error ? e.message : String(e));
+  const message = e instanceof Error ? e.message : String(e);
+  signal('failed', message);
+  root.setAttribute('data-br-capture-error', message.slice(0, 200));
+  root.setAttribute('data-br-capture', 'failed');
 });

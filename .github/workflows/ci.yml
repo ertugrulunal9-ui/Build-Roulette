@@ -30,10 +30,11 @@ on:
 permissions:
   contents: read
 
-# A new push cancels the older run of the same branch. The nightly run has its own group: a
-# push used to cancel it halfway (run 29, its chaos job never finished).
+# A new push cancels the older run of the same branch. The nightly and the manual runs have
+# their own groups: a push used to cancel them halfway (run 29, its chaos job never finished;
+# run 57, the esm.sh compat run started by hand, cancelled by a push a minute later).
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}${{ github.event_name == 'schedule' && '-nightly' || '' }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}${{ github.event_name == 'schedule' && '-nightly' || github.event_name == 'workflow_dispatch' && '-manual' || '' }}
   cancel-in-progress: true
 
 env:

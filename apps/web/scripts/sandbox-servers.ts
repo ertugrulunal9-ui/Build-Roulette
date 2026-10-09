@@ -12,6 +12,8 @@
  *   CDN_PORT         default 4322 (must match NEXT_PUBLIC_PKG_CDN_URL)
  *   CDN_CONTROL_PORT default 4323: `POST /cdn-outage?mode=refuse|error|hang|off` on
  *                    127.0.0.1 simulates a package CDN outage (T-032 e2e)
+ *   CDN_LAYOUT       `esm.sh`: the mock CDN answers like the public esm.sh (an entry module
+ *                    re-exporting an internal build path, T-035); default `bundle`
  *
  * Run: pnpm --filter @br/web dev:sandbox   (next to `pnpm --filter @br/web dev`)
  */
@@ -19,7 +21,11 @@ import { startShellServer } from '@br/sandbox-shell/server';
 // The mock CDN lives in @br/runtime's test support and serves the packages installed there.
 // It is imported by path because @br/runtime does not export its test support. Switch to
 // the self-hosted package CDN (T-006) once it exists.
-import { startMockCdn, startOutageControl } from '../../../packages/runtime/test-support/mock-cdn';
+import {
+  parseLayout,
+  startMockCdn,
+  startOutageControl,
+} from '../../../packages/runtime/test-support/mock-cdn';
 
 const env = process.env;
 const appOrigins = (env['BR_APP_ORIGINS'] ?? 'http://localhost:3000')
@@ -30,7 +36,12 @@ const shellPort = Number(env['SHELL_PORT'] ?? 4321);
 const cdnPort = Number(env['CDN_PORT'] ?? 4322);
 const controlPort = Number(env['CDN_CONTROL_PORT'] ?? 4323);
 
-const cdn = await startMockCdn({ port: cdnPort, host: 'localhost' });
+// CDN_LAYOUT=esm.sh: the mock answers like the public esm.sh (entry modules, T-035).
+const cdn = await startMockCdn({
+  port: cdnPort,
+  host: 'localhost',
+  layout: parseLayout(env['CDN_LAYOUT']),
+});
 const shell = await startShellServer({
   port: shellPort,
   host: '127.0.0.1',

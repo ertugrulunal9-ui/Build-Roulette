@@ -5,4 +5,7 @@ export class Controls {
     this.ok = scene instanceof Scene;
     this.scene = scene;
   }
+  target() {
+    return this.scene;
+  }
 }

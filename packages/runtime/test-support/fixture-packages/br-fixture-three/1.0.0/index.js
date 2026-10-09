@@ -4,4 +4,7 @@ export class Scene {
   constructor() {
     this.version = VERSION;
   }
+  describe() {
+    return `Scene from three ${this.version}`;
+  }
 }

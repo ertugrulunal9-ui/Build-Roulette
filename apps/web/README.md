@@ -8,7 +8,7 @@ and data loads in the browser from Supabase. Routes:
 |---|---|
 | `/` | Landing page: "Play solo" (`/play`), "Create room" (a name → `create_room` → `/r/{code}`) and "Join with code" (any case, trimmed, or a pasted invite link). |
 | `/play` | The solo game: name → SPIN → BUILD → SHIP → RESULTS → DESTROY. `?battle={id}` resumes a battle after a refresh. |
-| `/battles/[id]` | The permanent, shareable results page. One static shell for every battle (`src/app/battles/page.tsx`; the host rewrites `/battles/{id}` to it, "Static site" below): the browser reads the id from the URL and calls `get_public_battle` on every load, so a takedown shows on the next load. Its link preview is the static `public/og-card.png` for every battle (`pnpm og-card` redraws it) until T-038's Pages Function writes each battle's own tags (`src/lib/solo/battle-meta.ts`, `og-image.ts`: the rank-1 screenshot, or the card when there is none or it was taken down). |
+| `/battles/[id]` | The permanent, shareable results page. One static shell for every battle (`src/app/battles/page.tsx`, "Static site" below): the browser reads the id from the URL and calls `get_public_battle` on every load, so a takedown shows on the next load. A small Pages Function serves the shell with each battle's own link preview, and a real 404 for an unknown battle ("Link previews" below). |
 | `/playground` | Single-player editor and live preview, no game. |
 | `/r/[code]` | A room (M3): join → lobby → SPIN → BUILD → SHIP → REVEAL → VOTE → RESULTS → DESTROY → lobby (rematch). One static shell (`src/app/r/page.tsx`) serves every room: the host rewrites `/r/{code}` to it and the code is read in the browser (T-033, T-037). |
 | `/u/[id]` | A player's history (M4): their finished battles, newest first, from `get_player_history` with the anon key, paginated (`?before=…&before_battle=…`). One static shell (`src/app/u/page.tsx`); the browser reads the id and the cursor from the URL and the data on every load. |
@@ -25,10 +25,10 @@ and data loads in the browser from Supabase. Routes:
   (`out/r.html`, `out/battles.html`, `out/u.html`). `out/_redirects` rewrites every such path
   to its shell with status 200, so the URL stays; the page reads its parameter from the
   browser's URL (`src/lib/hosting/shells.ts`, `use-browser-url.ts`) and loads its data
-  (`use-remote.ts`): loading, the page, "not found" (a 404-style screen, served with a 200),
-  or "could not load" with a retry. The tab title is a React `<title>`
-  (`components/DocumentTitle.tsx`; those pages' metadata sets none). `next dev` applies the
-  same rewrites (`next.config.ts`, development only).
+  (`use-remote.ts`): loading, the page, "not found" (a 404-style screen, served with a 200;
+  `/battles/{id}` answers a real 404, below), or "could not load" with a retry. The tab title
+  is a React `<title>` (`components/DocumentTitle.tsx`; those pages' metadata sets none).
+  `next dev` applies the same rewrites (`next.config.ts`, development only).
 - **Links to a shell are page loads** (`<a>`, `lib/hosting/navigate.ts`): Next's client
   router would fetch `{path}.txt`, which a shell path does not have.
 - **No cache.** The public pages call `get_public_battle` / `get_player_history` with
@@ -43,8 +43,51 @@ and data loads in the browser from Supabase. Routes:
   other than the public anon key; Pages' limits (header lines ≤ 2,000 characters, rules,
   file count and size).
 - **Locally:** `pnpm --filter @br/web preview` serves `out/` with `wrangler pages dev`
-  (http://localhost:3000), which applies `_redirects` and `_headers` like Pages does. Every
-  e2e suite uses it.
+  (http://localhost:3000), which applies `_redirects` and `_headers` and runs the link-preview
+  Function like Pages does. Every e2e suite uses it.
+
+## Link previews (T-038)
+
+Crawlers (Slack, Discord, X, Facebook…) do not run the page's script, so a static shell alone
+would give every battle the same preview. A Cloudflare Pages Function on `/battles/*` fixes
+that (docs/08-free-tier.md §3 has the design and its CPU numbers):
+
+- **Where:** `src/lib/hosting/preview-worker.ts` (the worker entry: Pages' assets,
+  `get_public_battle`, `HTMLRewriter`), `preview-handler.ts` (what it does per request, tested
+  in Node), `battle-preview.ts` (the head: pure, tested). `scripts/preview-worker.ts` bundles
+  it into `out/_worker.js` (Pages "advanced mode") with the build's `NEXT_PUBLIC_*` values and
+  the `/*` headers of `_headers`, and writes `out/_routes.json` (`/battles/*` only).
+- **Per request:** `get_public_battle` with the anon key (the page's own call,
+  `lib/solo/public-battle.ts`) and the shell (`/battles`) at once; then the shell with its
+  title, description, `og:*` (`og:url`, `og:image` with its size and type), `twitter:*` and
+  canonical link replaced by the battle's (`HTMLRewriter`):
+  - title: "{rank-1 build} by {builder}", or "{challenge} · Battle results" when rank 1 was
+    taken down; description: "Winner: {build} by {builder}." (unless taken down: nobody is
+    promoted, T-028) and the challenge's BUILD / RULE / STYLE and time limit;
+  - image: the rank-1 screenshot from Storage, or `og-card.png` when rank 1 has none or was
+    taken down (`lib/solo/og-image.ts`, T-033; never the next build's);
+  - an unknown or not-yet-public battle: status **404** with "Battle not found" and `noindex`
+    (still the shell: the browser shows its not-found view); a malformed id: the same 404
+    without asking Supabase;
+  - **fail open:** Supabase slower than 1.5 s, an error or an odd answer: the shell
+    unchanged with 200 (the generic head). Anything else that throws: Pages' plain static
+    answer.
+- **Escaping:** names and challenge texts are HTML-escaped; the tags are our own strings
+  (unit tests round-trip `"><script>` and friends through an HTML parser).
+- **Headers:** the Function's answers carry the `_headers` security headers (it sets them
+  itself), keep `Cache-Control: max-age=0, must-revalidate`, drop the ETag, and add
+  `x-br-preview` (`battle`, `not-found`, `malformed`, `fail-open; reason=…`).
+- **No cache:** a takedown changes the preview on the next request.
+- **In the browser** the page then hydrates as before; React re-adds the shell's generic
+  `og:*` tags after the battle's ones (it matches head tags by content). Only crawlers read
+  them, and they read the HTML as sent: the battle's tags come first and are the only ones
+  there.
+- **Tests:** `src/lib/hosting/*.test.ts`; `e2e/link-preview.spec.ts` (in
+  `test:e2e:moderation`: a crawler-style request, 404s, Supabase slow/down on a variant site
+  from `scripts/preview-variant.ts`); `moderation.spec.ts` (the preview right after the
+  takedown of rank 1); `solo.spec.ts`, `multiplayer.spec.ts` (the rank-1 screenshot as
+  `og:image`).
+- **CPU:** `pnpm --filter @br/web measure:cpu` (needs the build and the local stack).
 
 ## Observability (T-030)
 

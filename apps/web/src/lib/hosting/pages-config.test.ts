@@ -153,9 +153,7 @@ describe('secret keys in the export', () => {
     expect(secretKeysIn(`const k="${jwt({ role: 'service_role' })}"`)).toEqual([
       'a JWT with role "service_role"',
     ]);
-    expect(secretKeysIn('x sb_secret_' + 'abcd1234'.repeat(4))).toEqual([
-      'an sb_secret_ key',
-    ]);
+    expect(secretKeysIn('x sb_secret_' + 'abcd1234'.repeat(4))).toEqual(['an sb_secret_ key']);
     expect(secretKeysIn('sb_publishable_ACJWlzQHlZjBrEguHvfOxg_3BJgxAaH')).toEqual([]);
   });
 });

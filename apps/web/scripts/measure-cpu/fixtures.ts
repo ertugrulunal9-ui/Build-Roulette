@@ -1,13 +1,15 @@
 /**
- * Test data for the CPU measurement (T-033) on the LOCAL Supabase stack: finished battles,
- * players with a history, reports and an admin. Inserted with psql as the superuser, like the
- * moderation and ISR e2e (e2e/stack.ts), and committed. Players are inserted straight into
- * `auth.users` (anonymous), so hundreds of them do not run into the Auth sign-up rate limit.
+ * Test data for the CPU measurement (T-033) on the LOCAL Supabase stack: finished battles
+ * (2–8 builds, with or without a PNG screenshot of rank 1) and players with a history. What a
+ * per-battle link preview (T-038's Pages Function, which reads `get_public_battle`) needs to
+ * be measured with. Inserted with psql as the superuser, like the moderation e2e
+ * (e2e/stack.ts), and committed. Players are inserted straight into `auth.users`
+ * (anonymous), so hundreds of them do not run into the Auth sign-up rate limit.
  */
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { deflateSync } from 'node:zlib';
-import { seedAdmin, uploadScreenshot } from '../../e2e/stack';
+import { uploadScreenshot } from '../../e2e/stack';
 
 export interface StackEnv {
   API_URL: string;
@@ -24,9 +26,9 @@ export interface BattleFixture {
 export interface BattleOptions {
   /** Players (and shipped builds), default 2. */
   players?: number;
-  /** `settled`: DESTROYED with destroyed_at (cached 1 h). `live`: RESULTS (cached 5 s). */
+  /** `settled`: DESTROYED with destroyed_at. `live`: RESULTS (screenshots may still land). */
   state?: 'settled' | 'live';
-  /** A PNG screenshot for rank 1 (what the OG card embeds), default none. */
+  /** A PNG screenshot for rank 1 (the battle's `og:image`), default none. */
   screenshot?: 'png' | 'none';
   /** Vote counts and category awards (an M4 battle), default true. */
   voted?: boolean;
@@ -188,45 +190,4 @@ export class Fixtures {
     }
     return fx;
   }
-
-  /** An open report on a build (for the admin queue and its actions). */
-  report(build: string, reporter: string): void {
-    this.sql(`insert into public.reports (build_id, reporter_id, reason, details)
-              values (${q(build)}, ${q(reporter)}, 'offensive', 'CPU probe');`);
-  }
-
-  /** Dismisses every open report (so the admin queue holds only this run's). */
-  clearReports(): void {
-    this.sql(`update public.reports set status = 'dismissed', resolved_at = now()
-              where status = 'open';`);
-  }
-
-  /** An email/password admin and a fresh session (access + refresh token). */
-  async admin(email: string, password: string): Promise<AdminTokens> {
-    seedAdmin(email, password);
-    return this.signIn(email, password);
-  }
-
-  async signIn(email: string, password: string): Promise<AdminTokens> {
-    const res = await fetch(`${this.env.API_URL}/auth/v1/token?grant_type=password`, {
-      method: 'POST',
-      headers: { apikey: this.env.ANON_KEY, 'content-type': 'application/json' },
-      body: JSON.stringify({ email, password }),
-    });
-    const json = (await res.json()) as { access_token?: string; refresh_token?: string };
-    if (!res.ok || !json.access_token || !json.refresh_token) {
-      throw new Error(`admin sign-in: HTTP ${String(res.status)}`);
-    }
-    return { access: json.access_token, refresh: json.refresh_token };
-  }
-}
-
-export interface AdminTokens {
-  access: string;
-  refresh: string;
-}
-
-/** The Cookie header of a signed-in admin (lib/admin/session.ts). */
-export function adminCookie(t: AdminTokens): string {
-  return `br_admin_at=${t.access}; br_admin_rt=${t.refresh}`;
 }

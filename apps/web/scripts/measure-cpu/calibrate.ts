@@ -1,7 +1,8 @@
 /**
  * Checks the measurement method on a Worker whose work is known (T-033): a plain loop of a
  * given length, a request that only waits on a slow upstream, and an empty one. The same
- * harness as the app (wrangler dev, the inspector proxy, the profile estimate, schedstat).
+ * harness as the app's measurement (workerd, the inspector proxy, the profile estimate,
+ * schedstat).
  *
  * - The loop: the isolate CPU from the profile should match the workerd thread's CPU (the
  *   loop is all the thread does), minus the small fixed cost of the request itself.
@@ -61,6 +62,7 @@ export async function calibrate(dir: string, samplingUs: number): Promise<Calibr
     inspectorPort: 9298,
     samplingUs,
     logFile: `${dir}/wrangler.log`,
+    kind: 'worker',
     config: `${dir}/wrangler.jsonc`,
   });
   const rows: CalibrationRow[] = [];

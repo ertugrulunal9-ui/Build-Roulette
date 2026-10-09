@@ -1,8 +1,8 @@
 /**
- * The local Cloudflare runtime the CPU measurement (T-033, kept by T-037 for T-038's Pages
+ * The local Cloudflare runtime the CPU measurement (T-033; since T-038 for the link-preview
  * Function) drives, and how one request is measured on it: `wrangler pages dev` (the static
- * site and its Pages Functions, if any) or `wrangler dev` (a plain Worker: the calibration
- * Worker), both workerd, the runtime Cloudflare runs.
+ * site and its Function) or `wrangler dev` (a plain Worker: the calibration Worker), both
+ * workerd, the runtime Cloudflare runs.
  *
  * Per request: the user isolate's CPU from a V8 CPU profile (DevTools `Profiler`, through
  * wrangler's inspector proxy) and the workerd main thread's CPU from
@@ -29,6 +29,8 @@ export interface Measurement {
   status: number;
   /** The `cf-cache-status` / `x-cache` header, if any (a Function may set one), or ''. */
   cache: string;
+  /** T-038's `x-br-preview` header (which case the link-preview Function took), or ''. */
+  preview: string;
   location: string;
   bytes: number;
   /** Request sent → body read, milliseconds (includes waiting on Supabase). */
@@ -214,13 +216,15 @@ export interface WorkersOptions {
   samplingUs: number;
   logFile: string;
   /**
-   * `pages`: `wrangler pages dev` on the app (apps/web/wrangler.jsonc: `out/`, plus a
-   * `functions/` directory once there is one; with none, wrangler runs a shim Worker that
-   * only serves the assets). `worker`: `wrangler dev` on `config`.
+   * `pages`: `wrangler pages dev` on the app (apps/web/wrangler.jsonc: `out/`, with T-038's
+   * link-preview Function `out/_worker.js` on `/battles/*`; every other path goes straight to
+   * the asset server), or on `dir`. `worker`: `wrangler dev` on `config`.
    */
   kind: 'pages' | 'worker';
   /** The Worker's wrangler config (kind `worker`, e.g. the calibration Worker). */
   config?: string;
+  /** Kind `pages`: serve this directory instead of `out/` (scripts/preview-variant.ts). */
+  dir?: string;
 }
 
 /**
@@ -245,7 +249,9 @@ export class WorkersRuntime {
       process.execPath,
       [
         'node_modules/wrangler/bin/wrangler.js',
-        ...(this.opts.kind === 'pages' ? ['pages', 'dev'] : ['dev']),
+        ...(this.opts.kind === 'pages'
+          ? ['pages', 'dev', ...(this.opts.dir ? [this.opts.dir] : [])]
+          : ['dev']),
         '--port',
         String(this.opts.port),
         '--ip',
@@ -352,6 +358,7 @@ export class WorkersRuntime {
     return {
       status: res.status,
       cache: header(res, 'cf-cache-status') || header(res, 'x-cache'),
+      preview: header(res, 'x-br-preview'),
       location: header(res, 'location'),
       bytes,
       wallMs,

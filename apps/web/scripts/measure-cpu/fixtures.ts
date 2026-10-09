@@ -190,4 +190,14 @@ export class Fixtures {
     }
     return fx;
   }
+
+  /**
+   * Marks a build as removed by a moderator, as `take_down_build` leaves it for the public
+   * pages (`taken_down_at`; get_public_battle then drops its name, screenshot and awards).
+   * Not the whole takedown (no takedown job, the screenshot stays in Storage): the measurement
+   * only needs what the link-preview Function reads.
+   */
+  takeDown(build: string): void {
+    this.sql(`update public.builds set taken_down_at = now() where id = ${q(build)};`);
+  }
 }

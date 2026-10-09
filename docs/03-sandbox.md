@@ -828,6 +828,11 @@ it is a second copy.
   On the pre-T-040 runtime all three fail in the esm.sh layout, exactly as in CI run 60.
 - **Unit tests:** resolve.test (URLs, map, limits, hostile manifests), mock-cdn.test,
   packages.test (shell), url/server tests (@br/pkg-cdn), compat-urls/compat-contract.
+- **The compatibility suite** has a variant case, `react-konva (scoped name in a prefix)`: its
+  manifest adds a scoped package, so react-konva's `konva/lib/Core.js` goes through a prefix
+  whose in-path list holds `%252F`. No other case uses a prefix with a scoped name. This case
+  shows whether esm.sh (and the Cloudflare edge in front of it) reads that list as documented
+  above; until the CI run, that is from esm.sh's source, not observed.
 
 ### Bundler start: stall timeout and retry (T-039)
 

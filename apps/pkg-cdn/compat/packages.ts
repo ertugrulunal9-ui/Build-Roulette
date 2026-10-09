@@ -639,6 +639,27 @@ export function App() {
 
   // ---------------------------------------------------------------- audio
   c({
+    id: 'react-konva (scoped name in a prefix)',
+    name: 'react-konva',
+    version: '19.3.0',
+    category: '3d-canvas-games',
+    // T-040: react-konva imports `konva/lib/Core.js`, which the import map resolves through its
+    // `konva/` prefix, `…/konva@10.7.0&external=@popperjs%252Fcore,react,react-dom,react-konva/`.
+    // A scoped name in that in-path list is sent as %252F (docs/03, "One instance per
+    // package"); this case proves the CDN reads it. @popperjs/core is only there for its name.
+    deps: { konva: '10.7.0', '@popperjs/core': '2.11.8' },
+    checks:
+      'react-konva reaches konva/lib/Core.js through an import-map prefix that lists a scoped package',
+    expected: 'ok:canvas',
+    app: `import { useEffect, useState } from 'react';
+import { Layer, Rect, Stage } from 'react-konva';
+export function App() {
+  const [s, setS] = useState('');
+  useEffect(() => { setS(document.querySelector('.konvajs-content canvas') ? 'canvas' : 'none'); }, []);
+  return <div><Stage width={100} height={100}><Layer><Rect x={10} y={10} width={20} height={20} fill="red" /></Layer></Stage><div data-testid="marker">ok:{s}</div></div>;
+}`,
+  }),
+  c({
     id: 'tone',
     name: 'tone',
     version: '15.1.22',

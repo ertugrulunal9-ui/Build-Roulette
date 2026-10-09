@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { CASES, REACT_VERSION, knownFailureOn } from '../compat/packages';
 import {
+  caseImportMap,
   caseMapUrls,
   caseUrls,
   importsOf,
@@ -109,6 +110,19 @@ describe('compat URLs for both CDNs (T-035, T-040)', () => {
       ).toEqual(ours.urls.map((u) => shortUrl(u.url, OURS)));
     }
     expect(shortUrl('https://other.example/x', ESM)).toBe('https://other.example/x');
+  });
+
+  it('has a case whose subpath goes through a prefix listing a scoped name (T-040)', () => {
+    const c = find('react-konva (scoped name in a prefix)');
+    expect(caseImportMap(c, ESM).imports['konva/']).toBe(
+      'https://esm.sh/konva@10.7.0&external=@popperjs%252Fcore,react,react-dom,react-konva/',
+    );
+    // What esm.sh reads from the URL react-konva's `konva/lib/Core.js` resolves to.
+    const url = new URL('lib/Core.js', caseImportMap(c, ESM).imports['konva/']);
+    const head = decodeURIComponent(url.pathname).split('/')[1] ?? '';
+    expect(new URLSearchParams(head.slice(head.indexOf('&') + 1)).get('external')).toBe(
+      '@popperjs/core,react,react-dom,react-konva',
+    );
   });
 
   it('knows which failures are known, and on which CDN (T-040)', () => {

@@ -19,6 +19,8 @@ blob-report/
 playwright/.cache/
 # Load test reports (tools/loadtest, T-025)
 loadtest-results/
+# CPU measurement raw data (apps/web measure:cpu, T-033)
+cpu-results/
 
 # Environment files (never commit secrets)
 .env

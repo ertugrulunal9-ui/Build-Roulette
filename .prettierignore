@@ -12,6 +12,7 @@ build/
 coverage/
 playwright-report/
 test-results/
+cpu-results/
 .open-next/
 .wrangler/
 

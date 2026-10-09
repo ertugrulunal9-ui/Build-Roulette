@@ -44,6 +44,10 @@ PLAN → BRIEF → DISPATCH → REVIEW → MERGE / FIX → NEXT WAVE
   and only to this branch.
 - Workers commit locally in their worktree. The hub merges accepted work with a merge commit.
 - Commit messages use the imperative mood and say what changed and why.
+- Never commit a key-shaped literal, not even the local Supabase CLI's well-known demo keys
+  (`sb_secret_…`, the service-role JWT). GitHub push protection rejects the push. That happened
+  with T-037's test fixture, and the unpushed history had to be rewritten. Build such values at
+  runtime instead (`'sb_secret_' + 'abcd1234'.repeat(4)`), or read them from `supabase status`.
 
 ## Reporting
 

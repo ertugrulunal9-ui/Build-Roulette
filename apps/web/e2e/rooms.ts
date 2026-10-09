@@ -11,6 +11,7 @@ import {
   type Page,
   type TestInfo,
 } from '@playwright/test';
+import { watchCsp } from './csp';
 import { trackPage } from './diagnostics';
 import { buildFrame, clickRouted, replaceEditorText } from './helpers';
 import { sql } from './stack';
@@ -50,6 +51,7 @@ export async function newPlayer(
   const page = await context.newPage();
   const errors: string[] = [];
   page.on('pageerror', (e) => errors.push(e.message));
+  watchCsp(page, errors);
   return { name, context, page, errors };
 }
 
@@ -69,6 +71,7 @@ export async function newPhone(browser: Browser, info: TestInfo, name: string): 
   const page = await context.newPage();
   const errors: string[] = [];
   page.on('pageerror', (e) => errors.push(e.message));
+  watchCsp(page, errors);
   return { name, context, page, errors };
 }
 

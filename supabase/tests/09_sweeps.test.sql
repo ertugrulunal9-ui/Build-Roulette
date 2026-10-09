@@ -14,10 +14,11 @@ select results_eq(
      from cron.job where jobname like 'br-%' order by jobname $$,
   $$ values ('br-cron-history-cleanup', '17 3 * * *',
              'delete from cron.job_run_details where end_time < now() - interval ''2 days''', true),
+            ('br-jobs-run', '* * * * *', 'select private.run_jobs_function()', true),
             ('br-rate-events-prune', '23 * * * *', 'select private.prune_rate_events()', true),
             ('br-sweep-deadlines', '5 seconds', 'select public.sweep_deadlines()', true),
             ('br-sweep-ttl', '*/10 * * * *', 'select public.sweep_ttl()', true) $$,
-  'the sweeps are scheduled: deadlines every 5 s, TTL every 10 min, history cleanup daily, rate events hourly');
+  'the sweeps are scheduled: deadlines every 5 s, TTL every 10 min, history cleanup daily, rate events hourly, the jobs function every minute (T-034)');
 
 -- ─── Fixtures ─────────────────────────────────────────────────────────────
 -- s1  solo, SPINNING, overdue                    → BUILDING

@@ -572,7 +572,7 @@ the compatibility suite in CI, `compat_cdn=https://esm.sh`):
 | A peer (`three` inside `@react-three/fiber`) | A URL with the request's query, byte-identical to the app's own `import 'three'` | An internal path. Assumed: the same path as behind the app's own `three` URL (case "@react-three/fiber (one three)"; "three/examples (OrbitControls)" for a subpath) |
 | `/three@0.186.1/examples/jsm/controls/OrbitControls.js?…` | A module for the subpath | A module for the subpath (documented) |
 | `/leaflet@1.9.4/dist/leaflet.css` (no query) | The raw file, `text/css` | The raw file (documented); relative `url()`s resolve against it |
-| A range (`/react@19`) | `302` to the exact version, cached 5 minutes | A redirect to the exact version (documented). The runtime never emits one: manifests pin exact versions |
+| A range (`/react@19`) | `302` to the exact version, cached 5 minutes | Assumed: a redirect to the exact version, or an answer with a short cache. Not checked: the runtime never emits one (manifests pin exact versions) |
 | Caching of an exact URL | `public, max-age=31536000, immutable` | Assumed the same, for entry URLs and internal paths (T-032 depends on it) |
 | CORS | `Access-Control-Allow-Origin: *` | `*` (documented: a public CORS CDN) |
 | Errors | Text, `no-store` | A text 404, or for a failed build a `500` module that throws `[esm.sh] …`, whose message the shell and the bundler now quote |

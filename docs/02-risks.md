@@ -42,8 +42,8 @@ validate it early. The roadmap ([06](06-roadmap.md)) is ordered to retire the to
 > - matter-js named imports on both CDNs.
 >
 > pixi.js timed out while esm.sh built its ~130 modules on first request; the suite now
-> probes the whole graph first. Our CDN: 56/57 with T-040's URLs, 0 unexpected failures. The
-> esm.sh rerun is pending in CI.
+> probes the whole graph first. Our CDN: 57/58 with T-040's URLs (one new variant case), 0
+> unexpected failures. The esm.sh rerun is pending in CI.
 >
 > **Production CDN on the free plan (T-035): the public esm.sh**, a third party (R10). The same
 > suite runs against it in GitHub CI (`workflow_dispatch` with `compat_cdn=https://esm.sh`;

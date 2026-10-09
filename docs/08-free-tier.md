@@ -742,7 +742,7 @@ pnpm --filter @br/runtime test         # resolve.test: the esm.sh import map and
 pnpm --filter @br/sandbox-shell test   # headers.test: the esm.sh CSP; packages.test: entry modules and bare imports followed
 pnpm --filter @br/pkg-cdn test         # compat-options / compat-urls / compat-contract tests; in-path query, peer URLs
 pnpm --filter @br/runtime test:e2e     # render, CDN outage and one-instance (T-040) again against an esm.sh-shaped mock CDN
-pnpm --filter @br/pkg-cdn compat       # our CDN: 56/57 (0 unexpected), contract ok
+pnpm --filter @br/pkg-cdn compat       # our CDN: 57/58 (0 unexpected, 1 known), contract ok
 # GitHub Actions → CI → Run workflow: compat=true, compat_cdn=https://esm.sh (chaos and
 # loadtest off) → artifact compat-results/RESULTS-esm.sh.md
 ```

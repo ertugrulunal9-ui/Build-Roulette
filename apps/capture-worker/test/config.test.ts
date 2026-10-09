@@ -34,6 +34,11 @@ describe('loadConfig', () => {
     expect(c.logLevel).toBe('info');
   });
 
+  it('takes the public esm.sh as the package CDN (T-035, the free plan)', () => {
+    const c = loadConfig({ ...ENV, PKG_CDN_URL: 'https://esm.sh/' });
+    expect(c.capture.pkgCdnUrl).toBe('https://esm.sh');
+  });
+
   it('lists every problem at once', () => {
     try {
       loadConfig({

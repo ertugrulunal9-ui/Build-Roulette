@@ -1,9 +1,12 @@
 # @br/pkg-cdn: esm.sh-compatible package CDN (npm registry)
 
 Serves npm packages as browser-ready ES modules for the sandbox runtime
-([docs/03-sandbox.md](../../docs/03-sandbox.md) §3.4), so builds do not depend on esm.sh
-([docs/02-risks.md](../../docs/02-risks.md) R1, R10). It speaks the URL shape that
-`@br/runtime`'s `cdn-rewrite` plugin emits:
+([docs/03-sandbox.md](../../docs/03-sandbox.md) §3.4), so builds need not depend on esm.sh
+([docs/02-risks.md](../../docs/02-risks.md) R1, R10). On the free plan production uses the
+public esm.sh instead, since this server would need Cloudflare Containers (T-035,
+[docs/08-free-tier.md](../../docs/08-free-tier.md) §4); it stays the CDN of local runs, the
+tests and the compatibility suite, and the option for a paid plan. It speaks the URL shape
+that `@br/runtime`'s `cdn-rewrite` plugin emits:
 
 ```
 GET /zustand@5.0.15?external=react,react-dom            bundled ES module
@@ -307,12 +310,32 @@ pnpm --filter @br/pkg-cdn dev        # tsx src/main.ts
 pnpm --filter @br/pkg-cdn build      # dist/main.js (esbuild, deps external); then `start`
 pnpm --filter @br/pkg-cdn test       # unit + server tests against an in-memory registry (offline)
 pnpm --filter @br/pkg-cdn compat     # R1 compatibility suite (needs the npm registry + Chromium)
+pnpm --filter @br/pkg-cdn compat --cdn https://esm.sh   # the same cases against another CDN
 ```
 
-`compat` options: `--only zustand,three`, `--keep-cache`, `--cache-dir <dir>`, `--no-write`,
-`--verbose`. It writes [compat/RESULTS.md](compat/RESULTS.md) (only for full runs).
+`compat` options (`compat/options.ts`): `--cdn <baseUrl>` (or `COMPAT_CDN`; empty, `own` or
+`pkg-cdn` = this server), `--only zustand,three`, `--keep-cache`, `--cache-dir <dir>`,
+`--no-write`, `--verbose`. A full run writes [compat/RESULTS.md](compat/RESULTS.md) for this
+server, or `compat/RESULTS-<host>.md` for another CDN (`RESULTS-esm.sh.md`), and
+`node_modules/.cache/pkg-cdn-compat/results.json` (every probed URL with its headers).
+
+**With `--cdn`** (T-035) the suite does not start this server: the sandbox shell's CSP allows
+the given CDN's origin and the runtime uses its base URL, as a production build would. Each
+case then runs exactly as against this server. Besides rendering, every URL a case requests
+and every module those import from the CDN are checked against what the sandbox needs
+(`compat/contract.ts`): `200` without a redirect, `max-age` of at least 30 days, CORS, the
+content type, imports only from the CDN's own origin, and whether the shell's import scan
+sees them. Requests carry Chromium's User-Agent and an `Origin`, so the CDN answers as it
+answers the browser. The run fails when fewer than 90% of the cases pass or when the React
+import map breaks that contract. In CI: the `compat` job of a manual run, input `compat_cdn`
+(`.github/workflows/ci.yml`; the results are the job's `compat-results` artifact).
 
 ## Not replicated from esm.sh
+
+esm.sh answers an entry URL (`/react@19.3.0`) with a re-export of an internal build path
+(`/react@19.3.0/es2022/react.mjs`); this server answers with the module itself. The sandbox
+shell handles both (it follows a module's imports on the CDN's origin when it warms or checks
+packages, T-035). Also not replicated:
 
 - Shared chunks between entry points of one package: each subpath is its own bundle, so
   internals that two subpaths both import by _relative_ path are duplicated (bare

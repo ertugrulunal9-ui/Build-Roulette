@@ -28,7 +28,15 @@ validate it early. The roadmap ([06](06-roadmap.md)) is ordered to retire the to
 > - pixi.js passes now that the shell CSP allows `'unsafe-eval'` (T-007);
 > - matter-js named imports fail (a UMD build, so it needs `import Matter from 'matter-js'`).
 >
-> See `apps/pkg-cdn/compat/RESULTS.md`.
+> See `apps/pkg-cdn/compat/RESULTS.md`. T-035 added two cases that check one instance across
+> the import map (react-dom's `flushSync`, fiber's `three`): 56/57 on our CDN.
+>
+> **Production CDN on the free plan (T-035): the public esm.sh**, a third party (R10). The same
+> suite runs against it in GitHub CI (`workflow_dispatch` with `compat_cdn=https://esm.sh`;
+> this container cannot reach esm.sh), with a CDN contract check on every URL (no redirect,
+> long cache, CORS, same-origin imports). Its result is `RESULTS-esm.sh.md` in the job's
+> artifact. esm.sh evaluates CommonJS on its server, so the matter-js named-imports case may
+> pass there.
 
 **Why it's hard.** The npm ecosystem assumes Node and a bundler. Some packages are CJS-only,
 expect `process.env`, import CSS or assets, have peer dependency trees, or end up with two
@@ -189,14 +197,22 @@ and part of the vibe. Random rules make this less useful, and stats such as edit
 paste counts are shown for fun, not as enforcement.
 
 ### R10: Third-party outage mid-battle
-The package CDN is our own service (`@br/pkg-cdn`) behind the Cloudflare cache, with no
-dependency on esm.sh. Exact-version URLs are `immutable`, so the edge keeps serving packages
-already requested while the origin container is down (setup and assumptions:
-`apps/pkg-cdn/README.md` "Origin outages").
+**The package CDN is a third party on the free plan (T-035): the public esm.sh**, because our
+own `@br/pkg-cdn` would need Cloudflare Containers (paid). esm.sh is free and community-run,
+with no SLA, and no rate limits documented that we know of; we assume our use is fair use (a
+player loads React once, then the packages of their own builds, mostly from the browser's
+cache).
+What protects a battle from an esm.sh outage is the browser side below, which works the same
+with both CDNs; the edge side, when we run our own CDN again, is `@br/pkg-cdn` behind the
+Cloudflare cache (exact-version URLs are `immutable`, so the edge keeps serving packages
+already requested while the origin container is down; `apps/pkg-cdn/README.md` "Origin
+outages"). Switching CDNs is one base URL in the app, shell and capture worker settings
+(docs/03 "The package CDN"); run the compatibility suite against the new one first.
 
 **In the browser (T-032):** the template's packages (React) are fetched into the
 browser's HTTP cache in the room lobby (desktop) and by the preview that runs during SPIN,
-including the template's other React entry points. With the CDN down, edits, preview restarts, reloads,
+including the template's other React entry points and, on esm.sh, the modules behind each
+entry URL (T-035). With the CDN down, edits, preview restarts, reloads,
 autosave, ship and the last look keep working (measured and covered by e2e). A package the
 browser never loaded fails within about a second with "Package server unreachable: x@1.2.3"
 instead of a blank preview. In REVEAL such a build shows its screenshot.

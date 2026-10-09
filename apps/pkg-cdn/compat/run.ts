@@ -212,6 +212,7 @@ async function main(): Promise<void> {
   let bootMs = 0;
   const react: CdnTiming = { coldMs: 0, warmMs: 0, bytes: 0, urls: [], error: null };
   let reactProbe: ProbeRecord[] = [];
+  const probed = new Map<string, ProbeRecord>();
   try {
     const page = await browser.newPage();
     const pageErrors: string[] = [];
@@ -223,7 +224,6 @@ async function main(): Promise<void> {
       origin: new URL(harness.appUrl).origin,
       userAgent: await page.evaluate(() => navigator.userAgent),
     };
-    const probed = new Map<string, ProbeRecord>();
 
     // React for the import map (shared by every case), with the modules behind it.
     const reactUrls = Object.values(reactImportMap(cdnUrl).imports);
@@ -323,13 +323,17 @@ async function main(): Promise<void> {
   );
   writeFileSync(
     path.join(outDir, 'results.json'),
-    JSON.stringify({ cdn, react, reactProbe, bootMs, results }, null, 2),
+    JSON.stringify(
+      { cdn, react, reactProbe, probed: [...probed.values()], bootMs, results },
+      null,
+      2,
+    ),
   );
   if (write && !only) {
     const file = resultsFileName(cdn.own ? null : cdnUrl);
     writeFileSync(
       path.join(APP_DIR, 'compat', file),
-      renderResults({ cdn, results, react, reactProbe, bootMs }),
+      renderResults({ cdn, results, react, reactProbe, probedUrls: probed.size, bootMs }),
     );
     console.log(`wrote compat/${file}`);
   }

@@ -214,6 +214,12 @@ cache and CDN outages". In short:
 - **Warm-up** (shell): after a build ran, its import map's URLs are fetched once per shell
   realm with `cache: 'force-cache'`, so React's other entry points are cached too. The web
   app's room lobby triggers it with an empty bundle (`TemplateWarmup`).
+- **The modules behind an entry URL** (T-035): esm.sh answers `/react@19.3.0` with a few lines
+  that re-export an internal build path (`/react@19.3.0/es2022/react.mjs`). The warm-up and
+  the checks below follow every module's static imports on the CDN's own origin
+  (`moduleImportUrls` in `@br/protocol`; at most 64 per check or warm-up), and report a
+  failure behind an entry under the entry's name. @br/pkg-cdn serves React as one module, so
+  there is nothing to follow there.
 - **Naming failures** (shell): when the module graph fails, or still waits after 8 s, the
   build's `packages` and then the rest of the import map are checked the same way (3 s
   each). The `module-load` error says `Package server unreachable: zustand@5.0.15`, `…not
@@ -222,7 +228,10 @@ cache and CDN outages". In short:
   bundler's package CSS diagnostics (`PackageFetchError`).
 - A network wait never trips the watchdog: the shell keeps answering pings.
 - e2e `cdn-outage.spec.ts`: the dev server's mock CDN takes an outage on
-  `POST /__test/cdn-outage?mode=refuse|error|hang|off` (`MockCdn.setOutage`).
+  `POST /__test/cdn-outage?mode=refuse|error|hang|off` (`MockCdn.setOutage`). It runs twice:
+  against the mock in its default layout, and in its esm.sh layout
+  (`playwright.esm-sh.config.ts`). Without following the entry modules' imports, the esm.sh
+  run fails: the warmed `react/jsx-dev-runtime` entry is cached but its module is not.
 
 ## Trust model
 
@@ -348,7 +357,8 @@ pnpm --filter @br/protocol --filter @br/runtime --filter @br/sandbox-shell lint
 # shell static build (prints shell.js size); writes apps/sandbox-shell/dist/{v1/,_headers}
 pnpm --filter @br/sandbox-shell build
 
-# e2e (Playwright, Chromium from /opt/pw-browsers; NOT part of `pnpm test`)
+# e2e (Playwright, Chromium from /opt/pw-browsers; NOT part of `pnpm test`): every suite,
+# then render + CDN outage again with the mock CDN in its esm.sh layout (test:e2e:esm-sh)
 pnpm --filter @br/runtime test:e2e
 
 # playground: http://localhost:4310 (shell on 127.0.0.1:4311, mock CDN on localhost:4312)
@@ -434,8 +444,10 @@ grace").
   - `destroy()` terminates the worker and disposes previews. The IndexedDB wipe lands with
     persistence.
 - **Shell config**: allowed app origins are baked in at build time (`BR_APP_ORIGINS`), and the
-  shell only accepts `connect` from `window.parent` at one of those origins. The CDN origin for
-  the CSP comes from `BR_CDN_ORIGIN`. Both default to placeholder production domains.
+  shell only accepts `connect` from `window.parent` at one of those origins. The CDN for the
+  CSP comes from `BR_PKG_CDN_URL`, the same base URL as the app's `NEXT_PUBLIC_PKG_CDN_URL`
+  (its origin goes into `script-src`; `BR_CDN_ORIGIN` is the older name). The default is the
+  public `https://esm.sh`, production's CDN on the free plan (T-035, docs/08-free-tier.md §4).
 - **Headers on every path** (T-009): the static `_headers` puts the security headers on `/*`
   and the local server sends them on 404s too. Besides CSP, `Permissions-Policy`, CORP,
   `Referrer-Policy` and `nosniff` there is `Origin-Agent-Cluster: ?1` (no `document.domain`,
@@ -490,7 +502,11 @@ grace").
   only at their installed versions; anything else gets a 404 with the reason. It accepts and
   ignores `deps=`, because it never emits peer URLs. `setOutage('refuse' | 'error' | 'hang' |
   null)` simulates an outage for the T-032 e2e (connection refused, a 502 without CORS
-  headers, or no answer until it ends).
+  headers, or no answer until it ends). With `layout: 'esm.sh'` (`CDN_LAYOUT=esm.sh` for the
+  dev server, T-035) every module URL answers like the public esm.sh: a few lines that
+  re-export an internal build path (`/react@19.3.0/X-…/es2022/react.mjs`) on the same origin,
+  which holds the module. `test:e2e` runs the render and CDN-outage suites a second time that
+  way (`playwright.esm-sh.config.ts`, ports 4316–4318).
 - Only the React entry points listed above are in the import map. Another `react-dom/*` subpath
   imported *from inside a CDN package* would fail to resolve (loudly).
 - Every rebuild is a full `esbuild.build()` (no incremental context yet), and there are no

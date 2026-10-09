@@ -2,7 +2,7 @@ declare namespace NodeJS {
   interface ProcessEnv {
     /** Sandbox shell URL for /playground and /play (inlined at build time). */
     readonly NEXT_PUBLIC_SANDBOX_SHELL_URL?: string;
-    /** esm.sh-compatible package CDN base URL (inlined at build time). */
+    /** esm.sh-compatible package CDN base URL (inlined at build time); https://esm.sh in production on the free plan (T-035). */
     readonly NEXT_PUBLIC_PKG_CDN_URL?: string;
     /** Supabase project URL. Default: the local stack, http://127.0.0.1:54321. */
     readonly NEXT_PUBLIC_SUPABASE_URL?: string;

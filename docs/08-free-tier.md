@@ -4,7 +4,8 @@ The user decided on 2026-10-09 to deploy on free plans only (docs/BOARD.md, T-03
 This document collects what that takes. §1 is the web app on Workers Free (T-033: it does
 not fit); §2 is what replaced it, the web app as a static site on Cloudflare Pages (T-037);
 §3 is the one piece of edge code left, the per-battle link previews (T-038: a Pages Function
-that fits); the other free-tier tasks add their own sections.
+that fits); §4 is the package CDN, the public esm.sh instead of our own (T-035); the other
+free-tier tasks add their own sections.
 
 ## 1. Web app on Workers Free (T-033)
 
@@ -648,4 +649,73 @@ pnpm --filter @br/web test:e2e:moderation  # link-preview.spec (crawler view, 40
 pnpm --filter @br/web test:e2e:solo        # og:image = the solo build's screenshot
 pnpm --filter @br/web test:e2e:multi       # og:image = the winner's screenshot
 pnpm --filter @br/web measure:cpu          # §3.3 (~15 min; --only/--warm/--cold to narrow it)
+```
+
+## 4. Package CDN (T-035)
+
+**Question:** can production use the public **esm.sh** as its package CDN, since our own
+`@br/pkg-cdn` would need Cloudflare Containers (paid only), and what does that change?
+
+### 4.1 Verdict
+
+**Yes, by configuration.** The runtime already emits esm.sh's URL shape (exact versions,
+`?external=react,react-dom`, `?deps=`, raw package CSS); the same URLs work on both CDNs
+(docs/03 "The package CDN" has the comparison). One thing was different and is fixed: esm.sh
+answers an entry URL such as `/react@19.3.0` with a re-export of an internal build path
+(`/react@19.3.0/es2022/react.mjs`), so the T-032 warm-up and package checks now follow those
+imports. **To confirm in CI** (this container cannot reach esm.sh): the compatibility suite
+with `compat_cdn=https://esm.sh` runs every case through esm.sh and checks every URL and every
+module behind it (no redirect, `max-age` ≥ 30 days, CORS, content type, same-origin imports).
+The run fails if the React import map breaks that contract or fewer than 90% of the cases pass.
+
+### 4.2 Settings
+
+The same base URL in every component, nothing else:
+
+| Component | Setting (build or start time) | Free plan value |
+|---|---|---|
+| Web app (`pnpm --filter @br/web build`) | `NEXT_PUBLIC_PKG_CDN_URL` | `https://esm.sh` |
+| Sandbox shell (`pnpm --filter @br/sandbox-shell build`) | `BR_PKG_CDN_URL` | `https://esm.sh` (the default) |
+| Capture worker / screenshot jobs | `PKG_CDN_URL` | `https://esm.sh` |
+
+The app's `_headers` CSP gets `connect-src https://esm.sh` (the bundler fetches package CSS);
+the shell's and the capture page's CSP get `script-src https://esm.sh`. A shell built for
+another CDN blocks every module: the preview shows "The build or one of its packages failed to
+load", and the browser console names the CSP. Costs: none (esm.sh is free).
+
+### 4.3 What it means
+
+- **A third party, no SLA** (R10): esm.sh is community-run and free, with no rate limits
+  documented that we know of (assumed: fair use covers us). An esm.sh outage is a package-CDN
+  outage: the T-032 behaviour (the browser's HTTP cache, warmed in the lobby and during SPIN;
+  "Package server unreachable: …" for packages a browser never loaded; screenshots in REVEAL)
+  applies unchanged, and the runbook has the esm.sh case
+  ([package-cdn-outage](runbooks/package-cdn-outage.md)).
+- **Cache lifetime:** T-032 relies on exact-version URLs being cached for long. Assumed for
+  esm.sh (`public, max-age=31536000, immutable` on entry URLs and internal paths); the CI
+  contract check shows it per URL.
+- **No denylist of ours:** `@br/pkg-cdn`'s denylist of compromised versions does not apply;
+  esm.sh's own policy does. Builds stay sandboxed (docs/03 §3.9).
+- **Build target per browser:** esm.sh picks the syntax level from the User-Agent (documented),
+  so the capture renderer and players may get different (equivalent) code for one URL.
+- **Not affected:** the bundler (esbuild-wasm) and the shell are our own static files; only
+  packages come from esm.sh.
+
+### 4.4 Switching back to our CDN
+
+Deploy `@br/pkg-cdn` (`apps/pkg-cdn/README.md`, and its "Origin outages" edge checklist), run
+the compatibility suite against it (`pnpm --filter @br/pkg-cdn compat --cdn <url>`, or the CI
+input `compat_cdn`), then set the three settings above to its URL and rebuild the app and the
+shell. Players' caches refill from the new origin (different URLs); nothing else changes.
+
+### 4.5 Verification
+
+```sh
+pnpm --filter @br/runtime test         # resolve.test: the esm.sh import map and module URLs
+pnpm --filter @br/sandbox-shell test   # headers.test: the esm.sh CSP; packages.test: entry modules followed
+pnpm --filter @br/pkg-cdn test         # compat-options / compat-urls / compat-contract tests
+pnpm --filter @br/runtime test:e2e     # render + CDN outage again against an esm.sh-shaped mock CDN
+pnpm --filter @br/pkg-cdn compat       # our CDN: 56/57, contract ok
+# GitHub Actions → CI → Run workflow: compat=true, compat_cdn=https://esm.sh (chaos and
+# loadtest off) → artifact compat-results/RESULTS-esm.sh.md
 ```

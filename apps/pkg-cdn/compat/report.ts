@@ -72,6 +72,8 @@ export function renderResults(run: {
   results: CaseResult[];
   react: CdnTiming;
   reactProbe: ProbeRecord[];
+  /** Distinct URLs the contract checked (every case, the modules behind them included). */
+  probedUrls: number;
   bootMs: number;
 }): string {
   const { cdn, results, react, reactProbe } = run;
@@ -114,10 +116,8 @@ export function renderResults(run: {
   );
   const reactProblems = reactProbe.flatMap((r) => r.problems);
   const withProblems = results.filter((r) => r.contract.problems.length > 0);
-  const checked = new Set([...reactProbe.map((r) => r.url), ...results.flatMap((r) => r.cdn.urls)])
-    .size;
   lines.push(
-    `- **CDN contract** (200 without a redirect, max-age ≥ 30 days, CORS, content type, imports only from the CDN's origin; compat/contract.ts): React import map ${reactProblems.length === 0 ? '**ok**' : `**${String(reactProblems.length)} problems**`} (${String(reactProbe.length)} URLs including the modules behind them); cases with problems: ${String(withProblems.length)} / ${String(results.length)}. About ${String(checked)} distinct URLs.`,
+    `- **CDN contract** (200 without a redirect, max-age ≥ 30 days, CORS, content type, imports only from the CDN's origin; compat/contract.ts): React import map ${reactProblems.length === 0 ? '**ok**' : `**${String(reactProblems.length)} problems**`} (${String(reactProbe.length)} URLs including the modules behind them); cases with problems: ${String(withProblems.length)} / ${String(results.length)}; ${String(run.probedUrls)} distinct URLs checked.`,
   );
   const notes = [
     ...new Set([

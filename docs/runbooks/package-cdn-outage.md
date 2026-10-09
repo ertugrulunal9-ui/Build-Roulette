@@ -1,9 +1,45 @@
 # Package CDN outage
 
+**Which CDN?** On the free plan, production uses the **public esm.sh** (`https://esm.sh`,
+T-035): see "esm.sh (free plan)" right below. The rest of this runbook is for our own CDN,
+`@br/pkg-cdn`, when it runs in production (a paid plan). Players see the same thing either
+way (Symptoms).
+
 `@br/pkg-cdn` (`apps/pkg-cdn`) serves npm packages as ES modules to every preview, the reveal
 and the screenshot renderer. It runs in Cloudflare Containers behind the Cloudflare cache:
 exact-version URLs are immutable, so the edge answers almost every request and the origin
 only bundles packages nobody asked for yet. It depends on the npm registry for those.
+
+## esm.sh (free plan)
+
+esm.sh is a third party: there is nothing of ours to restart. The player-facing behaviour and
+texts are the ones under Symptoms below ("Package server unreachable: …" names the package as
+the build imports it, also when a module behind esm.sh's entry URL is what failed); a failed
+esm.sh build shows as "Package server error (HTTP 500) for …: [esm.sh] …".
+
+Confirm that esm.sh itself answers (the template's React; expect `HTTP/2 200`, a long
+`cache-control`, `access-control-allow-origin: *`):
+
+```sh prod
+curl -sS -o /dev/null -D - "https://esm.sh/react@19.3.0" \
+  | grep -i -E '^(HTTP|cache-control|access-control-allow-origin|vary|cf-cache-status)'
+```
+
+Then:
+1. **esm.sh is down or slow for everyone:** wait. Players keep every package their browser
+   loaded (React for anyone who waited in a lobby or ran SPIN); new packages fail with the
+   texts above, screenshots fall back to client thumbnails. Note the time span for the
+   post-incident review.
+2. **Only some packages fail** (a 4xx/5xx for one URL, others fine): an esm.sh build problem
+   for that package or version. Nothing to do for the battle; if it persists, report it to
+   esm.sh and check the package with the compatibility suite
+   (`pnpm --filter @br/pkg-cdn compat --cdn https://esm.sh --only <package>`).
+3. **Long or repeated outages, or esm.sh changes its terms:** move to another CDN
+   (docs/08-free-tier.md §4 "Switching back to our CDN"): our own `@br/pkg-cdn` (needs a paid
+   plan for Containers, or another host), or another esm.sh-compatible CDN after the
+   compatibility suite passes against it. It is a configuration change: the app's
+   `NEXT_PUBLIC_PKG_CDN_URL`, the shell's `BR_PKG_CDN_URL`, the capture worker's
+   `PKG_CDN_URL`, then rebuild and deploy the app and the shell.
 
 What players see while it is down (T-032, docs/03-sandbox.md "Package cache and CDN
 outages"): every package their browser already loaded keeps working from the browser's

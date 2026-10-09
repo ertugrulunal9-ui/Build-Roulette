@@ -1,6 +1,7 @@
 import { expect, test, type Browser, type Locator, type Page } from '@playwright/test';
 import { watchCsp } from './csp';
 import { STATIC_CARD } from './helpers';
+import { crawl, one } from './link-preview';
 import {
   anonymousUserId,
   assertUuid,
@@ -26,8 +27,10 @@ import {
  *
  * The public pages are static shells that read the database on every load (T-037), so the
  * takedown shows on the very next page load of /battles/[id] and of the builder's /u/[id]:
- * no cache, nothing to revalidate. Their `og:image` is the static card (per-battle previews:
- * T-038).
+ * no cache, nothing to revalidate. The link preview of /battles/[id] (T-038: the Pages
+ * Function writes the head a crawler reads) follows on the very next request too: before the
+ * takedown it names the winner and shows its screenshot; after it, the static card, no winner,
+ * and not the runner-up's screenshot (e2e/link-preview.spec.ts has the other cases).
  *
  * The admin is a moderator in a browser that is also a player's (it reports, then dismisses,
  * a second build): the admin session lives in that tab's sessionStorage, never touches the
@@ -380,6 +383,12 @@ test('report → admin takedown → "Removed by moderators" and the screenshot i
   // ─── Right before the takedown, the public pages show the build ─────────────────
   await page.goto(battlePath);
   await expect(scamCard.getByTestId('public-build-name')).toContainText('Free Gift Card');
+  // …and so does the link preview a crawler reads (T-038): the winner and its screenshot.
+  const before = await crawl(page.request, battlePath);
+  expect(before.status).toBe(200);
+  expect(one(before, 'og:title')).toBe('Free Gift Card by Mallory');
+  expect(one(before, 'og:description')).toMatch(/^Winner: Free Gift Card by Mallory\. BUILD: /);
+  expect(one(before, 'og:image')).toBe(publicScreenshotUrl(fx.scam.path));
   await page.goto(`/u/${fx.mallory}`);
   await expect(page.getByTestId('history-build-name').first()).toHaveText('Free Gift Card');
 
@@ -450,10 +459,21 @@ test('report → admin takedown → "Removed by moderators" and the screenshot i
   await expect(page).toHaveTitle('A pomodoro timer · Battle results · Build Roulette');
   await scamCard.scrollIntoViewIfNeeded();
   await snap(page, 't028-removed-winner');
-  // The shell's social image is the static card for every battle until T-038: never the
-  // removed screenshot, nor Ana's.
-  const og = await page.locator('meta[property="og:image"]').getAttribute('content');
-  expect(og).toMatch(STATIC_CARD);
+  // The link preview, on the very next request (T-038, nothing cached): the static card,
+  // never the removed screenshot nor Ana's (nobody is promoted), and no winner named.
+  const after = await crawl(page.request, battlePath);
+  expect(after.status).toBe(200);
+  expect(after.headers['x-br-preview']).toBe('battle');
+  expect(one(after, 'og:image')).toMatch(STATIC_CARD);
+  expect(one(after, 'twitter:image')).toMatch(STATIC_CARD);
+  expect(after.titles).toEqual(['A pomodoro timer · Battle results · Build Roulette']);
+  expect(one(after, 'og:title')).toBe('A pomodoro timer · Battle results');
+  expect(one(after, 'og:description')).toBe(
+    'BUILD: A pomodoro timer · RULE: Only one button · STYLE: Brutalist · 5 min',
+  );
+  for (const gone of ['Free Gift Card', 'Mallory', 'Winner', fx.scam.path, fx.timer.path]) {
+    expect(after.html, gone).not.toContain(gone);
+  }
 
   // ─── …and on the builder's history, on its next load ────────────────────────────
   await page.goto(`/u/${fx.mallory}`);

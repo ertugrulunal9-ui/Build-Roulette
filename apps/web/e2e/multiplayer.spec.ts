@@ -1,6 +1,7 @@
 import type { Page } from '@playwright/test';
 import { expect, test } from './diagnostics';
 import { buildFrame, clickRouted } from './helpers';
+import { crawl, one } from './link-preview';
 import {
   FREEZE_BUTTON,
   battleOf,
@@ -471,11 +472,15 @@ test('a 3-player room: lobby → battle → ship and auto-ship → reveal → vo
   await expect(pub.locator('[data-testid=award][data-award=overall]')).toHaveCount(1);
   await expect(publicBuilds.nth(1).locator('[data-testid=award][data-source=vote]')).toHaveCount(0);
   await expect(publicBuilds.nth(2).locator('[data-award=style]')).toBeVisible();
-  // The social image: the static card the shell carries for every battle (T-037; per-battle
-  // previews with Bob's screenshot: T-038), served as a static file.
-  const ogUrl = await pub.locator('meta[property="og:image"]').getAttribute('content');
-  expect(ogUrl).toMatch(/\/og-card\.png$/);
-  const og = await pub.request.get('/og-card.png');
+  // The link preview (T-038, written at the edge for crawlers): the winner, Bob's build, with
+  // its screenshot from Storage.
+  const preview = await crawl(pub.request, `/battles/${battleId}`);
+  expect(preview.status).toBe(200);
+  expect(one(preview, 'og:title')).toMatch(/^Bob Turtle by /);
+  expect(one(preview, 'og:description')).toMatch(/^Winner: Bob Turtle by /);
+  const ogUrl = one(preview, 'og:image');
+  expect(ogUrl).toContain(`/storage/v1/object/public/screenshots/${battleId}/`);
+  const og = await pub.request.get(ogUrl);
   expect(og.status()).toBe(200);
   expect(og.headers()['content-type']).toMatch(/^image\//);
   await snap(pub, 'battle-page', true);

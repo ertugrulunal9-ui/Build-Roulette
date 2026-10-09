@@ -1,10 +1,11 @@
 /**
  * The title, description and social image of a battle's results page, from its public data.
  * The page sets the title in the browser (T-037: /battles/{id} is a static shell); the same
- * text is what a link preview should show (T-038 writes it into the shell's `og:*` tags at
- * the edge). A build a moderator removed is never named (T-028).
+ * text is what a link preview shows (T-038's Pages Function writes it into the shell's `og:*`
+ * tags at the edge: lib/hosting/battle-preview.ts). A build a moderator removed is never named
+ * (T-028), and nobody is named the winner in its place.
  */
-import { formatTimeLimit } from './format';
+import { formatTimeLimit, isWinner } from './format';
 import { battleOgImage, type OgImage } from './og-image';
 import type { PublicBattle } from './types';
 
@@ -25,7 +26,13 @@ export function battleMeta(data: PublicBattle): BattleMeta {
     top?.name && top.taken_down !== true
       ? `${top.name} by ${top.builder_name}`
       : `${data.challenge.build.text} · Battle results`;
-  const description = `BUILD: ${data.challenge.build.text} · RULE: ${data.challenge.rule.text} · STYLE: ${data.challenge.style.text} · ${formatTimeLimit(data.challenge.time_limit_seconds)}`;
+  // The winner as the page shows it (the Winner banner): rank 1 and not removed. A removed
+  // rank-1 build leaves the battle without a winner; the runner-up is not promoted.
+  const winner = data.builds.find(isWinner);
+  const challenge = `BUILD: ${data.challenge.build.text} · RULE: ${data.challenge.rule.text} · STYLE: ${data.challenge.style.text} · ${formatTimeLimit(data.challenge.time_limit_seconds)}`;
+  const description = winner?.name
+    ? `Winner: ${winner.name} by ${winner.builder_name}. ${challenge}`
+    : challenge;
   return { title, description, image: battleOgImage(data) };
 }
 

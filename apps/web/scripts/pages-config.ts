@@ -5,12 +5,15 @@
  * - Writes `out/_redirects` (the shells' rewrites) and `out/_headers` (security headers with
  *   a CSP built from this build's `NEXT_PUBLIC_*` values and the hashes of its inline
  *   scripts; a year's cache for `/_next/static/*`): src/lib/hosting/pages-config.ts.
+ * - Writes the link-preview Function (T-038): `out/_worker.js` (Pages advanced mode, bundled
+ *   with this build's `NEXT_PUBLIC_*` values and the `/*` headers) and `out/_routes.json`,
+ *   which limits it to `/battles/*` (scripts/preview-worker.ts).
  * - Fails the build when: a page the host needs is missing (`404.html`, every shell), a file
  *   holds a Supabase key that is not the public anon key (a service-role or user JWT, an
  *   `sb_secret_` key, or the value of `SUPABASE_SERVICE_ROLE_KEY` / `SERVICE_ROLE_KEY` /
- *   `SUPABASE_SECRET_KEY` from this environment), or a Pages limit is exceeded (header
- *   lines, rules, redirects, file count and size).
- * - Prints the export's size.
+ *   `SUPABASE_SECRET_KEY` from this environment; the worker is checked too), or a Pages
+ *   limit is exceeded (header lines, rules, redirects, file count and size).
+ * - Prints the export's size and the worker's.
  *
  *   tsx scripts/pages-config.ts [outDir]     (default: out)
  */
@@ -32,6 +35,7 @@ import { playgroundConfig } from '../src/lib/playground/config';
 import { supabaseConfig } from '../src/lib/supabase/config';
 import { turnstileSiteKey } from '../src/lib/supabase/turnstile';
 import { errorReportingEnabled, telemetryConfig } from '../src/lib/telemetry/config';
+import { bundlePreviewWorker, previewRoutesJson } from './preview-worker';
 
 const webDir = fileURLToPath(new URL('../', import.meta.url));
 const outDir = join(webDir, process.argv[2] ?? 'out');
@@ -43,8 +47,38 @@ function files(dir: string): string[] {
 }
 
 const problems: string[] = [];
-const all = files(outDir);
+const exported = files(outDir);
 const rel = (f: string) => relative(outDir, f);
+
+// ─── _headers and _redirects ─────────────────────────────────────────────────────
+const scriptHashes = exported
+  .filter((f) => f.endsWith('.html'))
+  .flatMap((f) => inlineScriptHashes(readFileSync(f, 'utf8')));
+const csp = contentSecurityPolicy({
+  supabaseUrl: supabaseConfig.url,
+  shellUrl: playgroundConfig.shellUrl,
+  cdnUrl: playgroundConfig.cdnBaseUrl,
+  sentryDsn: errorReportingEnabled() ? telemetryConfig.sentryDsn : null,
+  posthogHost: telemetryConfig.posthogKey ? telemetryConfig.posthogHost : null,
+  turnstile: turnstileSiteKey() !== null,
+  scriptHashes,
+});
+const rules = headerRules(csp);
+problems.push(...checkHeaders(rules));
+writeFileSync(join(outDir, '_headers'), headersFile(rules));
+writeFileSync(join(outDir, '_redirects'), pagesRedirects());
+if (SHELLS.length > PAGES_LIMITS.dynamicRedirects) problems.push('too many dynamic redirects');
+
+// ─── The link-preview Function (T-038) ───────────────────────────────────────────
+const everyPath = rules.find((r) => r.path === '/*');
+const worker = await bundlePreviewWorker({
+  env: process.env,
+  headers: Object.fromEntries(everyPath?.headers ?? []),
+});
+writeFileSync(join(outDir, '_worker.js'), worker);
+writeFileSync(join(outDir, '_routes.json'), previewRoutesJson());
+
+const all = files(outDir);
 
 // ─── The pages the host needs ────────────────────────────────────────────────────
 // A top-level 404.html also keeps Pages out of its single-page-app mode (every unknown path
@@ -70,27 +104,12 @@ for (const f of all) {
     if (text.includes(s)) problems.push(`${rel(f)} contains a secret key from the environment`);
 }
 
-// ─── _headers and _redirects ─────────────────────────────────────────────────────
-const scriptHashes = all
-  .filter((f) => f.endsWith('.html'))
-  .flatMap((f) => inlineScriptHashes(readFileSync(f, 'utf8')));
-const csp = contentSecurityPolicy({
-  supabaseUrl: supabaseConfig.url,
-  shellUrl: playgroundConfig.shellUrl,
-  cdnUrl: playgroundConfig.cdnBaseUrl,
-  sentryDsn: errorReportingEnabled() ? telemetryConfig.sentryDsn : null,
-  posthogHost: telemetryConfig.posthogKey ? telemetryConfig.posthogHost : null,
-  turnstile: turnstileSiteKey() !== null,
-  scriptHashes,
-});
-const rules = headerRules(csp);
-problems.push(...checkHeaders(rules));
-writeFileSync(join(outDir, '_headers'), headersFile(rules));
-writeFileSync(join(outDir, '_redirects'), pagesRedirects());
-if (SHELLS.length > PAGES_LIMITS.dynamicRedirects) problems.push('too many dynamic redirects');
-
 // ─── Size ────────────────────────────────────────────────────────────────────────
-const sizes = all.map((f) => ({ f, bytes: statSync(f).size }));
+// The files Pages serves (its own files are configuration, not assets).
+const PAGES_FILES = ['_headers', '_redirects', '_worker.js', '_routes.json'];
+const sizes = all
+  .filter((f) => !PAGES_FILES.includes(rel(f)))
+  .map((f) => ({ f, bytes: statSync(f).size }));
 if (sizes.length > PAGES_LIMITS.files) problems.push(`${String(sizes.length)} files`);
 for (const { f, bytes } of sizes) {
   if (bytes > PAGES_LIMITS.fileBytes)
@@ -105,6 +124,7 @@ console.log(
   [
     `pages-config: ${rel(join(outDir, '_headers'))}, _redirects written (CSP ${String(csp.length)} chars, ${String(new Set(scriptHashes).size)} inline script hashes)`,
     `export: ${String(sizes.length)} files, ${kib(total)} (JS ${String(js.length)} files, ${kib(js.reduce((n, s) => n + s.bytes, 0))}, ${kib(jsGzip)} gzip; largest ${largest ? `${rel(largest.f)} ${kib(largest.bytes)}` : '–'})`,
+    `preview Function: _worker.js ${kib(Buffer.byteLength(worker))} (${kib(gzipSync(worker).length)} gzip), _routes.json ${previewRoutesJson().trim().replace(/\s+/g, ' ')}`,
   ].join('\n'),
 );
 

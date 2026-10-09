@@ -532,7 +532,7 @@ export function createMockCdnHandler(opts: MockCdnOptions = {}) {
         internals.set(internal, key);
         const [, exports] = parseEsm(code);
         const s = JSON.stringify(internal);
-        body = `/* esm.sh-shaped mock - ${parsed.name}@${parsed.version}${parsed.subpath} */\nexport * from ${s};\n${exports.some((e) => e.name === 'default') ? `export { default } from ${s};\n` : ''}`;
+        body = `/* esm.sh-shaped mock - ${parsed.name}@${parsed.version}${parsed.subpath} */\nexport * from ${s};\n${exports.some((e) => e.type !== 'reexport-all' && e.name === 'default') ? `export { default } from ${s};\n` : ''}`;
       }
       send(res, 200, 'application/javascript; charset=utf-8', body, {
         'Cache-Control': 'public, max-age=31536000, immutable',

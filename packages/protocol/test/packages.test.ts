@@ -4,7 +4,7 @@ import {
   describePackageStall,
   errorDetail,
   isPackageStall,
-  leadingImports,
+  staticImports,
   moduleImportUrls,
   packageLabel,
 } from '../src/index';
@@ -101,11 +101,11 @@ describe('errorDetail', () => {
   });
 });
 
-describe('leadingImports', () => {
-  it('reads the leading static imports and re-exports of bundler output', () => {
+describe('staticImports', () => {
+  it('reads the static imports and re-exports of bundler output', () => {
     // An esm.sh entry module (the shape of /react-dom@19.3.0/client).
     expect(
-      leadingImports(
+      staticImports(
         '/* esm.sh - react-dom@19.3.0/client */\nimport "/scheduler@0.27.0/es2022/scheduler.mjs";\nexport * from "/react-dom@19.3.0/X-ZXJlYWN0/es2022/client.mjs";\nexport { default } from "/react-dom@19.3.0/X-ZXJlYWN0/es2022/client.mjs";\n',
       ),
     ).toEqual([
@@ -113,25 +113,27 @@ describe('leadingImports', () => {
       '/react-dom@19.3.0/X-ZXJlYWN0/es2022/client.mjs',
       '/react-dom@19.3.0/X-ZXJlYWN0/es2022/client.mjs',
     ]);
-    // Minified esbuild output: every clause shape, then code that only looks like imports.
+    // Minified esbuild output: every clause shape; strings, dynamic imports and import.meta
+    // are not static imports.
     expect(
-      leadingImports(
-        '"use strict";import*as e from"/a.mjs";import{jsx as t,Fragment as r}from"react/jsx-runtime";import n,{b as o}from\'./b.mjs\';export*from"/c.mjs";export{default}from"/d.mjs";import"/e.css";var s=\'import x from "/no.mjs"\';import("/lazy.mjs");',
+      staticImports(
+        '"use strict";import*as e from"/a.mjs";import{jsx as t,Fragment as r}from"react/jsx-runtime";import n,{b as o}from\'./b.mjs\';export*from"/c.mjs";export{default}from"/d.mjs";import"/e.css";var s=\'import x from "/no.mjs"\';import("/lazy.mjs");import.meta.url;importScripts("/w.js");export const a="/x.mjs";',
       ),
     ).toEqual(['/a.mjs', 'react/jsx-runtime', './b.mjs', '/c.mjs', '/d.mjs', '/e.css']);
   });
 
-  it('stops at the first other statement and at `max`', () => {
-    expect(leadingImports('const x = 1;\nimport "/late.mjs";')).toEqual([]);
-    expect(leadingImports('export const a = "/x.mjs";')).toEqual([]);
-    expect(leadingImports('import.meta.url;import "/x.mjs";')).toEqual([]);
-    expect(leadingImports('importScripts("/x.js");')).toEqual([]);
-    expect(leadingImports('import{fromEvent}from"rx";// c\n/* d */import"/y.mjs"')).toEqual([
+  it('finds imports after other code, as esbuild places them (after CommonJS helpers)', () => {
+    expect(
+      staticImports(
+        '/* @br/pkg-cdn @react-three/fiber@9.8.1 */\nvar fg=Object.create;var Ve,le=ud(()=>{Ve={}});var at={};gg(at,{default:()=>bg});import*as Ki from"react";var x=1}import{a}from"/three@0.186.1?external=react,react-dom"\nexport{y as default};',
+      ),
+    ).toEqual(['react', '/three@0.186.1?external=react,react-dom']);
+    expect(staticImports('import{fromEvent}from"rx";// c\n/* d */\nimport"/y.mjs"')).toEqual([
       'rx',
       '/y.mjs',
     ]);
-    expect(leadingImports('import "/1";import "/2";import "/3";', 2)).toEqual(['/1', '/2']);
-    expect(leadingImports('')).toEqual([]);
+    expect(staticImports('import "/1";import "/2";import "/3";', 2)).toEqual(['/1', '/2']);
+    expect(staticImports('')).toEqual([]);
   });
 });
 

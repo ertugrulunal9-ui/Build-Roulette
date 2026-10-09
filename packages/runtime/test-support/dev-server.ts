@@ -200,7 +200,7 @@ if (isMain) {
   });
   console.log(`playground  ${servers.appUrl}`);
   console.log(`shell       ${servers.shellUrl} (shell.js ${String(servers.shellJsBytes)} B)`);
-  console.log(`mock CDN    ${servers.cdnUrl} (${env['CDN_LAYOUT'] || 'bundle'} layout)`);
+  console.log(`mock CDN    ${servers.cdnUrl} (${parseLayout(env['CDN_LAYOUT'])} layout)`);
   const stop = () => {
     void servers.close().then(() => process.exit(0));
   };

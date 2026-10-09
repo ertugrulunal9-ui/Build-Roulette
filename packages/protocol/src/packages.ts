@@ -109,55 +109,41 @@ export function errorDetail(body: string, max = 200): string {
   return line.length > max ? `${line.slice(0, max - 1)}…` : line;
 }
 
-/** Whitespace, block comments and line comments between a module's leading statements. */
-const SKIP_RE = /(?:\s+|\/\*[\s\S]*?\*\/|\/\/[^\n]*(?:\n|$))*/y;
-/** `"use strict";` and other directives (string-only statements) at the very top. */
-const DIRECTIVE_RE = /(["'])[\w -]*\1\s*;?/y;
 /**
- * One static import or re-export with a module specifier: `import x from "a"`, `import "a"`,
- * `import*as x from"a"`, `export * from "a"`, `export{default}from"a"`. The clause before
- * `from` never holds quotes, parentheses, `=` or `;`, so the match cannot run into code.
+ * A static import or re-export with a module specifier, at the start of a statement (the
+ * start of the module, or after `;`, `}`, `)` or a line break): `import x from "a"`,
+ * `import "a"`, `import*as x from"a"`, `export * from "a"`, `export{default}from"a"`. The
+ * clause before `from` never holds quotes, parentheses, `=` or `;`, so a match cannot run
+ * across code; `import("a")` (dynamic) and `import.meta` do not match.
  */
-const STATIC_IMPORT_RE = /(?:import|export)\s*(?:[^"'`;()=]*?\bfrom\s*)?(["'])([^"'\r\n]+)\1\s*;?/y;
+const STATIC_IMPORT_RE =
+  /(?:^|[;})\n])[ \t]*(?:import|export)\s*(?:[^"'`;()=]*?\bfrom\s*)?(["'])([^"'\r\n]+)\1/g;
 
 /**
- * The specifiers of a module's leading static imports and re-exports, up to the first other
- * statement (at most `max`). Bundlers (esbuild, so @br/pkg-cdn and esm.sh) put every static
- * import at the top of their output, so this finds a CDN module's dependencies without a
- * parser, and text further down (strings, comments, code) is never taken for an import.
- * Dynamic `import()` is not followed: those modules load later, if at all.
+ * The specifiers of a module's static imports and re-exports, in order (at most `max`), found
+ * without a parser: CDN modules are bundler output (esbuild, for @br/pkg-cdn and esm.sh), one
+ * statement after another. esbuild puts a module's imports where that module starts, so they
+ * are not all at the top (after its CommonJS helpers, for example). Text inside a string that
+ * looks like a statement could be taken for one; callers only follow paths on the CDN's own
+ * origin (`moduleImportUrls`), so at worst that is one extra request to the CDN.
  */
-export function leadingImports(source: string, max = 64): string[] {
+export function staticImports(source: string, max = 64): string[] {
   const out: string[] = [];
-  let pos = 0;
-  const skip = () => {
-    SKIP_RE.lastIndex = pos;
-    if (SKIP_RE.exec(source)) pos = SKIP_RE.lastIndex;
-  };
-  skip();
-  for (;;) {
-    DIRECTIVE_RE.lastIndex = pos;
-    if (!DIRECTIVE_RE.exec(source)) break;
-    pos = DIRECTIVE_RE.lastIndex;
-    skip();
-  }
-  while (out.length < max) {
-    STATIC_IMPORT_RE.lastIndex = pos;
-    const m = STATIC_IMPORT_RE.exec(source);
-    if (!m?.[2]) break;
-    out.push(m[2]);
-    pos = STATIC_IMPORT_RE.lastIndex;
-    skip();
+  STATIC_IMPORT_RE.lastIndex = 0;
+  for (const m of source.matchAll(STATIC_IMPORT_RE)) {
+    if (out.length >= max) break;
+    if (m[2]) out.push(m[2]);
   }
   return out;
 }
 
 /**
- * The modules a CDN module loads from its own origin: its leading imports that are URLs or
- * paths (`/react@19.3.0/es2022/react.mjs`, `./x.mjs`, `https://same.origin/…`), resolved
- * against `moduleUrl`. Bare specifiers (`react`) are the import map's; another origin is
- * not the CDN's. esm.sh answers an entry URL with a few lines that re-export such internal
- * build paths; @br/pkg-cdn's peer URLs (`/three@0.186.1?external=…`) are found the same way.
+ * The modules a CDN module loads from its own origin: its static imports that are paths or
+ * URLs (`/react@19.3.0/es2022/react.mjs`, `./x.mjs`, `https://same.origin/…`), resolved
+ * against `moduleUrl`, without repeats. Bare specifiers (`react`) are the import map's, and
+ * another origin is not the CDN's. esm.sh answers an entry URL with a few lines that
+ * re-export such internal build paths; @br/pkg-cdn's peer URLs (`/three@0.186.1?external=…`)
+ * are found the same way.
  */
 export function moduleImportUrls(source: string, moduleUrl: string, max = 64): string[] {
   let base: URL;
@@ -167,7 +153,8 @@ export function moduleImportUrls(source: string, moduleUrl: string, max = 64): s
     return [];
   }
   const out = new Set<string>();
-  for (const spec of leadingImports(source, max)) {
+  for (const spec of staticImports(source)) {
+    if (out.size >= max) break;
     if (!/^(?:\/|\.\.?\/|https?:\/\/)/i.test(spec)) continue;
     let url: URL;
     try {

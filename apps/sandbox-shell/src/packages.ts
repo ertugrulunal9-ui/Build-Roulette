@@ -119,7 +119,7 @@ export async function checkPackage(
   url: string,
   fetchFn: FetchLike,
   timeoutMs = CHECK_TIMEOUT_MS,
-  seen: Set<string> = new Set([url]),
+  seen = new Set<string>([url]),
   budget = { left: MAX_FOLLOWED },
 ): Promise<PackageFailure | null> {
   const ctrl = new AbortController();

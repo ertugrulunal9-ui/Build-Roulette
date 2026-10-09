@@ -38,7 +38,10 @@ const appOrigins = (process.env['BR_APP_ORIGINS'] ?? 'https://buildroulette.app'
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean);
-const setting = (name: string) => process.env[name]?.trim() || undefined;
+const setting = (name: string): string | undefined => {
+  const value = process.env[name]?.trim();
+  return value === '' ? undefined : value;
+};
 const cdnOrigin = cdnOriginOf(
   setting('BR_PKG_CDN_URL') ?? setting('BR_CDN_ORIGIN') ?? PUBLIC_ESM_SH_URL,
 );

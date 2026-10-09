@@ -393,6 +393,30 @@ export function App() {
   return <div><div style={{ width: 200, height: 200 }}><Canvas onCreated={() => setS('created')}><mesh><boxGeometry /><meshBasicMaterial color="hotpink" /></mesh></Canvas></div><div data-testid="marker">ok:{s}</div></div>;
 }`,
   }),
+  // T-035: the app's `three` and fiber's peer `three` must be one module. @br/pkg-cdn emits the
+  // peer with the request's query, which is the app's own URL; on esm.sh it depends on how it
+  // resolves a peer under `?deps=`.
+  c({
+    id: '@react-three/fiber (one three)',
+    name: '@react-three/fiber',
+    version: '9.8.1',
+    category: '3d-canvas-games',
+    deps: { three: '0.186.1' },
+    checks: "fiber's scene is an instance of the app's own THREE.Scene",
+    expected: 'ok:true',
+    app: `import { useEffect, useState } from 'react';
+import * as THREE from 'three';
+import { Canvas, useThree } from '@react-three/fiber';
+function Probe({ report }: { report: (s: string) => void }) {
+  const scene = useThree((s) => s.scene);
+  useEffect(() => { report(String(scene instanceof THREE.Scene)); }, [scene]);
+  return null;
+}
+export function App() {
+  const [s, setS] = useState('');
+  return <div><div style={{ width: 100, height: 100 }}><Canvas><Probe report={setS} /></Canvas></div><div data-testid="marker">ok:{s}</div></div>;
+}`,
+  }),
   c({
     id: 'pixi.js',
     name: 'pixi.js',
@@ -1034,6 +1058,34 @@ function Home() {
 }
 export function App() {
   return <MemoryRouter><Routes><Route path="/" element={<Home />} /><Route path="/about" element={<div data-testid="marker">ok:about</div>} /></Routes></MemoryRouter>;
+}`,
+  }),
+  // T-035: one react-dom instance across the import map. react-dom/client registers its
+  // renderer on the internals of the `react-dom` it imports; `flushSync` from the app's
+  // `react-dom` only flushes when that is the same module (a second copy flushes nothing).
+  // On esm.sh this depends on how it resolves react-dom/client's own `react-dom` import.
+  c({
+    id: 'react-dom (flushSync, one instance)',
+    name: 'react-dom',
+    version: REACT_VERSION,
+    category: 'misc',
+    checks: "flushSync from 'react-dom' commits a render started by react-dom/client",
+    expected: 'ok:sync',
+    app: `import { useEffect, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
+export function App() {
+  const [n, setN] = useState(0);
+  const [result, setResult] = useState('');
+  const span = useRef<HTMLSpanElement>(null);
+  useEffect(() => {
+    // Outside React's own work (an effect would defer the flush).
+    const t = setTimeout(() => {
+      flushSync(() => setN(1));
+      setResult(span.current?.textContent === '1' ? 'sync' : 'not-sync');
+    }, 0);
+    return () => clearTimeout(t);
+  }, []);
+  return <div><span ref={span}>{n}</span><div data-testid="marker">ok:{result}</div></div>;
 }`,
   }),
 ];

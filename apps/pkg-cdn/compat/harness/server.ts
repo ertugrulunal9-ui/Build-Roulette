@@ -5,6 +5,8 @@
  *   app (harness page + bundler worker + esbuild.wasm)  http://localhost:<port>
  *   sandbox shell (/v1/)                                http://127.0.0.1:<port>  (different site)
  *   package CDN (@br/pkg-cdn, npm registry)             http://localhost:<port>
+ *     or an external one (`--cdn https://esm.sh`, T-035): not started, the shell's CSP allows
+ *     its origin and the runtime uses its base URL, as a production build would.
  *
  * The page and worker are built from `@br/runtime`'s public exports (`.` and `./worker`), so
  * nothing in packages/runtime is imported by relative path.
@@ -15,6 +17,7 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as esbuild from 'esbuild';
+import { cdnOriginOf } from '@br/sandbox-shell/headers';
 import { startShellServer } from '@br/sandbox-shell/server';
 import type { CdnConfig } from '../../src/config';
 import { startCdnServer, type CdnServer } from '../../src/server';
@@ -24,9 +27,15 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 export interface Harness {
   appUrl: string;
   shellUrl: string;
-  cdn: CdnServer;
+  /** The CDN base URL the runtime uses. */
+  cdnUrl: string;
+  /** Our own CDN when the harness started it; null for an external CDN. */
+  cdn: CdnServer | null;
   close(): Promise<void>;
 }
+
+/** Our own CDN (started with this configuration) or an external CDN's base URL. */
+export type HarnessCdn = { config: CdnConfig } | { externalUrl: string };
 
 async function bundleForBrowser(
   entry: string,
@@ -59,13 +68,17 @@ function listen(server: Server, host: string): Promise<number> {
 }
 
 export async function startHarness(
-  cdnConfig: CdnConfig,
+  cdnChoice: HarnessCdn,
   log?: (line: string) => void,
 ): Promise<Harness> {
-  const cdn = await startCdnServer(
-    { ...cdnConfig, host: 'localhost', port: 0 },
-    log ? { log } : {},
-  );
+  const cdn =
+    'config' in cdnChoice
+      ? await startCdnServer(
+          { ...cdnChoice.config, host: 'localhost', port: 0 },
+          log ? { log } : {},
+        )
+      : null;
+  const cdnUrl = cdn ? cdn.url : (cdnChoice as { externalUrl: string }).externalUrl;
 
   let handler: Parameters<typeof createServer>[1] = (_req, res) => {
     res.writeHead(503);
@@ -80,7 +93,7 @@ export async function startHarness(
     port: 0,
     host: '127.0.0.1',
     appOrigins: [appOrigin],
-    cdnOrigin: cdn.url,
+    cdnOrigin: cdnOriginOf(cdnUrl),
   });
 
   const require = createRequire(import.meta.url);
@@ -89,7 +102,7 @@ export async function startHarness(
     bundleForBrowser(path.join(HERE, 'page.ts'), {
       __COMPAT_CONFIG__: JSON.stringify({
         shellUrl: shell.shellUrl,
-        cdnBaseUrl: cdn.url,
+        cdnBaseUrl: cdnUrl,
         wasmUrl: '/esbuild.wasm',
         workerUrl: '/bundler.worker.js',
       }),
@@ -122,11 +135,12 @@ export async function startHarness(
   return {
     appUrl: `${appOrigin}/`,
     shellUrl: shell.shellUrl,
+    cdnUrl,
     cdn,
     close: async () => {
       await Promise.all([
         shell.close(),
-        cdn.close(),
+        cdn?.close(),
         new Promise<void>((resolve) => {
           app.close(() => {
             resolve();

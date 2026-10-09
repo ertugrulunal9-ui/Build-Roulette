@@ -362,7 +362,7 @@ describe('esm.sh as the package CDN (T-035)', () => {
     ).toEqual(esm.map((r) => (r.kind === 'cdn' || r.kind === 'cdn-css' ? r.url : r)));
     // No `target=`: esm.sh picks it from the User-Agent (Vary: User-Agent), pkg-cdn defaults
     // to es2022. Adding one here would split pkg-cdn's peer URLs from the user's imports.
-    for (const r of esm) expect(r.kind !== 'error' && r.url).not.toContain('target=');
+    for (const r of esm) expect('url' in r ? r.url : '').not.toContain('target=');
   });
 });
 

@@ -78,7 +78,7 @@ export function PreviewPane({
                 {snapshot.bundlerError ?? "Couldn't start the bundler."}
               </p>
               <p className="text-sm text-zinc-600 dark:text-zinc-400">
-                Your code is saved in this browser. Check your connection, then try again.
+                Your code is saved in this browser. Check your connection, then retry.
               </p>
               <button
                 type="button"

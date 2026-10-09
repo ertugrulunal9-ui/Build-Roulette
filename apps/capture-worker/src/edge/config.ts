@@ -156,6 +156,16 @@ export function loadFunctionConfig(env: Record<string, string | undefined>): Fun
   const windowMs = int('JOBS_RUN_WINDOW_MS', OPTIONAL.JOBS_RUN_WINDOW_MS, 1_000, 300_000);
   const hardStopMs = int('JOBS_RUN_HARD_STOP_MS', OPTIONAL.JOBS_RUN_HARD_STOP_MS, 5_000, 390_000);
   if (hardStopMs < windowMs) problems.push('JOBS_RUN_HARD_STOP_MS must be >= JOBS_RUN_WINDOW_MS');
+  const signedUrlTtlSeconds = int(
+    'CAPTURE_SIGNED_URL_TTL_S',
+    OPTIONAL.CAPTURE_SIGNED_URL_TTL_S,
+    30,
+    600,
+  );
+  const budget = {
+    limitMs: int('BROWSER_BUDGET_MS_PER_DAY', OPTIONAL.BROWSER_BUDGET_MS_PER_DAY, 0, 86_400_000),
+    reserveMs: int('BROWSER_RESERVE_MS', OPTIONAL.BROWSER_RESERVE_MS, 1_000, 120_000),
+  };
 
   if (problems.length > 0) throw new FunctionConfigError(problems);
   return {
@@ -167,20 +177,12 @@ export function loadFunctionConfig(env: Record<string, string | undefined>): Fun
       shellCaptureUrl,
       hmacSecret,
       pkgCdnUrl,
-      signedUrlTtlSeconds: int(
-        'CAPTURE_SIGNED_URL_TTL_S',
-        OPTIONAL.CAPTURE_SIGNED_URL_TTL_S,
-        30,
-        600,
-      ),
+      signedUrlTtlSeconds,
       captureTimeoutMs,
       viewport: { ...FUNCTION_VIEWPORT },
     },
     browserRendering: { apiUrl, accountId, apiToken, minIntervalMs },
-    budget: {
-      limitMs: int('BROWSER_BUDGET_MS_PER_DAY', OPTIONAL.BROWSER_BUDGET_MS_PER_DAY, 0, 86_400_000),
-      reserveMs: int('BROWSER_RESERVE_MS', OPTIONAL.BROWSER_RESERVE_MS, 1_000, 120_000),
-    },
+    budget,
     run: { windowMs, hardStopMs, jobTimeoutMs },
     logLevel: level as LogLevel,
   };

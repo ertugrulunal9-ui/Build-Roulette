@@ -1553,6 +1553,16 @@ function loadFunctionConfig(env) {
   const windowMs = int("JOBS_RUN_WINDOW_MS", OPTIONAL.JOBS_RUN_WINDOW_MS, 1e3, 3e5);
   const hardStopMs = int("JOBS_RUN_HARD_STOP_MS", OPTIONAL.JOBS_RUN_HARD_STOP_MS, 5e3, 39e4);
   if (hardStopMs < windowMs) problems.push("JOBS_RUN_HARD_STOP_MS must be >= JOBS_RUN_WINDOW_MS");
+  const signedUrlTtlSeconds = int(
+    "CAPTURE_SIGNED_URL_TTL_S",
+    OPTIONAL.CAPTURE_SIGNED_URL_TTL_S,
+    30,
+    600
+  );
+  const budget = {
+    limitMs: int("BROWSER_BUDGET_MS_PER_DAY", OPTIONAL.BROWSER_BUDGET_MS_PER_DAY, 0, 864e5),
+    reserveMs: int("BROWSER_RESERVE_MS", OPTIONAL.BROWSER_RESERVE_MS, 1e3, 12e4)
+  };
   if (problems.length > 0) throw new FunctionConfigError(problems);
   return {
     supabaseUrl,
@@ -1563,20 +1573,12 @@ function loadFunctionConfig(env) {
       shellCaptureUrl,
       hmacSecret,
       pkgCdnUrl,
-      signedUrlTtlSeconds: int(
-        "CAPTURE_SIGNED_URL_TTL_S",
-        OPTIONAL.CAPTURE_SIGNED_URL_TTL_S,
-        30,
-        600
-      ),
+      signedUrlTtlSeconds,
       captureTimeoutMs,
       viewport: { ...FUNCTION_VIEWPORT }
     },
     browserRendering: { apiUrl, accountId, apiToken, minIntervalMs },
-    budget: {
-      limitMs: int("BROWSER_BUDGET_MS_PER_DAY", OPTIONAL.BROWSER_BUDGET_MS_PER_DAY, 0, 864e5),
-      reserveMs: int("BROWSER_RESERVE_MS", OPTIONAL.BROWSER_RESERVE_MS, 1e3, 12e4)
-    },
+    budget,
     run: { windowMs, hardStopMs, jobTimeoutMs },
     logLevel: level
   };

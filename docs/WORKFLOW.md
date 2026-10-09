@@ -64,7 +64,11 @@ PLAN → BRIEF → DISPATCH → REVIEW → MERGE / FIX → NEXT WAVE
 - **Not reachable:** esm.sh and other external CDNs, and github.com (except git push
   through the proxy). Tests must not depend on them, so use local mock servers.
 - Docker works once the daemon is started (`dockerd &`). Docker Hub pulls work, but `public.ecr.aws` is blocked. **The local Supabase stack runs** with
-  `SUPABASE_INTERNAL_IMAGE_REGISTRY=docker.io npx -y supabase@2.119.0 start -x studio,imgproxy,vector,logflare,edge-runtime,supavisor,mailpit`.
+  `SUPABASE_INTERNAL_IMAGE_REGISTRY=docker.io npx -y supabase@2.119.0 start -x studio,imgproxy,vector,logflare,supavisor,mailpit,postgres-meta`.
+  Since T-034 the Edge Runtime stays on: the jobs function (`supabase/functions/jobs`) replaces the
+  capture worker in the web e2e and in `pnpm --filter @br/capture-worker test:function`. If Docker Hub
+  rate-limits its image, pull `mirror.gcr.io/supabase/edge-runtime:<tag>` and `docker tag` it as
+  `supabase/edge-runtime:<tag>` (supabase/README.md).
   Verified: migrations apply on Supabase Postgres 17, `supabase test db` passes 194/194, and anonymous sign-up returns 200.
   The containers are named after `project_id`, so only one worktree may run the stack at a time.
   Since T-011, DB tests run only on this stack (`supabase db reset && supabase test db`, plus `node supabase/scripts/e2e-solo.mjs`); the old `scripts/test.sh` harness was retired.

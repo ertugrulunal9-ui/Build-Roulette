@@ -52,7 +52,9 @@ const shell = await startShellServer({
 const control = await startOutageControl(cdn, controlPort);
 
 console.log(`sandbox shell  ${shell.shellUrl}  (allows ${appOrigins.join(', ')})`);
-console.log(`mock CDN       ${cdn.url}  (outages: POST ${control.url}/cdn-outage?mode=…)`);
+console.log(
+  `mock CDN       ${cdn.url}  (${parseLayout(env['CDN_LAYOUT'])} layout; outages: POST ${control.url}/cdn-outage?mode=…)`,
+);
 
 const stop = () => {
   void Promise.all([shell.close(), cdn.close(), control.close()]).then(() => process.exit(0));

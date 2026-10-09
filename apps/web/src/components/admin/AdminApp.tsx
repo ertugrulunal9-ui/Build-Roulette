@@ -165,9 +165,14 @@ function AdminConsole({ client }: { client: AdminClient }) {
         ? adminRpc<RoomLog>(client, 'admin_room_log', { p_code: lookup.code })
         : none,
       adminRpc<AdminAction[]>(client, 'admin_action_log', { p_limit: 20 }),
-    ]).then(([health, queue, battle, room, actions]) => {
-      if (live) setData({ health, queue, battle, room, actions });
-    });
+    ]).then(
+      ([health, queue, battle, room, actions]) => {
+        if (live) setData({ health, queue, battle, room, actions });
+      },
+      (e: unknown) => {
+        if (live) setFlash({ error: e instanceof Error ? e.message : String(e) });
+      },
+    );
     return () => {
       live = false;
     };
@@ -179,10 +184,15 @@ function AdminConsole({ client }: { client: AdminClient }) {
   const act = useCallback(
     async (fn: string, args: Record<string, unknown>, done: (data: unknown) => Flash) => {
       setBusy(true);
-      const res = await adminRpc<unknown>(client, fn, args);
-      setFlash(res.error ? { error: res.error } : done(res.data));
-      setRefresh((n) => n + 1);
-      setBusy(false);
+      try {
+        const res = await adminRpc<unknown>(client, fn, args);
+        setFlash(res.error ? { error: res.error } : done(res.data));
+      } catch (e) {
+        setFlash({ error: e instanceof Error ? e.message : String(e) });
+      } finally {
+        setRefresh((n) => n + 1);
+        setBusy(false);
+      }
     },
     [client],
   );

@@ -5,9 +5,10 @@ must go, or someone flooding the game. The tools: `/admin` (report queue, takedo
 room logs), the name filter and the rate limits (supabase/README.md "Abuse controls").
 
 **Take builds down from `/admin`.** It hides the build at once everywhere, deletes its
-screenshot (the capture worker's takedown job), marks its reports actioned, logs who did it,
-and expires the cached public pages. A takedown made with SQL does all of that **except** the
-cache: follow it with "Refresh public copies" ([cache-not-revalidating.md](cache-not-revalidating.md)).
+screenshot (the capture worker's takedown job), marks its reports actioned and logs who did
+it. A takedown made with SQL through the same RPC (step 2) does exactly the same: the public
+pages read the database on every load, there is no cache to expire (T-037). If a removed build
+still shows somewhere, see [removed-content-still-visible.md](removed-content-still-visible.md).
 
 ## Symptoms
 
@@ -56,8 +57,7 @@ limit 20;
 
 2. **`/admin` is unavailable** (it needs the web app): take it down with SQL, as the admin.
    This sets the admin's identity for this transaction only and calls the same RPC the page
-   does, so the checks and the log are the same. Then refresh the cached pages from `/admin`
-   once it is back.
+   does, so the checks, the log and the screenshot delete are the same.
 
    ```sql write
    -- Takes build {{build_id}} down as the admin {{admin_email}} (same RPC as /admin).
@@ -73,7 +73,7 @@ limit 20;
    ```
 
 3. **A player's name** (on a permanent results page or their history): replace it on every
-   battle they played and in their profile, then refresh the public copies of those battles.
+   battle they played and in their profile. The pages show the new name on their next load.
 
    ```sql write
    -- Replaces player {{user_id}}'s display name everywhere it is shown.
@@ -114,8 +114,8 @@ limit 20;
 
 ## Verify
 
-- The public page shows "Removed by moderators" without its screenshot on the first request
-  (and the OG image, and the builder's `/u/<id>`).
+- The public page shows "Removed by moderators" without its screenshot on its next load
+  (and so does the builder's `/u/<id>`).
 - The screenshot is gone from Storage and the takedown job is done (Health → Jobs →
   takedown "Done 1 h"):
 

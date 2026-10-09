@@ -1,41 +1,50 @@
 # @br/web
 
-The Next.js app (App Router). Routes:
+The Next.js app (App Router), exported as static files (`output: 'export'`) and served by
+Cloudflare Pages (T-037; [DEPLOY.md](DEPLOY.md)). There is no server: every page is a file,
+and data loads in the browser from Supabase. Routes:
 
 | Route | What |
 |---|---|
 | `/` | Landing page: "Play solo" (`/play`), "Create room" (a name → `create_room` → `/r/{code}`) and "Join with code" (any case, trimmed, or a pasted invite link). |
 | `/play` | The solo game: name → SPIN → BUILD → SHIP → RESULTS → DESTROY. `?battle={id}` resumes a battle after a refresh. |
-| `/battles/[id]` | The permanent, shareable results page (server-rendered, ISR). Cached for an hour once the battle is settled, seconds before that; a takedown shows at once ("Caching" below). Its `og:image` is the rank-1 build's screenshot (Supabase Storage), or the static `public/og-card.png` when there is none or it was taken down (`src/lib/solo/og-image.ts`; T-033: no card is drawn per request, `pnpm og-card` redraws the static one). |
+| `/battles/[id]` | The permanent, shareable results page. One static shell for every battle (`src/app/battles/page.tsx`; the host rewrites `/battles/{id}` to it, "Static site" below): the browser reads the id from the URL and calls `get_public_battle` on every load, so a takedown shows on the next load. Its link preview is the static `public/og-card.png` for every battle (`pnpm og-card` redraws it) until T-038's Pages Function writes each battle's own tags (`src/lib/solo/battle-meta.ts`, `og-image.ts`: the rank-1 screenshot, or the card when there is none or it was taken down). |
 | `/playground` | Single-player editor and live preview, no game. |
-| `/r/[code]` | A room (M3): join → lobby → SPIN → BUILD → SHIP → REVEAL → VOTE → RESULTS → DESTROY → lobby (rematch). One prerendered page (`src/app/r/page.tsx`) serves every room: `next.config.ts` rewrites `/r/{code}` to it and the code is read in the browser (T-033, so the Worker answers it from the cache). |
-| `/u/[id]` | A player's history (M4): their finished battles, newest first, server-rendered from `get_player_history` with the anon key, paginated (`?before=…&before_battle=…`). Rendered per request from data at most a minute old. |
-| `/admin` | Moderation (M5, T-024), server-rendered: the report queue (dismiss, take down), the battle / room event logs (`?q={battle id or room code}`), the admin log, and **Health** (T-030: `admin_ops_health`, the signals of docs/runbooks/). **A plain 404 for everyone who is not a signed-in admin.** |
+| `/r/[code]` | A room (M3): join → lobby → SPIN → BUILD → SHIP → REVEAL → VOTE → RESULTS → DESTROY → lobby (rematch). One static shell (`src/app/r/page.tsx`) serves every room: the host rewrites `/r/{code}` to it and the code is read in the browser (T-033, T-037). |
+| `/u/[id]` | A player's history (M4): their finished battles, newest first, from `get_player_history` with the anon key, paginated (`?before=…&before_battle=…`). One static shell (`src/app/u/page.tsx`); the browser reads the id and the cursor from the URL and the data on every load. |
+| `/admin` | Moderation (M5, T-024), in the browser with the moderator's own session ("Moderation" below): the report queue (dismiss, take down), the battle / room event logs (`?q={battle id or room code}`), the admin log, and **Health** (T-030: `admin_ops_health`, the signals of docs/runbooks/). **The plain "not found" screen for everyone who is not a signed-in admin.** |
 | `/admin/sign-in` | The moderators' email/password sign-in (not linked, not indexed). |
 
-## Caching (T-026)
+## Static site (T-037)
 
-The permanent pages are cached; the rules are in `src/lib/cache/policy.ts`, the Cloudflare
-side (R2, D1, Durable Object queue) in [DEPLOY.md](DEPLOY.md), "Caching".
+`next build` exports the app to `out/` (`next.config.ts`: `output: 'export'`), then
+`scripts/pages-config.ts` adds the host's files and checks the export
+(docs/08-free-tier.md §2 has the why and the trade-offs):
 
-- **`/battles/[id]`** is ISR: rendered on the first visit, then served
-  from the cache. They read `get_public_battle` through a `'use cache'` function
-  (`loadPublicBattle`) whose lifetime depends on the answer: **an hour** once the battle is
-  DESTROYED with `destroyed_at` set, **5 s** before that (screenshots land, then the destroy
-  job) and for a battle that is not public yet (its 404 doesn't stick). Tag `battle:{id}`.
-- **`/u/[id]`** reads its page from the query string, so it renders per request; its data
-  (`loadPlayerHistory`) is cached for at most a minute, and for 5 s only while it says "No
-  battles to show" or lists a battle that is not settled. Tagged with the player and every
-  battle on the page.
-- **A takedown** in `/admin` expires `battle:{id}` (`updateTag`): the battle's page (its
-  `og:image` becomes the static card) and every history page listing it show the removal on
-  the next request. Ten seconds later the page is expired once more (a copy rendered just
-  before the takedown could have landed just after it). Nothing else in `/admin` changes a
-  public page.
-- The pages read no cookies or headers (`force-static`), so a cached copy holds nothing
-  about its viewer.
-- Needs `experimental.useCache` (deprecated in Next 16 in favour of `cacheComponents`, which
-  would change every route; see DEPLOY.md).
+- **Shells.** `/r/{code}`, `/battles/{id}` and `/u/{id}` are one exported page each
+  (`out/r.html`, `out/battles.html`, `out/u.html`). `out/_redirects` rewrites every such path
+  to its shell with status 200, so the URL stays; the page reads its parameter from the
+  browser's URL (`src/lib/hosting/shells.ts`, `use-browser-url.ts`) and loads its data
+  (`use-remote.ts`): loading, the page, "not found" (a 404-style screen, served with a 200),
+  or "could not load" with a retry. The tab title is a React `<title>`
+  (`components/DocumentTitle.tsx`; those pages' metadata sets none). `next dev` applies the
+  same rewrites (`next.config.ts`, development only).
+- **Links to a shell are page loads** (`<a>`, `lib/hosting/navigate.ts`): Next's client
+  router would fetch `{path}.txt`, which a shell path does not have.
+- **No cache.** The public pages call `get_public_battle` / `get_player_history` with
+  `cache: 'no-store'` on every load, so a takedown, made in `/admin` or with SQL, shows on the
+  next load. T-026's ISR (R2, D1, the Durable Object queue, `lib/cache/policy.ts`) is gone.
+- **Headers** (`out/_headers`, `src/lib/hosting/pages-config.ts`): a Content-Security-Policy
+  whose `script-src` lists the SHA-256 of the exported pages' inline scripts (no
+  `'unsafe-inline'`) and whose other sources are this build's `NEXT_PUBLIC_*` hosts,
+  `frame-ancestors 'none'`, `X-Frame-Options`, `nosniff`, the referrer and permissions
+  policies, COOP, HSTS; a year's cache for `/_next/static/*`; `noindex` for `/admin`.
+- **Checks** (the build fails): `404.html` and every shell exist; no file holds a Supabase key
+  other than the public anon key; Pages' limits (header lines ≤ 2,000 characters, rules,
+  file count and size).
+- **Locally:** `pnpm --filter @br/web preview` serves `out/` with `wrangler pages dev`
+  (http://localhost:3000), which applies `_redirects` and `_headers` like Pages does. Every
+  e2e suite uses it.
 
 ## Observability (T-030)
 
@@ -49,9 +58,8 @@ Error reporting (Sentry) and product analytics (PostHog), both **off unless conf
   pings, no `addEventListener` wrapping) and `allowUrls` = the page's own origin, so the
   sandbox iframe's errors (another origin) and build code can never be reported.
   `app/global-error.tsx` reports render errors the window never sees.
-- **Server errors:** `src/instrumentation.ts` → `onRequestError` → `lib/telemetry/server.ts`
-  (`@br/telemetry`'s reporter on `@sentry/core`: the same code on `next start` and on
-  Workers, `waitUntil` there), with `SENTRY_DSN` (runtime) or the public DSN.
+- **No server errors** since T-037: the app is a static site. (`@br/telemetry`'s server
+  reporter on `@sentry/core` stays, for the capture worker and the package CDN.)
 - **Privacy:** every event goes through `scrubSentryEvent` (`packages/telemetry`): no query
   strings or fragments, route templates instead of paths (`/r/[code]`), UUIDs, emails and
   tokens masked in messages, no breadcrumbs, `extra`, cookies, headers or bodies; the user is
@@ -70,8 +78,9 @@ Error reporting (Sentry) and product analytics (PostHog), both **off unless conf
   this tab's preview counts for the battle: crashes, restarts, app stalls of 1 s or more and
   their total, and `preview_spared` (silences the pre-T-031 watchdog would have called a
   crash). Only the battle UUID, enums and numbers: no build code, console output or names.
-- `/admin` → Health has "Send a test error to Sentry" (it throws in a server action, so the
-  error takes the real path and the screen shows its digest).
+- `/admin` → Health has "Send a test error to Sentry": it throws an uncaught error from the
+  page's own code, the path any app error takes (the window's handler, then Sentry with the
+  page's tags); with no DSN in the build it says reporting is off.
 
 ## Moderation (T-024)
 
@@ -87,15 +96,34 @@ Error reporting (Sentry) and product analytics (PostHog), both **off unless conf
   inherits them: if it was rank 1, no build is the winner (`isWinner`, `awardsOf` and
   `rankMedal` in `src/lib/solo/format.ts`), and the battle's `og:image` is the static card,
   not the next build's screenshot (`src/lib/solo/og-image.ts`).
-- **Admin:** `/admin/sign-in` signs in with Supabase Auth (email + password) in a server
-  action; only an account that `is_admin()` accepts gets the session, kept in httpOnly,
-  SameSite=Strict cookies scoped to `/admin` (`src/lib/admin/session.ts`). The admin RPCs
-  run with that user's own token: the app has no service key, and Postgres decides
-  (`is_admin()` in every admin RPC). Players' anonymous sessions live in localStorage, so
-  they never reach `/admin`, which renders `notFound()` for them. An expired access token is
-  refreshed through `/admin/session` (a page render cannot set cookies). Locally:
-  `node supabase/scripts/seed-admin.mjs [email] [password]` (default
-  `admin@buildroulette.local` / `local-admin-pw`), then open `/admin/sign-in`.
+- **Admin** (client-side since T-037; `src/lib/admin/client.ts`, `src/components/admin/`):
+  `/admin/sign-in` signs in with Supabase Auth (email + password, plus a Turnstile token when
+  Turnstile is on) through **a supabase-js client of its own**; only an account that
+  `is_admin()` accepts keeps the session (any other gets "These details cannot sign in here"
+  and is signed out). The admin RPCs run with that session's own token: the app has no
+  service key (the build checks), and Postgres decides (`is_admin()` in every admin RPC).
+  Without an admin session `/admin` is the plain "not found" screen, and it asks nothing of
+  the server.
+  - **Kept apart from the player's session.** Players' anonymous sessions live in
+    localStorage (`br-auth`, `lib/supabase/browser.ts`); signing a moderator in through that
+    client would replace the player's session and send game RPCs with the moderator's
+    token. The moderator's session is held in memory by its own client
+    (`persistSession: false`) and mirrored into **this tab's sessionStorage**
+    (`br-admin-auth`) on sign-in and every token refresh: a reload or a link inside `/admin`
+    keeps it; another tab, or the tab after it is closed, does not have it. Not
+    localStorage (it would outlive the tab and reach every tab of the origin), and not
+    supabase-js's own persistence (it broadcasts every token refresh, session included, on
+    a `BroadcastChannel` any page of the origin can read).
+  - **Sign-out** revokes the session at Supabase Auth (the refresh token stops working) and
+    removes it from memory and sessionStorage, then goes to `/`.
+  - **The trade-off against T-024's httpOnly cookies:** script on the app origin (an XSS)
+    could read a moderator's session in that tab, which it could not read from an httpOnly
+    cookie. Against that: the app origin serves no user-generated HTML or script (builds run
+    on the sandbox site; results are text and `<img>`), the CSP has no `'unsafe-inline'`
+    script and limits `connect-src`, the page cannot be framed, the session lives for one
+    tab, and sign-out revokes it. docs/08-free-tier.md §2.3 has the full argument.
+  - Locally: `node supabase/scripts/seed-admin.mjs [email] [password]` (default
+    `admin@buildroulette.local` / `local-admin-pw`), then open `/admin/sign-in`.
 - **Name filter and rate limits:** `name_not_allowed` sends a room join back to the name
   prompt and shows "That name is not allowed here. Pick another one." on Create room, `/play`
   and the ship dialog; `rate_limited` shows the server's "Try again in …" sentence
@@ -236,8 +264,9 @@ still works but rooms do not: restart it without `realtime` in `-x`.
 
 ### Environment variables
 
-All `NEXT_PUBLIC_*` values are inlined at build time (`next build`, `cf:build`), so rebuild
-after changing them. The defaults are the local setup above.
+All `NEXT_PUBLIC_*` values are inlined at build time (`pnpm build`), and the build's CSP
+(`out/_headers`) allows exactly their hosts, so rebuild after changing them. There are no
+runtime settings. The defaults are the local setup above.
 
 | Variable | Default | What |
 |---|---|---|
@@ -245,19 +274,19 @@ after changing them. The defaults are the local setup above.
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | the local stack's demo anon key | Public anon key (JWT). `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` (`sb_publishable_…`) works instead. |
 | `NEXT_PUBLIC_SANDBOX_SHELL_URL` | `http://127.0.0.1:4321/v1/` | Sandbox shell |
 | `NEXT_PUBLIC_PKG_CDN_URL` | `http://localhost:4322` | esm.sh-compatible package CDN |
-| `NEXT_PUBLIC_SITE_URL` | `http://localhost:3000` | The app's public origin (`metadataBase`, absolute OG image URLs) |
+| `NEXT_PUBLIC_SITE_URL` | `http://localhost:3000` | The app's public origin (`metadataBase`: the absolute `og:image` URL of the static card) |
 | `NEXT_PUBLIC_TURNSTILE_SITE_KEY` | unset (no Turnstile) | Cloudflare Turnstile site key for anonymous sign-ups. Set it only together with Turnstile in Supabase Auth (the matching secret), or every sign-up fails. |
-| `NEXT_PUBLIC_SENTRY_DSN` | unset (no error reporting) | Sentry DSN for browser errors (and the server's, unless `SENTRY_DSN` is set at runtime) |
+| `NEXT_PUBLIC_SENTRY_DSN` | unset (no error reporting) | Sentry DSN for browser errors (the only errors: there is no server) |
 | `NEXT_PUBLIC_SENTRY_ENVIRONMENT` | `production` | Sentry environment |
 | `NEXT_PUBLIC_POSTHOG_KEY` | unset (no analytics) | PostHog project API key |
 | `NEXT_PUBLIC_POSTHOG_HOST` | `https://eu.i.posthog.com` | PostHog ingest host (`https://us.i.posthog.com` for a US project) |
 | `BR_RELEASE` | the git commit | The release reported with errors and events |
-| `SENTRY_DSN`, `SENTRY_ENVIRONMENT` | unset | **Runtime** (not inlined): the server's DSN and environment |
 
 The web app never holds the service-role key: players sign in anonymously
 (`signInAnonymously`), every write goes through RPCs and storage RLS, and the results page
 reads `get_public_battle`, which the anon key may call. `/admin` calls the admin RPCs with
-the moderator's own access token.
+the moderator's own access token. `pnpm build` fails if any exported file holds a Supabase
+key other than the anon key (`scripts/pages-config.ts`).
 
 `scripts/solo-services.ts` reads: `BR_APP_ORIGINS` (app origins the shell accepts, default
 `http://localhost:3000`), `APP_PORT` (3000), `SHELL_PORT` (4321), `CDN_PORT` (4322),
@@ -328,44 +357,50 @@ CDN (T-006) replaces it.
 | Error contract → messages | `src/lib/solo/errors.ts` |
 | React binding | `src/lib/solo/use-solo-game.ts` |
 | Screens | `src/components/solo/*` |
-| Results page + its `og:image` | `src/app/battles/[id]/*`, `src/lib/solo/public-battle.ts`, `src/lib/solo/og-image.ts`, `public/og-card.png` (`scripts/og-card.ts`) |
-| Caching rules of the permanent pages (lifetimes, tags) | `src/lib/cache/policy.ts`, `open-next.config.ts`, `wrangler.jsonc` |
-| Player history page | `src/app/u/[id]/*`, `src/lib/history/player-history.ts`, `src/components/results/MyHistoryLink.tsx` |
+| Results page (shell, loader, page) + its title and social image | `src/app/battles/page.tsx`, `src/components/results/BattleView.tsx`, `BattleResults.tsx`, `src/lib/solo/public-battle.ts`, `battle-meta.ts`, `og-image.ts`, `public/og-card.png` (`scripts/og-card.ts`) |
+| Static hosting: shells and rewrites, `_headers` and the CSP, the export checks, page loads | `src/lib/hosting/*`, `scripts/pages-config.ts`, `wrangler.jsonc` (Pages) |
+| Player history page | `src/app/u/page.tsx`, `src/components/results/PlayerHistoryView.tsx`, `PlayerHistory.tsx`, `src/lib/history/*`, `src/components/results/MyHistoryLink.tsx` |
 | Phones and tablets (touch-primary check) | `src/lib/device.ts`, `src/components/room/DesktopNeeded.tsx` |
 | Moderation: report dialog, "Removed by moderators" | `src/components/moderation/*`, `src/lib/moderation/report.ts` |
-| Admin page, sign-in, session cookies, server actions | `src/app/admin/*`, `src/lib/admin/*` |
+| Admin page, sign-in, the moderator's session (its own client, sessionStorage) | `src/app/admin/*`, `src/components/admin/*`, `src/lib/admin/*` |
 | Turnstile on anonymous sign-up | `src/lib/supabase/turnstile.ts`, `src/lib/supabase/browser.ts` |
-| Error reporting and analytics (env-gated), the hashed user and tags | `src/instrumentation*.ts`, `src/lib/telemetry/*`, `src/app/global-error.tsx`, `packages/telemetry` |
-| Admin Health section, its findings | `src/app/admin/health-view.tsx`, `src/lib/admin/health.ts` |
+| Error reporting and analytics (env-gated), the hashed user and tags | `src/instrumentation-client.ts`, `src/lib/telemetry/*`, `src/app/global-error.tsx`, `packages/telemetry` |
+| Admin Health section, its findings | `src/components/admin/HealthView.tsx`, `src/lib/admin/health.ts` |
 
 ## Tests
 
 ```sh
 pnpm --filter @br/web test             # unit (Vitest): solo + room controllers, sync engine, reducer, …
-pnpm --filter @br/web test:e2e         # /playground (Playwright), no Supabase needed
+pnpm --filter @br/web test:e2e         # /playground and the static site (Playwright), no Supabase needed
 pnpm --filter @br/web test:e2e:solo    # /play against the REAL local Supabase stack
-pnpm --filter @br/web test:e2e:moderation  # report → /admin takedown → removed, + the ISR cache (REAL stack)
-pnpm --filter @br/web test:e2e:cf:moderation   # the same against the Workers preview (cf:build first)
+pnpm --filter @br/web test:e2e:moderation  # report → /admin takedown → removed on the next load (REAL stack)
 pnpm --filter @br/web test:e2e:multi   # rooms: 3+ browser contexts (and phones), REAL stack WITH Realtime
 pnpm --filter @br/web test:e2e:mobile  # only the phone spec of the above
 pnpm --filter @br/web test:e2e:chaos   # rooms under chaos (~14 min), same stack
 CHAOS_SHARD=2 pnpm --filter @br/web test:e2e:chaos   # one of its 3 shards (~5 min each)
 pnpm --filter @br/web test:e2e:telemetry      # error reporting + analytics against a fake ingest, on and off (REAL stack)
-pnpm --filter @br/web test:e2e:cf:telemetry   # the "on" half against the Workers preview
 ```
 
 - `test:e2e:telemetry` (`playwright.telemetry.config.ts`) builds twice. First with the
   Sentry DSN and the PostHog host pointing at a local fake ingest (`@br/telemetry/testing`,
-  port 4399, started by the spec): a browser error, the admin's server test error and the
-  `room_created` / `room_joined` events arrive scrubbed (no query, room code, name, email or
-  raw user id; one hashed id); with GPC no analytics and no user; nothing from the sandbox
-  iframe (`e2e/telemetry-on.spec.ts`). Then the plain build: no Sentry chunk is loaded and no
-  request goes to any host but the app, Supabase and the sandbox servers
-  (`e2e/telemetry-off.spec.ts`). It leaves the plain build in `.next`.
+  port 4399, started by the spec, and allowed by that build's CSP): a browser error, the
+  admin's test error (thrown in the page; no server event exists any more) and the
+  `room_created` / `room_joined` events arrive scrubbed (no query, room code, name, email,
+  raw user id or admin token; one hashed id); with GPC no analytics and no user; nothing from
+  the sandbox iframe (`e2e/telemetry-on.spec.ts`). Then the plain build: no Sentry chunk is
+  loaded and no request goes to any host but the app, Supabase and the sandbox servers
+  (`e2e/telemetry-off.spec.ts`). It leaves the plain build in `out/`.
 
-- `test:e2e` runs `next build`, then Playwright starts `next start -p 3100` and
+- **Every suite serves the static export the way Cloudflare Pages does:** `pnpm build`, then
+  Playwright starts `wrangler pages dev` on port 3100 (`e2e/app-server.ts`: the `_redirects`
+  rewrites, the `_headers` CSP, the 404 page). The playground, solo, moderation, rooms and
+  chaos suites fail on any CSP violation of the app's pages (`e2e/csp.ts`).
+- `test:e2e` runs `pnpm build`, then Playwright starts `wrangler pages dev --port 3100` and
   `scripts/sandbox-servers.ts` (allowing `http://localhost:3100`) and runs `e2e/` except the
-  solo specs. It uses full Chromium (`channel: 'chromium'`), because the infinite-loop test
+  suites that need Supabase. `e2e/static-site.spec.ts` (T-037) checks the host's behaviour:
+  every page is a file, the shells keep their URL, unknown paths get the 404 page with a 404,
+  the `_headers` values, the CSP blocking an injected script and never blocking anything of
+  the app's own (the playground runs a build), and `/admin` without a session. It uses full Chromium (`channel: 'chromium'`), because the infinite-loop test
   needs site isolation (see `packages/runtime/README.md`). `@playwright/test` is pinned to
   1.56.1 to match the preinstalled browser. Not part of `pnpm test`.
   `e2e/cdn-outage.spec.ts` (T-032) takes the mock package CDN down after the template's
@@ -375,11 +410,13 @@ pnpm --filter @br/web test:e2e:cf:telemetry   # the "on" half against the Worker
   CDN that never answers shows "still loading" until it does.
 - `test:e2e:solo` (`playwright.solo.config.ts`) needs the local Supabase stack running. It
   builds, then starts `scripts/solo-services.ts` (shell with the capture gate, mock CDN,
-  capture worker) and `next start -p 3100`, and plays two battles (`e2e/solo.spec.ts`):
+  capture worker) and `wrangler pages dev --port 3100`, and plays two battles
+  (`e2e/solo.spec.ts`):
   - **ship:** name → spin → edit `App.tsx` → ship → RESULTS with the real 1280×800
     screenshot and the `speedrun` award → the last-look deadline is forced with psql →
     the DESTROY moment → the IndexedDB workspace and every ephemeral object of the battle
-    are gone → `/battles/[id]` shows the result, and its `og:image` is the screenshot;
+    are gone → `/battles/[id]` shows the result with the screenshot, and its `og:image` is
+    the static card (per-battle previews: T-038);
   - **auto-ship:** edit `styles.css` + `App.tsx`, autosave (tab hidden), force the build
     deadline and the grace → `auto_shipped`, captured with its CSS (the background colour is
     checked in the screenshot).
@@ -398,27 +435,21 @@ pnpm --filter @br/web test:e2e:cf:telemetry   # the "on" half against the Worker
 - `test:e2e:moderation` (`playwright.moderation.config.ts`, `e2e/moderation.spec.ts`; T-024)
   uses the solo servers (the capture worker's takedown loop matters here). It inserts a
   finished battle with psql (two builds, real PNG screenshots in the public bucket), then:
-  a player reports one build on `/battles/[id]`; `/admin` is a 404 for that player, for a
-  visitor without a session and after a wrong password; an email admin (seeded with
-  `supabase/scripts/seed-admin.mjs`) signs in, sees the report with its reason and details,
-  takes the build down and opens the battle's event log; the public page shows "Removed by
-  moderators" without the screenshot (rank kept), and the worker deletes the object. The
-  reported build had won the (voted) battle: afterwards it has no Winner banner and no award
-  chips on `/battles/[id]` and on the builder's `/u/[id]`, its vote counts stay, and the
-  runner-up keeps its own award without becoming the winner (T-028); the `og:image` turns
-  from its screenshot into the static card. The public surfaces are cached right before the
-  takedown and show it on the very next request (T-026). A second test: a blocked display name on Create room and `/play` shows the
-  friendly error. `MODERATION_SCREENSHOT_DIR=/dir` saves the UI screenshots.
-- The same config runs `e2e/isr.spec.ts` (T-026), against `next start` or, with
-  `E2E_APP_SERVER=workers` (`test:e2e:cf:moderation`), the OpenNext Workers preview with R2,
-  D1 and the Durable Object queue emulated. A settled battle (inserted with psql): the
-  second request of `/battles/[id]` is a cache HIT, with the rank-1 screenshot as its
-  `og:image`; renames made in the database stay hidden on it and on the builder's `/u/[id]`;
-  an admin takedown shows "Removed by moderators" on both on the next request (the
-  `og:image` becomes the static card), the fresh copies are cached again, and the second
-  expiry 10 s later picks up a later change. A battle that is not
-  public yet: its 404 is cached for seconds only, so the page appears once it reaches
-  RESULTS.
+  a player reports one build on `/battles/[id]`; `/admin` is the not-found screen for that
+  player, for a visitor without a session and after a wrong password. The moderator's browser
+  is a player's too (it reports a second build, then dismisses that report). The email admin
+  (seeded with `supabase/scripts/seed-admin.mjs`) signs in: the session is in that tab's
+  sessionStorage, the player session in localStorage is untouched, another tab is not signed
+  in. The admin sees the report with its reason and details, checks Health, takes the build
+  down and opens the battle's event log; **the very next load** of the public page shows
+  "Removed by moderators" without the screenshot (rank kept; the RPC answer of that load is
+  checked, and the shell's `Cache-Control` revalidates every time), and the worker deletes the
+  object. The reported build had won the (voted) battle: afterwards it has no Winner banner
+  and no award chips on `/battles/[id]` and on the builder's `/u/[id]`, its vote counts stay,
+  and the runner-up keeps its own award without becoming the winner (T-028). Sign-out
+  removes the session and revokes its refresh token. No CSP violation on any page. A second
+  test: a blocked display name on Create room and `/play` shows the friendly error.
+  `MODERATION_SCREENSHOT_DIR=/dir` saves the UI screenshots.
 - `test:e2e:multi` (`playwright.multi.config.ts`) needs the local stack running **with
   Realtime**; same servers as the solo e2e (`solo-services.ts --realtime`). Each player is
   its own browser context, i.e. its own anonymous user (`e2e/multiplayer.spec.ts`):
@@ -435,7 +466,7 @@ pnpm --filter @br/web test:e2e:cf:telemetry   # the "on" half against the Worker
     (Best Build three-way tie → total votes → earlier ship), votes per category, category
     awards plus `speedrun` + `fastest_ship`, the winner, real screenshots; each player's
     last look; the last look is forced → DESTROY for everyone → lobby (the spectator was
-    promoted) → rematch → `/battles/[id]` with the votes and its `og:image`;
+    promoted) → rematch → `/battles/[id]` with the votes (its `og:image` the static card);
   - **kick:** the host kicks a member in the lobby (with confirmation); they see the kicked
     screen and cannot rejoin;
   - **join errors:** an unknown code and a malformed one.
@@ -539,31 +570,31 @@ pnpm --filter @br/web test:e2e:cf:telemetry   # the "on" half against the Worker
   click that lost that race was dropped (T-023: the other cause of the 8-player test's
   failures). The controller now resends it with the version the server returned while the
   phase and the spotlight are unchanged (`HOST_RETRIES`, `src/lib/room/reveal-vote.ts`).
-- `test:e2e:cf` runs the playground suite against the Cloudflare Workers build
-  (`cf:build`, then `opennextjs-cloudflare preview`, which is `wrangler dev` on workerd)
-  instead of `next start` (`E2E_APP_SERVER=workers` in `playwright.config.ts`).
+## Cloudflare Pages
 
-## Cloudflare Workers
+Production is a static site on Cloudflare Pages (`wrangler.jsonc`: `pages_build_output_dir:
+./out`). `pnpm build` + `pnpm preview` serve it locally with `wrangler pages dev`, no account
+needed; `pnpm pages:deploy` uploads it. See [DEPLOY.md](DEPLOY.md) for the account setup,
+deploys, the security headers, observability and the custom domain.
 
-Production runs on Cloudflare Workers through OpenNext (`open-next.config.ts`,
-`wrangler.jsonc`). `cf:build` / `cf:preview` build and serve it locally with no Cloudflare
-account; the normal `build` is unaffected. See [DEPLOY.md](DEPLOY.md) for the account setup,
-deploys, secrets, custom domain and caching.
-
-**CPU per request (T-033).** `pnpm --filter @br/web measure:cpu` (after `cf:build`, with the
-local stack up; about an hour) measures the CPU time of every route class on workerd, in a
-warm and in a fresh isolate, and on `next start` for comparison: a V8 CPU profile of the
-Worker's isolate per request plus the workerd thread's CPU (`scripts/measure-cpu/`). The
-results and what they mean for Workers Free (10 ms per request) are in
-[docs/08-free-tier.md](../../docs/08-free-tier.md) §1; raw data lands in `cpu-results/`
-(gitignored).
+**CPU per request (T-033, kept for T-038).** `pnpm --filter @br/web measure:cpu` (after
+`pnpm build`) measures what `wrangler pages dev` runs per request on workerd, warm and in a
+fresh isolate: a V8 CPU profile of the user isolate plus the workerd thread's CPU, with a
+method check on a known Worker (`scripts/measure-cpu/`). Today that is wrangler's local
+shim (production runs no Worker for static files); T-038 measures its Pages Function with it.
+The T-033 results for Next.js on Workers and the static site's are in
+[docs/08-free-tier.md](../../docs/08-free-tier.md) §1 and §2; raw data lands in
+`cpu-results/` (gitignored).
 
 ## Known limitations
 
-- **A battle's `og:image` is the screenshot as stored** (T-033): WebP from the local capture
-  worker. Most link-preview crawlers accept WebP (assumed, not tested here); where one does
-  not, the preview has no image. A PNG/JPEG screenshot (Browser Rendering can produce
-  either, T-034) avoids the question.
+- **Every battle shares one link preview** (T-037): the shells' `og:*` tags are the generic
+  title and `og-card.png`, because crawlers do not run the page's script. T-038 writes each
+  battle's own tags at the edge. When it does, the rank-1 screenshot is WebP from the local
+  capture worker: most link-preview crawlers accept WebP (assumed, not tested here); a
+  PNG/JPEG screenshot (Browser Rendering can produce either, T-034) avoids the question.
+- **The shells answer 200** for an unknown battle or player (and `/admin` for everyone): the
+  page shows the 404 screen. Truly unknown paths get a real 404.
 - **The solo game polls** `get_battle_snapshot` (every 2–10 s depending on the phase, and
   right after each deadline; T-029: no longer every 250 ms once a deadline has passed);
   rooms use Realtime.

@@ -1,8 +1,9 @@
 # 8. Free tier
 
 The user decided on 2026-10-09 to deploy on free plans only (docs/BOARD.md, T-033…T-036).
-This document collects what that takes. §1 is the web app on Workers Free (T-033); the
-other free-tier tasks add their own sections.
+This document collects what that takes. §1 is the web app on Workers Free (T-033: it does
+not fit); §2 is what replaced it, the web app as a static site on Cloudflare Pages (T-037);
+the other free-tier tasks add their own sections.
 
 ## 1. Web app on Workers Free (T-033)
 
@@ -298,3 +299,138 @@ Worth doing with any of A–C:
 - If anything still renders in the Worker (B's `HTMLRewriter` path, or ISR if kept), warm
   it from T-034's cron Worker right after RESULTS so a player's first view is not the
   render. S, after T-034.
+
+## 2. Static site (T-037)
+
+**Decision (the user, 2026-10-09, after §1's NO-GO): option C.** The web app is a static
+export served by **Cloudflare Pages** (Free), with every piece of data loaded in the browser.
+No Next.js server and no Worker run for the app, so the 10 ms CPU limit and the 100,000
+requests a day of Workers Free do not apply to it: static requests on Pages are free,
+unlimited and not Worker invocations. Per-battle link previews come back with a small Pages
+Function in T-038, measured against the 10 ms first.
+
+### 2.1 What changed
+
+| | Before (T-012…T-033) | After (T-037) |
+|---|---|---|
+| Build | `next build` + OpenNext → a Worker (1.3 MB gzip) + assets | `next build` with `output: 'export'` → `apps/web/out/` (94 files, 15.8 MiB; JS 706 KiB gzip) + `_headers` and `_redirects` written by `scripts/pages-config.ts` |
+| Hosting | Workers (+ R2 incremental cache, D1 tag cache, Durable Object queue) | Pages, static files only (`apps/web/wrangler.jsonc`: `pages_build_output_dir`) |
+| `/`, `/play`, `/playground` | prerendered, served from R2 by the Worker | static files |
+| `/r/{code}` | one prerendered page behind a Next rewrite (T-033) | one shell (`out/r.html`) behind a Pages rewrite (`/r/:code /r 200`); the code is read in the browser, as before |
+| `/battles/{id}` | ISR: rendered by the Worker, cached up to an hour, revalidated by takedowns | one shell (`out/battles.html`, rewrite `/battles/:id /battles 200`); the browser calls `get_public_battle` (anon key) on every load: loading, not found, "could not load" with a retry, or the results; the tab title is set in the browser |
+| `/u/{id}` | rendered per request from data cached ≤ 60 s | one shell (`out/u.html`, rewrite `/u/:id /u 200`); `get_player_history` in the browser, the keyset cursor still in the query string |
+| Unknown paths | Next's 404, rendered in the Worker (~163 ms CPU in a fresh isolate) | `out/404.html`, served by Pages with a 404 |
+| `/admin` | server-rendered; httpOnly cookies; server actions | a static page; the moderator's own Supabase session in the browser (§2.3); the admin RPCs called with it |
+| Takedown visible | on the next request, through tag revalidation (and a second expiry 10 s later) | on the next page load: nothing is cached, nothing to revalidate; a takedown made with SQL shows too |
+| Security headers | none set by the app | `_headers`: a CSP without `'unsafe-inline'` scripts (§2.4), `frame-ancestors 'none'`, `X-Frame-Options`, `nosniff`, referrer and permissions policies, COOP, HSTS |
+| Error reporting | browser + server (`onRequestError`, `service: web`) | browser only; "Send a test error" throws in the admin page |
+| Removed | — | `open-next.config.ts`, the Worker's `wrangler.jsonc`, `@opennextjs/cloudflare`, the `cf:*` and `test:e2e:cf*` scripts, the server actions and the `/admin/session` route handler, `instrumentation.ts`, `lib/cache/policy.ts` and the `'use cache'` loaders, `lib/telemetry/server.ts`, `e2e/isr.spec.ts`, "Refresh public copies", the cache runbook (replaced by `removed-content-still-visible.md`) |
+
+The links between shells (`/battles/{id}`, `/u/{id}`, `/r/{code}`) are plain page loads
+(`<a>`, `loadPage()`): Next's client router would first ask for `{path}.txt`, which only real
+pages have; the rewrite would answer it with the shell's HTML and the router would fall back
+to a page load anyway. Links to real pages (`/`, `/play`) stay client-side.
+
+`next dev` gets the same rewrites from `next.config.ts` (development phase only, from the same
+list as `_redirects`: `src/lib/hosting/shells.ts`).
+
+### 2.2 Trade-offs
+
+| | What it costs | Mitigation / owner |
+|---|---|---|
+| **Link previews** | Crawlers do not run scripts: every battle shares one preview (the generic title and `og-card.png`) instead of its own title and rank-1 screenshot (T-033's `og:image` rule) | T-038: a Pages Function on `/battles/*` writes the tags with `HTMLRewriter` (`lib/solo/battle-meta.ts` already computes them) |
+| **Status codes** | A shell answers 200 for an unknown battle or player, and `/admin` answers 200 to everyone (the page shows the 404 screen); truly unknown paths still get a real 404 | T-038's Function can answer 404 for an unknown battle; `/admin` is `noindex` (`X-Robots-Tag`) |
+| **First paint** | Results and history appear after one RPC round trip from the browser (the HTML is a loading screen); before, the HTML held them | The answer is small: ~3 KB per battle (750–950 bytes gzip, 3–4 builds, measured locally) |
+| **Supabase load** | Every view of a results page is one `get_public_battle` call (before: at most one per hour per battle, from the edge cache). A link seen 10,000 times is 10,000 small reads (~10 MB of egress, gzip) | Well inside Supabase's quotas (docs/07 §7); T-036 reviews the Free plan's |
+| **Admin session** | In the tab's `sessionStorage`, readable by script on the app origin (an XSS), where T-024's httpOnly cookies were not | §2.3 |
+| **SEO of `/u/{id}`, `/battles/{id}`** | No content in the HTML for crawlers | T-038 for previews; full server rendering is what §1 ruled out |
+| **Takedown safety net** | Gone, and not needed: a takedown is visible on the next load, whether made in `/admin` or with SQL (T-026's "an SQL takedown stays cached for up to an hour" caveat is gone) | — |
+
+### 2.3 The admin session in the browser
+
+`/admin` is a static page like the others; anyone can load its script, which holds nothing
+secret. Postgres's `is_admin()`, checked by every admin RPC, stays the only authority, and the
+web app still has no service key (the build fails if any file in `out/` holds one:
+`scripts/pages-config.ts`).
+
+**How the session is kept** (`src/lib/admin/client.ts`):
+
+- **A client of its own**, not the player's. The player's supabase-js client keeps its
+  anonymous session in localStorage (`br-auth`); signing a moderator in through it would
+  replace the player's session (their battles in that browser) and send every game RPC with
+  the moderator's token. The moderator client has its own storage key, `br-admin-auth`.
+- **This tab only.** supabase-js holds the session in memory (`persistSession: false`) and the
+  page mirrors it into the tab's `sessionStorage` on sign-in and on every token refresh, so a
+  reload or a link inside `/admin` keeps it. Not localStorage: it would outlive the tab and the
+  browser session and be readable from every tab of the origin. Not supabase-js's own
+  persistence either: it announces every sign-in and token refresh, session included, on a
+  `BroadcastChannel` named after the storage key, which any page of the origin can listen to
+  (a player tab would hear the moderator's tokens). Cost: a new tab signs in again; closing
+  the tab ends the session in that browser.
+- **Sign-out** revokes the session at Supabase Auth (its refresh token stops working: checked
+  by the moderation e2e) and removes it from memory and sessionStorage. A real account that is
+  not an admin is signed out at once, with the same answer as a wrong password.
+- **Sign-in** sends a Turnstile token when Turnstile is configured (Supabase Auth's CAPTCHA
+  protection also covers password sign-ins; T-024's server-side sign-in sent none).
+- The sign-in button stays disabled until the page runs, so a form submitted before hydration
+  cannot put the password in the URL.
+
+**Against T-024's httpOnly cookies.** The cookies were out of reach of any script on the
+origin; a session in `sessionStorage` is not, so an XSS on the app origin in a moderator's
+tab could read the moderator's tokens (and act as the moderator until the access token
+expires, or until the moderator signs out, which revokes the refresh token). What keeps that
+risk low:
+
+- **The app origin serves no user-generated HTML or script.** Builds run on the sandbox site
+  (another site with its own CSP, T-009); results show text through React (escaped) and
+  screenshots as `<img>`; names pass the name filter.
+- **The CSP blocks injected scripts** (`script-src 'self' 'wasm-unsafe-eval'` plus the hashes
+  of the exported pages' own inline scripts, no `'unsafe-inline'`: the static-site e2e
+  injects one and checks it does not run) and limits where data can go (`connect-src`: the
+  app, Supabase, the package CDN, Sentry, PostHog, Turnstile).
+- `frame-ancestors 'none'` / `X-Frame-Options: DENY` (no clickjacking of the admin page),
+  `base-uri 'self'`, `form-action 'self'`, `object-src 'none'`.
+- The exposure lasts one tab's lifetime; a leaked access token lives for its own lifetime
+  (Supabase's default: 1 hour).
+- An XSS could already act as every *player* (their anonymous sessions were always in
+  localStorage); what changed is the moderator's tab, while it is open.
+
+Still to do at deploy (as for T-024): admin accounts only for people who need them, strong
+passwords, Supabase Auth's rate limits on password sign-in. An edge rule on `/admin*` no
+longer protects anything (the page is a public file); the Auth endpoint is what to protect.
+
+### 2.4 The Content-Security-Policy
+
+Next's static export puts two inline scripts in every page (its flight data). They differ per
+page but are fixed per build, so `scripts/pages-config.ts` hashes them: 10 distinct hashes
+for the 10 HTML files, one policy for every path (a rewritten shell and the 404 page get the
+same one). The header line is ~950 characters against Pages' 2,000 per line; the build fails
+if it ever grows past that. The hosts come from the build's own `NEXT_PUBLIC_*` values, so the
+policy always matches the bundles. `'wasm-unsafe-eval'` is for the playground's esbuild
+(WebAssembly); there is no `'unsafe-eval'`.
+
+Every e2e suite runs under it (`wrangler pages dev` applies `_headers`), and the playground,
+solo, moderation, rooms and chaos suites fail on any CSP violation of the app's pages
+(`e2e/csp.ts`).
+
+### 2.5 CPU
+
+Production runs no Worker for any request of the app. Locally, `wrangler pages dev` runs a
+shim Worker that hands each request to the asset server; `pnpm --filter @br/web measure:cpu`
+(T-033's tool, trimmed to Pages: `scripts/measure-cpu/`) measures it. On this machine
+(2026-10-09, a short run: 2 profiled warm samples and 1 fresh isolate per request): 0.2–0.6 ms
+warm and 0.5–1.4 ms in a fresh isolate for `/`, the shells, a JS chunk, `og-card.png` and the
+404. That is wrangler's local shim, which Cloudflare does not run or bill for static files;
+the tool is kept for T-038's Function on `/battles/*`, which must fit 10 ms (its fixtures,
+battles with and without a rank-1 screenshot, are in `scripts/measure-cpu/fixtures.ts`).
+
+### 2.6 Verification
+
+`pnpm --filter @br/web build` checks the export (the pages present, no secret key, Pages'
+limits) and prints its size. Every e2e suite serves `out/` with `wrangler pages dev`
+(`e2e/app-server.ts`): the playground (with `e2e/static-site.spec.ts`: rewrites, the 404
+page, the headers, the CSP enforced and never violated, `/admin` without a session), solo,
+moderation (a takedown visible on the next load; the admin session's storage, its separation
+from the player session and from another tab, sign-out revoking the refresh token), rooms,
+telemetry (the admin's test error from the browser, no server events) and the three chaos
+shards.

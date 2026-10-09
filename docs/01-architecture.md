@@ -37,8 +37,8 @@ flowchart LR
     UI <-->|"postMessage<br/>(MessageChannel)"| IF
   end
 
-  subgraph CFApp["Cloudflare Workers (app)"]
-    NX["Next.js via OpenNext<br/>SSR results pages, OG images,<br/>landing, thin route handlers"]
+  subgraph CFApp["Cloudflare Pages (app)"]
+    NX["Static export of the Next.js app<br/>HTML, JS chunks, esbuild.wasm<br/>(no server code)"]
   end
 
   subgraph Supabase
@@ -73,44 +73,38 @@ flowchart LR
 
 ## 1.3 Components
 
-### Web app: Next.js on Cloudflare Workers
-Deployed with the OpenNext Cloudflare adapter (`@opennextjs/cloudflare`), so the app, the
-sandbox shell, the package-CDN cache and screenshot rendering all live in one Cloudflare
-account. M2 starts with a spike that checks Next 16 compatibility. If it fails, the fallback
-is a plain Node `next start` on Fly.io (option B).
+### Web app: a static Next.js export on Cloudflare Pages
+The app is written with Next.js (App Router) and exported as static files
+(`output: 'export'`), which **Cloudflare Pages** serves (T-037). No server code runs for the
+app: every page is a file, and every piece of data is loaded in the browser from Supabase
+with the visitor's own credentials (the anon key, a player's anonymous session, a
+moderator's session). Static requests on Pages are free and unlimited.
 
-**Spike result (T-012): GO with caveats.** Next 16.3.8 runs under `@opennextjs/cloudflare`
-1.20.8, and the full web e2e suite passes against the local Workers preview. The Worker bundle
-is 829 KiB gzip; the limit is 10 MB on Workers Paid. `esbuild.wasm` (13.3 MiB) is served as a
-static asset, which allows up to 25 MiB per file. Rules that follow from the spike:
-- use **Workers Paid**, because the free plan's 10 ms CPU and 3 MB size limits are too tight;
-- avoid `proxy.ts` (middleware) unless it's really needed, since it adds about 1.2 MB gzip;
-- results pages (`/battles/[id]`) use the **R2 incremental cache** for ISR. Static pages use
-  the static-assets cache. (T-026: everything cached is in R2 now, with a D1 tag cache and a
-  Durable Object revalidation queue; see "Caching of the permanent pages" below);
-- set `metadataBase` for OG images. `next/og` works, but T-033 dropped it: a card drawn per
-  request cost about 300 ms of CPU (docs/08-free-tier.md §1).
-- Deploy with `cf:deploy`, never with plain `wrangler deploy`. See `apps/web/DEPLOY.md`.
+How it got here: the first plan was Next.js on Cloudflare Workers through OpenNext
+(T-012: GO with caveats, on Workers Paid). The user then chose free plans only, and T-033
+measured that Next.js renders cost 20–45 ms of CPU warm and 250–370 ms in a fresh isolate
+against Workers Free's 10 ms ([08-free-tier](08-free-tier.md) §1), so the user picked the
+static site ([08-free-tier](08-free-tier.md) §2).
+
 | Route | Rendering | Purpose |
 |---|---|---|
-| `/` | static + client | Landing page, "Create room", "Join with code" |
-| `/r/[code]` | static + client-heavy | Room: lobby, spin, build workspace, reveal, vote, results. One prerendered page for every room (a rewrite to `/r`; the code is read in the browser, T-033) |
-| `/battles/[id]` | SSR + ISR | Permanent results page (shareable). Reads only persisted data. Its `og:image` is the winning screenshot (Supabase Storage) or the static `/og-card.png`; no card is drawn per request (T-033) |
-| `/u/[id]` | SSR, cached data | Player history (builds, awards) |
+| `/` | static file + client | Landing page, "Create room", "Join with code" |
+| `/play`, `/playground` | static file + client-heavy | Solo game; editor and preview without a game |
+| `/r/[code]` | one static shell for every room (a Pages rewrite `/r/:code → /r`; the code is read in the browser) | Room: lobby, spin, build workspace, reveal, vote, results |
+| `/battles/[id]` | one static shell (rewrite `/battles/:id → /battles`); `get_public_battle` in the browser on every load | Permanent results page (shareable). Reads only persisted data. Link previews show the static `/og-card.png` until T-038 adds a Pages Function that writes each battle's `og:*` tags |
+| `/u/[id]` | one static shell (rewrite `/u/:id → /u`); `get_player_history` in the browser | Player history (builds, awards), paginated in the query string |
+| `/admin` | static file + client; the moderator's own Supabase session | Moderation, event logs, Health (`is_admin()` in every admin RPC) |
 
-**Caching of the permanent pages (T-026).** `/battles/[id]` (with its `og:image`) is cached
-for an hour once the battle is DESTROYED with `destroyed_at` set (nothing changes by itself
-after that), and for seconds before that (screenshots land, then the destroy job) or while
-the battle is not public yet. `/u/[id]` renders per request from data at most a minute old.
-A takedown in `/admin` revalidates the battle's page (and so its `og:image`) and every history page
-that lists it at once (cache tag `battle:{id}`). The rules are in
-`apps/web/src/lib/cache/policy.ts`, the Cloudflare setup in `apps/web/DEPLOY.md`
-("Caching").
+**No cache to manage.** The public pages read the database on every load, so a takedown
+(from `/admin` or with SQL) shows on the next load; T-026's ISR and its revalidation are gone
+with the server. `_redirects` and `_headers` (rewrites, the CSP and the other security
+headers, a year's cache for hashed assets) are written at build time
+(`apps/web/src/lib/hosting/`); the setup is in `apps/web/DEPLOY.md`.
 
-Server code in Next.js stays thin. Game logic lives in Postgres functions so there's a
-single transactional authority. Route handlers are only for things that need a secret the
-browser can't hold, such as Turnstile verification before anonymous sign-up, or admin and
-moderation actions.
+Game logic lives in Postgres functions, so there is a single transactional authority, and the
+web app has no server to keep thin. Anything that needs a secret the browser can't hold
+lives elsewhere: Turnstile verification in Supabase Auth, screenshots and destroys in the
+capture worker. Per-battle link previews will be the one piece of code at the edge (T-038).
 
 ### Supabase
 - **Auth:** anonymous sign-ins, protected by Cloudflare Turnstile. A player can link GitHub
@@ -266,7 +260,7 @@ sequenceDiagram
 | Realtime | Broadcast from DB triggers + Presence | **Postgres Changes**: RLS is evaluated per subscriber per change and doesn't scale as well. **Self-hosted WebSockets**: we'd have to operate them. |
 | Timers | Server timestamps + lazy client nudges + pg_cron backstop | **Server `setTimeout`**: we have no persistent server, and it gets lost on deploy. |
 | Canonical screenshot | Server-side headless render of the frozen bundle | **Client-only capture**: lower fidelity (DOM-to-canvas misses WebGL, fonts and filters) and can be forged. Clients could upload a fake screenshot as their permanent result. We keep the client thumbnail as a fallback. |
-| App hosting | Cloudflare Workers via OpenNext (option A, user decision 2026-10-04) | **Vercel**: one more vendor and account, and the user prefers not to use it. **Fly.io (Node)**: the fallback if OpenNext can't run Next 16. |
+| App hosting | A static export on Cloudflare Pages (T-037; user decisions 2026-10-04 and 2026-10-09: Cloudflare, free plans only) | **Next.js on Cloudflare Workers via OpenNext** (T-012, the plan until T-033): every server render is over Workers Free's 10 ms of CPU ([08-free-tier](08-free-tier.md) §1), and Workers Paid is not free. **Vercel**: one more vendor and account, and the user prefers not to use it. **Fly.io (Node)**: not free. |
 | Auth | Supabase anonymous, linkable later | **Required sign-up**: kills the "open link, play" moment. |
 
 ## 1.7 Cost model (rough estimates; validate in M5)
@@ -283,7 +277,7 @@ Assume a battle has 6 players and a 10-minute build.
 | Realtime | ~6 connections × ~15 min plus a few hundred messages | Activity pulses are throttled to ≤1 per 2 s per player |
 | Postgres | A few hundred small writes | Negligible |
 
-Fixed baseline: Supabase (free tier to start, Pro at launch), Cloudflare Workers Paid (needed for Containers and Browser Rendering), plus one domain for the app. The main
+Fixed baseline: Supabase (free tier to start, Pro at launch), Cloudflare (Free since the 2026-10-09 decision: the app on Pages, docs/08), plus one domain for the app. The main
 things that drive costs up are Realtime concurrent connections and messages (plan limits),
 reveal egress, and Browser Rendering minutes. We watch all three from day one.
 
@@ -291,7 +285,7 @@ reveal egress, and Browser Rendering minutes. We watch all three from day one.
 
 ```
 apps/
-  web/                 Next.js app (UI, routes, OG images)
+  web/                 Next.js app, exported as static files for Cloudflare Pages
   sandbox-shell/       Static runtime shell deployed to the usercontent domain (versioned paths)
   capture-worker/      Cloudflare Worker wrapping Browser Rendering (called by the Edge Function)
 packages/

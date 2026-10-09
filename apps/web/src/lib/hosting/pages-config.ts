@@ -5,10 +5,10 @@
  *
  * - `_redirects`: the shells' rewrites (shells.ts).
  * - `_headers`: the security headers of every response, and a long cache for the
- *   content-hashed build output. The app had no server-set security headers before T-037
- *   (`next start` and the Worker sent none but the asset cache rule); a static host can only
- *   send fixed headers, so they are fixed at build time, from the same `NEXT_PUBLIC_*`
- *   values the bundles are built with.
+ *   content-hashed build output. The app had no security headers before T-037 (the Worker
+ *   sent none but the asset cache rule); a static host can only send fixed headers, so they
+ *   are fixed at build time, from the same `NEXT_PUBLIC_*` values the bundles are built
+ *   with.
  *
  * The Content-Security-Policy has no `'unsafe-inline'` for scripts: each exported page has
  * two inline scripts (Next's flight data), and their SHA-256 hashes are listed instead. One

@@ -12,6 +12,13 @@
  * - `target`: esbuild target, from a fixed set. `dev`: development build (unminified,
  *   `process.env.NODE_ENV = "development"`).
  * Other query parameters are ignored (and preserved on redirects).
+ *
+ * The query may also be written in the path, after the version (`/three@0.186.1&external=a,b/
+ * examples/x.js`), the form esm.sh documents for import-map prefixes ("change the query prefix
+ * `?` to `&` and put it after the package version"): an import map appends a specifier's rest
+ * to its prefix, so a `?query` there would end up in front of the subpath (T-040). Like
+ * esm.sh, it is read as a query string after the path is decoded once (a scoped name's `/` is
+ * sent as `%252F`), and comes before the URL's own query.
  */
 import semver from 'semver';
 import { CdnError } from './errors';
@@ -21,9 +28,14 @@ export const BUILD_TARGETS = ['es2020', 'es2021', 'es2022', 'es2023', 'es2024', 
 export type BuildTarget = (typeof BUILD_TARGETS)[number];
 export const DEFAULT_TARGET: BuildTarget = 'es2022';
 
-const MAX_PATH_LENGTH = 1024;
+/** The bridge's URL limit (`@br/protocol` `LIMITS.importMapValueMaxChars`). */
+const MAX_PATH_LENGTH = 2048;
 const MAX_VERSION_SPEC_LENGTH = 128;
-const MAX_EXTERNALS = 32;
+/**
+ * The runtime sends at most 32 (`MAX_CDN_EXTERNALS`); a peer URL this CDN emits adds the
+ * requesting package (bundler.ts).
+ */
+const MAX_EXTERNALS = 33;
 const MAX_DEPS = 32;
 const DIST_TAG_RE = /^[a-z][a-z0-9._-]*$/i;
 const SUBPATH_SEGMENT_RE = /^[\w@~+=,.!$&'()-]+$/;
@@ -40,6 +52,11 @@ export interface PackageRef {
   version: VersionSpec;
   /** '' or '/sub/path' */
   subpath: string;
+  /**
+   * The query written in the path after the version (`&external=a,b`, without the `&`),
+   * decoded once like the rest of the path: a raw query string. '' when there is none.
+   */
+  pathQuery: string;
 }
 
 export interface CdnQuery {
@@ -94,7 +111,11 @@ export function parsePackagePath(pathname: string): PackageRef {
   const head = segments.slice(0, nameSegments).join('/');
   const at = head.indexOf('@', 1);
   const name = at === -1 ? head : head.slice(0, at);
-  const versionText = at === -1 ? '' : head.slice(at + 1);
+  const versionAndQuery = at === -1 ? '' : head.slice(at + 1);
+  // `&` is never part of a package name or version: what follows it is the in-path query.
+  const amp = versionAndQuery.indexOf('&');
+  const versionText = amp === -1 ? versionAndQuery : versionAndQuery.slice(0, amp);
+  const pathQuery = amp === -1 ? '' : versionAndQuery.slice(amp + 1);
   const nameError = validatePackageName(name);
   if (nameError !== null)
     throw new CdnError(400, 'invalid-name', `invalid package name: ${nameError}`);
@@ -105,7 +126,13 @@ export function parsePackagePath(pathname: string): PackageRef {
       throw bad(`invalid subpath segment "${seg}"`);
     }
   }
-  return { name, versionText, version, subpath: rest.length > 0 ? `/${rest.join('/')}` : '' };
+  return {
+    name,
+    versionText,
+    version,
+    subpath: rest.length > 0 ? `/${rest.join('/')}` : '',
+    pathQuery,
+  };
 }
 
 function listParam(params: URLSearchParams, key: string): string[] {
@@ -159,9 +186,16 @@ export function parseQuery(params: URLSearchParams): CdnQuery {
   };
 }
 
+/** The query string a request is read with: the in-path query, then the URL's own (`?…`). */
+export function effectiveSearch(ref: Pick<PackageRef, 'pathQuery'>, search: string): string {
+  const own = search.startsWith('?') ? search.slice(1) : search;
+  const parts = [ref.pathQuery, own].filter((p) => p !== '');
+  return parts.length > 0 ? `?${parts.join('&')}` : '';
+}
+
 export function parseCdnUrl(pathname: string, search: string): CdnRequest {
   const ref = parsePackagePath(pathname);
-  return { ...ref, query: parseQuery(new URLSearchParams(search)) };
+  return { ...ref, query: parseQuery(new URLSearchParams(effectiveSearch(ref, search))) };
 }
 
 /** Root-relative URL path for a package module: `/name@1.2.3/sub`. */

@@ -6,8 +6,9 @@
  * HTTP-cache partition (top-level app site + shell site) as the build's module imports. The
  * shell uses that for two things, and only for those:
  *
- * - **Warm-up:** after a build ran, every URL of its import map (React's entry points at the
- *   template's pinned version) is fetched once per shell realm with `cache: 'force-cache'`,
+ * - **Warm-up:** after a build ran, every module URL of its import map (the React set at the
+ *   template's pinned version, and since T-040 every package of the manifest; prefix entries
+ *   are skipped) is fetched once per shell realm with `cache: 'force-cache'`,
  *   so the whole set sits in this partition before an outage, not only the entry points the
  *   template happened to import. The URLs are exact versions served `immutable`, so a cached
  *   copy is used without asking the CDN.
@@ -20,7 +21,8 @@
  * Both follow a module's own imports from the CDN's origin (T-035): esm.sh answers
  * `/react@19.3.0` with a few lines that re-export an internal build path
  * (`/react@19.3.0/es2022/react.mjs`), and that path is what really runs. @br/pkg-cdn serves
- * React as one module, so there is nothing more to follow there. A failure behind an entry
+ * each package as one module, so there is nothing more to follow there. Bare imports are not
+ * followed: they are the import map's own entries (T-040), warmed and checked as such. A failure behind an entry
  * URL is reported under the entry URL: the package the build imports.
  *
  * Nothing here can put content into the cache: only the CDN's own responses are stored, as
@@ -54,6 +56,15 @@ export const MAX_CHECKS = 64;
 export const MAX_FOLLOWED = 64;
 
 /**
+ * An import map value that is a module URL to warm and check: http(s), and not a prefix
+ * entry's (`"three/": "…/three@0.186.1&external=…/"`, T-040), which only resolves subpaths a
+ * module imports and is not a module itself.
+ */
+export function isModuleUrl(url: string): boolean {
+  return /^https?:\/\//.test(url) && !url.endsWith('/');
+}
+
+/**
  * What to check for a load: `primary` are the URLs the bundle imports itself (the load's
  * `packages` hint); `secondary` the rest of the import map, which only CDN modules import
  * (`react-dom/client` imports `react-dom`). Without a hint, the import map is primary.
@@ -74,7 +85,7 @@ export function packageCandidates(
     const out: string[] = [];
     for (const url of urls) {
       if (seen.size >= max) break;
-      if (!/^https?:\/\//.test(url) || seen.has(url)) continue;
+      if (!isModuleUrl(url) || seen.has(url)) continue;
       seen.add(url);
       out.push(url);
     }
@@ -219,7 +230,7 @@ export async function warmPackages(
   let fetched = 0;
   let followed = 0;
   for (const url of urls) {
-    if (warmed.has(url) || !/^https?:\/\//.test(url)) continue;
+    if (warmed.has(url) || !isModuleUrl(url)) continue;
     warmed.add(url);
     const tree = [url];
     let failed = false;

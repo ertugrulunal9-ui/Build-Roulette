@@ -5,6 +5,7 @@ import {
   checkPackage,
   explainLoadFailure,
   explainStall,
+  isModuleUrl,
   packageCandidates,
   warmPackages,
   type FetchLike,
@@ -15,6 +16,8 @@ const REACT = `${CDN}/react@19.3.0`;
 const CLIENT = `${CDN}/react-dom@19.3.0/client?external=react,react-dom`;
 const ZUSTAND = `${CDN}/zustand@5.0.15?external=react,react-dom`;
 const IMPORT_MAP = { imports: { react: REACT, 'react-dom/client': CLIENT } };
+/** An import map prefix entry (`"zustand/"`, T-040): resolves subpaths, not a module itself. */
+const PREFIX = `${CDN}/zustand@5.0.15&external=react,react-dom/`;
 
 /**
  * A fake `fetch` over an HTTP cache: cached URLs answer 200, others go to "the network",
@@ -62,6 +65,17 @@ describe('packageCandidates', () => {
       primary: [ZUSTAND],
       secondary: [REACT],
     });
+  });
+  it('leaves out prefix entries, which are not modules (T-040)', () => {
+    const map = { imports: { ...IMPORT_MAP.imports, zustand: ZUSTAND, 'zustand/': PREFIX } };
+    expect(packageCandidates(map, [ZUSTAND])).toEqual({
+      primary: [ZUSTAND],
+      secondary: [REACT, CLIENT],
+    });
+    expect(packageCandidates(map, undefined).primary).toEqual([REACT, CLIENT, ZUSTAND]);
+    expect(isModuleUrl(ZUSTAND)).toBe(true);
+    expect(isModuleUrl(PREFIX)).toBe(false);
+    expect(isModuleUrl('blob:x')).toBe(false);
   });
 });
 
@@ -151,6 +165,11 @@ describe('warmPackages', () => {
     expect(await warmPackages([REACT, CLIENT], up.fn, warmed)).toBe(1);
     expect(up.calls.map((c) => c.url)).toEqual([CLIENT]);
     expect(await warmPackages([REACT, CLIENT], up.fn, warmed)).toBe(0);
+  });
+  it('does not fetch prefix entries (T-040)', async () => {
+    const up = fakeFetch(new Set(), 'up');
+    expect(await warmPackages([ZUSTAND, PREFIX], up.fn, new Set())).toBe(1);
+    expect(up.calls.map((c) => c.url)).toEqual([ZUSTAND]);
   });
 });
 

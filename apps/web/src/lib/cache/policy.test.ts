@@ -147,7 +147,7 @@ describe('historyLifetime', () => {
 });
 
 describe('tags', () => {
-  it('tags a battle page and its OG image with the battle', () => {
+  it('tags a battle page with the battle', () => {
     expect(battleTags(ID)).toEqual([`battle:${ID}`]);
     expect(battleTags(ID.toUpperCase())).toEqual([`battle:${ID}`]);
     expect(battleTag(ID)).toBe(`battle:${ID}`);
@@ -185,11 +185,8 @@ describe('tags', () => {
     ).toContain(takedownTags(ID)[0]);
   });
 
-  it('expires the page and the OG image once more a little later', () => {
-    expect(takedownPaths(ID.toUpperCase())).toEqual([
-      `/battles/${ID}`,
-      `/battles/${ID}/opengraph-image`,
-    ]);
+  it('expires the page once more a little later', () => {
+    expect(takedownPaths(ID.toUpperCase())).toEqual([`/battles/${ID}`]);
     expect(takedownPaths(undefined)).toEqual([]);
     expect(takedownPaths('../admin')).toEqual([]);
   });

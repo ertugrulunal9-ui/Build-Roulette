@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 /**
  * The public results surfaces with a build a moderator removed after RESULTS (T-028):
- * /battles/[id] (the page and the OG card's text) and /u/[id]. The removed rank-1 build
+ * /battles/[id] (the page and its social image) and /u/[id]. The removed rank-1 build
  * keeps its place, rank and vote counts, and shows no Winner banner, gold ring, medal or
  * award chips; nobody else becomes the winner or gets its awards. The data is what
  * get_public_battle / get_player_history return (their awards already left out), plus an
@@ -13,7 +13,7 @@ import BattlePage, { generateMetadata as battleMetadata } from '../../app/battle
 import PlayerPage, { generateMetadata as playerMetadata } from '../../app/u/[id]/page';
 import type * as HistoryModule from '../../lib/history/player-history';
 import type { HistoryBattle, PlayerHistory } from '../../lib/history/player-history';
-import { ogTopBuild } from '../../lib/solo/og-card';
+import { STATIC_OG_CARD, battleOgImage } from '../../lib/solo/og-image';
 import type { Award, PublicBattle, PublicBuild } from '../../lib/solo/types';
 
 const mocks = vi.hoisted(() => ({
@@ -188,38 +188,95 @@ describe('/battles/[id] with a removed rank-1 build (T-028)', () => {
   });
 });
 
-describe('the OG card (T-028)', () => {
-  it('a removed top build: no WINNER chip and no awards, only its rank and votes', () => {
-    const card = ogTopBuild(removedWinnerBattle(true));
-    expect(card?.build.id).toBe('mallory');
-    expect(card?.chip).toEqual({ tone: 'rank', text: '#1 · 5 VOTES' });
-    expect(card?.title).toBe('Removed by moderators');
-    expect(card?.byline).toBe('by Mallory');
-    expect(card?.awards).toEqual([]);
+describe('the social image of /battles/[id] (T-028, T-033)', () => {
+  const images = (meta: Awaited<ReturnType<typeof battleMetadata>>) => ({
+    og: meta.openGraph?.images,
+    twitter: meta.twitter?.images,
   });
 
-  it('a winner: the WINNER chip, its name and time, category awards first', () => {
+  beforeEach(() => {
+    getPublicBattle.mockReset();
+  });
+
+  it('a removed top build: the static card, not its screenshot, and nobody else promoted', async () => {
+    const data = removedWinnerBattle();
+    // Even if an older server still sent its screenshot path.
+    data.builds = data.builds.map((b) =>
+      b.id === 'mallory' ? { ...b, screenshot_path: `${BATTLE}/mallory.webp` } : b,
+    );
+    getPublicBattle.mockResolvedValue(data);
+    const meta = await battleMetadata({ params: Promise.resolve({ id: BATTLE }) });
+    expect(images(meta)).toEqual({ og: [STATIC_OG_CARD], twitter: [STATIC_OG_CARD] });
+    // Ana (rank 2) has a screenshot: it is not used in the removed winner's place.
+    expect(JSON.stringify(meta)).not.toContain('ana.png');
+    expect(JSON.stringify(meta)).not.toContain('mallory.webp');
+  });
+
+  it('a winner with a screenshot: its public Storage URL', async () => {
     const data = removedWinnerBattle();
     data.builds = data.builds.map((b) =>
-      b.id === 'mallory' ? { ...b, name: 'Free Gift Card', taken_down: false } : b,
+      b.id === 'mallory'
+        ? {
+            ...b,
+            name: 'Free Gift Card',
+            taken_down: false,
+            screenshot_path: `${BATTLE}/mallory.webp`,
+          }
+        : b,
     );
-    data.awards = [
-      { build_id: 'mallory', award: 'speedrun', source: 'auto', votes: null },
-      { build_id: 'mallory', award: 'overall', source: 'vote', votes: 3 },
-      { build_id: 'ana', award: 'style', source: 'vote', votes: 2 },
-    ];
-    const card = ogTopBuild(data);
-    expect(card?.chip).toEqual({ tone: 'winner', text: 'WINNER · 5 VOTES' });
-    expect(card?.title).toBe('Free Gift Card');
-    expect(card?.byline).toBe('by Mallory · 2:30.0');
-    expect(card?.awards).toEqual(['Best Build (3)', 'Speedrun']);
+    getPublicBattle.mockResolvedValue(data);
+    const meta = await battleMetadata({ params: Promise.resolve({ id: BATTLE }) });
+    const image = {
+      url: `http://127.0.0.1:54321/storage/v1/object/public/screenshots/${BATTLE}/mallory.webp`,
+      width: 1280,
+      height: 800,
+      alt: 'Screenshot of Free Gift Card by Mallory',
+      type: 'image/webp',
+    };
+    expect(images(meta)).toEqual({ og: [image], twitter: [image] });
+  });
+});
+
+describe('battleOgImage', () => {
+  const config = { url: 'https://db.example', anonKey: 'k' };
+  const battle = (top: Partial<PublicBuild> | null): PublicBattle => {
+    const data = removedWinnerBattle();
+    data.builds = top
+      ? [publicBuild('top', { builder_name: 'Ana', name: 'Pomodoro Pal', ...top })]
+      : [];
+    return data;
+  };
+
+  it('the rank-1 screenshot, typed and sized by how it was taken', () => {
+    expect(
+      battleOgImage(battle({ screenshot_path: 'b/top.png', capture_status: 'captured' }), config),
+    ).toEqual({
+      url: 'https://db.example/storage/v1/object/public/screenshots/b/top.png',
+      width: 1280,
+      height: 800,
+      alt: 'Screenshot of Pomodoro Pal by Ana',
+      type: 'image/png',
+    });
+    expect(
+      battleOgImage(battle({ screenshot_path: 'b/top.JPG', capture_status: 'fallback' }), config),
+    ).toMatchObject({ width: 640, height: 400, type: 'image/jpeg' });
+    const unknown = battleOgImage(
+      battle({ screenshot_path: 'b/top', capture_status: 'pending', name: null }),
+      config,
+    );
+    expect(unknown).toEqual({
+      url: 'https://db.example/storage/v1/object/public/screenshots/b/top',
+      alt: 'Screenshot of the top build by Ana',
+    });
   });
 
-  it('a battle without votes has no chip; no builds, no card', () => {
-    const data = removedWinnerBattle();
-    data.builds = data.builds.map((b) => ({ ...b, votes: null }));
-    expect(ogTopBuild(data)?.chip).toBeNull();
-    expect(ogTopBuild({ ...data, builds: [] })).toBeNull();
+  it('the static card: no builds, no screenshot, or a removed top build', () => {
+    expect(battleOgImage(battle(null), config)).toBe(STATIC_OG_CARD);
+    expect(battleOgImage(battle({ screenshot_path: null }), config)).toBe(STATIC_OG_CARD);
+    expect(battleOgImage(battle({ screenshot_path: 'b/top.webp', taken_down: true }), config)).toBe(
+      STATIC_OG_CARD,
+    );
+    expect(STATIC_OG_CARD).toMatchObject({ url: '/og-card.png', width: 1200, height: 630 });
   });
 });
 

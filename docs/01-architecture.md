@@ -88,21 +88,21 @@ static asset, which allows up to 25 MiB per file. Rules that follow from the spi
 - results pages (`/battles/[id]`) use the **R2 incremental cache** for ISR. Static pages use
   the static-assets cache. (T-026: everything cached is in R2 now, with a D1 tag cache and a
   Durable Object revalidation queue; see "Caching of the permanent pages" below);
-- set `metadataBase` for OG images. `next/og` works.
+- set `metadataBase` for OG images. `next/og` works, but T-033 dropped it: a card drawn per
+  request cost about 300 ms of CPU (docs/08-free-tier.md §1).
 - Deploy with `cf:deploy`, never with plain `wrangler deploy`. See `apps/web/DEPLOY.md`.
 | Route | Rendering | Purpose |
 |---|---|---|
 | `/` | static + client | Landing page, "Create room", "Join with code" |
-| `/r/[code]` | client-heavy | Room: lobby, spin, build workspace, reveal, vote, results |
-| `/battles/[id]` | SSR + ISR | Permanent results page (shareable). Reads only persisted data. |
-| `/battles/[id]/opengraph-image` | ISR (in the Worker) | Social card built from the challenge and the winning screenshot |
+| `/r/[code]` | static + client-heavy | Room: lobby, spin, build workspace, reveal, vote, results. One prerendered page for every room (a rewrite to `/r`; the code is read in the browser, T-033) |
+| `/battles/[id]` | SSR + ISR | Permanent results page (shareable). Reads only persisted data. Its `og:image` is the winning screenshot (Supabase Storage) or the static `/og-card.png`; no card is drawn per request (T-033) |
 | `/u/[id]` | SSR, cached data | Player history (builds, awards) |
 
-**Caching of the permanent pages (T-026).** `/battles/[id]` and its OG image are cached
+**Caching of the permanent pages (T-026).** `/battles/[id]` (with its `og:image`) is cached
 for an hour once the battle is DESTROYED with `destroyed_at` set (nothing changes by itself
 after that), and for seconds before that (screenshots land, then the destroy job) or while
 the battle is not public yet. `/u/[id]` renders per request from data at most a minute old.
-A takedown in `/admin` revalidates the battle's page, its OG image and every history page
+A takedown in `/admin` revalidates the battle's page (and so its `og:image`) and every history page
 that lists it at once (cache tag `battle:{id}`). The rules are in
 `apps/web/src/lib/cache/policy.ts`, the Cloudflare setup in `apps/web/DEPLOY.md`
 ("Caching").

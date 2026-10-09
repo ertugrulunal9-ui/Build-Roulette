@@ -4,11 +4,16 @@ The web app runs on **Cloudflare Workers** through the OpenNext adapter
 (`@opennextjs/cloudflare`). One deploy uploads two things:
 
 - **A Worker** (`.open-next/worker.js` plus the server code). It renders the dynamic pages
-  (`/r/[code]`, `/u/[id]`, `/admin`), renders `/battles/[id]` and its OG image when they are
-  not cached, and answers cached pages from the incremental cache (R2, see "Caching").
+  (`/u/[id]`, `/admin`), renders `/battles/[id]` when it is not cached, and answers cached
+  pages from the incremental cache (R2, see "Caching"): the prerendered ones, including the
+  one page every room (`/r/{code}`) shares since T-033.
 - **Static assets** (`.open-next/assets`): JS/CSS chunks, the playground's bundler worker
-  chunk and `esbuild.wasm`. Cloudflare serves these directly, without running the Worker,
-  and asset requests are free.
+  chunk, `esbuild.wasm` and `og-card.png` (the static social card). Cloudflare serves these
+  directly, without running the Worker, and asset requests are free.
+
+How much CPU each kind of request takes, against the Workers Free limit of 10 ms, is
+measured in [docs/08-free-tier.md](../../docs/08-free-tier.md) §1 (`pnpm --filter @br/web
+measure:cpu`).
 
 Everything below runs from the repository root. Nothing here is needed for local work.
 
@@ -38,11 +43,13 @@ placeholder geo data.
 
 1. **Create a Cloudflare account** at <https://dash.cloudflare.com/sign-up>.
 2. **Choose the Workers Paid plan** (Workers & Pages → Plans, about US$5/month). The free
-   plan allows only 10 ms of CPU per request, which server rendering React pages can exceed,
-   and caps the Worker at 3 MB compressed. Today's Worker is about 2.2 MB compressed
-   (`wrangler deploy --dry-run`, T-030; 2.1 MB before error reporting, 1.9 MB before the
-   cache), and a `proxy.ts`
-   (middleware) would add about 1.2 MB (measured in the T-012 spike). Paid allows 10 MB.
+   plan allows only 10 ms of CPU per request, and every server render of this app takes
+   more (measured in [docs/08-free-tier.md](../../docs/08-free-tier.md) §1, T-033: only cached
+   answers fit). Today's Worker is about 1.3 MB compressed, 6.4 MB raw
+   (`wrangler deploy --dry-run`, T-033 after dropping `next/og`; 2.2 MB compressed before),
+   and a `proxy.ts` (middleware) would add about 1.2 MB (measured in the T-012 spike). The
+   size limit was 3 MB compressed on Free and 10 MB on Paid; Cloudflare's docs now list
+   64 MiB uncompressed on both (docs/08 §1.3).
 3. **Log in from your machine** (opens a browser once):
    ```sh
    pnpm --filter @br/web exec wrangler login
@@ -198,9 +205,9 @@ Measured with `cf:build` + `wrangler deploy --dry-run` and the build's chunks (T
 
 | Page | How | Lifetime | Tags |
 |---|---|---|---|
-| `/battles/[id]` and `/battles/[id]/opengraph-image` | ISR: rendered on the first visit, then served from the cache (`force-static`) | **1 hour** once the battle is DESTROYED with `destroyed_at` set (it can't change by itself any more). **5 s** while it can: RESULTS (the screenshots land), or DESTROYED before the destroy job stamps `destroyed_at`. **5 s** for "no public battle" (an unknown id, or a battle not in RESULTS yet), so its 404 never sticks. 1 hour for a malformed id. | `battle:{id}` |
+| `/battles/[id]` (its `og:image` is the rank-1 screenshot in Storage or the static `/og-card.png`, never drawn per request: T-033) | ISR: rendered on the first visit, then served from the cache (`force-static`) | **1 hour** once the battle is DESTROYED with `destroyed_at` set (it can't change by itself any more). **5 s** while it can: RESULTS (the screenshots land), or DESTROYED before the destroy job stamps `destroyed_at`. **5 s** for "no public battle" (an unknown id, or a battle not in RESULTS yet), so its 404 never sticks. 1 hour for a malformed id. | `battle:{id}` |
 | `/u/[id]` | Rendered per request (its pagination is in the query string); its data is cached | **At most 60 s** once every battle on the page is settled: fresh for 30 s, then served once more while it refreshes. **5 s**, never served once more, while it is "No battles to show" (the first battle may end any moment) or lists a battle that is not settled. | `player:{id}`, plus `battle:{id}` of every battle on the page |
-| `/`, `/play`, `/playground` | Prerendered at build time | Until the next deploy | — |
+| `/`, `/play`, `/playground`, `/r` (every `/r/{code}`, through a rewrite) | Prerendered at build time | Until the next deploy | — |
 
 The rules live in `src/lib/cache/policy.ts` (unit-tested). How it works:
 
@@ -217,12 +224,13 @@ The rules live in `src/lib/cache/policy.ts` (unit-tested). How it works:
   key and the responses set no cookie, so a cached copy holds nothing about the viewer.
 - **A takedown** (`/admin`, `takeDownAction`) expires `battle:{id}` with `updateTag`. The
   battle id comes from `admin_take_down_build`'s answer, not from the form. That covers
-  the battle's page, its OG image and every history page that lists it, the builder's
-  included. The next request renders a fresh copy; it is not served the old one once more.
-- Ten seconds later the action expires the page and the OG image again, by path (`after()`,
-  which is `waitUntil` on Workers). A render that read the battle just before the takedown
-  could have stored its copy just after it. (By path because OpenNext writes a tag only
-  once per request; a path also reaches the cached data those pages read.)
+  the battle's page (whose `og:image` then becomes the static card) and every history page
+  that lists it, the builder's included. The next request renders a fresh copy; it is not
+  served the old one once more.
+- Ten seconds later the action expires the page again, by path (`after()`, which is
+  `waitUntil` on Workers). A render that read the battle just before the takedown could
+  have stored its copy just after it. (By path because OpenNext writes a tag only once per
+  request; a path also reaches the cached data the page read.)
 - No other admin action changes a public page (dismissed reports are never shown).
 - A takedown made **outside** `/admin` (SQL in the dashboard) revalidates nothing: the
   cached copies keep showing the build for up to an hour (a minute on `/u/[id]`). Take
@@ -256,8 +264,9 @@ Things to know:
   `expire`: a day for a settled battle, a minute otherwise.)
 - If the tag write of a takedown fails (D1 down), OpenNext logs it and the admin is not
   told. The copies then live out their lifetime; the hour is that safety net.
-- The OG image fetches the screenshot with `no-store`: only the finished PNG is cached,
-  never a copy of a screenshot that a takedown deletes from Storage.
+- The `og:image` points at the screenshot in Storage; nothing caches a copy of it in the
+  Worker, so a screenshot a takedown deletes is gone for new link previews (social networks
+  keep their own copies).
 
 Check it after a deploy (with any settled battle):
 
@@ -268,16 +277,16 @@ curl -sI https://<app-origin>/battles/<id> | grep -i x-opennext-cache   # the 2n
 Locally, `pnpm --filter @br/web test:e2e:cf:moderation` (with the local stack up) runs
 `e2e/isr.spec.ts` and `e2e/moderation.spec.ts` against the Workers preview. It checks a HIT
 on the second request, database changes staying hidden until the takedown, the takedown
-showing at once on the page, the OG image and `/u/[id]`, the second expiry, and a 404 that
-lives for seconds.
+showing at once on the page (and its `og:image`) and `/u/[id]`, the second expiry, and a
+404 that lives for seconds.
 
 ## Limits to keep in mind
 
 | Limit | Value | Us today |
 |---|---|---|
-| Worker size (compressed) | 3 MB free / 10 MB paid | ~2.2 MB (T-030) |
+| Worker size | 3 MB free / 10 MB paid, compressed (since September 2026 Cloudflare's docs list 64 MiB uncompressed on both plans instead; docs/08 §1.3) | ~1.3 MB compressed, 6.4 MB raw (T-033) |
 | One static asset | 25 MiB | `esbuild.wasm` is 13.3 MiB |
 | Static asset count | 20,000 per version | ~25 |
-| CPU per request | 10 ms free / 30 s default on paid | SSR pages are small |
+| CPU per request | 10 ms free / 30 s default on paid | measured in docs/08 §1: cached answers fit, renders do not |
 | `waitUntil` after the response | 30 s | the takedown's second expiry waits 10 s |
 | R2 / D1 per cached answer | one R2 read, one D1 query (rows read: one per tag) | a takedown writes one D1 row per tag |

@@ -3,7 +3,6 @@
  * Workers preview (`E2E_APP_SERVER=workers`). No test-only code in the app: only the headers
  * both servers already send.
  */
-import { createHash } from 'node:crypto';
 import { expect, type APIRequestContext, type APIResponse } from '@playwright/test';
 
 /**
@@ -25,13 +24,17 @@ export function sMaxAge(res: APIResponse): number | null {
   return m?.[1] ? Number(m[1]) : null;
 }
 
-/** A short hash of the response body (to compare two renders of an image). */
-export async function bodyHash(res: APIResponse): Promise<string> {
-  return createHash('sha256')
-    .update(await res.body())
-    .digest('hex')
-    .slice(0, 16);
+/**
+ * The `og:image` of a page's HTML (T-033: the rank-1 screenshot's Storage URL, or the static
+ * `/og-card.png`), or null without one.
+ */
+export function ogImage(html: string): string | null {
+  const m = /<meta property="og:image" content="([^"]*)"/.exec(html);
+  return m?.[1] ? m[1].replaceAll('&amp;', '&') : null;
 }
+
+/** The static social card (public/og-card.png): an absolute og:image URL ending like this. */
+export const STATIC_CARD = /^https?:\/\/[^/]+\/og-card\.png$/;
 
 /** The runtime under test, for messages. */
 export const APP_SERVER = process.env['E2E_APP_SERVER'] === 'workers' ? 'workers' : 'next start';

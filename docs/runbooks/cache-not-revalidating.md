@@ -60,15 +60,15 @@ pnpm --filter @br/web exec wrangler d1 execute build-roulette-web-tags --local -
 ## Mitigate
 
 1. **Expire the copies:** `/admin` → look up the battle id → its log → **Refresh public
-   copies**. It expires the tag (page, OG image, every history page that lists the battle)
-   and, 10 s later, the page and OG image by path, like a takedown.
+   copies**. It expires the tag (the page with its `og:image`, every history page that lists
+   the battle) and, 10 s later, the page by path, like a takedown.
 2. **D1 is down** (the refresh does not help; Cloudflare status shows D1 incidents): the
    copies expire on their own within the hour (`/u/[id]` within a minute). For an urgent
    removal, deploy again (`pnpm --filter @br/web cf:deploy`): every deploy starts with an
    empty cache (keys are per build id).
 3. **A CDN rule in front of the Worker:** remove it (DEPLOY.md: no "Cache Everything" rule),
    then purge the URL (Cloudflare dashboard → Caching → Configuration → Purge Cache → Custom
-   purge → the page URL and `…/opengraph-image`).
+   purge → the page URL).
 
 ## Verify
 

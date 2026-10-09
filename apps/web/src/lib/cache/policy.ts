@@ -67,8 +67,9 @@ export const LIVE_HISTORY: CacheLifetime = { stale: 30, revalidate: 5, expire: 5
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /**
- * The tag of everything that shows a battle: `/battles/{id}`, its OG image, and every history
- * page that lists it (`/u/{builder}` included). Revalidated by a takedown in that battle.
+ * The tag of everything that shows a battle: `/battles/{id}` (its `og:image` included) and
+ * every history page that lists it (`/u/{builder}` included). Revalidated by a takedown in
+ * that battle.
  */
 export function battleTag(battleId: string): string {
   return `battle:${battleId.toLowerCase()}`;
@@ -97,15 +98,15 @@ export function historyLifetime(data: PlayerHistory | null): CacheLifetime {
   return data.battles.every(isSettled) ? PLAYER_HISTORY : LIVE_HISTORY;
 }
 
-/** The tags of one battle's page and OG image. */
+/** The tags of one battle's page. */
 export function battleTags(id: string): string[] {
   return [battleTag(id)];
 }
 
 /**
  * The tags a takedown in battle `battleId` revalidates (`admin_take_down_build` returns the
- * battle id): its page, its OG image and every history page that lists it, the builder's
- * included. Nothing for an answer without a valid id.
+ * battle id): its page (and so its `og:image`) and every history page that lists it, the
+ * builder's included. Nothing for an answer without a valid id.
  */
 export function takedownTags(battleId: unknown): string[] {
   return typeof battleId === 'string' && UUID.test(battleId.toLowerCase())
@@ -115,12 +116,13 @@ export function takedownTags(battleId: unknown): string[] {
 
 /**
  * The paths a takedown in battle `battleId` expires a second time, TAKEDOWN_REEXPIRE_MS
- * later (app/admin/actions.ts): the battle's page and its OG image.
+ * later (app/admin/actions.ts): the battle's page. (Its social image is no longer a route of
+ * its own, T-033: the page's metadata names it.)
  */
 export function takedownPaths(battleId: unknown): string[] {
   if (takedownTags(battleId).length === 0) return [];
   const id = String(battleId).toLowerCase();
-  return [`/battles/${id}`, `/battles/${id}/opengraph-image`];
+  return [`/battles/${id}`];
 }
 
 /**

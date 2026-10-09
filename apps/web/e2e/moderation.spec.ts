@@ -1,5 +1,5 @@
 import { expect, test, type Browser, type Locator, type Page } from '@playwright/test';
-import { bodyHash, cachedCopy } from './cache';
+import { STATIC_CARD, cachedCopy, ogImage } from './cache';
 import {
   anonymousUserId,
   assertUuid,
@@ -22,10 +22,11 @@ import {
  * and its vote counts but has no Winner banner and no award chips on /battles/[id] and on
  * the builder's /u/[id]; the runner-up keeps its own award and does not become the winner.
  *
- * The three public surfaces (/battles/[id], its OG image, the builder's /u/[id]) are cached
+ * The public surfaces (/battles/[id] with its `og:image`, the builder's /u/[id]) are cached
  * (T-026) and served from the cache right up to the takedown; the takedown's revalidation
  * makes the very next request of each show the removal (e2e/isr.spec.ts covers a settled
- * battle, cached for an hour).
+ * battle, cached for an hour). The `og:image` is the winner's screenshot until then, and the
+ * static card after (T-028, T-033).
  *
  * Plus: /admin is a plain 404 for a player (and without a session, and after a failed
  * sign-in), and a blocked display name gets the friendly error.
@@ -315,9 +316,10 @@ test('report → admin takedown → "Removed by moderators" and the screenshot i
 
   // ─── Right before the takedown, the public copies are cached (T-026) ────────────
   const battlePath = `/battles/${fx.battle}`;
-  const ogPath = `${battlePath}/opengraph-image`;
-  expect(await (await cachedCopy(page.request, battlePath)).text()).toContain('Free Gift Card');
-  const ogBefore = await bodyHash(await cachedCopy(page.request, ogPath));
+  const cachedBefore = await (await cachedCopy(page.request, battlePath)).text();
+  expect(cachedBefore).toContain('Free Gift Card');
+  // The social image is the winning (scam) build's screenshot (T-033).
+  expect(ogImage(cachedBefore)).toBe(publicScreenshotUrl(fx.scam.path));
   // /u/[id] renders per request from cached data (at most a minute old).
   expect(await (await page.request.get(`/u/${fx.mallory}`)).text()).toContain('Free Gift Card');
 
@@ -379,11 +381,11 @@ test('report → admin takedown → "Removed by moderators" and the screenshot i
   await expect(page.locator('[data-award=overall], [data-award=speedrun]')).toHaveCount(0);
   await scamCard.scrollIntoViewIfNeeded();
   await snap(page, 't028-removed-winner');
-  const og = await page.request.get(ogPath);
-  expect(og.status()).toBe(200);
-  expect(og.headers()['content-type']).toContain('image/png');
-  // A new card (no WINNER chip, no awards, no screenshot), not the cached one.
-  expect(await bodyHash(og)).not.toBe(ogBefore);
+  // The social image: the static card, not the removed screenshot and not Ana's (nobody is
+  // promoted), on the first request after the takedown.
+  const og = await page.locator('meta[property="og:image"]').getAttribute('content');
+  expect(og).toMatch(STATIC_CARD);
+  expect(og).not.toContain(fx.timer.path);
 
   // ─── …and on the builder's history ──────────────────────────────────────────────
   await page.goto(`/u/${fx.mallory}`);

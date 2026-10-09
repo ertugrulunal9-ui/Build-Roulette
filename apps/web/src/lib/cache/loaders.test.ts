@@ -145,8 +145,5 @@ describe('the pages’ segment config', () => {
     const page = await import('../../app/battles/[id]/page');
     expect(page.dynamic).toBe('force-static');
     expect(page.revalidate).toBe(SETTLED_BATTLE.revalidate);
-    const og = await import('../../app/battles/[id]/opengraph-image');
-    expect(og.dynamic).toBe('force-static');
-    expect(og.revalidate).toBe(SETTLED_BATTLE.revalidate);
   });
 });

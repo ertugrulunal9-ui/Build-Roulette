@@ -1,6 +1,6 @@
 /**
  * Server-side read of a battle's permanent results (`get_public_battle`, callable with the
- * anon key). Used by /battles/[id] and its OG image. Plain fetch, so it runs the same on
+ * anon key). Used by /battles/[id] (page and metadata). Plain fetch, so it runs the same on
  * Node and on Cloudflare Workers.
  *
  * Cached (T-026): `loadPublicBattle` is a `'use cache'` function whose lifetime depends on

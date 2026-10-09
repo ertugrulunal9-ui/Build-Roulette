@@ -38,8 +38,13 @@ supabase/
 │   ├── 20261008130000_takedown_awards.sql             a build taken down after RESULTS loses its awards in every
 │   │                                                    public read and through RLS; rows kept (T-028)
 │   ├── 20261008140000_heartbeat_battle_version.sql    heartbeat also returns battle_id and battle_version (T-029)
-│   └── 20261008150000_ops_health.sql                  admin_ops_health: the signals of /admin Health and the
-│                                                        runbooks; two indexes for its windows (T-030)
+│   ├── 20261008150000_ops_health.sql                  admin_ops_health: the signals of /admin Health and the
+│   │                                                    runbooks; two indexes for its windows (T-030)
+│   └── 20261009120000_jobs_function.sql               the jobs Edge Function's SQL (T-034): the daily Browser
+│                                                        Rendering budget, pg_net, pg_cron br-jobs-run → Vault
+├── functions/
+│   └── jobs/                    the `jobs` Edge Function (T-034): index.ts (Deno entry) + core.js (GENERATED from
+│                                apps/capture-worker/src/edge by `pnpm --filter @br/capture-worker build:function`)
 ├── tests/                       pgTAP tests (*.test.sql), one transaction each, rolled back
 │   ├── 00_schema.test.sql       tables/enums exist, RLS on every table, policies, table privileges
 │   ├── 01_constraints.test.sql  room codes, time limits, one build per player, vote PK, cascades
@@ -74,8 +79,11 @@ supabase/
 │   │                            keep theirs, nothing reassigned or re-ranked, rows untouched, solo too (T-028)
 │   ├── 24_heartbeat_battle_version.test.sql  heartbeat's battle_id / battle_version (none, running, moved on,
 │   │                            live, after the battle, with a host migration), members only, same errors (T-029)
-│   └── 25_ops_health.test.sql   admin_ops_health: admins only (anon, service_role, players refused), counts on
-│                                fixtures as before/after differences (overdue vs stuck, jobs, cron, TTL) (T-030)
+│   ├── 25_ops_health.test.sql   admin_ops_health: admins only (anon, service_role, players refused), counts on
+│   │                            fixtures as before/after differences (overdue vs stuck, jobs, cron, TTL) (T-030)
+│   └── 26_jobs_function.test.sql  the jobs function's SQL (T-034): budget reserve/settle (limit, refusals, 429s,
+│                                stale reservations, the UTC day), run_jobs_function (due jobs, Vault, the pg_net
+│                                request), grants
 └── scripts/
     ├── e2e-solo.mjs             the solo loop through the real HTTP APIs (Auth, PostgREST, Storage, pg_cron)
     ├── e2e-multiplayer.mjs      a 3-player battle + late spectator through supabase-js, with Realtime reception
@@ -103,7 +111,7 @@ prove the emulation.
 ```bash
 # once per session (in the cloud container: start dockerd first, and pull from Docker Hub)
 SUPABASE_INTERNAL_IMAGE_REGISTRY=docker.io npx -y supabase@2.119.0 start \
-  -x studio,imgproxy,vector,logflare,edge-runtime,supavisor,mailpit,postgres-meta
+  -x studio,imgproxy,vector,logflare,supavisor,mailpit,postgres-meta
 
 npx -y supabase@2.119.0 db reset             # re-apply all migrations to a fresh database
 npx -y supabase@2.119.0 test db              # pgTAP: supabase/tests/*.test.sql
@@ -119,7 +127,11 @@ npx -y supabase@2.119.0 stop --no-backup
 ```
 
 `SUPABASE_INTERNAL_IMAGE_REGISTRY=docker.io` is only needed where `public.ecr.aws` is blocked
-(the cloud dev container). **Realtime must run** for `14_realtime.test.sql` and the two
+(the cloud dev container). The Edge Runtime (`edge-runtime`) stays in since T-034: the web e2e
+and the function's integration tests serve the `jobs` function (see "Jobs" below); the pgTAP
+tests and the scripts here do not need it. When Docker Hub rate-limits the pull, Google's
+mirror has the same image: `docker pull mirror.gcr.io/supabase/edge-runtime:<tag>` and `docker
+tag` it as `supabase/edge-runtime:<tag>` (the tag `supabase start` asks for). **Realtime must run** for `14_realtime.test.sql` and the two
 supabase-js scripts (it owns `realtime.messages` and its daily partitions). The migrations
 themselves also apply to a stack started with `-x realtime` (the capture CI job does that).
 Drop `studio,postgres-meta` from `-x` to get the dashboard. The containers are named after
@@ -210,6 +222,45 @@ PT429 `rate_limited` (T-024; PostgREST answers HTTP 429, `hint` = `{"retry_after
 | `complete_destroy(p_battle_id uuid)` | service role | void |
 | `complete_takedown(p_build_id uuid)` | service role (T-024) | void; `not_taken_down` for a build that was not taken down |
 | `sweep_deadlines()`, `sweep_ttl()` | pg_cron, service role | `int` |
+| `browser_budget_reserve(p_reserve_ms int, p_limit_ms int)` | service role (the jobs function, T-034) | `{granted, day, used_ms, reserved_ms, limit_ms}`; `invalid_reserve_ms` / `invalid_limit_ms` (22023) |
+| `browser_budget_settle(p_day date, p_reserved_ms int, p_used_ms int, p_rate_limited boolean default false)` | service role (T-034) | void; `invalid_settlement` (22023) |
+
+## Jobs (T-034): the `jobs` Edge Function, pg_cron, pg_net, Vault
+
+On the free plan nothing runs all the time: the capture, destroy and takedown jobs are
+processed by the Edge Function `supabase/functions/jobs`, which pg_cron starts every minute
+(docs/08-free-tier.md §5). `20261009120000_jobs_function.sql`:
+
+- **`br-jobs-run`** (pg_cron, every minute) calls `private.run_jobs_function()`, which sends a
+  pg_net `POST` to the function **only when a job is due** (queued or with an expired lease,
+  attempts left), with the header `x-br-cron-secret`. The function URL and the secret are read
+  from **Vault** (`br_jobs_function_url`, `br_jobs_cron_secret`): not in the migration, not in
+  `cron.job`. Without both secrets (a fresh database, the local stack) nothing is sent. Why a
+  cron secret rather than the service key: the migration's header. The function answers 202
+  and works in the background for up to ~110 s.
+- **The daily budget** (`private.browser_budget`, one row per UTC day: used, reserved, renders,
+  refused, rate_limited) is kept by `browser_budget_reserve` / `browser_budget_settle`
+  (service role) around every Browser Rendering call; a reservation not settled within
+  2 minutes counts as used. The limit is the function's `BROWSER_BUDGET_MS_PER_DAY` (9.5 min).
+- **pg_net** is created in `extensions` (as on Supabase; it adds schema `net`). Requests and
+  answers are in `net.http_request_queue` / `net._http_response` (pg_net keeps answers 6 h).
+
+Production setup (secrets, deploy, Vault): `apps/web/DEPLOY.md` "Screenshots and jobs". Turning
+it off (to run the self-hosted worker instead): `select cron.unschedule('br-jobs-run');`, back
+with `select cron.schedule('br-jobs-run', '* * * * *', 'select private.run_jobs_function()');`.
+
+**Locally:** the stack's Edge Runtime serves `supabase/functions`; the e2e services
+(`apps/web/scripts/solo-services.ts`) and the function's integration tests run `supabase
+functions serve --env-file …` with the stand-in for Browser Rendering, and the e2e services
+add the Vault secrets (the function as the database sees it: `http://kong:8000/functions/v1/jobs`)
+and a local schedule `e2e-jobs-run` every 2 s, removed again on stop. `config.toml` sets
+`[functions.jobs] verify_jwt = false` and `[edge_runtime] policy = "per_worker"` (background
+tasks need it). Calling it by hand:
+
+```sh
+curl -sS -X POST 'http://127.0.0.1:54321/functions/v1/jobs?wait=1' -H "x-br-cron-secret: $JOBS_CRON_SECRET"
+# → {"run":"…","ms":…,"stoppedBy":"empty","hardStopped":false,"jobs":[…]}
+```
 
 ## Rooms and multiplayer (M3, T-016)
 
@@ -473,7 +524,7 @@ holds running battles; `cron.job_run_details` keeps two days.
   admins), a queued capture job is cancelled and a pending `capture_status` becomes
   `failed`, the open reports become `actioned`, a `takedown` battle event is logged (its
   broadcast is a `sync`, so clients in the battle refetch), and a `takedown` job is queued.
-- **The file:** the capture-worker's takedown job deletes `screenshots/{battle}/{build}.*`
+- **The file:** the takedown job (the jobs function since T-034, or the self-hosted worker) deletes `screenshots/{battle}/{build}.*`
   through the Storage API (SQL cannot), checks nothing is left, then
   `complete_takedown(build)` stamps `storage_deleted_at`. `claim_job('takedown')` waits while
   the build's capture job is running with a live lease, `claim_job('capture')` never hands
@@ -654,6 +705,7 @@ compatible RULE cards and every compatible BUILD + RULE pair at least 15 STYLE c
 when the extension is available and schedules `br-sweep-deadlines` (every 5 s),
 `br-sweep-ttl` (every 10 min) and `br-cron-history-cleanup` (daily, keeps 2 days of
 `cron.job_run_details`); `20261008120100_rate_limits.sql` adds `br-rate-events-prune` (hourly,
-T-024). Without `pg_cron` the block is skipped with a NOTICE. Hosted
+T-024) and `20261009120000_jobs_function.sql` adds `br-jobs-run` (every minute, T-034: the jobs
+function, above). Without `pg_cron` the block is skipped with a NOTICE. Hosted
 Supabase ships pg_cron; this has only been verified on the local stack so far, so check the
 schedule (`select * from cron.job`) after the first `supabase db push`.

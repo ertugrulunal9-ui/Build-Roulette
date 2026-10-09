@@ -6,7 +6,7 @@ What to do when something in production goes wrong. Each runbook has the same pa
 | Runbook | When |
 |---|---|
 | [stuck-battle.md](stuck-battle.md) | A battle sits past its deadline and does not move on |
-| [capture-backlog.md](capture-backlog.md) | Screenshots or deletes pile up; Browser Rendering is down |
+| [capture-backlog.md](capture-backlog.md) | Screenshots or deletes pile up; Browser Rendering is down or its daily budget spent; the jobs function is not called |
 | [package-cdn-outage.md](package-cdn-outage.md) | Previews cannot load npm packages |
 | [realtime-quota.md](realtime-quota.md) | "Reconnecting…", channels closed by Realtime, the spend-cap decision |
 | [supabase-outage.md](supabase-outage.md) | Supabase (database, Auth, Realtime, Storage) is down or degraded |
@@ -37,9 +37,13 @@ What to do when something in production goes wrong. Each runbook has the same pa
   in app-awake time, `wall_silent_ms`, `stalled_ms`, `longest_stall_ms`, `restarted`). Many
   crashes with a large `stalled_ms` point at overloaded player machines, not at loops.
 - **Logs:** Supabase dashboard → Logs (Postgres: `sweep_deadlines: battle … not advanced`
-  warnings; Realtime; Auth), the capture worker's and the package CDN's stdout (one JSON
-  object per line). The web app is static files on Cloudflare Pages: it has no logs of its
-  own (Workers & Pages → `build-roulette-web` → Deployments shows what is live).
+  warnings; Realtime; Auth), Edge Functions → `jobs` → Logs (the screenshot and delete jobs on
+  the free plan, T-034: one JSON object per event, `run.*`, `capture.*`, `budget.*`), the
+  self-hosted capture worker's and the package CDN's stdout (one JSON object per line).
+  pg_cron's calls of the jobs function are in `net._http_response`
+  ([capture-backlog.md](capture-backlog.md)). The web app is static files on Cloudflare
+  Pages: it has no logs of its own (Workers & Pages → `build-roulette-web` → Deployments
+  shows what is live).
 
 ## Running the SQL
 

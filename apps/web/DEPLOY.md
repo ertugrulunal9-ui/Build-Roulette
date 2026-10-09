@@ -100,7 +100,7 @@ pnpm --filter @br/web pages:deploy --branch main
 - **The package CDN is the public esm.sh** on the free plan (T-035; our own `@br/pkg-cdn`
   needs Cloudflare Containers, a paid feature). Use the same base URL in three places:
   `NEXT_PUBLIC_PKG_CDN_URL` here, `BR_PKG_CDN_URL` for the sandbox shell (step 4) and
-  `PKG_CDN_URL` for the screenshot jobs (`apps/capture-worker`). The app's CSP gets
+  `PKG_CDN_URL` for the screenshot jobs (the `jobs` function's secret, below). The app's CSP gets
   `connect-src https://esm.sh` (the bundler fetches package CSS), the shell's `script-src
   https://esm.sh`. If they disagree, previews load no package ("The build or one of its
   packages failed to load", and a CSP error in the browser console). To move to another
@@ -136,7 +136,7 @@ pnpm --filter @br/web pages:deploy --branch main
 Nothing to configure for it to work; four things to know:
 
 1. **It shares Workers Free's 100,000 requests a day** with every other Worker on the account
-   (T-034's cron Worker included), counted from 00:00 UTC. Only `/battles/*` counts: one
+   (there is no other: T-034's jobs run on Supabase, next section), counted from 00:00 UTC. Only `/battles/*` counts: one
    request per view of a results page, by a person or by a crawler. Pages Functions on the
    Free plan **fail open** by default when that allowance is spent: requests skip the
    Function and get the static shell, as before T-038 (the generic preview; the page itself
@@ -160,6 +160,92 @@ Nothing to configure for it to work; four things to know:
    screenshot (or `og-card.png`). An unknown id answers `404` with `x-br-preview: not-found`.
    Then paste a battle link into the debugger of a network you care about (e.g. the Facebook
    Sharing Debugger, the LinkedIn Post Inspector) to see the card.
+
+## Screenshots and jobs (the `jobs` Edge Function, T-034)
+
+Screenshots, and the deletes of finished battles' files and of taken-down screenshots, run in
+the Supabase Edge Function `jobs` (`supabase/functions/jobs`). pg_cron starts it every minute
+through pg_net when a job is due, and it renders with **Cloudflare Browser Rendering's REST
+API** (Workers Free: 10 browser-minutes a day; the function stops at 9.5 and then uses the
+players' own thumbnails). Design and limits: docs/08-free-tier.md §5. Nothing else runs all
+the time. Run these steps once, after the database migrations (`supabase db push`), the
+sandbox shell and the app:
+
+1. **The Browser Rendering credentials** (Cloudflare dashboard):
+   - **Account ID:** Workers & Pages → Overview, right column (also in the dashboard URL).
+   - **API token:** My Profile → API Tokens → Create Token → Custom token, with the permission
+     **Account → Browser Rendering → Edit**, limited to this account. Copy the token once.
+     Per Cloudflare's docs; not tried here (no account).
+2. **The capture secret.** This is the sandbox shell's capture gate secret. If the shell's
+   Pages project has none yet, create it, then redeploy the shell. The function needs the
+   same value.
+   ```sh
+   CAPTURE_HMAC_SECRET=$(openssl rand -hex 32)
+   printf %s "$CAPTURE_HMAC_SECRET" | \
+     pnpm --filter @br/web exec wrangler pages secret put CAPTURE_HMAC_SECRET --project-name <sandbox project>
+   ```
+   The shell must be built from T-034 or later: the function reads the capture page's
+   `data-br-*` report (docs/03 "Capture on the free plan").
+3. **The Supabase CLI** linked to the project: `npx -y supabase@2.119.0 login`, then
+   `npx -y supabase@2.119.0 link --project-ref <ref>` (the ref is in the project URL
+   `https://<ref>.supabase.co`).
+4. **The function's secrets.** They go in a file so they stay out of the shell history; delete
+   it afterwards:
+   ```sh
+   JOBS_CRON_SECRET=$(openssl rand -hex 32)
+   cat > /tmp/jobs.env <<ENV
+   JOBS_CRON_SECRET=$JOBS_CRON_SECRET
+   CAPTURE_SHELL_URL=https://<sandbox>.pages.dev/v1/capture
+   CAPTURE_HMAC_SECRET=$CAPTURE_HMAC_SECRET
+   PKG_CDN_URL=https://esm.sh
+   BROWSER_RENDERING_ACCOUNT_ID=<account id>
+   BROWSER_RENDERING_API_TOKEN=<API token>
+   ENV
+   npx -y supabase@2.119.0 secrets set --env-file /tmp/jobs.env
+   rm /tmp/jobs.env
+   ```
+   - `CAPTURE_SHELL_URL`: the shell's capture page, i.e. `NEXT_PUBLIC_SANDBOX_SHELL_URL` with
+     `capture` instead of the trailing path. With per-build origins it would be
+     `https://{build}.<usercontent>/v1/capture`.
+   - `PKG_CDN_URL`: the same as the app's `NEXT_PUBLIC_PKG_CDN_URL`.
+   - Supabase sets `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` itself.
+   - Optional, with their defaults: `BROWSER_BUDGET_MS_PER_DAY` (570000),
+     `BROWSER_RENDERING_MIN_INTERVAL_MS` (10000, the free plan's one request per 10 s),
+     `CAPTURE_TIMEOUT_MS` (35000), `JOBS_RUN_WINDOW_MS` (50000),
+     `JOBS_RUN_HARD_STOP_MS` (140000; up to 390000 on a paid plan), `LOG_LEVEL` (info).
+   - `npx -y supabase@2.119.0 secrets list` shows the names (digests, not values).
+5. **Deploy the function.** `supabase/config.toml` already has `verify_jwt = false` for it:
+   pg_cron sends the cron secret, not a user's token. The flag repeats it.
+   ```sh
+   npx -y supabase@2.119.0 functions deploy jobs --no-verify-jwt
+   ```
+6. **Tell the database where the function is, and its secret** (Vault). Run this once in the
+   SQL editor with the real values. To rotate later, use
+   `vault.update_secret((select id from vault.secrets where name = 'br_jobs_cron_secret'), '<new>')`
+   together with step 4.
+   ```sql
+   select vault.create_secret('https://<ref>.supabase.co/functions/v1/jobs', 'br_jobs_function_url');
+   select vault.create_secret('<the JOBS_CRON_SECRET value>', 'br_jobs_cron_secret');
+   ```
+7. **Check it:**
+   ```sh
+   curl -sS -X POST "https://<ref>.supabase.co/functions/v1/jobs?wait=1" -H "x-br-cron-secret: $JOBS_CRON_SECRET"
+   # → 200 {"run":"…","stoppedBy":"empty","jobs":[…]}; 401 without the secret
+   ```
+   Then play a solo battle. Within a minute of RESULTS its screenshot should be `captured`
+   (`/admin` → Health: "Screenshots, last 24 h"), and the function's logs (Edge Functions →
+   `jobs` → Logs) show `capture.rendered` with `browserMs`. pg_cron's own calls:
+   ```sql
+   select r.status_code, r.content, r.created from net._http_response r order by r.created desc limit 5;
+   select day, used_ms, renders, refused, rate_limited from private.browser_budget order by day desc limit 7;
+   ```
+
+**The self-hosted worker instead** (a paid plan or your own machine: `apps/capture-worker`,
+Playwright + sharp, no daily budget): stop the trigger with
+`select cron.unschedule('br-jobs-run');`, then run the worker with its `.env`
+(`apps/capture-worker/README.md`). To switch back, run
+`select cron.schedule('br-jobs-run', '* * * * *', 'select private.run_jobs_function()');`.
+The two can also run side by side; `claim_job` hands each job to one of them.
 
 ## Custom domain
 

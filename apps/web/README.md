@@ -196,7 +196,7 @@ pnpm --filter @br/web dev:solo     # then open http://localhost:3000/play
 | Local Supabase stack | `http://127.0.0.1:54321` | Used if it is running, otherwise started with `supabase start -x …` (see [supabase/README.md](../../supabase/README.md)). In the cloud dev container, start `dockerd` first and set `SUPABASE_INTERNAL_IMAGE_REGISTRY=docker.io`. |
 | Mock package CDN | `http://localhost:4322` | React and a few packages from `@br/runtime`'s test support. |
 | Sandbox shell | `http://127.0.0.1:4321/v1/` | The preview (a different site from the app), plus the signed capture page `/v1/capture` with a random per-run HMAC secret. |
-| Capture/destroy worker | (no port) | `@br/capture-worker` with Playwright Chromium: screenshots shipped builds and deletes ephemeral files after DESTROY. |
+| Jobs (T-034) | (no port) | As in production: the `jobs` Edge Function (`supabase functions serve`), started by pg_cron every 2 s through pg_net (Vault holds its URL and secret), rendering through a local Browser Rendering stand-in on Playwright Chromium (port 4325). It screenshots shipped builds, deletes ephemeral files after DESTROY and taken-down screenshots. Needs the stack's Edge Runtime. `--worker` runs the self-hosted `@br/capture-worker` instead. |
 | Next.js | `http://localhost:3000` | `next dev`, pointed at all of the above. |
 
 Ctrl+C stops everything (the stack keeps running; stop it with
@@ -337,8 +337,9 @@ key other than the anon key (`scripts/pages-config.ts`).
 
 `scripts/solo-services.ts` reads: `BR_APP_ORIGINS` (app origins the shell accepts, default
 `http://localhost:3000`), `APP_PORT` (3000), `SHELL_PORT` (4321), `CDN_PORT` (4322),
-`CAPTURE_HMAC_SECRET` (default: random per run), `WORKER_IDLE_MAX_MS` (2000), and the
-stack's `API_URL` / `ANON_KEY` / `SERVICE_ROLE_KEY` (default: `supabase status -o env`).
+`STAND_IN_PORT` (4325), `CAPTURE_HMAC_SECRET` (default: random per run), `BR_JOBS=worker`
+(like `--worker`), `WORKER_IDLE_MAX_MS` (2000, `--worker` only), and the stack's `API_URL` /
+`ANON_KEY` / `SERVICE_ROLE_KEY` / `DB_URL` (default: `supabase status -o env`).
 
 ## `/playground` local setup
 

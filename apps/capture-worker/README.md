@@ -19,9 +19,18 @@ Server-side screenshots and source destruction for finished battles
   the same build is still running (and never hands out a capture of a taken-down build),
   so a capture cannot upload after the delete.
 
-Locally the renderer is Playwright + Chromium (`PlaywrightRenderer`); production is meant
-to use Cloudflare Browser Rendering (`BrowserRenderingRenderer` is a documented sketch, see
-below).
+**Two ways to run these jobs, one job contract** (T-034):
+
+- **Production on the free plan: the `jobs` Supabase Edge Function** (`supabase/functions/jobs`).
+  pg_cron starts it every minute; it renders with Cloudflare Browser Rendering's REST API
+  (`BrowserRenderingRenderer`, `src/browser-rendering.ts`) within a daily budget
+  (`src/budget.ts`), stores the WebP Browser Rendering returns (`webpImaging`, no sharp), and runs
+  the same `processCaptureJob`, `processDestroyJob` and `processTakedownJob` as the worker. Its
+  code is `src/edge/`, bundled into `supabase/functions/jobs/core.js`; see "The jobs Edge
+  Function" below and docs/08-free-tier.md §5.
+- **Self-hosted: this worker process** (a paid or own host): Playwright + Chromium
+  (`PlaywrightRenderer`) and sharp (`sharpImaging`), no budget. Switching between them:
+  docs/08-free-tier.md §5.6.
 
 ## Capture flow
 
@@ -184,8 +193,19 @@ goes out at most once a minute. A render that fails because of the build's own c
 
 ```bash
 pnpm --filter @br/capture-worker test              # unit tests, fakes only (part of pnpm test)
-pnpm --filter @br/capture-worker test:integration  # real Chromium + the local Supabase stack
+pnpm --filter @br/capture-worker test:integration  # the worker: real Chromium + the local Supabase stack
+pnpm --filter @br/capture-worker test:function     # the jobs Edge Function in the local Edge Runtime (T-034)
 ```
+
+- Function (`integration/function.test.ts`, T-034; the stack with the Edge Runtime): `supabase
+  functions serve` runs the function against the Browser Rendering stand-in, the shell's
+  capture page and Storage. A React build is captured (WebP 1280×800, the budget counts its
+  browser time); a throwing build falls back to its thumbnail (container rebuilt, EXIF gone);
+  a spent budget falls back without calling Browser Rendering; a 429 with a short Retry-After
+  is retried in the run, a long one is handed back twice and then falls back; a run killed
+  mid-capture leaves the job leased, and once the lease is over the next run captures it;
+  destroy and takedown delete the files; pg_cron's trigger (`private.run_jobs_function`)
+  reaches the function through pg_net with the cron secret from Vault.
 
 - Unit (`test/`): readiness rule, blank detection and WebP encoding, the capture job
   (signed URL contents, captured / fallback / retry / final failure / missing bundle /
@@ -215,16 +235,37 @@ pnpm --filter @br/capture-worker test:integration  # real Chromium + the local S
   run as the superuser in one transaction that parks the other jobs and restores them), so
   jobs left by the e2e suites are neither processed nor changed.
 
-## Production: Cloudflare Browser Rendering
+## The jobs Edge Function (T-034)
 
-`BrowserRenderingRenderer` throws `not-implemented`; the module comment explains the two
-options. The recommended one is running this job loop in a Worker with a Browser Rendering
-binding and `@cloudflare/playwright`, which keeps `PlaywrightRenderer`'s logic (route guard,
-network events, console hints, timeouts). The REST screenshot API is callable from Node but
-cannot express the readiness rule or the navigation guard exactly. `sharp` does not run in
-workerd: WebP would come from Cloudflare Images, or the PNG is stored (the bucket allows it).
+What runs in production on the free plan. The pieces live here, so the worker's tests cover
+them:
 
-**The package CDN** (T-035): set `PKG_CDN_URL` to the same base URL as the app's
+| Module | What |
+|---|---|
+| `src/edge/handler.ts` | the request handler: `POST` with `x-br-cron-secret` → 202 and a background run (`?wait=1`: inline, returns the summary); 401/405/500 otherwise |
+| `src/edge/run.ts` | one run: `claim_job` round robin (capture, destroy, takedown) for `JOBS_RUN_WINDOW_MS` (50 s), in-flight jobs aborted at `JOBS_RUN_HARD_STOP_MS` (140 s) |
+| `src/edge/config.ts` | its environment (secrets and defaults: apps/web/DEPLOY.md "Screenshots and jobs") |
+| `src/browser-rendering.ts` | Browser Rendering's REST `/snapshot`: the request, the capture page's report (`data-br-*` on `<html>`), 429s and pacing, error classes |
+| `src/budget.ts` | the daily browser-time budget (`browser_budget_reserve` / `browser_budget_settle`) |
+| `src/capture-policy.ts` | no usable render: fall back now (the build, the budget) or retry first (429, outages) |
+| `src/imaging.ts`, `src/webp.ts` | `webpImaging`: the WebP as rendered; client thumbnails rebuilt without metadata |
+| `src/stand-in.ts` | a local stand-in for the REST API on Playwright (tests, e2e, `pnpm … stand-in`) |
+
+`pnpm --filter @br/capture-worker build:function` (also part of `build`) bundles
+`src/edge/entry.ts` with esbuild (platform-neutral, 60 KiB) into
+`supabase/functions/jobs/core.js`, **committed** so `supabase functions deploy jobs` needs no
+build step; `test/function-bundle.test.ts` fails when it is stale. Sharing is by bundling, not
+by copying: the function runs this package's code.
+
+Run it locally: the stack with the Edge Runtime, then
+`pnpm --filter @br/capture-worker stand-in` (Browser Rendering on port 4325),
+`pnpm --filter @br/capture-worker dev:shell`, and
+`npx -y supabase@2.119.0 functions serve --env-file <file>` with the variables of
+`integration/function.test.ts`'s `functionEnv`; or simply `pnpm --filter @br/web dev:solo`,
+which does all of it (apps/web/scripts/solo-services.ts).
+
+**The package CDN** (T-035): set `PKG_CDN_URL` (the worker's variable, the function's secret)
+to the same base URL as the app's
 `NEXT_PUBLIC_PKG_CDN_URL` and the sandbox shell's `BR_PKG_CDN_URL`. On the free plan that is
 the public `https://esm.sh` (docs/08-free-tier.md §4). The capture page's CSP is the shell's,
 so it allows that origin only; a different value here makes every capture load nothing and
@@ -241,3 +282,11 @@ fall back to the client thumbnail.
 - A uniform single-colour build counts as blank and gets the thumbnail if there is one.
 - Autosaves made before the `autosave/bundle.css` slot (T-014) have no CSS file; such a
   build is captured without its CSS.
+- **The Edge Function's captures** (T-034) differ from this worker's:
+  - there is no "network idle + 2 s", so a build without the ready signal waits the full 6 s;
+  - there is no navigation guard (the CSP sandbox remains);
+  - blank detection uses the page's DOM report (`data-br-paint`), not pixels;
+  - client thumbnails are stored with a rebuilt container, not re-encoded, and must fit
+    1280×800.
+
+  docs/08-free-tier.md §5.3.

@@ -647,5 +647,5 @@ pnpm --filter @br/web test:e2e             # static-site.spec: /battles/x is the
 pnpm --filter @br/web test:e2e:moderation  # link-preview.spec (crawler view, 404s, Supabase slow and down) + the takedown
 pnpm --filter @br/web test:e2e:solo        # og:image = the solo build's screenshot
 pnpm --filter @br/web test:e2e:multi       # og:image = the winner's screenshot
-pnpm --filter @br/web measure:cpu          # §3.3 (~25 min; --only/--warm/--cold to narrow it)
+pnpm --filter @br/web measure:cpu          # §3.3 (~15 min; --only/--warm/--cold to narrow it)
 ```

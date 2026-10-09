@@ -22,7 +22,7 @@ import sharp from 'sharp';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { BUCKET_EPHEMERAL, type Job } from '../src/backend';
 import type { CaptureOutcome } from '../src/capture-job';
-import { decodeRaw, isBlank, pixelStats, type RawImage } from '../src/image';
+import { decodeRaw, isBlank, pixelStats, sharpImaging, type RawImage } from '../src/image';
 import { createLogger } from '../src/log';
 import { PlaywrightRenderer } from '../src/playwright-renderer';
 import { WorkerRunner, type JobOutcome } from '../src/runner';
@@ -78,6 +78,7 @@ beforeAll(async () => {
     {
       backend,
       renderer,
+      imaging: sharpImaging,
       capture: {
         shellCaptureUrl: fx.shell.captureUrl,
         hmacSecret: SECRET,

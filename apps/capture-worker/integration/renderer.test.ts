@@ -96,7 +96,7 @@ describe('PlaywrightRenderer + shell capture page', () => {
     });
     expect(result.ready.reason).toBe('signal');
     expect(result.ready.afterMs).toBeLessThan(6000);
-    const img = await decodeRaw(result.png);
+    const img = await decodeRaw(result.image);
     expect([img.width, img.height]).toEqual([1280, 800]);
     const stats = pixelStats(img);
     expect(isBlank(stats)).toBe(false);
@@ -115,7 +115,7 @@ describe('PlaywrightRenderer + shell capture page', () => {
     expect(result.ready.afterMs).toBeGreaterThanOrEqual(2500);
     expect(result.ready.afterMs).toBeLessThan(6000);
     expect(
-      colorClose(pixelStats(await decodeRaw(result.png)).dominant, { r: 33, g: 150, b: 243 }),
+      colorClose(pixelStats(await decodeRaw(result.image)).dominant, { r: 33, g: 150, b: 243 }),
     ).toBe(true);
   });
 
@@ -128,7 +128,7 @@ describe('PlaywrightRenderer + shell capture page', () => {
     expect(result.ready.reason).toBe('cap');
     expect(result.ready.afterMs).toBeGreaterThanOrEqual(6000);
     expect(result.ready.afterMs).toBeLessThan(7000);
-    expect(isBlank(pixelStats(await decodeRaw(result.png)))).toBe(false);
+    expect(isBlank(pixelStats(await decodeRaw(result.image)))).toBe(false);
   });
 
   it('blocks popups, top-level navigations and modals; the capture still succeeds', async () => {
@@ -143,7 +143,7 @@ describe('PlaywrightRenderer + shell capture page', () => {
     expect(result.notes.some((n) => n.startsWith('blocked navigation to http://127.0.0.1'))).toBe(
       true,
     );
-    const stats = pixelStats(await decodeRaw(result.png));
+    const stats = pixelStats(await decodeRaw(result.image));
     expect(colorClose(stats.dominant, { r: 46, g: 125, b: 50 })).toBe(true);
   });
 

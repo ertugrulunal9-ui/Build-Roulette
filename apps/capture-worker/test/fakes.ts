@@ -220,7 +220,8 @@ export class FakeRenderer implements Renderer {
 
 export function rendered(png: Uint8Array): RenderResult {
   return {
-    png,
+    image: png,
+    format: 'png',
     ready: { reason: 'signal', afterMs: 120 },
     durationMs: 900,
     blocked: { navigations: 0, popups: 0 },

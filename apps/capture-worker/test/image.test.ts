@@ -2,13 +2,13 @@ import sharp from 'sharp';
 import { describe, expect, it } from 'vitest';
 import {
   BLANK_STDDEV_THRESHOLD,
-  MAX_SCREENSHOT_BYTES,
   decodeRaw,
   encodeWebp,
   isBlank,
   pixelStats,
   type RawImage,
 } from '../src/image';
+import { MAX_SCREENSHOT_BYTES } from '../src/imaging';
 import { imageWithBlock, solidImage } from './fakes';
 
 function raw(width: number, height: number, fill: (x: number, y: number) => number[]): RawImage {

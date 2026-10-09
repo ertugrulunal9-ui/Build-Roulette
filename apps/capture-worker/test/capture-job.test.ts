@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { verifyCaptureUrl } from '@br/sandbox-shell/capture-sig';
 import { BackendError, BUCKET_EPHEMERAL, BUCKET_SCREENSHOTS } from '../src/backend';
 import { processCaptureJob, type CaptureConfig, type CaptureDeps } from '../src/capture-job';
+import { sharpImaging } from '../src/image';
 import { silentLogger } from '../src/log';
 import { RenderError } from '../src/renderer';
 import {
@@ -54,7 +55,14 @@ beforeEach(async () => {
 });
 
 function deps(renderer: FakeRenderer): CaptureDeps {
-  return { backend, renderer, config: CONFIG, log: silentLogger, now: () => 1_800_000_000_000 };
+  return {
+    backend,
+    renderer,
+    imaging: sharpImaging,
+    config: CONFIG,
+    log: silentLogger,
+    now: () => 1_800_000_000_000,
+  };
 }
 
 function shippedBuild(files: Record<string, Uint8Array | string> = {}) {

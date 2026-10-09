@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { BUCKET_EPHEMERAL, BUCKET_SCREENSHOTS } from '../src/backend';
 import type { CaptureConfig } from '../src/capture-job';
+import { sharpImaging } from '../src/image';
 import { createLogger, silentLogger } from '../src/log';
 import { RenderError, type RenderRequest } from '../src/renderer';
 import { WorkerRunner } from '../src/runner';
@@ -65,7 +66,13 @@ describe('WorkerRunner', () => {
     backend.phases.set(BATTLE, 'destroyed');
     backend.addJob('destroy', BATTLE);
     const renderer = new FakeRenderer(() => Promise.resolve(rendered(png)));
-    runner = new WorkerRunner({ backend, renderer, capture: CONFIG, log: silentLogger });
+    runner = new WorkerRunner({
+      backend,
+      renderer,
+      imaging: sharpImaging,
+      capture: CONFIG,
+      log: silentLogger,
+    });
     const captures = await runner.drain('capture');
     expect(captures.map((c) => c.outcome.result)).toEqual(['captured']);
     const destroys = await runner.drain('destroy');
@@ -79,7 +86,13 @@ describe('WorkerRunner', () => {
     backend.put(BUCKET_SCREENSHOTS, `${BATTLE}/${BUILD}.webp`, 'shot');
     backend.addJob('takedown', BUILD);
     runner = new WorkerRunner(
-      { backend, renderer: hangingRenderer(), capture: CONFIG, log: silentLogger },
+      {
+        backend,
+        renderer: hangingRenderer(),
+        imaging: sharpImaging,
+        capture: CONFIG,
+        log: silentLogger,
+      },
       { idleMinMs: 10, shutdownGraceMs: 0 },
     );
     runner.start();
@@ -93,7 +106,13 @@ describe('WorkerRunner', () => {
     const backend = new FakeBackend();
     capturable(backend);
     runner = new WorkerRunner(
-      { backend, renderer: hangingRenderer(), capture: CONFIG, log: silentLogger },
+      {
+        backend,
+        renderer: hangingRenderer(),
+        imaging: sharpImaging,
+        capture: CONFIG,
+        log: silentLogger,
+      },
       { jobTimeoutMs: 50 },
     );
     const [first] = await runner.drain('capture', 1);
@@ -107,7 +126,13 @@ describe('WorkerRunner', () => {
   it('polls with exponential backoff while idle, and resets after a job', async () => {
     const backend = new FakeBackend();
     runner = new WorkerRunner(
-      { backend, renderer: hangingRenderer(), capture: CONFIG, log: silentLogger },
+      {
+        backend,
+        renderer: hangingRenderer(),
+        imaging: sharpImaging,
+        capture: CONFIG,
+        log: silentLogger,
+      },
       { idleMinMs: 10, idleMaxMs: 40, kinds: ['destroy'] },
     );
     runner.start();
@@ -130,6 +155,7 @@ describe('WorkerRunner', () => {
       {
         backend,
         renderer: hangingRenderer(),
+        imaging: sharpImaging,
         capture: CONFIG,
         log: createLogger({ write: (l) => lines.push(l) }),
       },
@@ -150,7 +176,7 @@ describe('WorkerRunner', () => {
       capturable(backend, `33333333-3333-4333-8333-33333333333${String(i)}`);
     const renderer = hangingRenderer();
     runner = new WorkerRunner(
-      { backend, renderer, capture: CONFIG, log: silentLogger },
+      { backend, renderer, imaging: sharpImaging, capture: CONFIG, log: silentLogger },
       { captureConcurrency: 2, idleMinMs: 10, kinds: ['capture'], shutdownGraceMs: 0 },
     );
     runner.start();
@@ -160,7 +186,7 @@ describe('WorkerRunner', () => {
     expect(
       () =>
         new WorkerRunner(
-          { backend, renderer, capture: CONFIG, log: silentLogger },
+          { backend, renderer, imaging: sharpImaging, capture: CONFIG, log: silentLogger },
           { captureConcurrency: 0 },
         ),
     ).toThrow();
@@ -182,7 +208,7 @@ describe('WorkerRunner', () => {
       return rendered(png);
     });
     runner = new WorkerRunner(
-      { backend, renderer, capture: CONFIG, log: silentLogger },
+      { backend, renderer, imaging: sharpImaging, capture: CONFIG, log: silentLogger },
       { idleMinMs: 10, kinds: ['capture'], shutdownGraceMs: 5000 },
     );
     runner.start();
@@ -202,7 +228,7 @@ describe('WorkerRunner', () => {
     capturable(backend);
     const renderer = hangingRenderer();
     runner = new WorkerRunner(
-      { backend, renderer, capture: CONFIG, log: silentLogger },
+      { backend, renderer, imaging: sharpImaging, capture: CONFIG, log: silentLogger },
       { idleMinMs: 10, kinds: ['capture'], shutdownGraceMs: 30 },
     );
     runner.start();

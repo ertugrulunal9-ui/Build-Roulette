@@ -1,16 +1,20 @@
 /**
- * One capture job (docs/01 §1.5 "Ship → capture → destroy", docs/03 §3.7).
+ * One capture job (docs/01 §1.5 "Ship → capture → destroy", docs/03 §3.7). Shared by the
+ * self-hosted worker (Playwright + sharp) and the `jobs` Edge Function (Browser Rendering's
+ * REST API + plain WebP, T-034): the renderer, the imaging and the budget are injected.
  *
  *   build row ─► signed Storage URLs (bundle.js, bundle.css if any; short TTL)
  *             ─► import map from the build's manifest (source.json)
  *             ─► signed capture page URL (HMAC, short expiry)
- *             ─► renderer (PNG 1280×800) ─► blank check ─► WebP ─► screenshots/{battle}/{build}.webp
+ *             ─► [budget: reserve browser time, or fall back]
+ *             ─► renderer ─► imaging: usable? ─► WebP ─► screenshots/{battle}/{build}.webp
  *             ─► complete_capture('captured')
  *
- * Fallback when the render fails or is blank: the client thumbnail `thumb.webp`, re-encoded
- * (never stored as uploaded), `complete_capture('fallback')`.
+ * No usable render (capture-policy.ts): the build's fault or the budget is spent → the
+ * client thumbnail `thumb.webp`, as a WebP we wrote (`complete_capture('fallback')`); the
+ * rendering service failed → retried first, the thumbnail from the 3rd attempt.
  *
- * Neither works: `fail_job` (re-queued with backoff; at the 5th attempt SQL gives up and
+ * Nothing at all: `fail_job` (re-queued with backoff; at the 5th attempt SQL gives up and
  * sets capture_status = failed). One case fails at once with `complete_capture('failed')`:
  * no bundle AND no thumbnail, because retrying cannot make files appear (uploads are closed
  * once a build is shipped).
@@ -29,11 +33,13 @@ import {
   type BuildRow,
   type Job,
 } from './backend';
-import { decodeRaw, encodeWebp, isBlank, pixelStats } from './image';
+import type { CaptureBudget } from './budget';
+import { afterNoRender, classifyRenderFailure, type NoRenderKind } from './capture-policy';
+import type { CaptureImaging } from './imaging';
 import { errorMessage, type Logger } from './log';
 import { buildSources, screenshotPath, type BuildSources } from './paths';
 import type { ReadyReason } from './readiness';
-import { RenderError, type Renderer } from './renderer';
+import { RenderError, type RenderResult, type Renderer } from './renderer';
 
 export interface CaptureConfig {
   /**
@@ -54,6 +60,10 @@ export interface CaptureConfig {
 export interface CaptureDeps {
   backend: Backend;
   renderer: Renderer;
+  /** `sharpImaging` (worker) or `webpImaging` (Edge Function). */
+  imaging: CaptureImaging;
+  /** The daily Browser Rendering budget (Edge Function); none for the self-hosted worker. */
+  budget?: CaptureBudget | undefined;
   config: CaptureConfig;
   log: Logger;
   now?: () => number;
@@ -110,8 +120,36 @@ export async function importMapFor(
 
 type RenderAttempt =
   | { kind: 'missing' }
-  | { kind: 'blank'; stdDev: number }
-  | { kind: 'ok'; png: Uint8Array; ready: ReadyReason; renderMs: number };
+  | { kind: 'no-render'; why: NoRenderKind; reason: string }
+  | { kind: 'ok'; webp: Uint8Array; ready: ReadyReason; renderMs: number };
+
+/** Renders under the budget (when there is one); always settles what it reserved. */
+async function renderWithBudget(
+  deps: CaptureDeps,
+  url: string,
+  signal: AbortSignal,
+): Promise<{ result: RenderResult } | { spent: true }> {
+  const { budget, config } = deps;
+  const req = { url, viewport: config.viewport, timeoutMs: config.captureTimeoutMs, signal };
+  if (!budget) return { result: await deps.renderer.render(req) };
+  const ticket = await budget.reserve();
+  if (!ticket) return { spent: true };
+  let browserMs = 0;
+  let rateLimited = false;
+  try {
+    const result = await deps.renderer.render(req);
+    browserMs = result.browserMs ?? result.durationMs;
+    return { result };
+  } catch (e) {
+    if (e instanceof RenderError) {
+      browserMs = e.extra.browserMs ?? 0;
+      rateLimited = e.code === 'rate-limited';
+    }
+    throw e;
+  } finally {
+    await budget.settle(ticket, { browserMs, rateLimited });
+  }
+}
 
 async function renderBuild(
   deps: CaptureDeps,
@@ -136,22 +174,28 @@ async function renderBuild(
     exp: Math.floor(now() / 1000) + ttl,
     secret: config.hmacSecret,
   });
-  const result = await deps.renderer.render({
-    url,
-    viewport: config.viewport,
-    timeoutMs: config.captureTimeoutMs,
-    signal,
-  });
+
+  const rendered = await renderWithBudget(deps, url, signal);
+  if ('spent' in rendered) {
+    return {
+      kind: 'no-render',
+      why: 'budget',
+      reason: "today's browser rendering budget is spent",
+    };
+  }
+  const result = rendered.result;
   log.info('capture.rendered', {
     ready: result.ready.reason,
     readyAfterMs: result.ready.afterMs,
     renderMs: result.durationMs,
+    ...(result.browserMs === undefined ? {} : { browserMs: result.browserMs }),
+    ...(result.paint === undefined ? {} : { paint: result.paint }),
     blocked: result.blocked,
     notes: result.notes,
   });
-  const stats = pixelStats(await decodeRaw(result.png));
-  if (isBlank(stats)) return { kind: 'blank', stdDev: stats.maxStdDev };
-  return { kind: 'ok', png: result.png, ready: result.ready.reason, renderMs: result.durationMs };
+  const check = await deps.imaging.screenshot(result, config.viewport);
+  if (!check.ok) return { kind: 'no-render', why: 'render', reason: check.reason };
+  return { kind: 'ok', webp: check.webp, ready: result.ready.reason, renderMs: result.durationMs };
 }
 
 async function giveUpOrRetry(
@@ -216,39 +260,45 @@ async function runCapture(
     return giveUpOrRetry(deps, job, errorMessage(e), log);
   }
 
-  // 1. Server render.
-  let attempt: RenderAttempt | null = null;
-  let renderFailure: string;
+  // 1. Server render. Any error on the way (signing, the renderer, the pixel check) means
+  // no usable render; only an abort (shutdown, out of time) sends the job straight back.
+  let attempt: RenderAttempt;
   try {
     attempt = await renderBuild(deps, build, sources, signal, log);
-    renderFailure =
-      attempt.kind === 'missing'
-        ? `${sources.kind} bundle.js is missing`
-        : attempt.kind === 'blank'
-          ? `blank render (max channel std dev ${attempt.stdDev.toFixed(2)})`
-          : '';
   } catch (e) {
-    // Shutting down or out of time: no fallback, the job goes back to the queue.
     if (signal.aborted || (e instanceof RenderError && e.code === 'aborted')) throw e;
-    renderFailure = errorMessage(e);
+    attempt = { kind: 'no-render', why: classifyRenderFailure(e), reason: errorMessage(e) };
   }
-
-  if (attempt?.kind === 'ok') {
-    const webp = await encodeWebp(attempt.png);
-    await backend.upload(BUCKET_SCREENSHOTS, target, webp, 'image/webp');
+  if (attempt.kind === 'ok') {
+    await backend.upload(BUCKET_SCREENSHOTS, target, attempt.webp, 'image/webp');
     await backend.completeCapture(build.id, 'captured', target);
-    log.info('capture.captured', { path: target, bytes: webp.byteLength, ready: attempt.ready });
+    log.info('capture.captured', {
+      path: target,
+      bytes: attempt.webp.byteLength,
+      ready: attempt.ready,
+    });
     return { result: 'captured', path: target, ready: attempt.ready, renderMs: attempt.renderMs };
   }
-  log.warn('capture.render_unusable', { reason: renderFailure });
+  const renderFailure =
+    attempt.kind === 'missing' ? `${sources.kind} bundle.js is missing` : attempt.reason;
+  if (attempt.kind === 'no-render' && afterNoRender(attempt.why, job.attempts) === 'retry') {
+    // The rendering service failed (not the build): try again before using the thumbnail.
+    log.warn('capture.service_failed', { reason: renderFailure });
+    return giveUpOrRetry(deps, job, renderFailure, log);
+  }
+  if (attempt.kind === 'no-render' && attempt.why === 'budget') {
+    log.info('capture.budget_spent', { reason: renderFailure });
+  } else {
+    log.warn('capture.render_unusable', { reason: renderFailure });
+  }
 
-  // 2. Fallback: the client thumbnail, re-encoded.
+  // 2. Fallback: the client thumbnail, as a WebP we wrote.
   const thumb = await backend.download(BUCKET_EPHEMERAL, sources.thumb);
   let thumbProblem = 'no client thumbnail';
   if (thumb) {
     let webp: Uint8Array | null = null;
     try {
-      webp = await encodeWebp(thumb, { fit: config.viewport });
+      webp = await deps.imaging.thumbnail(thumb, config.viewport);
     } catch (e) {
       thumbProblem = `the client thumbnail is not a usable image (${errorMessage(e)})`;
     }
@@ -262,7 +312,7 @@ async function runCapture(
 
   // 3. Nothing to show.
   const reason = `${renderFailure}; ${thumbProblem}`;
-  if (attempt?.kind === 'missing' && !thumb) {
+  if (attempt.kind === 'missing' && !thumb) {
     await backend.completeCapture(build.id, 'failed', null);
     log.warn('capture.failed', { reason });
     return { result: 'failed', reason };

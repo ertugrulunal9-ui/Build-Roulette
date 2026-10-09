@@ -13,9 +13,11 @@
  *   is retried after its backoff instead of waiting for the lease to expire.
  */
 import type { Backend, Job, JobKind } from './backend';
+import type { CaptureBudget } from './budget';
 import { processCaptureJob, type CaptureConfig, type CaptureOutcome } from './capture-job';
 import { processDestroyJob, type DestroyOutcome } from './destroy-job';
 import { processTakedownJob, type TakedownOutcome } from './takedown-job';
+import type { CaptureImaging } from './imaging';
 import { errorMessage, type Logger } from './log';
 import type { Renderer } from './renderer';
 
@@ -40,6 +42,10 @@ export const DEFAULT_RUNNER_OPTIONS: RunnerOptions = {
 export interface RunnerDeps {
   backend: Backend;
   renderer: Renderer;
+  /** `sharpImaging` (worker) or `webpImaging` (Edge Function). */
+  imaging: CaptureImaging;
+  /** The daily Browser Rendering budget (Edge Function only). */
+  budget?: CaptureBudget | undefined;
   capture: CaptureConfig;
   log: Logger;
 }
@@ -140,6 +146,8 @@ export class WorkerRunner {
               {
                 backend: this.deps.backend,
                 renderer: this.deps.renderer,
+                imaging: this.deps.imaging,
+                budget: this.deps.budget,
                 config: this.deps.capture,
                 log: this.deps.log,
               },

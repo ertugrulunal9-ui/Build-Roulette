@@ -1,9 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { PREVIEW_SANDBOX_BY_MODE } from '@br/runtime';
 import { CAPTURE_SANDBOX_FLAGS } from '@br/sandbox-shell/headers';
-import { BrowserRenderingRenderer, screenshotRequestBody } from '../src/browser-rendering-renderer';
 import { ConfigError, describeConfig, loadConfig } from '../src/config';
-import { RenderError } from '../src/renderer';
 
 const ENV = {
   SUPABASE_URL: 'http://127.0.0.1:54321/',
@@ -85,26 +83,5 @@ describe('capture sandbox flags', () => {
     expect([...CAPTURE_SANDBOX_FLAGS].sort()).toEqual(
       PREVIEW_SANDBOX_BY_MODE.capture.split(/\s+/).filter(Boolean).sort(),
     );
-  });
-});
-
-describe('BrowserRenderingRenderer (sketch)', () => {
-  it('fails loudly instead of pretending to capture', async () => {
-    const r = new BrowserRenderingRenderer({ accountId: 'a', apiToken: 't' });
-    await expect(r.render()).rejects.toBeInstanceOf(RenderError);
-    await expect(r.render()).rejects.toThrow('not-implemented');
-  });
-
-  it('maps a capture to the REST screenshot body (shape only)', () => {
-    const body = screenshotRequestBody({
-      url: 'https://b.usercontent.example/v1/capture?sig=x',
-      viewport: { width: 1280, height: 800 },
-      timeoutMs: 20_000,
-    });
-    expect(body).toMatchObject({
-      viewport: { width: 1280, height: 800, deviceScaleFactor: 1 },
-      waitForSelector: { selector: 'html[data-br-capture="ready"]', timeout: 6000 },
-      screenshotOptions: { type: 'png', fullPage: false },
-    });
   });
 });

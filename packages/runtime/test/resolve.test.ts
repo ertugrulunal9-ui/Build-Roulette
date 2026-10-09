@@ -414,6 +414,22 @@ describe('buildImportMap', () => {
       'react-dom/': 'https://pkg.example.net/react-dom@18.3.1&external=react,react-dom/',
     });
   });
+  it('maps nothing but CDN URLs from a hostile manifest (REVEAL and capture read stored ones)', () => {
+    const hostile = {
+      ...TEMPLATE,
+      'https://evil.example/x': '1.0.0',
+      '../../x': '1.0.0',
+      'a&external=evil': '1.0.0',
+      'a?b': '1.0.0',
+      'a#b': '1.0.0',
+      ok: '1.0.0/../../evil',
+      fine: '1.0.0',
+    };
+    const map = buildImportMap(hostile, 'https://esm.sh').imports;
+    const template = buildImportMap(TEMPLATE, 'https://esm.sh').imports;
+    expect(Object.keys(map).sort()).toEqual([...Object.keys(template), 'fine', 'fine/'].sort());
+    for (const url of Object.values(map)) expect(url.startsWith('https://esm.sh/')).toBe(true);
+  });
   it('maps packages without React too (vanilla templates)', () => {
     expect(buildImportMap({ zustand: '5.0.15' }, CDN)).toEqual({
       imports: {

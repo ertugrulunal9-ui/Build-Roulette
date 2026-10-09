@@ -110,8 +110,12 @@ describe('capture job: server render', () => {
         'react/jsx-runtime': 'https://pkg.test/react@19.3.0/jsx-runtime?external=react,react-dom',
         'react/jsx-dev-runtime':
           'https://pkg.test/react@19.3.0/jsx-dev-runtime?external=react,react-dom',
-        'react-dom': 'https://pkg.test/react-dom@19.3.0?external=react,react-dom',
-        'react-dom/client': 'https://pkg.test/react-dom@19.3.0/client?external=react,react-dom',
+        'react/': 'https://pkg.test/react@19.3.0&external=react,react-dom/',
+        'react-dom': 'https://pkg.test/react-dom@19.3.0?external=react,react-dom,scheduler',
+        'react-dom/client':
+          'https://pkg.test/react-dom@19.3.0/client?external=react,react-dom,scheduler',
+        'react-dom/': 'https://pkg.test/react-dom@19.3.0&external=react,react-dom,scheduler/',
+        scheduler: 'https://pkg.test/scheduler@0.28.0',
       },
     });
 

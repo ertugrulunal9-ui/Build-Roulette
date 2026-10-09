@@ -2,8 +2,9 @@
  * What the REVEAL reads of another player's build (supabase/README.md "Reveal and voting"):
  * `bundle.js`, `bundle.css` and `manifest.json` from `ephemeral-builds`. Everything in them
  * was produced by another player's browser, so it is untrusted: the manifest is parsed
- * defensively (size cap, shape, string values only), only exact React / React DOM pins
- * become import map entries (`buildImportMap`), and the result is validated against the
+ * defensively (size cap, shape, string values only), only exact pins of valid package names
+ * become import map entries (`buildImportMap`: every one is a URL on the configured CDN, which
+ * the bundle could import directly anyway, T-040), and the result is validated against the
  * bridge's own schema before it reaches a preview. Anything unusable degrades to an empty
  * import map (the build then shows its own load error in the sandbox), never to a throw.
  */

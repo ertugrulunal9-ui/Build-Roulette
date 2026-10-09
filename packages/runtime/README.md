@@ -303,13 +303,30 @@ The app therefore treats the sandbox as hostile:
   `isAbortError(e)`). Nothing hangs when `boot()` races `destroy()`, for example under React
   StrictMode's double effects. After `terminate()`, the `BundlerClient` can be used again
   (a new worker); an `EsmBrowserRuntime` cannot.
+- **A bundler start never hangs (T-039)**: the worker fetches `esbuild.wasm` itself (compiling
+  while it downloads, like esbuild-wasm's `wasmURL` path) and posts `init-progress` when it
+  runs, when the response starts, at most every 250 ms while bytes arrive, and when the
+  download is complete. A start with no progress for `initStallMs` (default
+  `DEFAULT_INIT_STALL_MS`, 15 s) is terminated and retried once with a fresh worker; the timer
+  starts over with every message, so a slow but moving download is never cut off. If the retry
+  stalls too, `boot()` rejects with a `BundlerInitTimeoutError` (`isInitTimeout(e)`, with the
+  `stage` it stalled in: `worker`, `download` or `compile`). `BootTimings.attempts` says
+  whether the retry was needed, and the `onInitAttempt` option reports every worker start
+  (ready, stalled, error) for telemetry. Why 15 s and not a fixed bound: the wasm is 13.6 MB
+  (3–4 MB compressed), so a whole-start bound would have to allow minutes on a slow phone link,
+  and one shorter than the real download would fail every retry too; 15 s without a single
+  byte is a stall at any link speed. The cost: the module compiles from our own `Response`
+  (a counting stream), which has no URL, so Chrome's wasm code cache for fetched responses
+  does not apply on later visits; measured cold starts are about 20 ms slower (table below).
 - **A failed bundler start is retried**: if the worker script fails to load, `createWorker`
-  throws or esbuild-wasm fails to initialize, `boot()` rejects, the failed worker is
-  terminated, and the failure is not cached. The next `build()` (explicit or debounced after
-  `writeFile`) starts a fresh worker.
+  throws, esbuild-wasm fails to initialize or both starts stalled, `boot()` rejects, the
+  failed worker is terminated, and the failure is not cached. The next `build()` (explicit
+  or debounced after `writeFile`) starts a fresh worker. Errors are not retried
+  automatically: only a stall is.
 - **Build failures are results, not rejections**: when the bundler cannot start, `build()`
-  resolves with `ok: false` and one diagnostic with `code: 'bundler-init-failed'`, and the
-  result goes to `onBuild` listeners like any build. Debounced builds never produce unhandled
+  resolves with `ok: false` and one diagnostic with `code: 'bundler-init-failed'` (its text is
+  `bundlerStartFailureText(e)`: "Couldn't start the bundler: the download stalled (no progress
+  for 15 s, 2 attempts)"), and the result goes to `onBuild` listeners like any build. Debounced builds never produce unhandled
   rejections. `build()` rejects only once the runtime is destroyed.
 
 ## Running it
@@ -351,6 +368,8 @@ last two full e2e runs.
 | Metric | Result | Budget (docs/03 §3.8) |
 |---|---|---|
 | Worker cold start (`new Worker` → esbuild-wasm ready), 5 fresh contexts | p50 **192–235 ms**, max 241 ms | < 3 s cold (incl. download) |
+| …with the worker's own wasm fetch for progress (T-039), 3 runs × 5 contexts each, old vs new worker | median of run medians ~205 → ~227 ms (+~20 ms on localhost) | |
+| A stalled `esbuild.wasm` request (web e2e `playground.spec`): retry → first build | ~16.7 s test (15 s stall + the retry); both stalled → failed state ~30 s | no hang |
 | …of which wasm compile/instantiate inside the worker | ~160–190 ms | |
 | First build (cold, fetches package CSS) | 420–520 ms | |
 | First preview after boot (build → `ready`, cold CDN + React eval) | p50 **492–624 ms**, max 691 ms | < 1 s preloaded |

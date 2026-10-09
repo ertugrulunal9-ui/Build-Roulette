@@ -133,6 +133,9 @@ export function WorkspacePanes({ session, dark, previewOverlay }: WorkspacePanes
           snapshot={snapshot}
           shellUrl={playgroundConfig.shellUrl}
           onRestart={() => controller?.restartPreview()}
+          onRetryBundler={() => {
+            controller?.retryBundler();
+          }}
           onDismissErrors={() => controller?.dismissErrors()}
           onClearConsole={() => controller?.clearConsole()}
           onOpenDiagnostic={openDiagnostic}

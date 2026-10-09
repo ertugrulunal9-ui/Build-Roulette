@@ -10,6 +10,8 @@ interface PreviewPaneProps {
   snapshot: SandboxSnapshot;
   shellUrl: string;
   onRestart: () => void;
+  /** Starts the bundler again after it failed to start (T-039). */
+  onRetryBundler: () => void;
   onDismissErrors: () => void;
   onClearConsole: () => void;
   onOpenDiagnostic: (d: Diagnostic) => void;
@@ -33,6 +35,7 @@ export function PreviewPane({
   snapshot,
   shellUrl,
   onRestart,
+  onRetryBundler,
   onDismissErrors,
   onClearConsole,
   onOpenDiagnostic,
@@ -64,11 +67,26 @@ export function PreviewPane({
         {snapshot.bundler === 'failed' && (
           <div
             role="alert"
-            className="absolute inset-0 grid place-items-center bg-white p-6 text-center text-sm text-red-700 dark:bg-zinc-950 dark:text-red-300"
+            data-testid="bundler-failed"
+            className="absolute inset-0 grid place-items-center bg-white p-6 text-center dark:bg-zinc-950"
           >
-            <div>
-              <p className="font-semibold">The bundler failed to start.</p>
-              <p className="mt-1 font-mono text-xs">{snapshot.bundlerError}</p>
+            <div className="flex max-w-sm flex-col items-center gap-3">
+              <p
+                className="text-sm font-semibold break-words text-red-700 dark:text-red-300"
+                data-testid="bundler-error"
+              >
+                {snapshot.bundlerError ?? "Couldn't start the bundler."}
+              </p>
+              <p className="text-sm text-zinc-600 dark:text-zinc-400">
+                Your code is saved in this browser. Check your connection, then retry.
+              </p>
+              <button
+                type="button"
+                onClick={onRetryBundler}
+                className="rounded-lg bg-zinc-900 px-4 py-2 text-sm font-semibold text-white dark:bg-zinc-100 dark:text-zinc-900"
+              >
+                Retry
+              </button>
             </div>
           </div>
         )}

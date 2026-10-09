@@ -13,16 +13,23 @@
  *
  * Watchdog crashes go to the optional `PreviewHealth` (T-031): one `preview_crash` event per
  * crash, sent once the user restarted the preview or the controller went away, and the
- * preview's watchdog stats for the battle's `sync_health`.
+ * preview's watchdog stats for the battle's `sync_health`. Bundler starts that stall or fail
+ * go there too (`bundler_start`, T-039).
+ *
+ * A bundler that cannot start never hangs (T-039): the runtime gives up on a start with no
+ * progress for 15 s and retries it once, then `boot()` rejects. The snapshot then reads
+ * `bundler: 'failed'` with the reason, and `retryBundler()` (the Retry button) or the next
+ * edit starts it again. The workspace is not touched: it stays in IndexedDB either way.
  */
 import { isPackageStall, type RuntimeErrorMessage } from '@br/protocol';
-import type {
-  BuildResult,
-  ConsoleEntry,
-  Diagnostic,
-  PreviewCrash,
-  PreviewHandle,
-  SandboxRuntime,
+import {
+  bundlerStartFailureText,
+  type BuildResult,
+  type ConsoleEntry,
+  type Diagnostic,
+  type PreviewCrash,
+  type PreviewHandle,
+  type SandboxRuntime,
 } from '@br/runtime';
 import type { Workspace } from '@br/workspace';
 import type { PreviewHealth } from '../telemetry/sandbox-health';
@@ -51,6 +58,7 @@ export type PreviewStatus = 'connecting' | 'loading' | 'running' | 'crashed';
 
 export interface SandboxSnapshot {
   bundler: 'booting' | 'ready' | 'failed';
+  /** Why the bundler could not start, for the player ("Couldn't start the bundler: …"). */
   bundlerError: string | null;
   /** Edits were sent to the bundler and no build result has come back since. */
   building: boolean;
@@ -99,7 +107,10 @@ export interface SandboxControllerDeps {
   runtime?: PlaygroundRuntime;
   /** Defaults to requestAnimationFrame. */
   frames?: FrameScheduler;
-  /** Watchdog telemetry (T-031): crashes, restarts and the preview's stall counters. */
+  /**
+   * Watchdog telemetry (T-031): crashes, restarts and the preview's stall counters; and the
+   * bundler starts that stalled or failed (T-039, reported by the default runtime).
+   */
   health?: PreviewHealth;
 }
 
@@ -135,9 +146,15 @@ export class SandboxController {
   constructor(host: HTMLElement, config: PlaygroundConfig, deps: SandboxControllerDeps = {}) {
     this.host = host;
     this.config = config;
-    this.runtime = deps.runtime ?? createPlaygroundRuntime(config);
-    this.batcher = new FrameBatcher(this.flushOutput, deps.frames);
     this.health = deps.health ?? null;
+    this.runtime =
+      deps.runtime ??
+      createPlaygroundRuntime(config, {
+        onInitAttempt: (report) => {
+          if (!this.disposed) this.health?.bundlerStart(report);
+        },
+      });
+    this.batcher = new FrameBatcher(this.flushOutput, deps.frames);
     this.offBuild = this.runtime.onBuild(this.onBuild);
   }
 
@@ -162,11 +179,12 @@ export class SandboxController {
       // boot() takes the files synchronously, so sync() calls made while it awaits apply.
       await this.runtime.boot({ files: workspace.files, manifest: workspace.manifest });
     } catch (e) {
+      // The same text as the `bundler-init-failed` diagnostic of a build that waited for it.
       if (!this.disposed) {
         this.update({
           bundler: 'failed',
           building: false,
-          bundlerError: e instanceof Error ? e.message : String(e),
+          bundlerError: bundlerStartFailureText(e),
         });
       }
       return;
@@ -219,6 +237,19 @@ export class SandboxController {
       },
       () => undefined, // only after dispose()
     );
+  }
+
+  /**
+   * Starts the bundler again after it failed to start (the Retry button): a fresh worker, then
+   * a build of the current files. The outcome arrives like any build result: `ready` and a
+   * preview, or `failed` again with the new reason. Only the bundler restarts; the workspace
+   * (IndexedDB, autosave) is not touched.
+   */
+  retryBundler(): void {
+    if (this.disposed || this.snapshot.bundler !== 'failed') return;
+    this.update({ bundler: 'booting', bundlerError: null, building: true });
+    // A start that fails again resolves with a `bundler-init-failed` diagnostic (applyBuild).
+    this.runtime.build().catch(() => undefined); // only rejects after dispose()
   }
 
   /** Builds now (the result is loaded by `onBuild`). */

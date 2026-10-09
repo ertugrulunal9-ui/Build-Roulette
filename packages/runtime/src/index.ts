@@ -11,9 +11,16 @@ export { EsmBrowserRuntime, type EsmBrowserRuntimeOptions, type SandboxRuntime }
 export {
   BundlerAbortError,
   BundlerClient,
+  BundlerInitTimeoutError,
+  DEFAULT_INIT_STALL_MS,
+  INIT_ATTEMPTS,
+  bundlerStartFailureText,
   isAbortError,
+  isInitTimeout,
   type BootTimings,
   type BundlerClientOptions,
+  type InitAttemptReport,
+  type InitStage,
 } from './worker/client';
 export {
   PREVIEW_ALLOW,

@@ -538,3 +538,40 @@ this task.
 - The edge side (Cloudflare in front of the package CDN container) is in
   [apps/pkg-cdn/README.md](../apps/pkg-cdn/README.md#origin-outages-t-032) and the
   [package CDN outage runbook](runbooks/package-cdn-outage.md).
+
+### Bundler start: stall timeout and retry (T-039)
+
+Before T-039 a bundler start had no timeout: an `esbuild.wasm` (13.6 MB) or worker-script
+download that stalled without an error left "Starting bundler…" on screen for good (seen once
+in CI, a page stuck at the battle start). The lifecycle now is:
+
+1. **Start:** `BundlerClient.init()` creates the worker. The worker fetches `esbuild.wasm`
+   itself and compiles it while it downloads (as esbuild-wasm's own `wasmURL` path does), so
+   it can report progress: `init-progress` when it runs and sends the request, when the
+   response starts, at most every 250 ms while bytes arrive, and when the download is
+   complete.
+2. **Stall:** no progress for **15 s** (`initStallMs`) stops that worker. The timer starts over
+   on each message, so a slow link is never cut off while bytes keep coming. 15 s with not one
+   byte is a stall, not a slow network; compiling after the last byte takes ~0.2 s here. A fixed
+   bound on the whole start would have to be minutes long for a slow phone link (3–4 MB on the
+   wire), and a bound shorter than the real download would make every retry fail too.
+3. **One automatic retry** with a fresh worker (and a fresh request). The player only sees
+   "Starting bundler…" for longer.
+4. **Failed:** if the retry stalls too, `boot()` rejects with a `BundlerInitTimeoutError` and
+   builds resolve with a `bundler-init-failed` diagnostic. The BUILD screen and the playground
+   show "Couldn't start the bundler: the download stalled (no progress for 15 s, 2 attempts)",
+   a note that the code is saved, and **Retry** (`SandboxController.retryBundler()`: a fresh
+   start, then a build of the current files). An edit retries as well. The workspace is never
+   touched: edits keep going to IndexedDB, and the autosave (it uploads the last good build
+   with the source) picks up with the first build after the bundler starts.
+
+Errors (a 404, a refused connection, a worker script that fails to load) still fail at once
+without the automatic retry: they are reported, and Retry or the next edit starts over.
+`terminate()` (a `destroy()`) settles a start at any point, including during the retry, and no
+timer fires after it. Telemetry: each start that stalls or fails, and the automatic retry after
+a stall, is a `bundler_start` event (`outcome`, `stage`: `worker` / `download` / `compile`,
+`attempt`, `elapsed_ms`, `loaded_bytes`, the battle UUID; no code, no names).
+
+Limit: the stall timer measures wall-clock time on the app's main thread. A tab whose renderer
+is frozen for more than 15 s during the start (the whole CPU starved) can see a false stall.
+That costs one retry from the HTTP cache, not a failure.

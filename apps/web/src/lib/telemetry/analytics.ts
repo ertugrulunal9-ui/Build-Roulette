@@ -95,6 +95,26 @@ export interface PreviewCrashProps {
   restarted: boolean;
 }
 
+/**
+ * A bundler worker start that stalled or failed, or that worked only on the automatic retry
+ * after a stall (T-039, sandbox-health.ts). One per worker start; a clean first start sends
+ * nothing.
+ */
+export interface BundlerStartProps {
+  /** The battle being built; null outside a battle (the playground). */
+  battle_id: string | null;
+  /** `stalled`: no progress for 15 s (retried once); `error`: a load or init error. */
+  outcome: 'ready' | 'stalled' | 'error';
+  /** How far it got: the worker script never ran, esbuild.wasm was downloading, or compiling. */
+  stage: 'worker' | 'download' | 'compile';
+  /** 1, or 2 for the automatic retry after a stall. */
+  attempt: number;
+  /** From this worker's start to the outcome. */
+  elapsed_ms: number;
+  /** Bytes of esbuild.wasm received. */
+  loaded_bytes: number;
+}
+
 export interface AnalyticsEvents {
   room_created: { room_id: string };
   room_joined: { room_id: string; role: 'player' | 'spectator' };
@@ -126,6 +146,7 @@ export interface AnalyticsEvents {
   report_filed: { reason: ReportReason; surface: 'results' | 'reveal' };
   sync_health: SyncHealthProps;
   preview_crash: PreviewCrashProps;
+  bundler_start: BundlerStartProps;
 }
 
 export type AnalyticsEventName = keyof AnalyticsEvents;

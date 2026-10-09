@@ -164,7 +164,11 @@ test('a bundler that failed to start is started again by the next edit', async (
   });
   await page.goto('/playground');
   await expect(page.getByTestId('build-status')).toHaveText('Bundler failed', { timeout: 20_000 });
-  await expect(page.getByText('The bundler failed to start.')).toBeVisible();
+  // An error (unlike a stall) is not retried on its own: one request, then the failed state.
+  await expect(page.getByTestId('bundler-error')).toHaveText(
+    /^Couldn't start the bundler: esbuild-wasm failed to initialize: /,
+  );
+  expect(wasmRequests).toBe(1);
 
   failWasm = false;
   await replaceEditorText(page, 'export function App() {\n  return <h1>Second try</h1>;\n}\n');
@@ -172,9 +176,90 @@ test('a bundler that failed to start is started again by the next edit', async (
     timeout: 20_000,
   });
   await expect(buildFrame(page).locator('h1')).toHaveText('Second try');
-  await expect(page.getByText('The bundler failed to start.')).toHaveCount(0);
+  await expect(page.getByTestId('bundler-failed')).toHaveCount(0);
   expect(wasmRequests).toBeGreaterThanOrEqual(2);
   // No unhandled rejections from the failed start or the retried builds.
+  expect(pageErrors).toEqual([]);
+});
+
+// T-039: a download that stalls (no answer, no error) must not leave "Starting bundler…" on
+// screen forever. The runtime gives up on a start after 15 s without progress and retries it
+// once with a fresh worker; these tests wait out that real timeout.
+test('a stalled esbuild.wasm download is retried with a fresh worker after 15 s', async ({
+  page,
+}) => {
+  test.setTimeout(90_000);
+  const pageErrors: string[] = [];
+  page.on('pageerror', (e) => pageErrors.push(e.message));
+  // The first esbuild.wasm request never gets an answer; later ones load.
+  const requestedAt: number[] = [];
+  await page.context().route('**/*.wasm', (route) => {
+    requestedAt.push(Date.now());
+    if (requestedAt.length === 1) return; // never fulfilled: a stalled download
+    return route.continue();
+  });
+  await page.goto('/playground');
+  await expect(page.getByTestId('build-status')).toHaveText('Starting bundler…');
+  await expect(page.getByTestId('build-status')).toHaveText(/^Built in \d+ ms$/, {
+    timeout: 45_000,
+  });
+  await expect(buildFrame(page).locator('h1')).toHaveText('Hello, Build Roulette!');
+  // Exactly one retry, started by the stall timeout (not by an error).
+  expect(requestedAt).toHaveLength(2);
+  const [first = 0, second = 0] = requestedAt;
+  expect(second - first).toBeGreaterThanOrEqual(14_000);
+  expect(second - first).toBeLessThan(25_000);
+  await expect(page.getByTestId('bundler-failed')).toHaveCount(0);
+  expect(pageErrors).toEqual([]);
+});
+
+test('when the retry stalls too, the failed state offers Retry, and the code survives', async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  const pageErrors: string[] = [];
+  page.on('pageerror', (e) => pageErrors.push(e.message));
+  let stall = true;
+  let wasmRequests = 0;
+  await page.context().route('**/*.wasm', (route) => {
+    wasmRequests++;
+    if (stall) return; // never fulfilled
+    return route.continue();
+  });
+  await page.goto('/playground');
+  await expect(page.getByTestId('build-status')).toHaveText('Starting bundler…');
+  // The player edits while the bundler is stuck: the edit is saved and survives everything.
+  await replaceEditorText(
+    page,
+    'export function App() {\n  return <h1>Made while stuck</h1>;\n}\n',
+  );
+  await expect(page.getByTestId('save-status')).toHaveAttribute('data-state', 'saved');
+
+  // Two starts of 15 s without progress, then the failed state with a reason and Retry.
+  await expect(page.getByTestId('bundler-failed')).toBeVisible({ timeout: 50_000 });
+  await expect(page.getByTestId('bundler-error')).toHaveText(
+    "Couldn't start the bundler: the download stalled (no progress for 15 s, 2 attempts)",
+  );
+  await expect(page.getByTestId('build-status')).toHaveText('Bundler failed');
+  expect(wasmRequests).toBe(2);
+  expect(await editorText(page)).toContain('Made while stuck');
+
+  // The network is back: Retry starts a fresh worker and builds the edited code.
+  stall = false;
+  await page.getByRole('button', { name: 'Retry' }).click();
+  await expect(page.getByTestId('build-status')).toHaveText(/^Built in \d+ ms$/, {
+    timeout: 20_000,
+  });
+  await expect(buildFrame(page).locator('h1')).toHaveText('Made while stuck');
+  await expect(page.getByTestId('bundler-failed')).toHaveCount(0);
+  expect(wasmRequests).toBe(3);
+
+  // And the edit is still in IndexedDB.
+  await page.reload();
+  await expect(page.getByTestId('build-status')).toHaveText(/^Built in \d+ ms$/, {
+    timeout: 20_000,
+  });
+  await expect(buildFrame(page).locator('h1')).toHaveText('Made while stuck');
   expect(pageErrors).toEqual([]);
 });
 

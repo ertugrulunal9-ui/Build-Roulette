@@ -7,6 +7,7 @@ import { PreviewHandle, type PreviewOptions } from './preview/preview-handle';
 import type { BuildMode, BuildResult, FileMap, Manifest, WorkspaceSnapshot } from './types';
 import {
   BundlerClient,
+  bundlerStartFailureText,
   isAbortError,
   type BootTimings,
   type BundlerClientOptions,
@@ -16,9 +17,10 @@ import { buildImportMap, normalizePath } from './bundler/resolve';
 export interface SandboxRuntime {
   readonly kind: 'esm-browser' | 'webcontainer';
   /**
-   * Starts the bundler (esbuild-wasm cold start) and loads the workspace. Rejects when the
-   * bundler fails to start (later builds retry) or with an `AbortError` when `destroy()`
-   * runs first.
+   * Starts the bundler (esbuild-wasm cold start) and loads the workspace. A start that stalls
+   * (no progress for `initStallMs`) is retried once with a fresh worker. Rejects when the
+   * bundler fails to start (a `BundlerInitTimeoutError` when both starts stalled; later
+   * builds retry) or with an `AbortError` when `destroy()` runs first.
    */
   boot(opts: { files: FileMap; manifest: Manifest }): Promise<BootTimings>;
   /** Updates one file and schedules a debounced rebuild (150 ms). */
@@ -120,7 +122,7 @@ export class EsmBrowserRuntime implements SandboxRuntime {
           {
             severity: 'error',
             code: 'bundler-init-failed',
-            text: `The bundler could not start: ${e instanceof Error ? e.message : String(e)}`,
+            text: bundlerStartFailureText(e),
           },
         ],
         durationMs: 0,

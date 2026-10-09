@@ -18,8 +18,8 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 | T-031 | Preview watchdog false crash **after** `ready` under whole-machine CPU starvation (chaos shard 1, `heartbeat-timeout silentMs=5309 phase=running`): count only silence while the app itself was awake and pinging; report preview crashes (phase, silence, starvation evidence) as a sandbox-health event | `packages/runtime/`, `apps/web/` | done | Merged |
 | T-032 | Template packages survive a package-CDN outage after the lobby preload (R10): measure what the browser really caches for the shell and build frames (cache partitioning, opaque origins, the shell's own wipe), choose a Service Worker, an in-shell module cache or edge-only caching, implement it, and test it with an e2e that kills the CDN mid-BUILD | `apps/sandbox-shell/`, `packages/runtime/`, `apps/web/`, `apps/pkg-cdn/` | done | Merged |
 | T-033 | **Free tier, step 1 (measure first):** CPU time per request of the web app on workerd for every route class (prerendered, ISR HIT/MISS, OG image, `/u/[id]`, `/r/[code]`, `/admin` and its actions, cold vs warm isolate) against the Workers Free 10 ms limit; how Cloudflare enforces it; slim what doesn't fit (e.g. OG image without runtime rendering); GO/NO-GO for Workers Free with evidence | `apps/web/`, `docs/` | done | Merged: **NO-GO** for Next on Workers Free → static site (T-037, T-038) |
-| T-037 | **Free tier: the web app as a static site on Cloudflare Pages** (user decision, option C). `output: 'export'`; `/battles/[id]`, `/u/[id]`, `/r/[code]` become static shells served through Pages `_redirects` rewrites, and they load data in the browser through the anon RPCs. `/admin` runs client-side with the admin's own Supabase session (`is_admin()` in Postgres unchanged). Remove the ISR/R2/D1/DO setup and the server actions; security headers move to `_headers`; e2e runs against `wrangler pages dev`. | `apps/web/`, `docs/` | in-progress | Free-tier deploy, task 2 |
-| T-038 | Free tier: per-battle link previews. A tiny Pages Function on `/battles/*` injects `og:*` meta (rank-1 screenshot, or the static card; T-028 rule) with `HTMLRewriter`. Its CPU is measured cold/warm with the T-033 tool against the 10 ms limit; if it doesn't fit, fall back to the static card. | `apps/web/` | todo | Free-tier deploy, after T-037 |
+| T-037 | **Free tier: the web app as a static site on Cloudflare Pages** (user decision, option C). `output: 'export'`; `/battles/[id]`, `/u/[id]`, `/r/[code]` become static shells served through Pages `_redirects` rewrites, and they load data in the browser through the anon RPCs. `/admin` runs client-side with the admin's own Supabase session (`is_admin()` in Postgres unchanged). Remove the ISR/R2/D1/DO setup and the server actions; security headers move to `_headers`; e2e runs against `wrangler pages dev`. | `apps/web/`, `docs/` | done | Merged |
+| T-038 | Free tier: per-battle link previews. A tiny Pages Function on `/battles/*` injects `og:*` meta (rank-1 screenshot, or the static card; T-028 rule) with `HTMLRewriter`. Its CPU is measured cold/warm with the T-033 tool against the 10 ms limit; if it doesn't fit, fall back to the static card. | `apps/web/` | in-progress | Free-tier deploy, task 3 |
 | T-034 | Free tier: capture + destroy/takedown jobs on a Cloudflare cron Worker with Browser Rendering (Free: 10 browser-min/day, 3 concurrent); client thumbnail fallback when the daily budget is spent | `apps/capture-worker/` (or a new Worker), `supabase/` | todo | Free-tier deploy, after T-033 |
 | T-035 | Free tier: public esm.sh as the package CDN (config, CSP, import-map URL shapes); compat suite against esm.sh in GitHub CI (this container cannot reach esm.sh) | `packages/runtime/`, `apps/sandbox-shell/`, `apps/web/`, `apps/pkg-cdn/` (compat), `ci.yml` | todo | Free-tier deploy |
 | T-036 | Free tier: Supabase Free adjustments (keep-alive against the 7-day pause, screenshot size/retention for the 1 GB storage, quotas in docs/07), deploy checklist rewritten for the free setup | `supabase/`, `docs/`, `apps/web/DEPLOY.md` | todo | Free-tier deploy |
@@ -49,18 +49,18 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 
 | Item | Needed for |
 |---|---|
-| Cloudflare account (**Workers Paid, ~$5/month, at deploy time**: free-plan CPU and size limits are too tight for SSR per T-012) | Deploying the app, sandbox shell, package CDN and screenshots |
+| Cloudflare account, **free plan** (decision of 2026-10-09). The app and the sandbox shell are static Pages sites (T-037); screenshots and jobs run on a cron Worker (T-034). The full free-setup checklist comes with T-036. | Deploying the app, sandbox shell and screenshots |
 | Supabase project (free plan to start) | Hosted database, auth, storage and realtime |
 | One domain for the app (optional at first; the app can run on a free Cloudflare address) | Public launch |
-| **Decision at deploy: Supabase spend cap.** Re-measured after T-029: with the cap's assumed Presence quota (50/s), 10 rooms × 8 players went from 4,571 room-channel closes to 0, but 50 × 8 still had 1,703 (channels down 5–45 s at a time). The cap can stay ON at launch; turn it OFF (or move to Team) before about 15 concurrent 8-player rooms are in BUILD. The 50/s figure is an assumption to check. See docs/07 §7.0. | Realtime capacity |
+| **Only if you later move to Supabase Pro: the spend cap.** (The free plan has hard limits instead.) Re-measured after T-029: with the cap's assumed Presence quota (50/s), 10 rooms × 8 players went from 4,571 room-channel closes to 0, but 50 × 8 still had 1,703 (channels down 5–45 s at a time). The cap can stay ON at launch; turn it OFF (or move to Team) before about 15 concurrent 8-player rooms are in BUILD. The 50/s figure is an assumption to check. See docs/07 §7.0. | Realtime capacity |
 | At deploy: raise the Realtime tenant `db_pool` (1 → ~10). Battle-channel joins p95 went from 23 s to 213 ms in the load test. | Realtime join latency |
 | Later: second (usercontent) domain + Public Suffix List entry (F1) | Per-build isolation as the game grows |
 | At deploy: create the admin user(s) (Supabase dashboard → Add user, then the SQL insert in `supabase/README.md`) | Moderation (`/admin`) |
 | At deploy: Turnstile site and secret keys; enable CAPTCHA in Supabase Auth together with `NEXT_PUBLIC_TURNSTILE_SITE_KEY` | Bot protection for anonymous sign-up |
 | At deploy: Cloudflare per-IP rate-limit rules and protection for `/admin` (numbers in `supabase/README.md`) | Abuse protection at the edge |
-| At deploy: results-page cache (T-026). Create the R2 bucket `build-roulette-web-cache` with a 30-day lifecycle rule on `incremental-cache/`. Create the D1 database `build-roulette-web-tags` near the Supabase region and put its id into `wrangler.jsonc`. Deploy only with `cf:deploy`, and put no "Cache Everything" rule or other CDN in front of the Worker. Steps are in `apps/web/DEPLOY.md`. | Cached `/battles/[id]` pages; takedowns showing at once |
-| At deploy: Sentry account with one JavaScript project. Set the DSN as `NEXT_PUBLIC_SENTRY_DSN` at `cf:build`, plus `SENTRY_DSN` for the capture worker and the package CDN. In the project, turn on "Prevent Storing of IP Addresses" and set Allowed Domains to the app origin. Optional: a build-time auth token for source maps. PostHog EU project: `NEXT_PUBLIC_POSTHOG_KEY` and `NEXT_PUBLIC_POSTHOG_HOST`, with "Discard client IP data" on. Steps are in `apps/web/DEPLOY.md` (Observability). | Error reporting and product analytics |
-| At deploy: package CDN edge caching (T-032). Cache the immutable package URLs at the Cloudflare edge and serve the cached copy when the container fails. Use a Cache Rule if the container can be a proxied origin; otherwise use `caches.default` in the fronting Worker. Turn on Tiered Cache, consider Cache Reserve, pre-warm the template URLs after each deploy, and never purge everything during an incident. Steps are in `apps/pkg-cdn/README.md` ("Origin outages"); some are assumptions until the account exists. | Packages served through a container outage |
+| ~~At deploy: results-page cache (T-026)~~: obsolete since T-037. The static site has no server cache, so there is no R2, D1 or Durable Object to create. |
+| At deploy: Sentry account with one JavaScript project. Set the DSN as `NEXT_PUBLIC_SENTRY_DSN` at the static build (`pnpm --filter @br/web build`), plus `SENTRY_DSN` for the jobs worker. In the project, turn on "Prevent Storing of IP Addresses" and set Allowed Domains to the app origin. Optional: a build-time auth token for source maps. PostHog EU project: `NEXT_PUBLIC_POSTHOG_KEY` and `NEXT_PUBLIC_POSTHOG_HOST`, with "Discard client IP data" on. Steps are in `apps/web/DEPLOY.md` (Observability). | Error reporting and product analytics |
+| At deploy: package CDN. The free plan uses public esm.sh (T-035); our own CDN on Containers (T-032's edge-caching steps in `apps/pkg-cdn/README.md`) applies only if we move to a paid plan. |
 | **M5 exit criterion: rehearse every runbook once on staging.** This needs the hosted Supabase project and the Cloudflare account above. | M5 sign-off |
 
 **User decisions (2026-10-04):** option A, so everything is hosted on Cloudflare and Vercel is dropped. The sandbox starts on `*.pages.dev` (already on the PSL), so there is no second domain at launch. Package CDN runs on Cloudflare Containers. Continue M2 locally.
@@ -700,3 +700,31 @@ Start M5.
   - moderation 4/4 and 4/4 on Workers;
   - solo 3/3, multiplayer 5/5;
   - a short `measure:cpu` run finished with exit 0. It was interrupted by a session restart after its last test.
+
+### T-037: accepted (free-tier task 2)
+- **The web app is now a static export** (`apps/web/out/`) on Cloudflare Pages. No Next server and no Worker code run for the app.
+- **Routes:**
+  - `/r/{code}`, `/battles/{id}` and `/u/{id}` are single shells served through `_redirects` 200 rewrites; their data loads in the browser through the anon RPCs (`get_public_battle`, `get_player_history`, both granted to anon);
+  - unknown paths get `404.html` with a real 404 status;
+  - links to the shells are full page loads.
+- **Admin is client-side:**
+  - a separate supabase-js client whose session lives only in this tab (in memory, mirrored to sessionStorage; never localStorage, never supabase-js's BroadcastChannel);
+  - sign-out revokes the session; a non-admin account is signed out at once;
+  - `is_admin()` in Postgres stays the only authority;
+  - the build fails if any exported file contains a non-anon key.
+  - **Trade-off vs T-024's httpOnly cookies (accepted):** an XSS on the app origin could read the tokens in that tab. Mitigations: no user HTML on the app origin, a hash-based CSP with no inline script (an e2e proves an injected script is blocked), `frame-ancestors 'none'`, and a tab-scoped, revocable session.
+- **`_headers` (new; the old app sent none):** CSP with 10 script hashes (928 chars; the build enforces Pages' 2,000-char limit), XFO, nosniff, referrer policy, permissions policy, COOP, HSTS, immutable `/_next/static`, noindex on `/admin`.
+- **Removed:**
+  - OpenNext and the Worker config (R2, D1, DO), `cf:*` scripts, server actions, `instrumentation.ts`;
+  - the T-026 cache code and ISR e2e, and "Refresh public copies";
+  - `measure-cpu` trimmed to what T-038 needs.
+  Takedowns now show on the next load with no cache involved. The runbook `cache-not-revalidating` is replaced by `removed-content-still-visible`.
+- **e2e:** every Playwright config serves `out/` through `wrangler pages dev`. A new `static-site.spec` covers rewrites, 404s, headers and CSP enforcement, and solo, moderation, rooms and chaos watch for CSP violations.
+- Hub re-ran on a fresh clone:
+  - pipeline green (web 395 unit tests);
+  - export: 94 files, JS 706 KiB gzip;
+  - playground 22/22, solo 3/3, moderation 2/2, multiplayer 5/5, telemetry 6/6 + 1/1;
+  - **chaos shards 3/3, 2/2, 4/4**;
+  - runbook check 0 failed.
+- **Hub fix on top:** the worker saw the T-031 `preview_crash` e2e fail once (`silent_ms` 5635 > 5600). That isn't a flake, the bound was wrong: `ready` moves the deadline to ready + 5 s and the last pong can be up to one ping interval earlier, so the bound is 5000 + 1000 + 300 ms. Changed it to 6300 ms with that explanation.
+- This hub commit also updated the stale "Blocked on the user" rows (Workers Paid, the R2/D1 cache, the Containers CDN). T-036 rewrites the whole free-setup checklist.

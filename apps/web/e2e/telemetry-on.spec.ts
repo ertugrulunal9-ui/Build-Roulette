@@ -207,7 +207,12 @@ test('a preview watchdog crash arrives as preview_crash (T-031): restarted, no b
   const silent = p['silent_ms'] as number;
   const wall = p['wall_silent_ms'] as number;
   expect(silent).toBeGreaterThan(5000);
-  expect(silent).toBeLessThanOrEqual(5600);
+  // `silent_ms` counts from the last pong, and `ready` moves the deadline to ready + 5 s
+  // (preview-handle.ts): the last pong can be up to one ping interval (1 s) before `ready`,
+  // and the crash comes on the first tick past the deadline (250 ms + 50 ms jitter). So up
+  // to 5000 + 1000 + 300 ms of awake silence (5635 ms was seen once against an older,
+  // too tight 5600 ms bound).
+  expect(silent).toBeLessThanOrEqual(6300);
   expect(wall).toBeGreaterThanOrEqual(silent);
   expect(p['stalled_ms']).toBe(wall - silent);
   expect(typeof p['longest_stall_ms']).toBe('number');

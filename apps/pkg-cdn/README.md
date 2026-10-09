@@ -10,17 +10,27 @@ that `@br/runtime`'s `cdn-rewrite` plugin emits:
 
 ```
 GET /zustand@5.0.15?external=react,react-dom            bundled ES module
-GET /@react-three/fiber@9.8.1?external=react,react-dom  scoped packages
-GET /three@0.186.1/examples/jsm/controls/OrbitControls.js?external=react,react-dom
-GET /react-dom@19.3.0/client?external=react,react-dom   (import map entries, React is CJS)
+GET /@react-three/fiber@9.8.1?external=react,react-dom,three   scoped packages
+GET /three@0.186.1/examples/jsm/controls/OrbitControls.js?external=@react-three/fiber,react,react-dom
+GET /react-dom@19.3.0/client?external=react,react-dom,scheduler   (import map entries, React is CJS)
+GET /three@0.186.1&external=@react-three%252Ffiber,react,react-dom/examples/x.js   query in the path
 GET /leaflet@1.9.4/dist/leaflet.css                     raw file
 GET /zustand@^5  /zustand@latest  /zustand              302 -> /zustand@5.0.15 (query kept)
 ```
 
-Query parameters: `external=a,b` (left as bare imports for the page's import map), `deps=x@1.2.3`
-(pins the version of peer dependencies that are emitted as CDN URLs), `target=es2020…esnext`
-(default `es2022`), `dev` (unminified, `NODE_ENV=development`), `module` (serve a `.json`
-subpath as an ES module). Unknown parameters are ignored and kept on redirects.
+Query parameters: `external=a,b` (left as bare imports for the page's import map; at most 33),
+`deps=x@1.2.3` (pins the version of peer dependencies that are emitted as CDN URLs; the runtime
+no longer sends it since T-040), `target=es2020…esnext` (default `es2022`), `dev` (unminified,
+`NODE_ENV=development`), `module` (serve a `.json` subpath as an ES module). Unknown parameters
+are ignored and kept on redirects.
+
+Since T-040 the runtime sends every other package of the manifest in `external` (so a package's
+import of another manifest package goes through the import map to one instance), and its
+import-map prefix entries put the query in the path, after the version
+(`/three@0.186.1&external=a,b/` + subpath), the form esm.sh documents for import maps. The path
+is decoded once and the part after `&` is read as a query string (a scoped name's `/` arrives as
+`%252F`), before the URL's own `?query`. A module URL in that form answers with a module that
+re-exports the `?query` URL (one instance either way); raw files ignore the query.
 
 ## How a request is served
 
@@ -67,7 +77,10 @@ request instead, so it is never baked into a cached tree. Install scripts are ne
 2. **Peer dependencies** of the requested package, and peers of a dependency that the tree does
    not provide, become CDN URLs (`/three@0.186.1?external=react,react-dom`), so e.g. `three` is
    one shared module and not a second copy inside `@react-three/fiber`. The version is the
-   `deps=` pin, else npm's pick for the peer range.
+   `deps=` pin, else npm's pick for the peer range. The URL's `external` is the request's plus
+   the requesting package (T-040: the runtime externalizes every manifest package except the
+   one a URL is for, so every package of a build that shares a peer the manifest does not list
+   asks for the same URL). A peer the manifest lists is external, so it never gets here.
 3. A bare import of the requested package itself from inside it (`zustand` → `zustand/vanilla`,
    `three/examples/…` → `three`) becomes the CDN URL of that entry.
 4. Everything else is bundled. Node built-ins the tree cannot provide become empty modules

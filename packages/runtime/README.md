@@ -46,31 +46,46 @@ a preview in a cross-site sandboxed iframe. It works together with:
 - **vfs**: entry point, relative and workspace-absolute (`/src/x`) imports; tries the exact path,
   then `.tsx .ts .jsx .js .mjs .css .json`, then `index.*`. `.js` files use the JSX loader.
   `.module.css` uses esbuild's `local-css`.
-- **cdn-rewrite**: `react`, `react/jsx-runtime`, `react/jsx-dev-runtime`, `react-dom`,
-  `react-dom/client` stay bare (import map). Any other bare import becomes the external URL
-  `${cdnBaseUrl}/${name}@${version}${subpath}?external=react,react-dom&deps=…`. A package that is
-  not in `manifest.dependencies`, a version that is not exact, or a Node built-in is a
+- **cdn-rewrite**: the React set (`react`, `react/jsx-runtime`, `react/jsx-dev-runtime`,
+  `react-dom`, `react-dom/client`, and `scheduler` when the manifest lists it) stays bare
+  (import map). Any other bare import becomes the external URL
+  `${cdnBaseUrl}/${name}@${version}${subpath}?external=…`. A package that is not in
+  `manifest.dependencies`, a version that is not exact, or a Node built-in is a
   **diagnostic** with file and line; there is never a silent `latest`.
-- **Peer pinning (`deps=`)**: `deps` lists every manifest dependency except React and
-  React DOM as `name@version`, sorted by package name (`cdnDepsPins`), for example
-  `?external=react,react-dom&deps=@react-three/fiber@9.4.0,three@0.186.1`. The package CDN
-  emits peer dependencies as CDN URLs pinned to these versions, so `three` inside
-  `@react-three/fiber` is the manifest's `three` and not npm's newest match. Every CDN URL of
-  a build carries the same list, the package itself included. The CDN emits a peer as
-  `/<peer>@<pin>` plus the query of the request it is serving, so the user's own
-  `import 'three'` and fiber's peer import are byte-identical URLs and load one module
-  instance. If the package itself were left out of its own list, the two URLs would differ
-  and `three` would load twice. Entries the CDN would reject are left out (non-npm names,
-  versions with build metadata). Above the CDN's limit of 32 entries no URL gets `deps=` and
-  the build has a warning. Trade-off: adding or bumping any dependency changes every CDN URL
-  of the build, so those modules are fetched (and, on a cold CDN cache, bundled) again.
+- **One instance per package (T-040, replaces T-035's `deps=` pins)**:
+  - `?external=` lists every *other* package of the manifest plus React and React DOM, sorted
+    as the CDN sorts them (`cdnExternals`, `urlExternals`). For example
+    `/three@0.186.1?external=@react-three/fiber,react,react-dom` and
+    `/@react-three/fiber@9.8.1?external=react,react-dom,three`. A CDN module therefore leaves
+    every manifest package bare, and the import map resolves it to the one URL the bundle
+    uses. That matters on esm.sh, which otherwise imports a package's own dependencies by range
+    (`/chart.js@^4.1.1?target=es2022`, cached 10 minutes) or, with `deps=`, at build arguments
+    of their own: a second instance either way (CI run 60).
+  - A package is never in its own list: a subpath's import of its own package goes to the main
+    build with the same list, on both CDNs.
+  - Entries the CDN would reject are left out (non-npm names, versions with build metadata).
+    Above 32 externals per URL (or 1,200 characters) URLs externalize React only, the import
+    map holds the React set, and the build has a warning.
+  - Trade-off: adding or bumping a dependency changes every other package's URL, so those
+    modules are fetched again (and, on a cold esm.sh or pkg-cdn cache, built again). The React
+    set's URLs never change with the manifest.
 - **css**: local CSS (including `@import` and `url()`) is bundled into one CSS output. Package CSS
   (`pkg/dist/x.css`) is fetched from the CDN by the worker, cached in memory and inlined;
   relative `url()`/`@import` inside it are rewritten to absolute CDN URLs.
 - **assets**: images (`.png .jpg .gif .webp .avif .svg .ico .bmp`, ≤ 200 KB) become data URLs,
   both for JS imports and CSS `url()`. The file map is text only, so binary images are stored as
   `data:` URLs (SVG may be raw markup).
-- **Import map**: generated from the pinned `react` / `react-dom` versions, one shared instance.
+- **Import map** (`buildImportMap`, a pure function of the manifest: REVEAL, the solo last
+  look and the capture renderer rebuild it from a stored manifest):
+  - the React set with fixed URLs, `scheduler` pinned to the exact version for the React DOM
+    minor (`REACT_DOM_SCHEDULER`, or the manifest's own pin), so the template loads only from
+    immutable URLs on esm.sh too;
+  - for every other exact package, its main URL (the bundle's) and a prefix entry for subpaths
+    that CDN modules import (`"konva/"`, `"react/"`, `"react-dom/"`). The prefix carries its
+    query in esm.sh's in-path form, `${cdnBaseUrl}/konva@10.7.0&external=…/`, where a scoped
+    name's `/` is written `%252F` (`cdnPrefixUrl`, `inPathName`).
+  - Size: 8 entries for the template, plus 2 per other package.
+  - Details: docs/03 "One instance per package and a fully pinned template".
 
 ### Preview isolation and bridge
 - The iframe's `sandbox` and `allow` depend on the run mode (`PREVIEW_SANDBOX_BY_MODE`,
@@ -496,19 +511,25 @@ grace").
   background timer throttling. Partitioned storage should still work, because the iframe gets a
   partition keyed by the app's top-level site, but the e2e does not prove it. The
   hidden-tab grace logic is not covered by e2e.
-- **The mock CDN bundles each package with its dependencies into one module.** A dependency
-  shared by two packages is therefore duplicated, which esm.sh avoids. React stays single
-  because of `external`. Only `react`, `react-dom`, `zustand` and `animate.css` are served, and
-  only at their installed versions; anything else gets a 404 with the reason. It accepts and
-  ignores `deps=`, because it never emits peer URLs. `setOutage('refuse' | 'error' | 'hang' |
-  null)` simulates an outage for the T-032 e2e (connection refused, a 502 without CORS
-  headers, or no answer until it ends). With `layout: 'esm.sh'` (`CDN_LAYOUT=esm.sh` for the
-  dev server, T-035) every module URL answers like the public esm.sh: a few lines that
-  re-export an internal build path (`/react@19.3.0/X-…/es2022/react.mjs`) on the same origin,
-  which holds the module. `test:e2e` runs the render and CDN-outage suites a second time that
-  way (`playwright.esm-sh.config.ts`, ports 4316–4318).
-- Only the React entry points listed above are in the import map. Another `react-dom/*` subpath
-  imported *from inside a CDN package* would fail to resolve (loudly).
+- **The mock CDN** (`test-support/mock-cdn.ts`):
+  - **What it serves.** `react`, `react-dom`, `scheduler`, `zustand` and `animate.css`, only at
+    their installed versions, and the fixture packages
+    (`test-support/fixture-packages/<name>/<version>/`, T-040) at every version they have.
+    Anything else gets a 404 with the reason.
+  - **Layouts.** The `bundle` layout (like @br/pkg-cdn) bundles a package's own dependencies
+    into its module and ignores `deps=`. With `layout: 'esm.sh'` (`CDN_LAYOUT=esm.sh` for the
+    dev server, T-035) every module URL answers like the public esm.sh: a few lines that
+    re-export an internal build path (`/react@19.3.0/X-…/es2022/react.mjs`) on the same origin,
+    which holds the module. Since T-040 it also imports a package's own dependencies the way
+    esm.sh does: by the range in its package.json (`/scheduler@^0.28.0?target=es2022`,
+    `Cache-Control: public, max-age=600`, the newest version available) unless the request
+    externalizes the dependency or pins it with `deps=`.
+  - **Both layouts:** a subpath's import of its own package is the main module with the same
+    query, and they accept the query in the path (`/x@1.0.0&external=a/sub`).
+  - **Outages.** `setOutage('refuse' | 'error' | 'hang' | null)` simulates an outage for the
+    T-032 e2e (connection refused, a 502 without CORS headers, or no answer until it ends).
+  - **`test:e2e`** runs the render, CDN-outage and one-instance suites a second time in the
+    esm.sh layout (`playwright.esm-sh.config.ts`, ports 4316–4318).
 - Every rebuild is a full `esbuild.build()` (no incremental context yet), and there are no
   sourcemaps yet (runtime errors point into the blob bundle).
 - **Client thumbnail** (T-014): `PreviewHandle.captureThumbnail({width, height})` sends

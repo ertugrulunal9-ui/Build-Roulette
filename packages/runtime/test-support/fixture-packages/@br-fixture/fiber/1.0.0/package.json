@@ -1,0 +1,14 @@
+{
+  "name": "@br-fixture/fiber",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "dependencies": {
+    "@br-fixture/util": "^1.0.0"
+  },
+  "peerDependencies": {
+    "br-fixture-three": "^1.0.0",
+    "react": ">=19"
+  }
+}

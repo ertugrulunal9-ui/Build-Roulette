@@ -8,9 +8,10 @@
     "dev:sandbox": "tsx scripts/sandbox-servers.ts",
     "dev:solo": "tsx scripts/solo-services.ts --next --start-stack",
     "dev:multi": "tsx scripts/solo-services.ts --next --start-stack --realtime",
-    "build": "NEXT_TELEMETRY_DISABLED=1 next build",
+    "build": "NEXT_TELEMETRY_DISABLED=1 next build && tsx scripts/pages-config.ts",
     "build:telemetry": "NEXT_PUBLIC_SENTRY_DSN=http://public@127.0.0.1:4399/1 NEXT_PUBLIC_SENTRY_ENVIRONMENT=e2e NEXT_PUBLIC_POSTHOG_KEY=phc_e2e_test NEXT_PUBLIC_POSTHOG_HOST=http://127.0.0.1:4399 pnpm run build",
-    "start": "NEXT_TELEMETRY_DISABLED=1 next start",
+    "preview": "WRANGLER_SEND_METRICS=false wrangler pages dev --port 3000 --ip localhost",
+    "pages:deploy": "WRANGLER_SEND_METRICS=false wrangler pages deploy",
     "lint": "eslint . --max-warnings=0",
     "typecheck": "NEXT_TELEMETRY_DISABLED=1 next typegen && tsc --noEmit",
     "test": "vitest run",
@@ -21,14 +22,8 @@
     "test:e2e:mobile": "pnpm run build && playwright test -c playwright.multi.config.ts multiplayer-mobile",
     "test:e2e:chaos": "pnpm run build && playwright test -c playwright.chaos.config.ts",
     "test:e2e:telemetry": "pnpm run build:telemetry && E2E_TELEMETRY=on playwright test -c playwright.telemetry.config.ts && pnpm run build && E2E_TELEMETRY=off playwright test -c playwright.telemetry.config.ts",
-    "cf:build": "NEXT_TELEMETRY_DISABLED=1 WRANGLER_SEND_METRICS=false opennextjs-cloudflare build",
-    "cf:preview": "NEXT_TELEMETRY_DISABLED=1 WRANGLER_SEND_METRICS=false opennextjs-cloudflare preview",
-    "cf:deploy": "NEXT_TELEMETRY_DISABLED=1 WRANGLER_SEND_METRICS=false opennextjs-cloudflare deploy",
-    "test:e2e:cf": "pnpm run cf:build && E2E_APP_SERVER=workers playwright test",
-    "test:e2e:cf:moderation": "pnpm run cf:build && E2E_APP_SERVER=workers playwright test -c playwright.moderation.config.ts",
     "measure:cpu": "tsx scripts/measure-cpu/main.ts",
-    "og-card": "tsx scripts/og-card.ts",
-    "test:e2e:cf:telemetry": "NEXT_PUBLIC_SENTRY_DSN=http://public@127.0.0.1:4399/1 NEXT_PUBLIC_SENTRY_ENVIRONMENT=e2e NEXT_PUBLIC_POSTHOG_KEY=phc_e2e_test NEXT_PUBLIC_POSTHOG_HOST=http://127.0.0.1:4399 pnpm run cf:build && E2E_APP_SERVER=workers E2E_TELEMETRY=on playwright test -c playwright.telemetry.config.ts"
+    "og-card": "tsx scripts/og-card.ts"
   },
   "dependencies": {
     "@br/game": "workspace:*",
@@ -54,7 +49,6 @@
   "devDependencies": {
     "@br/config": "workspace:*",
     "@br/sandbox-shell": "workspace:*",
-    "@opennextjs/cloudflare": "1.20.8",
     "@playwright/test": "1.56.1",
     "@tailwindcss/postcss": "4.3.3",
     "@testing-library/dom": "10.4.2",

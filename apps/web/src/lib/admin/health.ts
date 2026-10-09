@@ -8,7 +8,7 @@ export type Runbook =
   | 'stuck-battle'
   | 'capture-backlog'
   | 'supabase-outage'
-  | 'cache-not-revalidating'
+  | 'removed-content-still-visible'
   | 'takedown-abuse';
 
 export interface HealthFinding {

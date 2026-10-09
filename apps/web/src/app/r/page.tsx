@@ -2,19 +2,20 @@ import type { Metadata } from 'next';
 import { RoomLoader } from '../../components/room/RoomLoader';
 
 export const metadata: Metadata = {
-  title: 'Room',
+  // The tab title is RoomLoader's own `<title>` (components/DocumentTitle.tsx).
+  title: null,
   description: 'You are invited to a Build Roulette battle. Open the link, pick a name, play.',
 };
 
 /**
  * A room, `/r/{code}`: join, lobby, battle, rematch (all client-side; see components/room).
  *
- * Every room shares this one page: next.config.ts rewrites `/r/{code}` here, and the room
- * code comes from the browser's URL (RoomLoader). So the page is prerendered and answered
- * from the cache, never rendered per request: T-033, Workers Free allows 10 ms of CPU per
- * request and a server render of the old `/r/[code]` page took about as much warm, and
- * twenty times that in a fresh isolate (docs/08-free-tier.md §1). The tab title gets the
- * code once the page runs.
+ * Every room shares this one exported page: Cloudflare Pages rewrites `/r/{code}` here
+ * (`out/_redirects`, src/lib/hosting/shells.ts; `next dev` does the same from next.config.ts)
+ * and the room code comes from the browser's URL (RoomLoader), which also sets the tab title
+ * ("Room K7QXM").
+ * T-033 made it one page so a Worker could answer it from its cache; since T-037 it is a
+ * plain static file.
  */
 export default function RoomPage() {
   return <RoomLoader />;

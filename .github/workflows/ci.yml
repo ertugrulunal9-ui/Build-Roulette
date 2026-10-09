@@ -186,8 +186,9 @@ jobs:
         id: capture-integration
         run: pnpm --filter @br/capture-worker test:integration
 
-      # The solo game end to end on the same stack: next build + next start, the sandbox
-      # shell with the capture gate, the mock CDN and the capture worker
+      # The solo game end to end on the same stack: the static export (pnpm build) served by
+      # `wrangler pages dev` like Cloudflare Pages serves it (apps/web/e2e/app-server.ts),
+      # the sandbox shell with the capture gate, the mock CDN and the capture worker
       # (apps/web/scripts/solo-services.ts). Ship path to the permanent page, and the
       # auto-ship path. Same Chromium as above (Playwright 1.56.1). Needs psql.
       - name: Run the solo game e2e
@@ -195,10 +196,12 @@ jobs:
         run: pnpm --filter @br/web test:e2e:solo
 
       # Moderation (T-024): a player reports a build on /battles/[id], the admin (seeded with
-      # supabase/scripts/seed-admin.mjs) signs in at /admin, sees the report and takes the
-      # build down; the page shows "Removed by moderators" and the capture worker's takedown
-      # job deletes the screenshot object. Also: /admin is a 404 for a player, and a blocked
-      # display name shows the friendly error. Needs psql.
+      # supabase/scripts/seed-admin.mjs) signs in at /admin (its session in the tab's
+      # sessionStorage, apart from the player's), sees the report and takes the build down;
+      # the next load of the page shows "Removed by moderators" and the capture worker's
+      # takedown job deletes the screenshot object. Also: /admin is the not-found screen for
+      # a player, sign-out revokes the session, and a blocked display name shows the
+      # friendly error. Needs psql.
       - name: Run the moderation e2e
         if: ${{ !cancelled() && steps.capture-integration.outcome != 'skipped' }}
         run: pnpm --filter @br/web test:e2e:moderation
@@ -249,7 +252,8 @@ jobs:
           npx -y "$SUPABASE_CLI" start
           -x studio,imgproxy,vector,logflare,edge-runtime,supavisor,mailpit,postgres-meta
 
-      # Several browser contexts (anonymous players) against next start, the sandbox shell,
+      # Several browser contexts (anonymous players) against the static export served by
+      # `wrangler pages dev`, the sandbox shell,
       # the mock CDN and the capture worker (apps/web/scripts/solo-services.ts --realtime):
       # create/join, lobby presence, ready/start, ship and auto-ship, ranked results with
       # screenshots, REVEAL (host controls, a frozen build skipped locally), VOTE (revote,
@@ -387,9 +391,10 @@ jobs:
         id: runtime-e2e
         run: pnpm --filter @br/runtime test:e2e
 
-      # Runs `next build`, then the /playground tests against `next start` with the local
-      # sandbox shell and mock CDN. Also runs when the runtime suite failed, so one CI run
-      # reports both.
+      # Runs `pnpm build` (the static export), then the /playground tests and the static
+      # site's checks (rewrites, 404, headers, CSP) against `wrangler pages dev` with the
+      # local sandbox shell and mock CDN. Also runs when the runtime suite failed, so one CI
+      # run reports both.
       - name: Run web playground e2e tests
         if: ${{ !cancelled() && steps.runtime-e2e.outcome != 'skipped' }}
         run: pnpm --filter @br/web test:e2e

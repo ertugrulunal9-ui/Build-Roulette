@@ -1,43 +1,15 @@
 {
-  // Cloudflare Workers config for the OpenNext build (see DEPLOY.md).
+  // Cloudflare Pages project of the web app (T-037; DEPLOY.md). The app is a static export:
+  // `pnpm --filter @br/web build` writes it to ./out with its `_headers` and `_redirects`, and
+  // Pages serves those files without running any Worker code.
+  //
+  // `wrangler pages dev` (the e2e suites, `pnpm preview`) and `wrangler pages deploy`
+  // (`pnpm pages:deploy`) read this file. Once a Pages project uses a Wrangler config file,
+  // the file is the source of truth for its settings (the dashboard shows them read-only).
   // No `account_id` on purpose: `wrangler login` (or CLOUDFLARE_ACCOUNT_ID) supplies it at
-  // deploy time, and the local preview (`pnpm --filter @br/web cf:preview`) needs no account.
+  // deploy time, and local runs need no account.
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "build-roulette-web",
-  "main": ".open-next/worker.js",
+  "pages_build_output_dir": "./out",
   "compatibility_date": "2026-10-01",
-  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
-  "assets": {
-    // Prerendered pages, /_next/static/** (JS, CSS, the bundler worker chunk, esbuild.wasm)
-    // and public/ files. Cloudflare serves these without running the worker.
-    "directory": ".open-next/assets",
-    "binding": "ASSETS",
-  },
-  "services": [
-    {
-      // Self-reference that OpenNext uses for cache revalidation. Must match "name".
-      "binding": "WORKER_SELF_REFERENCE",
-      "service": "build-roulette-web",
-    },
-  ],
-  // ISR and `'use cache'` (T-026, open-next.config.ts, DEPLOY.md "Caching"). The local
-  // preview emulates all of these; production needs the bucket and the database created once.
-  "r2_buckets": [
-    // The incremental cache.
-    { "binding": "NEXT_INC_CACHE_R2_BUCKET", "bucket_name": "build-roulette-web-cache" },
-  ],
-  "d1_databases": [
-    {
-      // The tag cache (one `revalidations` table, created by cf:preview / cf:deploy).
-      // Production: put the id printed by `wrangler d1 create build-roulette-web-tags` here.
-      "binding": "NEXT_TAG_CACHE_D1",
-      "database_name": "build-roulette-web-tags",
-    },
-  ],
-  "durable_objects": {
-    // The revalidation queue (stale ISR copies are regenerated in the background).
-    "bindings": [{ "name": "NEXT_CACHE_DO_QUEUE", "class_name": "DOQueueHandler" }],
-  },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["DOQueueHandler"] }],
-  "observability": { "enabled": true },
 }

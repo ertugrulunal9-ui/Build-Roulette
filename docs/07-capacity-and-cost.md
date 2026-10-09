@@ -390,7 +390,7 @@ Code: `tools/loadtest/src/cost.ts`; `pnpm --filter @br/loadtest cost <report.jso
 | Cloudflare Pages | $0 | static sandbox shell, free and unlimited |
 | Browser Rendering | 10 browser-hours/month included, then $0.09/hour; 10 concurrent browsers (monthly average), then $2 each | Workers Paid |
 | Containers | $0.0000025/GiB-s memory, $0.000020/vCPU-s, $0.00000007/GB-s disk; 25 GiB-h, 375 vCPU-min, 200 GB-h included; egress $0.025/GB after 1 TB | package CDN |
-| R2 | $0 | OpenNext ISR cache within the free tier |
+| R2 | $0 | was the OpenNext ISR cache; unused since T-037 (the app is a static site on Cloudflare Pages, docs/08 §2) |
 | Domain | $10.44/year | app domain (.com, at-cost registrar); the usercontent domain only in stage 2 |
 
 ### 7.4.2 Behaviour of a real battle (ASSUMED, 2026-10-07)

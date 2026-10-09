@@ -1,40 +1,42 @@
 // @vitest-environment happy-dom
 /**
- * The public results surfaces with a build a moderator removed after RESULTS (T-028):
- * /battles/[id] (the page and its social image) and /u/[id]. The removed rank-1 build
- * keeps its place, rank and vote counts, and shows no Winner banner, gold ring, medal or
- * award chips; nobody else becomes the winner or gets its awards. The data is what
- * get_public_battle / get_player_history return (their awards already left out), plus an
- * older server's answer that still carries them.
+ * The public results surfaces (/battles/{id} and /u/{id}), which are static shells that load
+ * their data in the browser (T-037):
+ *
+ * - the shells read the id (and the history's cursor) from the browser's URL, call the RPC
+ *   with the anon key, and show loading, the results, "not found" or "could not load" with a
+ *   retry, and set the tab title;
+ * - with a build a moderator removed after RESULTS (T-028): the removed rank-1 build keeps
+ *   its place, rank and vote counts, and shows no Winner banner, gold ring, medal or award
+ *   chips; nobody else becomes the winner or gets its awards. The data is what
+ *   get_public_battle / get_player_history return (their awards already left out), plus an
+ *   older server's answer that still carries them;
+ * - the title, description and social image (lib/solo/battle-meta.ts, og-image.ts) that
+ *   T-038's link previews will use.
  */
 import { cleanup, render, screen, within } from '@testing-library/react';
+import { createElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import BattlePage, { generateMetadata as battleMetadata } from '../../app/battles/[id]/page';
-import PlayerPage, { generateMetadata as playerMetadata } from '../../app/u/[id]/page';
-import type * as HistoryModule from '../../lib/history/player-history';
-import type { HistoryBattle, PlayerHistory } from '../../lib/history/player-history';
+import type {
+  HistoryBattle,
+  PlayerHistory as PlayerHistoryData,
+} from '../../lib/history/player-history';
+import { playerMeta } from '../../lib/history/player-meta';
+import { battleMeta } from '../../lib/solo/battle-meta';
 import { STATIC_OG_CARD, battleOgImage } from '../../lib/solo/og-image';
 import type { Award, PublicBattle, PublicBuild } from '../../lib/solo/types';
+import { BattleResults } from './BattleResults';
+import { BattleView } from './BattleView';
+import { PlayerHistory } from './PlayerHistory';
+import { PlayerHistoryView } from './PlayerHistoryView';
 
-const mocks = vi.hoisted(() => ({
-  getPublicBattle: vi.fn<(id: string) => Promise<PublicBattle | null>>(),
-  getPlayerHistory: vi.fn<() => Promise<PlayerHistory | null>>(),
-}));
-
-vi.mock('../../lib/solo/public-battle', () => ({
-  getPublicBattle: mocks.getPublicBattle,
-  fetchPublicBattle: mocks.getPublicBattle,
-}));
-vi.mock('../../lib/history/player-history', async (importOriginal) => ({
-  ...(await importOriginal<typeof HistoryModule>()),
-  getPlayerHistory: mocks.getPlayerHistory,
-}));
 // The viewer's own history link needs a browser session; not part of these pages' data.
 vi.mock('./MyHistoryLink', () => ({ MyHistoryLink: () => null }));
 
-const { getPublicBattle, getPlayerHistory } = mocks;
-
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 const BATTLE = 'b0280000-0000-4000-8000-000000000001';
 const MALLORY = 'a0280000-0000-4000-8000-00000000000a';
@@ -129,15 +131,68 @@ const chipsOf = (el: HTMLElement) =>
     .queryAllByTestId('award')
     .map((a) => a.dataset['award']);
 
-describe('/battles/[id] with a removed rank-1 build (T-028)', () => {
-  beforeEach(() => {
-    getPublicBattle.mockReset();
+/** PostgREST's answers to the page's one RPC call, in order; every request is recorded. */
+function stubRpc(...answers: { status: number; body: unknown }[]) {
+  const fetchMock = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>(() => {
+    const next = answers.shift();
+    if (!next) return Promise.reject(new Error('unexpected request'));
+    return Promise.resolve(new Response(JSON.stringify(next.body), { status: next.status }));
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  return fetchMock;
+}
+
+/** The browser is at `path` (the host rewrote it to the shell). */
+function visit(path: string): void {
+  window.history.replaceState(null, '', path);
+}
+
+describe('/battles/{id}: the shell loads the battle in the browser (T-037)', () => {
+  it('reads the id from the URL, calls get_public_battle with the anon key, sets the title', async () => {
+    const fetchMock = stubRpc({ status: 200, body: removedWinnerBattle() });
+    visit(`/battles/${BATTLE.toUpperCase()}`);
+    render(createElement(BattleView));
+    expect(screen.getByTestId('battle-loading')).toBeTruthy();
+    await screen.findByTestId('battle-title');
+    expect(screen.getAllByTestId('public-build')).toHaveLength(3);
+    const [url, init] = fetchMock.mock.calls[0] ?? [];
+    expect(url).toBe('http://127.0.0.1:54321/rest/v1/rpc/get_public_battle');
+    expect(JSON.parse(init?.body as string)).toEqual({ p_battle_id: BATTLE });
+    expect(init?.cache).toBe('no-store');
+    expect(document.title).toBe('A pomodoro timer · Battle results · Build Roulette');
   });
 
+  it('an unknown battle (battle_not_found) and a malformed id: the not-found view', async () => {
+    const fetchMock = stubRpc({ status: 400, body: { message: 'battle_not_found' } });
+    visit(`/battles/${BATTLE}`);
+    render(createElement(BattleView));
+    await screen.findByTestId('battle-not-found');
+    expect(document.title).toBe('Battle not found · Build Roulette');
+    cleanup();
+
+    visit('/battles/not-a-battle');
+    render(createElement(BattleView));
+    await screen.findByTestId('battle-not-found');
+    expect(fetchMock).toHaveBeenCalledTimes(1); // no request for a malformed id
+  });
+
+  it('a server failure is "could not load", not "not found"; Try again loads it', async () => {
+    stubRpc(
+      { status: 503, body: { message: 'upstream' } },
+      { status: 200, body: removedWinnerBattle() },
+    );
+    visit(`/battles/${BATTLE}`);
+    render(createElement(BattleView));
+    const failed = await screen.findByTestId('battle-load-error');
+    within(failed).getByRole('button', { name: 'Try again' }).click();
+    await screen.findByTestId('battle-title');
+  });
+});
+
+describe('/battles/{id} with a removed rank-1 build (T-028)', () => {
   for (const stale of [false, true]) {
-    it(`no Winner banner, gold ring or awards on it; nobody inherits${stale ? ' (an older server still sends its awards)' : ''}`, async () => {
-      getPublicBattle.mockResolvedValue(removedWinnerBattle(stale));
-      render(await BattlePage({ params: Promise.resolve({ id: BATTLE }) }));
+    it(`no Winner banner, gold ring or awards on it; nobody inherits${stale ? ' (an older server still sends its awards)' : ''}`, () => {
+      render(createElement(BattleResults, { data: removedWinnerBattle(stale) }));
 
       const cards = screen.getAllByTestId('public-build');
       expect(
@@ -167,52 +222,39 @@ describe('/battles/[id] with a removed rank-1 build (T-028)', () => {
     });
   }
 
-  it('a winner that was not removed keeps the banner and the ring', async () => {
+  it('a winner that was not removed keeps the banner and the ring', () => {
     const data = removedWinnerBattle();
     data.builds = data.builds.map((b) =>
       b.id === 'mallory' ? { ...b, name: 'Free Gift Card', taken_down: false } : b,
     );
     data.awards = [{ build_id: 'mallory', award: 'overall', source: 'vote', votes: 3 }];
-    getPublicBattle.mockResolvedValue(data);
-    render(await BattlePage({ params: Promise.resolve({ id: BATTLE }) }));
+    render(createElement(BattleResults, { data }));
     expect(screen.getAllByTestId('public-winner')).toHaveLength(1);
     expect(cardOf('mallory').dataset['winner']).toBe('true');
     expect(cardOf('mallory').className).toContain('ring-amber');
     expect(chipsOf(cardOf('mallory'))).toEqual(['overall']);
   });
 
-  it('the page title does not name the removed build', async () => {
-    getPublicBattle.mockResolvedValue(removedWinnerBattle());
-    const meta = await battleMetadata({ params: Promise.resolve({ id: BATTLE }) });
-    expect(meta.title).toBe('A pomodoro timer · Battle results');
+  it('the page title does not name the removed build', () => {
+    expect(battleMeta(removedWinnerBattle()).title).toBe('A pomodoro timer · Battle results');
   });
 });
 
-describe('the social image of /battles/[id] (T-028, T-033)', () => {
-  const images = (meta: Awaited<ReturnType<typeof battleMetadata>>) => ({
-    og: meta.openGraph?.images,
-    twitter: meta.twitter?.images,
-  });
-
-  beforeEach(() => {
-    getPublicBattle.mockReset();
-  });
-
-  it('a removed top build: the static card, not its screenshot, and nobody else promoted', async () => {
+describe('the social image of a battle (T-028, T-033; used by T-038)', () => {
+  it('a removed top build: the static card, not its screenshot, and nobody else promoted', () => {
     const data = removedWinnerBattle();
     // Even if an older server still sent its screenshot path.
     data.builds = data.builds.map((b) =>
       b.id === 'mallory' ? { ...b, screenshot_path: `${BATTLE}/mallory.webp` } : b,
     );
-    getPublicBattle.mockResolvedValue(data);
-    const meta = await battleMetadata({ params: Promise.resolve({ id: BATTLE }) });
-    expect(images(meta)).toEqual({ og: [STATIC_OG_CARD], twitter: [STATIC_OG_CARD] });
+    const meta = battleMeta(data);
+    expect(meta.image).toEqual(STATIC_OG_CARD);
     // Ana (rank 2) has a screenshot: it is not used in the removed winner's place.
     expect(JSON.stringify(meta)).not.toContain('ana.png');
     expect(JSON.stringify(meta)).not.toContain('mallory.webp');
   });
 
-  it('a winner with a screenshot: its public Storage URL', async () => {
+  it('a winner with a screenshot: its public Storage URL', () => {
     const data = removedWinnerBattle();
     data.builds = data.builds.map((b) =>
       b.id === 'mallory'
@@ -224,16 +266,17 @@ describe('the social image of /battles/[id] (T-028, T-033)', () => {
           }
         : b,
     );
-    getPublicBattle.mockResolvedValue(data);
-    const meta = await battleMetadata({ params: Promise.resolve({ id: BATTLE }) });
-    const image = {
-      url: `http://127.0.0.1:54321/storage/v1/object/public/screenshots/${BATTLE}/mallory.webp`,
-      width: 1280,
-      height: 800,
-      alt: 'Screenshot of Free Gift Card by Mallory',
-      type: 'image/webp',
-    };
-    expect(images(meta)).toEqual({ og: [image], twitter: [image] });
+    expect(battleMeta(data)).toEqual({
+      title: 'Free Gift Card by Mallory',
+      description: 'BUILD: A pomodoro timer · RULE: Only one button · STYLE: Brutalist · 5 min',
+      image: {
+        url: `http://127.0.0.1:54321/storage/v1/object/public/screenshots/${BATTLE}/mallory.webp`,
+        width: 1280,
+        height: 800,
+        alt: 'Screenshot of Free Gift Card by Mallory',
+        type: 'image/webp',
+      },
+    });
   });
 });
 
@@ -318,33 +361,80 @@ function historyBattle(
   };
 }
 
-describe('/u/[id] with a removed rank-1 build (T-028)', () => {
-  const REMOVED = 'b0280000-0000-4000-8000-000000000002';
-  const WON = 'b0280000-0000-4000-8000-000000000003';
+const REMOVED = 'b0280000-0000-4000-8000-000000000002';
+const WON = 'b0280000-0000-4000-8000-000000000003';
 
-  beforeEach(() => {
-    getPlayerHistory.mockReset();
-    getPlayerHistory.mockResolvedValue({
-      player: { display_name: 'Mallory' },
-      battles: [
-        // An older server might still send the awards; the page ignores them.
-        historyBattle(REMOVED, { name: null, taken_down: true }, [
-          { award: 'overall', source: 'vote', votes: 3 },
-          { award: 'speedrun', source: 'auto', votes: null },
-        ]),
-        historyBattle(WON, { name: 'Tick Tock' }, [{ award: 'overall', source: 'vote', votes: 3 }]),
-      ],
-      next: null,
+function malloryHistory(): PlayerHistoryData & { player: { display_name: string } } {
+  return {
+    player: { display_name: 'Mallory' },
+    battles: [
+      // An older server might still send the awards; the page ignores them.
+      historyBattle(REMOVED, { name: null, taken_down: true }, [
+        { award: 'overall', source: 'vote', votes: 3 },
+        { award: 'speedrun', source: 'auto', votes: null },
+      ]),
+      historyBattle(WON, { name: 'Tick Tock' }, [{ award: 'overall', source: 'vote', votes: 3 }]),
+    ],
+    next: { before: '2026-10-08T12:00:00+00:00', before_battle: WON },
+  };
+}
+
+describe('/u/{id}: the shell loads the history in the browser (T-037)', () => {
+  it('reads the id and the cursor from the URL; links to the next page and the battles', async () => {
+    const fetchMock = stubRpc({ status: 200, body: malloryHistory() });
+    const before = '2026-10-09T08:00:00.5+00:00';
+    visit(`/u/${MALLORY}?before=${encodeURIComponent(before)}&before_battle=${WON}`);
+    render(createElement(PlayerHistoryView));
+    expect(screen.getByTestId('player-loading')).toBeTruthy();
+    await screen.findByTestId('player-name');
+    const [url, init] = fetchMock.mock.calls[0] ?? [];
+    expect(url).toBe('http://127.0.0.1:54321/rest/v1/rpc/get_player_history');
+    expect(JSON.parse(init?.body as string)).toEqual({
+      p_user_id: MALLORY,
+      p_before: before,
+      p_before_battle: WON,
+      p_limit: 10,
     });
+    expect(document.title).toBe("Mallory's battles · Build Roulette");
+    expect(screen.getByTestId('history-newest').getAttribute('href')).toBe(`/u/${MALLORY}`);
+    const older = new URL(
+      screen.getByTestId('history-older').getAttribute('href') ?? '',
+      'https://x.example',
+    );
+    expect(older.searchParams.get('before_battle')).toBe(WON);
+    expect(screen.getAllByTestId('history-battle-link').map((a) => a.getAttribute('href'))).toEqual(
+      [`/battles/${REMOVED}`, `/battles/${WON}`],
+    );
   });
 
-  const props = {
-    params: Promise.resolve({ id: MALLORY }),
-    searchParams: Promise.resolve({}),
-  };
+  it('an unknown player and a malformed id: "No battles to show"', async () => {
+    const fetchMock = stubRpc({ status: 200, body: { player: null, battles: [], next: null } });
+    visit(`/u/${MALLORY}`);
+    render(createElement(PlayerHistoryView));
+    await screen.findByTestId('player-not-found');
+    expect(document.title).toBe('Player not found · Build Roulette');
+    cleanup();
+    visit('/u/nobody');
+    render(createElement(PlayerHistoryView));
+    await screen.findByTestId('player-not-found');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
 
-  it('rank kept ("#1 of 3"), votes kept; no gold ring, medal or awards', async () => {
-    render(await PlayerPage(props));
+  it('a server failure is "could not load"', async () => {
+    stubRpc({ status: 500, body: { message: 'boom' } });
+    visit(`/u/${MALLORY}`);
+    render(createElement(PlayerHistoryView));
+    await screen.findByTestId('player-load-error');
+  });
+});
+
+describe('/u/{id} with a removed rank-1 build (T-028)', () => {
+  beforeEach(() => {
+    cleanup();
+  });
+
+  it('rank kept ("#1 of 3"), votes kept; no gold ring, medal or awards', () => {
+    render(createElement(PlayerHistory, { id: MALLORY, cursor: null, data: malloryHistory() }));
     const [removed, won] = screen.getAllByTestId('history-battle');
     if (!removed || !won) throw new Error('two battles expected');
     expect(removed.dataset['removed']).toBe('true');
@@ -364,8 +454,7 @@ describe('/u/[id] with a removed rank-1 build (T-028)', () => {
     expect(chipsOf(won)).toEqual(['overall']);
   });
 
-  it('the description counts only the win that was not removed', async () => {
-    const meta = await playerMetadata(props);
-    expect(meta.description).toContain('1 win on this page');
+  it('the description counts only the win that was not removed', () => {
+    expect(playerMeta(malloryHistory()).description).toContain('1 win on this page');
   });
 });

@@ -127,3 +127,9 @@ export async function waitForBuild(page: Page): Promise<void> {
     timeout: 30_000,
   });
 }
+
+/**
+ * The static social card (public/og-card.png) as an absolute `og:image` URL. Every shell
+ * carries it until T-038 writes per-battle tags at the edge.
+ */
+export const STATIC_CARD = /^https?:\/\/[^/]+\/og-card\.png$/;

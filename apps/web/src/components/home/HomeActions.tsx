@@ -7,8 +7,8 @@
  */
 import { normalizeRoomCode } from '@br/game';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
 import { useState } from 'react';
+import { loadPage } from '../../lib/hosting/navigate';
 import { describeError, toGameError, type GameError } from '../../lib/solo/errors';
 import { randomDisplayName } from '../../lib/solo/names';
 
@@ -32,7 +32,6 @@ function rememberedName(): string {
 type Panel = 'none' | 'create' | 'join';
 
 export function HomeActions() {
-  const router = useRouter();
   const [panel, setPanel] = useState<Panel>('none');
   const [name, setName] = useState('');
   const [code, setCode] = useState('');
@@ -67,7 +66,9 @@ export function HomeActions() {
       } catch {
         // storage blocked
       }
-      router.push(`/r/${room.code}`);
+      // A room is a static shell behind a host rewrite (T-037): a page load, not a client
+      // navigation. Queued analytics go out on `pagehide` (keepalive).
+      loadPage(`/r/${room.code}`);
     } catch (e) {
       setError(toGameError(e));
       setBusy(false);
@@ -80,7 +81,7 @@ export function HomeActions() {
       setCodeError('A room code has 5 letters and digits, like K7QXM.');
       return;
     }
-    router.push(`/r/${normalized}`);
+    loadPage(`/r/${normalized}`);
   };
 
   return (

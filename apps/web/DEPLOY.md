@@ -1,133 +1,155 @@
-# Deploying `@br/web` to Cloudflare
+# Deploying `@br/web` to Cloudflare Pages (free)
 
-The web app runs on **Cloudflare Workers** through the OpenNext adapter
-(`@opennextjs/cloudflare`). One deploy uploads two things:
+The web app is a **static site** (T-037, the user's option C after T-033: Next.js on Workers
+Free does not fit the 10 ms CPU limit, docs/08-free-tier.md). `next build` exports every page
+as a file (`output: 'export'`) into `apps/web/out/`, and **Cloudflare Pages** serves those
+files. No server and no Worker run for the app: static requests are free, unlimited, and are
+not Worker invocations. Everything else happens in the browser, against Supabase.
 
-- **A Worker** (`.open-next/worker.js` plus the server code). It renders the dynamic pages
-  (`/u/[id]`, `/admin`), renders `/battles/[id]` when it is not cached, and answers cached
-  pages from the incremental cache (R2, see "Caching"): the prerendered ones, including the
-  one page every room (`/r/{code}`) shares since T-033.
-- **Static assets** (`.open-next/assets`): JS/CSS chunks, the playground's bundler worker
-  chunk, `esbuild.wasm` and `og-card.png` (the static social card). Cloudflare serves these
-  directly, without running the Worker, and asset requests are free.
+What a deploy uploads (`apps/web/out/`, measured on 2026-10-09):
 
-How much CPU each kind of request takes, against the Workers Free limit of 10 ms, is
-measured in [docs/08-free-tier.md](../../docs/08-free-tier.md) §1 (`pnpm --filter @br/web
-measure:cpu`).
+| | |
+|---|---|
+| Pages | `/`, `/play`, `/playground`, `/admin`, `/admin/sign-in`, `404.html`, and three **shells**: `/r` (every room), `/battles` (every battle's results), `/u` (every player's history) |
+| `_redirects` | `/r/:code /r 200`, `/battles/:id /battles 200`, `/u/:id /u 200`: rewrites, so `/battles/{id}` is answered with the shell and keeps its URL; the page reads the id in the browser and loads its data (`src/lib/hosting/shells.ts`) |
+| `_headers` | the security headers (a Content-Security-Policy, no framing, `nosniff`, referrer and permissions policies), a year's cache for `/_next/static/*`, `noindex` for `/admin` (`src/lib/hosting/pages-config.ts`) |
+| Assets | JS/CSS chunks, the bundler worker chunk, `esbuild.wasm` (13.3 MiB), `og-card.png`, `icon.svg` |
+| Size | 94 files, 15.8 MiB; JS 2.1 MiB (706 KiB gzip) |
+
+`pnpm build` runs `next build` and then `scripts/pages-config.ts`, which writes `_headers` and
+`_redirects` and **fails the build** if `404.html` or a shell is missing, if any file holds a
+Supabase key other than the public anon key (a service-role or user JWT, an `sb_secret_` key,
+or the value of `SUPABASE_SERVICE_ROLE_KEY` / `SERVICE_ROLE_KEY` / `SUPABASE_SECRET_KEY` from
+the build's environment), or if a Pages limit would be exceeded. It prints the export's size.
 
 Everything below runs from the repository root. Nothing here is needed for local work.
 
 ## Try it locally first (no account needed)
 
 ```sh
-pnpm --filter @br/web cf:build      # next build + OpenNext → apps/web/.open-next/
-pnpm --filter @br/web cf:preview    # serves it with workerd (the real Workers runtime) on http://localhost:8787
-pnpm --filter @br/web test:e2e:cf   # cf:build, then the Playwright suite against the preview
-pnpm --filter @br/web test:e2e:cf:moderation   # cf:build, then moderation + the ISR cache (needs the local stack)
+pnpm --filter @br/web build        # next build + _headers/_redirects → apps/web/out/
+pnpm --filter @br/web preview      # wrangler pages dev: http://localhost:3000
 ```
 
-The preview emulates the cache bindings (R2, D1, the Durable Object queue) in
-`apps/web/.wrangler/state`, and fills them first (the prerendered pages, the D1 table).
-While it does, it prints two warnings about `DOQueueHandler` ("will not work in local
-development", "no such Durable Object class is exported"): they come from that fill step,
-which runs without the Worker. The Worker itself exports the class and the queue works.
+`preview` is `wrangler pages dev` (Cloudflare's local Pages server, on workerd): the same
+rewrites, headers and 404 handling as production. Every e2e suite runs against it
+(`e2e/app-server.ts`). `/playground` and `/play` also need the sandbox servers
+(`pnpm --filter @br/web dev:sandbox`, or `dev:solo`'s services), and every page that reads
+data needs the local Supabase stack (`supabase/README.md`).
 
-`/playground` also needs the sandbox servers (`pnpm --filter @br/web dev:sandbox`) with the
-preview origin allowed: `BR_APP_ORIGINS=http://localhost:8787 pnpm --filter @br/web dev:sandbox`.
-
-Wrangler prints `Unable to fetch the Request.cf object` when it can't reach
-`workers.cloudflare.com` (for example behind a proxy). It is harmless: it falls back to
-placeholder geo data.
+Wrangler prints `Unable to fetch the Request.cf object` when it cannot reach
+`workers.cloudflare.com` (for example behind a proxy): harmless, it falls back to placeholder
+geo data.
 
 ## One-time setup
 
-1. **Create a Cloudflare account** at <https://dash.cloudflare.com/sign-up>.
-2. **Choose the Workers Paid plan** (Workers & Pages → Plans, about US$5/month). The free
-   plan allows only 10 ms of CPU per request, and every server render of this app takes
-   more (measured in [docs/08-free-tier.md](../../docs/08-free-tier.md) §1, T-033: only cached
-   answers fit). Today's Worker is about 1.3 MB compressed, 6.4 MB raw
-   (`wrangler deploy --dry-run`, T-033 after dropping `next/og`; 2.2 MB compressed before),
-   and a `proxy.ts` (middleware) would add about 1.2 MB (measured in the T-012 spike). The
-   size limit was 3 MB compressed on Free and 10 MB on Paid; Cloudflare's docs now list
-   64 MiB uncompressed on both (docs/08 §1.3).
-3. **Log in from your machine** (opens a browser once):
+1. **A Cloudflare account** (<https://dash.cloudflare.com/sign-up>). The **Free plan** is
+   enough: Pages has no paid feature this app uses.
+2. **Log in from your machine** (opens a browser once):
    ```sh
    pnpm --filter @br/web exec wrangler login
    ```
-   For CI, create an API token instead (My Profile → API Tokens → "Edit Cloudflare Workers"
-   template) and set `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` as CI secrets.
-   The account id is on the Workers & Pages overview page. It does not go in
-   `wrangler.jsonc`.
-4. **Optional:** rename the Worker. `name` in `apps/web/wrangler.jsonc` (currently
-   `build-roulette-web`) becomes the free URL `https://<name>.<your-subdomain>.workers.dev`.
-   If you change it, change the `WORKER_SELF_REFERENCE` service name to match.
-5. **Create the cache's storage** (once per account; details in "Caching"):
+   For CI, create an API token instead (My Profile → API Tokens → Create Token → "Edit
+   Cloudflare Workers" template, which includes Pages) and set `CLOUDFLARE_API_TOKEN` and
+   `CLOUDFLARE_ACCOUNT_ID` as CI secrets. The account id is on the Workers & Pages overview.
+3. **Create the Pages project** (Direct Upload: you build, wrangler uploads):
    ```sh
-   # The incremental cache (cf:deploy would also create it if missing).
-   pnpm --filter @br/web exec wrangler r2 bucket create build-roulette-web-cache
-   # Every deploy writes under a new build id: drop what old builds left behind.
-   pnpm --filter @br/web exec wrangler r2 bucket lifecycle add build-roulette-web-cache expire-old-builds incremental-cache/ --expire-days 30
-   # The tag cache. Pick the location next to the Supabase project's region (enam, weur, apac…).
-   pnpm --filter @br/web exec wrangler d1 create build-roulette-web-tags --location <hint>
+   pnpm --filter @br/web exec wrangler pages project create build-roulette-web --production-branch main
    ```
-   Put the `database_id` that `d1 create` prints into `apps/web/wrangler.jsonc`, in the
-   `NEXT_TAG_CACHE_D1` entry of `d1_databases` (the one value the repository can't know).
-   The revalidation queue is a Durable Object: nothing to create, the first deploy applies
-   the `migrations` entry (`v1`, class `DOQueueHandler`). Never edit or remove that entry;
-   renaming the class needs a new migration.
+   The name is `name` in `apps/web/wrangler.jsonc`; it becomes the free address
+   `https://build-roulette-web.pages.dev` (Cloudflare adds a suffix if the name is taken: use
+   what it prints). `apps/web/wrangler.jsonc` is the project's configuration from then on
+   (`pages_build_output_dir: ./out`, the compatibility date); Cloudflare shows those settings
+   read-only in the dashboard.
+4. **The sandbox shell must allow the app's origin.** It bakes the origins that may frame it
+   into its CSP and its `postMessage` checks at build time: build it with
+   `BR_APP_ORIGINS=https://build-roulette-web.pages.dev` (and the custom domain, if any,
+   comma-separated): `apps/sandbox-shell/scripts/build.ts`.
 
 ## Deploying
 
 ```sh
-NEXT_PUBLIC_SANDBOX_SHELL_URL=https://<sandbox>.pages.dev/v1/ \
-NEXT_PUBLIC_PKG_CDN_URL=https://<package-cdn-host> \
 NEXT_PUBLIC_SUPABASE_URL=https://<project>.supabase.co \
 NEXT_PUBLIC_SUPABASE_ANON_KEY=<anon or publishable key> \
-NEXT_PUBLIC_SITE_URL=https://<app-origin> \
-  pnpm --filter @br/web cf:build
-pnpm --filter @br/web cf:deploy
+NEXT_PUBLIC_SANDBOX_SHELL_URL=https://<sandbox>.pages.dev/v1/ \
+NEXT_PUBLIC_PKG_CDN_URL=https://<package-cdn-host> \
+NEXT_PUBLIC_SITE_URL=https://build-roulette-web.pages.dev \
+  pnpm --filter @br/web build
+pnpm --filter @br/web pages:deploy --branch main
 ```
 
-- `cf:deploy` runs `opennextjs-cloudflare deploy`. It first uploads the prerendered pages
-  (`/`, `/play`, `/playground`) to the R2 cache and creates the D1 `revalidations` table if
-  it is missing, and then runs `wrangler deploy`. Use it rather than plain
-  `wrangler deploy`, which skips both.
-- `NEXT_PUBLIC_*` values are baked into the browser code **at build time**, so set them when
-  you run `cf:build`, not in the Cloudflare dashboard. Without them the build points at the
-  local dev servers (`127.0.0.1:4321`, `localhost:4322`) and the local Supabase stack
-  (`127.0.0.1:54321` with its demo anon key). The anon/publishable key is public by design;
-  the service-role key never goes into the web app. The sandbox shell must also be
-  built to allow the app's production origin (see `apps/sandbox-shell`).
-- Every deploy creates a new version. To roll back, use Workers & Pages → `build-roulette-web`
-  → Deployments, or run `wrangler rollback`.
+- `pages:deploy` is `wrangler pages deploy` (it uploads `out/` as the config says). With
+  `--branch main` (the production branch of step 3) it goes live on the project's address and
+  custom domains; any other `--branch` makes a preview deployment on its own
+  `https://<hash>.build-roulette-web.pages.dev` address (the sandbox shell does not allow
+  preview origins unless you add them to `BR_APP_ORIGINS`, so `/play` and `/playground` only
+  work on production there).
+- **Every setting is baked in at build time.** `NEXT_PUBLIC_*` values are inlined into the
+  bundles, and the build's `_headers` allows exactly those hosts in its CSP (Supabase, the
+  sandbox shell, the package CDN, Sentry, PostHog, Turnstile). There are no runtime variables
+  or secrets in the Pages project: change a value, build again, deploy again. Without them
+  the build points at the local stack and the local dev servers.
+- The anon/publishable key is public by design. **No secret goes into this build**: the
+  service-role key and the Turnstile secret belong to Supabase and the capture worker, never
+  to the web app (`pages-config.ts` refuses to finish a build that contains one).
+- **Rollback:** Workers & Pages → `build-roulette-web` → Deployments → a previous production
+  deployment → "Rollback to this deployment" (instant), or deploy an older build again.
+- **Cloudflare's Git integration** (Cloudflare builds on every push) also works in principle:
+  build command `pnpm --filter @br/web build`, build output directory `apps/web/out`, root
+  directory the repository root, the `NEXT_PUBLIC_*` values as build environment variables,
+  and `NODE_VERSION=22`. Not tested here (no account); Direct Upload above is the path this
+  repository is set up for. Git builds count toward Pages Free's 500 builds a month.
 
-## Secrets and settings
+## Custom domain
 
-- **Secrets** (Supabase service-role key, Turnstile secret, and so on) are read on the
-  server at request time through `process.env.NAME`. Set each one once per environment:
-  ```sh
-  pnpm --filter @br/web exec wrangler secret put TURNSTILE_SECRET_KEY
-  ```
-  (It prompts for the value. They are also editable under Worker → Settings → Variables and
-  Secrets.)
-- **Non-secret runtime settings** go in `wrangler.jsonc` under `"vars": { ... }`.
-- **Locally**, put runtime secrets in `apps/web/.dev.vars` (`NAME=value` lines). It is
-  gitignored. `cf:preview` reads it.
+1. Workers & Pages → `build-roulette-web` → Custom domains → Set up a custom domain. A domain
+   on Cloudflare gets its DNS record and certificate automatically; for a domain elsewhere,
+   add the `CNAME` to `build-roulette-web.pages.dev` that the dashboard shows.
+2. Build with `NEXT_PUBLIC_SITE_URL` set to that origin (absolute `og:image` URLs, through
+   `metadataBase` in `src/app/layout.tsx`), and add it to the sandbox shell's `BR_APP_ORIGINS`.
+3. Optional: a Bulk Redirect from `build-roulette-web.pages.dev` to the custom domain, so
+   there is one canonical address.
+
+## Security model (what moved where in T-037)
+
+- **The pages are public files.** Anyone can load `/admin`'s script; it holds nothing
+  secret. What any page shows comes from Supabase with the visitor's own credentials:
+  the anon key for the public pages, a player's anonymous session for the game, a
+  moderator's session for `/admin`. Row-level security, the RPC guards and `is_admin()` in
+  every admin RPC decide, as before T-037.
+- **Admins** sign in in the browser (email + password through supabase-js) into a session
+  kept apart from the player's: its own client and storage key, in that tab's
+  `sessionStorage` only, never broadcast to other tabs; sign-out revokes it at Supabase Auth.
+  The trade-off against T-024's httpOnly cookies is written up in `apps/web/README.md`
+  ("Moderation"). Protect `/admin/sign-in` with Supabase Auth's own rate limits and CAPTCHA
+  (Turnstile covers password sign-ins too when it is on).
+- **Headers** (`out/_headers`): `Content-Security-Policy` with `script-src 'self'
+  'wasm-unsafe-eval'` plus the SHA-256 of each exported page's inline scripts (no
+  `'unsafe-inline'`), `connect-src` / `img-src` / `frame-src` limited to the configured hosts,
+  `frame-ancestors 'none'`, `object-src 'none'`, `base-uri 'self'`, `form-action 'self'`; also
+  `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy:
+  strict-origin-when-cross-origin`, a `Permissions-Policy` that refuses camera, microphone,
+  geolocation and the like, `Cross-Origin-Opener-Policy: same-origin` and HSTS. Pages also
+  adds `Access-Control-Allow-Origin: *` to static files by default: harmless here, every file
+  is public.
+- **What the app origin never serves:** user-generated HTML or scripts. Builds run on the
+  sandbox site (another site, its own CSP), and results show only text and screenshots.
 
 ## Observability (T-030)
 
 Error reporting (Sentry) and product analytics (PostHog) are **off until you configure
 them**: without the variables below no SDK is loaded, no listener is installed and nothing
 is sent (checked by `pnpm --filter @br/web test:e2e:telemetry`). What is sent, and what never
-is, is in `apps/web/README.md` "Observability" and `packages/telemetry/src/scrub.ts`.
+is, is in `apps/web/README.md` "Observability" and `packages/telemetry/src/scrub.ts`. Since
+T-037 every web event is the browser's: there is no server to report from.
 
 ### Accounts
 
-1. **Sentry** (<https://sentry.io>, the free Developer plan is enough to start; pick the EU
-   data region if you prefer). Create one project, platform *JavaScript*: browser errors,
-   server errors (`service: web`), the capture worker and the package CDN all report to it,
-   told apart by the `service` and `runtime` tags. Copy its DSN (Project → Settings →
-   Client Keys). Then, in Project → Settings:
+1. **Sentry** (<https://sentry.io>, the free Developer plan is enough; pick the EU data
+   region if you prefer). Create one project, platform *JavaScript*: browser errors, the
+   capture worker and the package CDN all report to it, told apart by the `service` and
+   `runtime` tags. Copy its DSN (Project → Settings → Client Keys). Then, in Project →
+   Settings:
    - Security & Privacy: turn on **Prevent Storing of IP Addresses**; keep the default data
      scrubbers on;
    - Client Keys → the key → **Allowed Domains**: your app origin (the DSN is public by
@@ -137,156 +159,70 @@ is, is in `apps/web/README.md` "Observability" and `packages/telemetry/src/scrub
    app does not use posthog-js, so autocapture, session replay and surveys never run; leave
    them off.
 
-### Variables
+### Variables (all at build time)
 
-| Variable | Where | When | What |
-|---|---|---|---|
-| `NEXT_PUBLIC_SENTRY_DSN` | the shell running `cf:build` | build time | browser errors; also the server's DSN unless `SENTRY_DSN` is set |
-| `NEXT_PUBLIC_SENTRY_ENVIRONMENT` | `cf:build` | build time | optional, default `production` (e.g. `staging`) |
-| `NEXT_PUBLIC_POSTHOG_KEY` | `cf:build` | build time | product analytics |
-| `NEXT_PUBLIC_POSTHOG_HOST` | `cf:build` | build time | default `https://eu.i.posthog.com`; `https://us.i.posthog.com` for a US project |
-| `BR_RELEASE` | `cf:build` | build time | optional; default the git commit (`build-roulette-web@<sha>` in Sentry) |
-| `SENTRY_DSN` | `wrangler secret put SENTRY_DSN` (or `"vars"`) | runtime | optional: a different DSN for server errors |
-| `SENTRY_ENVIRONMENT` | `"vars"` in `wrangler.jsonc` | runtime | optional: the server's environment |
-| `SENTRY_DSN`, `SENTRY_ENVIRONMENT`, `SENTRY_RELEASE` | the capture worker's and the package CDN's environment | runtime | their error reporting (`apps/capture-worker/.env.example`, `apps/pkg-cdn/README.md`) |
+| Variable | What |
+|---|---|
+| `NEXT_PUBLIC_SENTRY_DSN` | browser error reporting (its ingest host joins the CSP's `connect-src`) |
+| `NEXT_PUBLIC_SENTRY_ENVIRONMENT` | optional, default `production` (e.g. `staging`) |
+| `NEXT_PUBLIC_POSTHOG_KEY` | product analytics |
+| `NEXT_PUBLIC_POSTHOG_HOST` | default `https://eu.i.posthog.com`; `https://us.i.posthog.com` for a US project |
+| `BR_RELEASE` | optional; default the git commit (`build-roulette-web@<sha>` in Sentry) |
+| `SENTRY_DSN`, `SENTRY_ENVIRONMENT`, `SENTRY_RELEASE` | **not the web app's**: the capture worker's and the package CDN's runtime settings (`apps/capture-worker/.env.example`, `apps/pkg-cdn/README.md`) |
 
 ```sh
 NEXT_PUBLIC_SENTRY_DSN=https://<key>@<org>.ingest.de.sentry.io/<project> \
 NEXT_PUBLIC_POSTHOG_KEY=phc_<key> \
 NEXT_PUBLIC_POSTHOG_HOST=https://eu.i.posthog.com \
-  pnpm --filter @br/web cf:build        # plus the variables of "Deploying"
-pnpm --filter @br/web cf:deploy
+  pnpm --filter @br/web build        # plus the variables of "Deploying"
+pnpm --filter @br/web pages:deploy --branch main
 ```
 
 ### Check it after a deploy
 
-- `/admin` → Health → **Send a test error to Sentry**: the page shows the error screen with
-  an error code; Sentry gets "Build Roulette test error (thrown from /admin on purpose)"
-  with `runtime: workerd` and that code as its `digest` tag. "Server error reporting is off"
-  means no DSN reached the Worker.
+- `/admin` → Health → **Send a test error to Sentry**: the page throws "Build Roulette test
+  error (thrown from /admin on purpose)" from its own code; Sentry shows it within a minute
+  with `runtime: browser` and `route: /admin`. "Error reporting is off in this build" means
+  the build had no usable `NEXT_PUBLIC_SENTRY_DSN`.
 - Create a room: PostHog → Activity shows `room_created` and `room_joined` within seconds,
   with a 32-character `distinct_id` and no person profile.
 
-### What it costs
-
-Measured with `cf:build` + `wrangler deploy --dry-run` and the build's chunks (T-030):
-
-| | Before | After |
-|---|---|---|
-| Worker (gzip) | 2161.7 KiB | 2197.8 KiB (+36 KiB: the server reporter on `@sentry/core`) |
-| JS of `/` (gzip), no DSN or key | 177.5 KiB | 178.4 KiB (+0.9 KiB: settings, the error screen) |
-| JS of `/` (gzip), with DSN and key | 177.5 KiB | 178.9 KiB, plus the Sentry chunk (27.8 KiB) loaded when the browser is idle |
-
 ### Not done (yet)
 
-- Source maps are not uploaded, so browser stack traces in Sentry point into minified
-  chunks (the server's are readable). Uploading them needs a Sentry auth token at build time
-  (`sentry-cli sourcemaps upload` on `.next/static`); add it when the traces are needed.
+- Source maps are not uploaded, so browser stack traces in Sentry point into minified chunks.
+  Uploading them needs a Sentry auth token at build time (`sentry-cli sourcemaps upload` on
+  `out/_next/static`); add it when the traces are needed.
 - No Sentry alerts are created by the code: add an alert rule on new issues for
-  `service:web` and on `service:capture-worker` `claim.failed`.
-
-## Custom domain
-
-1. Add the domain to Cloudflare (Websites → Add a site) and switch the registrar's
-   nameservers to the two Cloudflare gives you. This can take a few hours.
-2. Attach it to the Worker: Workers & Pages → `build-roulette-web` → Settings →
-   Domains & Routes → Add → Custom domain. You can also add it to `wrangler.jsonc` so
-   deploys keep it:
-   ```jsonc
-   "routes": [{ "pattern": "buildroulette.example", "custom_domain": true }]
-   ```
-   Cloudflare creates the DNS record and TLS certificate.
-3. Build with `NEXT_PUBLIC_SITE_URL` set to the real origin (it becomes `metadataBase` in
-   `src/app/layout.tsx`). Otherwise OG image URLs point at `http://localhost:3000`.
+  `runtime:browser` and on `service:capture-worker` `claim.failed`.
 
 ## Caching
 
-**As implemented (T-026).** The permanent pages are cached, and a takedown shows at once.
+There is no app cache to manage any more (T-026's ISR, R2, D1 and Durable Object queue are
+gone with the server):
 
-| Page | How | Lifetime | Tags |
-|---|---|---|---|
-| `/battles/[id]` (its `og:image` is the rank-1 screenshot in Storage or the static `/og-card.png`, never drawn per request: T-033) | ISR: rendered on the first visit, then served from the cache (`force-static`) | **1 hour** once the battle is DESTROYED with `destroyed_at` set (it can't change by itself any more). **5 s** while it can: RESULTS (the screenshots land), or DESTROYED before the destroy job stamps `destroyed_at`. **5 s** for "no public battle" (an unknown id, or a battle not in RESULTS yet), so its 404 never sticks. 1 hour for a malformed id. | `battle:{id}` |
-| `/u/[id]` | Rendered per request (its pagination is in the query string); its data is cached | **At most 60 s** once every battle on the page is settled: fresh for 30 s, then served once more while it refreshes. **5 s**, never served once more, while it is "No battles to show" (the first battle may end any moment) or lists a battle that is not settled. | `player:{id}`, plus `battle:{id}` of every battle on the page |
-| `/`, `/play`, `/playground`, `/r` (every `/r/{code}`, through a rewrite) | Prerendered at build time | Until the next deploy | — |
+- HTML pages are served with Pages' default `Cache-Control: public, max-age=0,
+  must-revalidate` (browsers revalidate them on every load); `/_next/static/*` is
+  content-hashed and cached for a year (`_headers`). A deploy is visible at once.
+- The public pages read `get_public_battle` / `get_player_history` in the browser on every
+  load, with `cache: 'no-store'`: **a takedown shows on the very next page load**, whether it
+  was made in `/admin` or with SQL. Nothing needs revalidating.
+- What can still show a removed build for a while: its screenshot file, until the capture
+  worker's takedown job deletes it (seconds), plus up to 5 minutes in browsers and
+  Supabase's CDN (the upload's `max-age=300`); and link previews that social networks cached
+  on their side. docs/runbooks/removed-content-still-visible.md has the checks.
 
-The rules live in `src/lib/cache/policy.ts` (unit-tested). How it works:
-
-- `get_public_battle` and `get_player_history` are read through `'use cache'` functions
-  (`loadPublicBattle`, `loadPlayerHistory`). They call `cacheLife()` with the lifetime the
-  answer deserves and `cacheTag()` with the tags above. An ISR page takes on the lifetime
-  and the tags of the data it reads, so one rule covers both. A failed read throws and is
-  not cached; an ISR page then keeps serving its last good copy.
-- This needs `experimental.useCache` in `next.config.ts`. Next 16 marks the flag deprecated
-  in favour of `cacheComponents`, which would also turn every other route into a partial
-  prerender (and needs cache interception off). Revisit when a Next upgrade drops the flag.
-- The pages read no cookies or headers (`force-static` would hand them empty ones anyway;
-  the viewer's "Your battle history" link is a client component). The fetches use the anon
-  key and the responses set no cookie, so a cached copy holds nothing about the viewer.
-- **A takedown** (`/admin`, `takeDownAction`) expires `battle:{id}` with `updateTag`. The
-  battle id comes from `admin_take_down_build`'s answer, not from the form. That covers
-  the battle's page (whose `og:image` then becomes the static card) and every history page
-  that lists it, the builder's included. The next request renders a fresh copy; it is not
-  served the old one once more.
-- Ten seconds later the action expires the page again, by path (`after()`, which is
-  `waitUntil` on Workers). A render that read the battle just before the takedown could
-  have stored its copy just after it. (By path because OpenNext writes a tag only once per
-  request; a path also reaches the cached data the page read.)
-- No other admin action changes a public page (dismissed reports are never shown).
-- A takedown made **outside** `/admin` (SQL in the dashboard) revalidates nothing: the
-  cached copies keep showing the build for up to an hour (a minute on `/u/[id]`). Take
-  builds down from `/admin`.
-
-**On Cloudflare** (`open-next.config.ts`, `wrangler.jsonc`) the cache uses three bindings:
-
-| Binding | What | Resource |
-|---|---|---|
-| `NEXT_INC_CACHE_R2_BUCKET` | Incremental cache: the ISR copies, the `'use cache'` data, the prerendered pages. Keys are per build id, so every deploy starts cold. | R2 bucket `build-roulette-web-cache` |
-| `NEXT_TAG_CACHE_D1` | Tag cache ("next mode": one row per revalidated tag). Every cached answer checks it, so a takedown is seen in every region at once. | D1 database `build-roulette-web-tags`, table `revalidations` (created by `cf:deploy`) |
-| `NEXT_CACHE_DO_QUEUE` | Revalidation queue. A copy past its lifetime is served once more (`x-opennext-cache: STALE`) and regenerated in the background through `WORKER_SELF_REFERENCE`. | Durable Object class `DOQueueHandler` (migration `v1`) |
-
-Cache interception stays on: a cached page is answered from R2 before the Next server loads
-(`x-opennext-cache: HIT`); a miss reaches Next (`x-nextjs-cache: MISS`).
-
-Things to know:
-
-- **Each cached answer costs one R2 read and one D1 query.** D1 lives in one location (the
-  `--location` hint in "One-time setup"), so a viewer far from it waits for that round
-  trip. When traffic grows, put `withRegionalCache(r2IncrementalCache, { mode: "long-lived" })`
-  in front of R2 (the Cache API of each data center), and move the tag cache to the
-  sharded Durable Object one (`doShardedTagCache`, which has its own regional cache; it
-  needs a `DOShardedTagCache` binding and migration). See
-  <https://opennext.js.org/cloudflare/caching>.
-- The pages send `Cache-Control: s-maxage=…` for Next's own cache. Don't add a Cloudflare
-  "Cache Everything" rule (or another CDN) in front of the Worker: a copy cached there would
-  not see takedowns.
-- OpenNext's interceptor uses only the `revalidate` part of a lifetime, not `expire`, so an
-  old copy is always served once more while it regenerates. (`next start` also honours
-  `expire`: a day for a settled battle, a minute otherwise.)
-- If the tag write of a takedown fails (D1 down), OpenNext logs it and the admin is not
-  told. The copies then live out their lifetime; the hour is that safety net.
-- The `og:image` points at the screenshot in Storage; nothing caches a copy of it in the
-  Worker, so a screenshot a takedown deletes is gone for new link previews (social networks
-  keep their own copies).
-
-Check it after a deploy (with any settled battle):
-
-```sh
-curl -sI https://<app-origin>/battles/<id> | grep -i x-opennext-cache   # the 2nd time: HIT
-```
-
-Locally, `pnpm --filter @br/web test:e2e:cf:moderation` (with the local stack up) runs
-`e2e/isr.spec.ts` and `e2e/moderation.spec.ts` against the Workers preview. It checks a HIT
-on the second request, database changes staying hidden until the takedown, the takedown
-showing at once on the page (and its `og:image`) and `/u/[id]`, the second expiry, and a
-404 that lives for seconds.
-
-## Limits to keep in mind
+## Limits to keep in mind (Pages Free)
 
 | Limit | Value | Us today |
 |---|---|---|
-| Worker size | 3 MB free / 10 MB paid, compressed (since September 2026 Cloudflare's docs list 64 MiB uncompressed on both plans instead; docs/08 §1.3) | ~1.3 MB compressed, 6.4 MB raw (T-033) |
-| One static asset | 25 MiB | `esbuild.wasm` is 13.3 MiB |
-| Static asset count | 20,000 per version | ~25 |
-| CPU per request | 10 ms free / 30 s default on paid | measured in docs/08 §1: cached answers fit, renders do not |
-| `waitUntil` after the response | 30 s | the takedown's second expiry waits 10 s |
-| R2 / D1 per cached answer | one R2 read, one D1 query (rows read: one per tag) | a takedown writes one D1 row per tag |
+| Requests to static files | unlimited, free, not Worker invocations | every request |
+| Files per deployment | 20,000 | 94 |
+| One file | 25 MiB | `esbuild.wasm` 13.3 MiB |
+| `_headers` | 100 rules, 2,000 characters per header line | 4 rules; the CSP line is ~950 characters (10 script hashes), checked by the build |
+| `_redirects` | 2,000 static + 100 dynamic rules | 3 dynamic |
+| Builds (Git integration only) | 500 a month | Direct Upload: none |
+| Custom domains | 100 per project | 0–1 |
+
+Link previews per battle (each battle's own title and screenshot in `og:*`) need code at the
+edge: a Pages Function on `/battles/*` is T-038, measured against Workers Free's 10 ms
+first. Until then every shell carries the generic tags and `og-card.png`.

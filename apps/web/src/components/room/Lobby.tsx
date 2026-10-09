@@ -15,7 +15,6 @@ import {
   VOTING_MIN_SECONDS,
   isTerminalPhase,
 } from '@br/game';
-import Link from 'next/link';
 import { useState } from 'react';
 import { useTouchPrimary } from '../../lib/device';
 import { TemplateWarmup } from '../playground/TemplateWarmup';
@@ -276,14 +275,14 @@ export function Lobby({ controller, state, room, lastBattle }: LobbyProps) {
               a desktop browser: if you play from here, your build ends as DNF.
             </p>
           )}
-          <Link
+          <a
             href={`/u/${me.user_id}`}
             target="_blank"
             className="mt-4 inline-block text-sm font-semibold underline"
             data-testid="my-history-link"
           >
             Your battle history ↗
-          </Link>
+          </a>
         </section>
 
         {hadBattle && <LastBattle battle={lastBattle} />}
@@ -360,13 +359,13 @@ function LastBattle({ battle }: { battle: BattleSnapshot }) {
         </ol>
       )}
       {battle.battle.phase === 'destroyed' ? (
-        <Link
+        <a
           href={`/battles/${battle.battle.id}`}
           className="mt-3 inline-block text-sm font-semibold underline"
           data-testid="last-battle-link"
         >
           Full results →
-        </Link>
+        </a>
       ) : (
         <p className="mt-3 text-sm text-zinc-500">
           It was abandoned (nobody was left), so it has no results page.

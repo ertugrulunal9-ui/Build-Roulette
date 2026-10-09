@@ -3,15 +3,16 @@
 Supabase is the game's server: Postgres (all state and every rule), Auth (anonymous
 sessions), Realtime, Storage (build files, screenshots) and pg_cron (deadlines). When it is
 down, nothing can change state. What keeps working (docs/02 R10): editing and the live
-preview are local to each browser, and the permanent pages already in the cache.
+preview are local to each browser, and the app's pages themselves (static files on Cloudflare
+Pages, T-037), which load but cannot show any data.
 
 ## Symptoms
 
 - Players: "Reconnecting…", ships and votes failing (the client retries), new visitors cannot
-  sign in; uncached `/battles/[id]` and `/u/[id]` pages answer 500.
-- Sentry: server errors of the web app (`service: web`, `route: /battles/[id]` or
-  `/u/[id]`, "fetch failed" / HTTP 5xx), the capture worker's `claim.failed`, many browser
-  errors at once.
+  sign in; `/battles/[id]` and `/u/[id]` say "Could not load this page" with a Try again
+  button.
+- Sentry: the capture worker's `claim.failed`, many browser errors at once (`runtime:
+  browser`).
 - `/admin` → Health: "Could not load the health signals" (it is an RPC itself).
 
 ## Confirm

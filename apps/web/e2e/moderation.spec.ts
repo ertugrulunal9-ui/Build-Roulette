@@ -1,9 +1,11 @@
 import { expect, test, type Browser, type Locator, type Page } from '@playwright/test';
-import { STATIC_CARD, cachedCopy, ogImage } from './cache';
+import { watchCsp } from './csp';
+import { STATIC_CARD } from './helpers';
 import {
   anonymousUserId,
   assertUuid,
   publicScreenshotUrl,
+  refreshWorks,
   seedAdmin,
   sql,
   uploadScreenshot,
@@ -22,19 +24,23 @@ import {
  * and its vote counts but has no Winner banner and no award chips on /battles/[id] and on
  * the builder's /u/[id]; the runner-up keeps its own award and does not become the winner.
  *
- * The public surfaces (/battles/[id] with its `og:image`, the builder's /u/[id]) are cached
- * (T-026) and served from the cache right up to the takedown; the takedown's revalidation
- * makes the very next request of each show the removal (e2e/isr.spec.ts covers a settled
- * battle, cached for an hour). The `og:image` is the winner's screenshot until then, and the
- * static card after (T-028, T-033).
+ * The public pages are static shells that read the database on every load (T-037), so the
+ * takedown shows on the very next page load of /battles/[id] and of the builder's /u/[id]:
+ * no cache, nothing to revalidate. Their `og:image` is the static card (per-battle previews:
+ * T-038).
  *
- * Plus: /admin is a plain 404 for a player (and without a session, and after a failed
- * sign-in), and a blocked display name gets the friendly error.
+ * The admin is a moderator in a browser that is also a player's (it reports, then dismisses,
+ * a second build): the admin session lives in that tab's sessionStorage, never touches the
+ * player's anonymous session in localStorage, does not reach another tab, and sign-out
+ * revokes it at Supabase Auth.
+ *
+ * Plus: /admin is the plain not-found screen for a player (and without a session, and after a
+ * failed sign-in), and a blocked display name gets the friendly error.
  *
  * T-030: the admin's Health section (admin_ops_health) shows the sweeps running, a RESULTS
  * battle past its last look that waits for a screenshot (overdue, not stuck), a capture job
- * that failed for good (a finding), and after the takedown the takedown job done; the
- * battle log's "Refresh public copies" and Health's "Send a test error" (off here: no DSN).
+ * that failed for good (a finding), and after the takedown the takedown job done; Health's
+ * "Send a test error" (off here: no DSN).
  *
  * The finished battle is inserted with psql (two builds with real PNG screenshots in the
  * public bucket), so the test does not need a whole game. MODERATION_SCREENSHOT_DIR=/dir
@@ -200,6 +206,14 @@ async function awardChips(card: Locator): Promise<(string | null)[]> {
     .evaluateAll((els) => els.map((e) => e.getAttribute('data-award')));
 }
 
+/** The anonymous player's user id in this browser (the session in localStorage `br-auth`). */
+async function storedUser(page: Page): Promise<string | null> {
+  return page.evaluate(() => {
+    const raw = window.localStorage.getItem('br-auth');
+    return raw ? ((JSON.parse(raw) as { user?: { id?: string } }).user?.id ?? null) : null;
+  });
+}
+
 function screenshotObjects(path: string): number {
   return Number(
     sql(
@@ -215,9 +229,12 @@ test('report → admin takedown → "Removed by moderators" and the screenshot i
   expect(screenshotObjects(fx.scam.path)).toBe(1);
 
   // ─── A player reports the scam build on the public results page ─────────────────
+  const battlePath = `/battles/${fx.battle}`;
   const player = await browser.newContext();
   const page = await player.newPage();
-  await page.goto(`/battles/${fx.battle}`);
+  // Every page here runs under the static site's CSP (T-037): no violation anywhere.
+  const csp = watchCsp(page);
+  await page.goto(battlePath);
   const scamCard = page.locator(`[data-testid=public-build][data-build="${fx.scam.id}"]`);
   const timerCard = page.locator(`[data-testid=public-build][data-build="${fx.timer.id}"]`);
   await expect(scamCard.getByTestId('public-build-name')).toContainText('Free Gift Card');
@@ -251,40 +268,83 @@ test('report → admin takedown → "Removed by moderators" and the screenshot i
     sql(`select reason || ':' || status from public.reports where build_id = '${fx.scam.id}'`),
   ).toBe('phishing:open');
 
-  // ─── /admin is a plain 404 for that player (and for nobody signed in) ───────────
-  const notFound = await page.goto('/admin');
-  expect(notFound?.status()).toBe(404);
+  // ─── /admin is the plain not-found screen for that player (and for nobody signed in) ─
+  // A static page (T-037): the status is 200, the screen is the 404 one, and the player's
+  // anonymous session (localStorage) never reaches it.
+  await page.goto('/admin');
+  await expect(page.getByTestId('admin-not-found')).toBeVisible();
   await expect(page.getByText('This page could not be found.')).toBeVisible();
   await expect(page.getByText('Moderation')).toHaveCount(0);
   const stranger = await browser.newContext();
   const strangerPage = await stranger.newPage();
-  expect((await strangerPage.goto('/admin'))?.status()).toBe(404);
-  expect((await strangerPage.goto('/admin?q=K7QXM'))?.status()).toBe(404);
+  for (const path of ['/admin', '/admin?q=K7QXM']) {
+    await strangerPage.goto(path);
+    await expect(strangerPage.getByTestId('admin-not-found')).toBeVisible();
+  }
   await stranger.close();
 
-  // ─── The admin signs in ─────────────────────────────────────────────────────────
+  // ─── The moderator's browser is also a player's: it reports Ana's build ──────────
+  // That gives it an anonymous player session (localStorage `br-auth`), which the admin
+  // session must neither replace nor share (lib/admin/client.ts).
   seedAdmin(ADMIN_EMAIL, ADMIN_PASSWORD);
   const mod = await browser.newContext();
   const admin = await mod.newPage();
+  watchCsp(admin, csp);
+  await admin.goto(battlePath);
+  const modTimerCard = admin.locator(`[data-testid=public-build][data-build="${fx.timer.id}"]`);
+  await modTimerCard.getByTestId('report-build').click();
+  const modDialog = admin.locator('dialog[open][data-testid=report-dialog]');
+  await modDialog.getByTestId('report-reason-other').check();
+  await modDialog.getByTestId('report-submit').click();
+  await expect(admin.getByTestId('report-thanks')).toBeVisible();
+  const playerSession = await storedUser(admin);
+  expect(playerSession).toMatch(/^[0-9a-f-]{36}$/);
+
+  // ─── The admin signs in (a wrong password first) ────────────────────────────────
   await admin.goto('/admin/sign-in');
   await admin.getByTestId('admin-email').fill(ADMIN_EMAIL);
   await admin.getByTestId('admin-password').fill('wrong-password');
   await admin.getByTestId('admin-sign-in-submit').click();
   await expect(admin.getByTestId('admin-sign-in-error')).toBeVisible();
-  expect((await admin.goto('/admin'))?.status()).toBe(404);
+  await admin.goto('/admin');
+  await expect(admin.getByTestId('admin-not-found')).toBeVisible();
   await admin.goto('/admin/sign-in');
   await admin.getByTestId('admin-email').fill(ADMIN_EMAIL);
   await admin.getByTestId('admin-password').fill(ADMIN_PASSWORD);
   await admin.getByTestId('admin-sign-in-submit').click();
   await expect(admin).toHaveURL(/\/admin$/);
+  await expect(admin.getByTestId('admin')).toBeVisible();
+  await expect(admin).toHaveTitle('Moderation · Build Roulette');
+  // The admin session is in this tab's sessionStorage only; the player session is untouched.
+  const storage = await admin.evaluate(() => ({
+    local: Object.keys(window.localStorage),
+    session: Object.keys(window.sessionStorage),
+  }));
+  expect(storage.session).toContain('br-admin-auth');
+  expect(storage.local).not.toContain('br-admin-auth');
+  expect(await storedUser(admin)).toBe(playerSession);
+  // Another tab of the same browser is not signed in (sessionStorage is per tab).
+  const otherTab = await mod.newPage();
+  await otherTab.goto('/admin');
+  await expect(otherTab.getByTestId('admin-not-found')).toBeVisible();
+  await otherTab.close();
 
-  // ─── The report is in the queue ─────────────────────────────────────────────────
+  // ─── The reports are in the queue ───────────────────────────────────────────────
   const item = admin.locator(`[data-testid=report-item][data-build="${fx.scam.id}"]`);
   await expect(item.getByTestId('report-item-name')).toHaveText('Free Gift Card');
   await expect(item.getByTestId('report-item-reasons')).toContainText('Phishing or scam × 1');
   await expect(item.getByTestId('report-item-reports')).toContainText('to "claim" a gift card');
   await expect(item.getByTestId('report-item-screenshot')).toBeVisible();
   await snap(admin, 't024-admin-queue');
+  // Ana's build was reported for nothing: dismiss it.
+  const timerItem = admin.locator(`[data-testid=report-item][data-build="${fx.timer.id}"]`);
+  await timerItem.getByTestId('admin-dismiss').click();
+  await expect(admin.getByTestId('admin-flash')).toHaveAttribute('data-done', 'dismissed');
+  await expect(admin.getByTestId('admin-flash')).toContainText('Reports dismissed. (1)');
+  await expect(timerItem).toHaveCount(0);
+  expect(sql(`select status from public.reports where build_id = '${fx.timer.id}'`)).toBe(
+    'dismissed',
+  );
 
   // ─── T-030: Health ───────────────────────────────────────────────────────────────
   const healthFx = await createHealthFixture();
@@ -308,20 +368,20 @@ test('report → admin takedown → "Removed by moderators" and the screenshot i
     health.locator('[data-testid=health-finding][data-area=jobs]').first(),
   ).toContainText('capture-backlog');
   await snap(admin, 't030-admin-health', true);
-  // No DSN in this build: the test-error button says reporting is off.
+  // No DSN in this build: the test-error button says reporting is off (and throws nothing).
+  const adminErrors: string[] = [];
+  admin.on('pageerror', (e) => adminErrors.push(e.message));
   await health.getByTestId('admin-test-error').click();
   await expect(admin.getByTestId('admin-flash')).toHaveAttribute('data-done', 'test_error_off');
+  expect(adminErrors).toEqual([]);
   await admin.goto('/admin');
   sql(`update public.builds set capture_status = 'failed' where battle_id = '${healthFx.battle}'`);
 
-  // ─── Right before the takedown, the public copies are cached (T-026) ────────────
-  const battlePath = `/battles/${fx.battle}`;
-  const cachedBefore = await (await cachedCopy(page.request, battlePath)).text();
-  expect(cachedBefore).toContain('Free Gift Card');
-  // The social image is the winning (scam) build's screenshot (T-033).
-  expect(ogImage(cachedBefore)).toBe(publicScreenshotUrl(fx.scam.path));
-  // /u/[id] renders per request from cached data (at most a minute old).
-  expect(await (await page.request.get(`/u/${fx.mallory}`)).text()).toContain('Free Gift Card');
+  // ─── Right before the takedown, the public pages show the build ─────────────────
+  await page.goto(battlePath);
+  await expect(scamCard.getByTestId('public-build-name')).toContainText('Free Gift Card');
+  await page.goto(`/u/${fx.mallory}`);
+  await expect(page.getByTestId('history-build-name').first()).toHaveText('Free Gift Card');
 
   // ─── Take it down ───────────────────────────────────────────────────────────────
   await item.getByTestId('admin-take-down').click();
@@ -348,17 +408,25 @@ test('report → admin takedown → "Removed by moderators" and the screenshot i
   await expect(
     log.locator(`[data-testid=admin-build][data-build="${fx.scam.id}"]`),
   ).toHaveAttribute('data-taken-down', 'true');
+  await expect(log.getByTestId('admin-public-page')).toHaveAttribute('href', battlePath);
+  // "Refresh public copies" is gone (T-037): there are no copies to refresh.
+  await expect(admin.getByRole('button', { name: /refresh/i })).toHaveCount(0);
   await snap(admin, 't024-admin-battle-log', true);
-  // T-030: refresh the battle's public copies by hand (runbook: cache not revalidating).
-  await log.getByTestId('admin-refresh-copies').click();
-  await expect(admin.getByTestId('admin-flash')).toHaveAttribute('data-done', 'refreshed');
-  await expect(admin.getByTestId('admin-battle-log')).toHaveAttribute('data-battle', fx.battle);
 
-  // ─── The public page: "Removed by moderators", no screenshot ────────────────────
-  // Its cached copy is seconds old: by time alone it would still be served (once more, at
-  // least: stale-while-revalidate). Only the takedown's tag revalidation shows the removal
-  // on the first request.
-  await page.goto(battlePath);
+  // ─── The very next page load shows "Removed by moderators" (no cache anywhere) ───
+  const battleRead = page.waitForResponse((r) =>
+    r.url().endsWith('/rest/v1/rpc/get_public_battle'),
+  );
+  const shell = await page.goto(battlePath);
+  // The shell is a static file the browser revalidates on every load; the data is read live.
+  expect(shell?.headers()['cache-control']).toMatch(/max-age=0|no-cache|no-store/);
+  const fresh = (await (await battleRead).json()) as {
+    builds: { id: string; name: string | null; taken_down?: boolean }[];
+  };
+  expect(fresh.builds.find((b) => b.id === fx.scam.id)).toMatchObject({
+    name: null,
+    taken_down: true,
+  });
   await expect(scamCard).toHaveAttribute('data-removed', 'true');
   await expect(scamCard.getByTestId('public-build-name')).toContainText('Removed by moderators');
   await expect(scamCard.getByTestId('public-build-name')).not.toContainText('Free Gift Card');
@@ -379,15 +447,15 @@ test('report → admin takedown → "Removed by moderators" and the screenshot i
   await expect(timerCard).toHaveAttribute('data-rank', '2');
   expect(await awardChips(timerCard)).toEqual(['style']);
   await expect(page.locator('[data-award=overall], [data-award=speedrun]')).toHaveCount(0);
+  await expect(page).toHaveTitle('A pomodoro timer · Battle results · Build Roulette');
   await scamCard.scrollIntoViewIfNeeded();
   await snap(page, 't028-removed-winner');
-  // The social image: the static card, not the removed screenshot and not Ana's (nobody is
-  // promoted), on the first request after the takedown.
+  // The shell's social image is the static card for every battle until T-038: never the
+  // removed screenshot, nor Ana's.
   const og = await page.locator('meta[property="og:image"]').getAttribute('content');
   expect(og).toMatch(STATIC_CARD);
-  expect(og).not.toContain(fx.timer.path);
 
-  // ─── …and on the builder's history ──────────────────────────────────────────────
+  // ─── …and on the builder's history, on its next load ────────────────────────────
   await page.goto(`/u/${fx.mallory}`);
   const entry = page.locator(`[data-testid=history-battle][data-battle="${fx.battle}"]`);
   await expect(entry).toHaveAttribute('data-removed', 'true');
@@ -414,6 +482,21 @@ test('report → admin takedown → "Removed by moderators" and the screenshot i
   await admin.goto('/admin');
   const takedownRow = admin.locator('[data-testid=health-job][data-kind=takedown]');
   expect(Number(await takedownRow.getAttribute('data-done-hour'))).toBeGreaterThanOrEqual(1);
+
+  // ─── Sign-out revokes the session and forgets it; the player session stays ──────
+  const refreshToken = await admin.evaluate(() => {
+    const raw = window.sessionStorage.getItem('br-admin-auth') ?? '{}';
+    return (JSON.parse(raw) as { refresh_token?: string }).refresh_token ?? '';
+  });
+  expect(refreshToken).not.toBe('');
+  await admin.getByTestId('admin-sign-out').click();
+  await expect(admin).toHaveURL(/\/$/);
+  expect(await admin.evaluate(() => window.sessionStorage.getItem('br-admin-auth'))).toBeNull();
+  expect(await storedUser(admin)).toBe(playerSession);
+  await admin.goto('/admin');
+  await expect(admin.getByTestId('admin-not-found')).toBeVisible();
+  expect(await refreshWorks(refreshToken)).toBe(false);
+  expect(csp).toEqual([]);
 
   await mod.close();
   await player.close();

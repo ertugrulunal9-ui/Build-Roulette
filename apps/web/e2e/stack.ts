@@ -93,6 +93,17 @@ export function seedAdmin(email: string, password: string): void {
   });
 }
 
+/** Whether Supabase Auth still accepts a refresh token (a revoked session's does not). */
+export async function refreshWorks(refreshToken: string): Promise<boolean> {
+  const anon = stackEnv('ANON_KEY');
+  const res = await fetch(`${stackEnv('API_URL')}/auth/v1/token?grant_type=refresh_token`, {
+    method: 'POST',
+    headers: { apikey: anon, 'content-type': 'application/json' },
+    body: JSON.stringify({ refresh_token: refreshToken }),
+  });
+  return res.ok;
+}
+
 /** Runs SQL as the superuser; returns the unaligned, tuples-only output. */
 export function sql(query: string): string {
   return execFileSync(

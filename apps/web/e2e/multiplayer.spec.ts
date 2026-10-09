@@ -471,12 +471,11 @@ test('a 3-player room: lobby → battle → ship and auto-ship → reveal → vo
   await expect(pub.locator('[data-testid=award][data-award=overall]')).toHaveCount(1);
   await expect(publicBuilds.nth(1).locator('[data-testid=award][data-source=vote]')).toHaveCount(0);
   await expect(publicBuilds.nth(2).locator('[data-award=style]')).toBeVisible();
-  // The social image: Bob's screenshot, or the static card when it has none (T-033).
+  // The social image: the static card the shell carries for every battle (T-037; per-battle
+  // previews with Bob's screenshot: T-038), served as a static file.
   const ogUrl = await pub.locator('meta[property="og:image"]').getAttribute('content');
-  expect(ogUrl).toMatch(/\/storage\/v1\/object\/public\/screenshots\/|\/og-card\.png$/);
-  const og = await pub.request.get(
-    ogUrl?.endsWith('/og-card.png') ? '/og-card.png' : (ogUrl ?? ''),
-  );
+  expect(ogUrl).toMatch(/\/og-card\.png$/);
+  const og = await pub.request.get('/og-card.png');
   expect(og.status()).toBe(200);
   expect(og.headers()['content-type']).toMatch(/^image\//);
   await snap(pub, 'battle-page', true);

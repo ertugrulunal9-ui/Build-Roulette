@@ -1,5 +1,13 @@
 import { expect, test, type Page } from '@playwright/test';
-import { buildFrame, clickRouted, replaceEditorText, startBattle, waitForBuild } from './helpers';
+import {
+  STATIC_CARD,
+  buildFrame,
+  clickRouted,
+  replaceEditorText,
+  startBattle,
+  waitForBuild,
+} from './helpers';
+import { watchCsp } from './csp';
 import { battleRow, ephemeralObjects, sql } from './stack';
 
 /**
@@ -51,6 +59,7 @@ test('ship: spin → build → ship → results (screenshot, speedrun) → destr
 }) => {
   const pageErrors: string[] = [];
   page.on('pageerror', (e) => pageErrors.push(e.message));
+  watchCsp(page, pageErrors);
 
   const battle = await startBattle(page, 'E2E Shipper');
   // The reels land one after another on the server's cards.
@@ -176,14 +185,16 @@ test('ship: spin → build → ship → results (screenshot, speedrun) → destr
         .evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth),
     )
     .toBe(1280);
-  // The social image is the screenshot itself (T-033: no card drawn per request).
   const shotUrl = await page.getByTestId('public-screenshot').getAttribute('src');
   expect(shotUrl).toContain(`/storage/v1/object/public/screenshots/${battle}/`);
-  await expect(page.locator('meta[property="og:image"]')).toHaveAttribute('content', shotUrl ?? '');
+  const shotFile = await page.request.get(shotUrl ?? '');
+  expect(shotFile.status()).toBe(200);
+  expect(shotFile.headers()['content-type']).toMatch(/^image\/(webp|png|jpeg)$/);
+  // The page is a static shell (T-037): its social image is the static card for every battle
+  // until T-038 writes each battle's own (this screenshot) at the edge.
+  await expect(page.locator('meta[property="og:image"]')).toHaveAttribute('content', STATIC_CARD);
+  await expect(page).toHaveTitle(/· Build Roulette$/);
   await snap(page, 'battle-page');
-  const og = await page.request.get(shotUrl ?? '');
-  expect(og.status()).toBe(200);
-  expect(og.headers()['content-type']).toMatch(/^image\/(webp|png|jpeg)$/);
 
   // Play again starts over.
   await page.goto('/play');

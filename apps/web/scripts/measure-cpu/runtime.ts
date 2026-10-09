@@ -1,17 +1,16 @@
 /**
- * The two servers the CPU measurement (T-033) drives, and how one request is measured on each.
+ * The local Cloudflare runtime the CPU measurement (T-033, kept by T-037 for T-038's Pages
+ * Function) drives, and how one request is measured on it: `wrangler pages dev` (the static
+ * site and its Pages Functions, if any) or `wrangler dev` (a plain Worker: the calibration
+ * Worker), both workerd, the runtime Cloudflare runs.
  *
- * - **Workers**: the OpenNext build served by `wrangler dev` (workerd, like `cf:preview`).
- *   Per request: the app isolate's CPU from a V8 CPU profile (DevTools `Profiler`, through
- *   wrangler's inspector proxy) and the workerd main thread's CPU from
- *   `/proc/<pid>/task/<pid>/schedstat` (nanoseconds; every isolate of the local runtime runs
- *   on that thread, so it also counts the emulated R2/D1/Durable Object and routing workers).
- * - **Node**: `next start` with a preload (node-hook.mjs) that reads `process.threadCpuUsage()`
- *   around each request.
+ * Per request: the user isolate's CPU from a V8 CPU profile (DevTools `Profiler`, through
+ * wrangler's inspector proxy) and the workerd main thread's CPU from
+ * `/proc/<pid>/task/<pid>/schedstat` (nanoseconds; every isolate of the local runtime runs on
+ * that thread, so it also counts the local asset and routing workers).
  *
  * A measurement waits until the server is quiet again ("settled"), so work after the response
- * (`waitUntil`/`after`, the ISR cache write, a background regeneration) is counted too: on
- * Workers it is part of the same invocation's CPU.
+ * (`waitUntil`) is counted too: on Workers it is part of the same invocation's CPU.
  */
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createWriteStream, readFileSync, readdirSync } from 'node:fs';
@@ -28,25 +27,23 @@ export interface RequestSpec {
 
 export interface Measurement {
   status: number;
-  /** x-opennext-cache / x-nextjs-cache (HIT, MISS, STALE), or ''. */
+  /** The `cf-cache-status` / `x-cache` header, if any (a Function may set one), or ''. */
   cache: string;
   location: string;
   bytes: number;
   /** Request sent → body read, milliseconds (includes waiting on Supabase). */
   wallMs: number;
-  /** Workers: the app isolate's CPU from the profile (null when not profiled). Node: null. */
+  /** The user isolate's CPU from the profile (null when not profiled). */
   isolate: IsolateCpu | null;
-  /** Workers: workerd main thread CPU. Node: the main thread's CPU (`threadCpuUsage`). */
+  /** workerd main thread CPU. */
   threadMs: number;
-  /** Node only: CPU of the main thread until the response finished. */
-  toFinishMs: number | null;
 }
 
 const webDir = fileURLToPath(new URL('../../', import.meta.url));
 const quietMs = 80;
 const settleTimeoutMs = 5_000;
 
-/** The request's headers; `origin: self` becomes the server's own origin (server actions check it). */
+/** The request's headers; `origin: self` becomes the server's own origin. */
 function headersFor(spec: RequestSpec, origin: string): Record<string, string> {
   const h = { ...spec.headers };
   if (h['origin'] === 'self') h['origin'] = origin;
@@ -216,15 +213,19 @@ export interface WorkersOptions {
   /** Profiler sampling interval, microseconds. */
   samplingUs: number;
   logFile: string;
-  /** Another Worker's wrangler config (the calibration Worker); default: the app's. */
+  /**
+   * `pages`: `wrangler pages dev` on the app (apps/web/wrangler.jsonc: `out/`, plus a
+   * `functions/` directory once there is one; with none, wrangler runs a shim Worker that
+   * only serves the assets). `worker`: `wrangler dev` on `config`.
+   */
+  kind: 'pages' | 'worker';
+  /** The Worker's wrangler config (kind `worker`, e.g. the calibration Worker). */
   config?: string;
 }
 
 /**
- * `wrangler dev` on the OpenNext build. One start = one fresh isolate: workerd evaluates the
- * Worker's global scope at startup, before the first request (as Cloudflare does), and the
- * first request then initialises the Next server lazily (OpenNext's `import()` of the handler,
- * bundled as a lazy module initialiser).
+ * `wrangler pages dev` / `wrangler dev`. One start = one fresh isolate: workerd evaluates the
+ * Worker's global scope at startup, before the first request (as Cloudflare does).
  */
 export class WorkersRuntime {
   readonly origin: string;
@@ -244,7 +245,7 @@ export class WorkersRuntime {
       process.execPath,
       [
         'node_modules/wrangler/bin/wrangler.js',
-        'dev',
+        ...(this.opts.kind === 'pages' ? ['pages', 'dev'] : ['dev']),
         '--port',
         String(this.opts.port),
         '--ip',
@@ -260,7 +261,6 @@ export class WorkersRuntime {
           ...process.env,
           WRANGLER_SEND_METRICS: 'false',
           WRANGLER_CI_DISABLE_CONFIG_WATCHING: 'true',
-          NEXT_TELEMETRY_DISABLED: '1',
         },
         stdio: ['ignore', 'pipe', 'pipe'],
         detached: true,
@@ -351,13 +351,12 @@ export class WorkersRuntime {
     }
     return {
       status: res.status,
-      cache: header(res, 'x-opennext-cache') || header(res, 'x-nextjs-cache'),
+      cache: header(res, 'cf-cache-status') || header(res, 'x-cache'),
       location: header(res, 'location'),
       bytes,
       wallMs,
       isolate,
       threadMs: after - before,
-      toFinishMs: null,
     };
   }
 
@@ -373,127 +372,8 @@ export class WorkersRuntime {
     await settle(() => threadCpuMs(this.runtimePid));
     return {
       status: res.status,
-      cache: header(res, 'x-opennext-cache') || header(res, 'x-nextjs-cache'),
+      cache: header(res, 'cf-cache-status') || header(res, 'x-cache'),
       text,
     };
-  }
-}
-
-export interface NodeOptions {
-  port: number;
-  probePort: number;
-  logFile: string;
-}
-
-interface ProbeAnswer {
-  toFinishMs: number;
-  settledMs: number;
-}
-
-/** `next start` with node-hook.mjs preloaded (the cross-check on Node). */
-export class NodeRuntime {
-  readonly origin: string;
-  private child: ChildProcess | null = null;
-  private seq = 0;
-
-  constructor(private readonly opts: NodeOptions) {
-    this.origin = `http://127.0.0.1:${String(opts.port)}`;
-  }
-
-  async start(): Promise<void> {
-    const log = createWriteStream(this.opts.logFile, { flags: 'a' });
-    const hook = fileURLToPath(new URL('./node-hook.mjs', import.meta.url));
-    const child = spawn(
-      process.execPath,
-      ['node_modules/next/dist/bin/next', 'start', '-p', String(this.opts.port), '-H', '127.0.0.1'],
-      {
-        cwd: webDir,
-        env: {
-          ...process.env,
-          NEXT_TELEMETRY_DISABLED: '1',
-          NODE_OPTIONS: `--import ${hook}`,
-          CPU_PROBE_PORT: String(this.opts.probePort),
-        },
-        stdio: ['ignore', 'pipe', 'pipe'],
-        detached: true,
-      },
-    );
-    this.child = child;
-    child.stdout.on('data', (c: Buffer) => log.write(c));
-    child.stderr.on('data', (c: Buffer) => log.write(c));
-    const deadline = Date.now() + 60_000;
-    for (;;) {
-      if (child.exitCode !== null) throw new Error(`next start exited (see ${this.opts.logFile})`);
-      const up = await fetch(`http://127.0.0.1:${String(this.opts.probePort)}/ping`)
-        .then((r) => r.ok)
-        .catch(() => false);
-      const app = up
-        ? await fetch(`${this.origin}/favicon-probe-does-not-exist`, { method: 'HEAD' })
-            .then(() => true)
-            .catch(() => false)
-        : false;
-      if (app) break;
-      if (Date.now() > deadline) throw new Error('next start not ready');
-      await sleep(100);
-    }
-  }
-
-  async stop(): Promise<void> {
-    const child = this.child;
-    this.child = null;
-    if (!child) return;
-    killGroup(child);
-    await waitForExit(child, 5_000);
-    killGroup(child, 'SIGKILL');
-    await sleep(200);
-  }
-
-  async restart(): Promise<void> {
-    await this.stop();
-    await this.start();
-  }
-
-  async measure(spec: RequestSpec, holdMs = 0): Promise<Measurement> {
-    const id = `p${String(++this.seq)}`;
-    const t0 = performance.now();
-    const res = await fetch(this.origin + spec.path, {
-      method: spec.method ?? 'GET',
-      headers: {
-        ...headersFor(spec, this.origin),
-        'x-cpu-probe': id,
-        'x-cpu-probe-hold': String(holdMs),
-      },
-      body: spec.body ?? null,
-      redirect: 'manual',
-    });
-    const bytes = await readBody(res);
-    const wallMs = performance.now() - t0;
-    // Ask once the hook is likely done, so this request's own CPU is not counted.
-    await sleep(250 + holdMs);
-    const probe = (await (
-      await fetch(`http://127.0.0.1:${String(this.opts.probePort)}/settle/${id}`)
-    ).json()) as ProbeAnswer;
-    return {
-      status: res.status,
-      cache: header(res, 'x-nextjs-cache'),
-      location: header(res, 'location'),
-      bytes,
-      wallMs,
-      isolate: null,
-      threadMs: probe.settledMs,
-      toFinishMs: probe.toFinishMs,
-    };
-  }
-
-  async request(spec: RequestSpec): Promise<{ status: number; cache: string; text: string }> {
-    const res = await fetch(this.origin + spec.path, {
-      method: spec.method ?? 'GET',
-      headers: headersFor(spec, this.origin),
-      body: spec.body ?? null,
-      redirect: 'manual',
-    });
-    const text = await res.text();
-    await sleep(100);
-    return { status: res.status, cache: header(res, 'x-nextjs-cache'), text };
   }
 }

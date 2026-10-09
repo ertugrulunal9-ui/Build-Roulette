@@ -1,5 +1,6 @@
 import { startFakeIngest, type FakeIngest } from '@br/telemetry/testing';
 import { expect, test } from '@playwright/test';
+import { watchCsp } from './csp';
 import { openFile, openPlayground, replaceEditorText } from './helpers';
 import { seedAdmin } from './stack';
 import {
@@ -18,6 +19,8 @@ import {
  * host at a local fake ingest (playwright.telemetry.config.ts, `build:telemetry`). What
  * arrives there must be scrubbed: no query strings or fragments, no room codes, display names,
  * emails or raw user ids, nothing from the sandbox iframe; a hashed user id joins the two.
+ * Every event is the browser's: the app is a static site (T-037), so the admin's "Send a test
+ * error" throws in the page, and no server-side event (`service: web`) exists any more.
  */
 
 let ingest: FakeIngest;
@@ -214,7 +217,7 @@ test('a preview watchdog crash arrives as preview_crash (T-031): restarted, no b
   }
 });
 
-test('a server error (the admin test error) arrives with its digest, scrubbed', async ({
+test('the admin test error is the browser’s (no server any more): it arrives scrubbed', async ({
   browser,
 }) => {
   const email = `telemetry-${String(Date.now())}@telemetry.e2e`;
@@ -222,44 +225,44 @@ test('a server error (the admin test error) arrives with its digest, scrubbed', 
   seedAdmin(email, password);
   const ctx = await browser.newContext();
   const admin = await ctx.newPage();
+  const errors: string[] = [];
+  watchCsp(admin, errors);
   await admin.goto('/admin/sign-in');
   await admin.getByTestId('admin-email').fill(email);
   await admin.getByTestId('admin-password').fill(password);
   await admin.getByTestId('admin-sign-in-submit').click();
   await expect(admin).toHaveURL(/\/admin$/);
   await expect(admin.getByTestId('admin-health')).toBeVisible();
+  await sentryLoaded(admin);
+  const session = await admin.evaluate(() => window.sessionStorage.getItem('br-admin-auth') ?? '');
+  const { access_token: accessToken, refresh_token: refreshToken } = JSON.parse(session) as {
+    access_token: string;
+    refresh_token: string;
+  };
   ingest.reset();
 
   await admin.getByTestId('admin-test-error').click();
-  const screen = admin.getByTestId('global-error');
-  await expect(screen).toBeVisible();
-  const digest = (await screen.getAttribute('data-digest')) ?? '';
-  await expect(screen).toContainText(`Error code ${digest}`);
-  expect(digest).not.toBe('');
-
-  await expect
-    .poll(() => sentry().filter((e) => e.tags?.['service'] === 'web').length, { timeout: 15_000 })
-    .toBe(1);
-  const ev = sentry().find((e) => e.tags?.['service'] === 'web');
+  await expect(admin.getByTestId('admin-flash')).toHaveAttribute('data-done', 'test_error_sent');
+  await expect.poll(() => sentry().length, { timeout: 15_000 }).toBe(1);
+  const ev = sentry()[0];
   expect(ev?.exception?.values?.[0]).toMatchObject({
     type: 'Error',
     value: 'Build Roulette test error (thrown from /admin on purpose)',
   });
-  expect(ev?.tags).toMatchObject({
-    service: 'web',
-    route: '/admin',
-    route_type: 'action',
-    digest,
-    runtime: process.env['E2E_APP_SERVER'] === 'workers' ? 'workerd' : 'node',
-  });
-  expect(ev?.request).toEqual({ url: '/admin', method: 'POST' });
+  expect(ev?.tags).toMatchObject({ route: '/admin', runtime: 'browser' });
+  expect(ev?.request?.url).toMatch(/^http:\/\/localhost:\d+\/admin$/);
   expect(ev?.release).toMatch(/^build-roulette-web@/);
-  // The client does not report it again (it has a digest: a server error).
+  // The moderator is not a player of this page: no user on the event.
+  expect(ev?.user).toBeUndefined();
+  // Nothing else arrives: no server reporter (`service: web`) exists since T-037, and the
+  // page does not report the error twice.
   await admin.waitForTimeout(2_000);
-  expect(sentry().filter((e) => e.tags?.['runtime'] === 'browser')).toEqual([]);
+  expect(sentry()).toHaveLength(1);
+  expect(sentry().filter((e) => e.tags?.['service'] !== undefined)).toEqual([]);
   const raw = allBodies();
-  for (const secret of [email, 'br_admin_at', 'br_admin_rt', password]) {
-    expect(raw, secret).not.toContain(secret);
+  for (const secret of [email, password, accessToken, refreshToken, 'br-admin-auth']) {
+    expect(raw, secret.slice(0, 12)).not.toContain(secret);
   }
+  expect(errors).toEqual([]);
   await ctx.close();
 });

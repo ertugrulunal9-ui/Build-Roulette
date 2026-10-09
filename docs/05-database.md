@@ -401,9 +401,11 @@ migrations in `supabase/migrations/` are the source of truth.
     and taken-down builds are refused.
   - **Admins:** listed in `private.admins`, managed with SQL only; anonymous users are
     refused by a trigger. `is_admin()` gates every `admin_*` RPC, and every admin action is
-    logged in `private.admin_actions`. `/admin` returns 404 to non-admins; sign-in is at
-    `/admin/sign-in`, with httpOnly SameSite=Strict cookies scoped to `/admin`. There is no
-    service key in the web app.
+    logged in `private.admin_actions`. `/admin` shows non-admins the 404 screen; sign-in is
+    at `/admin/sign-in`, in the browser since T-037 (the web app is a static site): the
+    moderator's own Supabase session, kept apart from the player's anonymous one in that
+    tab's sessionStorage (apps/web/README.md "Moderation"). There is no service key in the
+    web app.
   - **Takedown:** the admin RPC hides the build at once (it sets `taken_down_at` and clears
     `name` and `screenshot_path`; the originals go to `private.build_takedowns`). A
     `takedown` job then deletes the screenshot through the Storage API.

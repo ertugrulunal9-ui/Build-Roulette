@@ -15,7 +15,6 @@
  * has no Winner banner, gold ring, medal or awards; nobody else becomes the winner.
  */
 import { VOTE_CATEGORIES, isTerminalPhase } from '@br/game';
-import Link from 'next/link';
 import { myBuild, type SoloState } from '../../lib/solo/controller';
 import {
   CAPTURE_TEXT,
@@ -257,7 +256,7 @@ function RankedBuilds({ snapshot }: { snapshot: BattleSnapshot }) {
               </p>
               <p className="text-sm text-zinc-600 dark:text-zinc-400">
                 by{' '}
-                <Link
+                <a
                   href={`/u/${b.builder_id}`}
                   className="font-bold underline decoration-zinc-300 underline-offset-2 hover:decoration-current dark:decoration-zinc-600"
                   data-testid="player-history-link"
@@ -266,7 +265,7 @@ function RankedBuilds({ snapshot }: { snapshot: BattleSnapshot }) {
                   title={`${nameOf(b.builder_id)}'s battles (opens a new tab)`}
                 >
                   {nameOf(b.builder_id)}
-                </Link>
+                </a>
                 {isMe && ' (you)'}
                 {shipped && b.completion_ms !== null && (
                   <>

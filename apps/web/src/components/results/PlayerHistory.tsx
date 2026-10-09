@@ -1,23 +1,20 @@
-import type { Metadata } from 'next';
 import Link from 'next/link';
-import { notFound } from 'next/navigation';
-import { AwardBadges, VoteTally } from '../../../components/results/ResultPieces';
 import {
-  getPlayerHistory,
   historyHref,
-  isUserId,
-  parseCursor,
   type HistoryBattle,
-} from '../../../lib/history/player-history';
+  type HistoryCursor,
+  type PlayerHistory as PlayerHistoryData,
+} from '../../lib/history/player-history';
 import {
   awardsOf,
   formatCompletion,
   formatTimeLimit,
   isWinner,
   rankMedal,
-} from '../../../lib/solo/format';
-import { REMOVED_TEXT, RemovedCard } from '../../../components/moderation/Removed';
-import { screenshotUrl } from '../../../lib/supabase/config';
+} from '../../lib/solo/format';
+import { screenshotUrl } from '../../lib/supabase/config';
+import { REMOVED_TEXT, RemovedCard } from '../moderation/Removed';
+import { AwardBadges, VoteTally } from './ResultPieces';
 
 /**
  * A player's history (docs/01 §1.3 `/u/[id]`): their past battles, newest first, from
@@ -30,52 +27,19 @@ import { screenshotUrl } from '../../../lib/supabase/config';
  * The id is the player's (anonymous) auth user id: clearing the browser's storage loses
  * the way back here, but not the page. Account linking (docs/06 M6) will keep it across
  * devices.
+ *
+ * Links to other `/u/…` and `/battles/…` pages are plain `<a>`: those are static shells
+ * behind a host rewrite (T-037), so each is a page load of its own, not a client navigation.
  */
-
-interface PlayerPageProps {
-  params: Promise<{ id: string }>;
-  searchParams: Promise<{ before?: string | string[]; before_battle?: string | string[] }>;
-}
-
-async function load(props: PlayerPageProps) {
-  const { id } = await props.params;
-  const cursor = parseCursor(await props.searchParams);
-  if (!isUserId(id)) return null;
-  const data = await getPlayerHistory(
-    id.toLowerCase(),
-    cursor?.before ?? null,
-    cursor?.before_battle ?? null,
-  );
-  return data?.player ? { id: id.toLowerCase(), cursor, data, player: data.player } : null;
-}
-
-export async function generateMetadata(props: PlayerPageProps): Promise<Metadata> {
-  const page = await load(props);
-  if (!page) return { title: 'Player not found', robots: { index: false } };
-  const { player, data } = page;
-  const wins = data.battles.filter((b) => isWinner(b.build)).length;
-  const title = `${player.display_name}'s battles`;
-  const latest = data.battles[0];
-  const description = latest
-    ? `${player.display_name} on Build Roulette: ${latest.challenge.build.text}${
-        latest.build.name ? `, “${latest.build.name}”` : ''
-      }${wins > 0 ? ` · ${String(wins)} ${wins === 1 ? 'win' : 'wins'} on this page` : ''}.`
-    : `${player.display_name} on Build Roulette.`;
-  return {
-    title,
-    description,
-    // Older pages are the same page, further down: one canonical URL.
-    alternates: { canonical: `/u/${page.id}` },
-    openGraph: { title, description, type: 'profile' },
-    twitter: { card: 'summary', title, description },
-  };
-}
-
-export default async function PlayerPage(props: PlayerPageProps) {
-  const page = await load(props);
-  if (!page) notFound();
-  const { id, cursor, data, player } = page;
-
+export function PlayerHistory({
+  id,
+  cursor,
+  data,
+}: {
+  id: string;
+  cursor: HistoryCursor | null;
+  data: PlayerHistoryData & { player: { display_name: string } };
+}) {
   return (
     <main className="mx-auto flex min-h-dvh max-w-4xl flex-col gap-8 px-4 py-10">
       <header className="flex flex-col gap-2">
@@ -86,7 +50,7 @@ export default async function PlayerPage(props: PlayerPageProps) {
           Player history
         </p>
         <h1 className="text-4xl font-black tracking-tight break-words" data-testid="player-name">
-          {player.display_name}
+          {data.player.display_name}
         </h1>
         <p className="text-sm text-zinc-500">
           Finished battles, newest first. Builds are destroyed after each battle; their results and
@@ -102,24 +66,24 @@ export default async function PlayerPage(props: PlayerPageProps) {
 
       <nav className="flex flex-wrap items-center justify-between gap-3" aria-label="Pages">
         {cursor ? (
-          <Link
+          <a
             href={historyHref(id, null)}
             className="text-sm font-semibold underline"
             data-testid="history-newest"
           >
             ← Newest battles
-          </Link>
+          </a>
         ) : (
           <span />
         )}
         {data.next && (
-          <Link
+          <a
             href={historyHref(id, data.next)}
             className="rounded-lg border border-zinc-300 px-4 py-2 text-sm font-semibold hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
             data-testid="history-older"
           >
             Older battles →
-          </Link>
+          </a>
         )}
       </nav>
 
@@ -135,6 +99,31 @@ export default async function PlayerPage(props: PlayerPageProps) {
           Play a battle
         </Link>
       </footer>
+    </main>
+  );
+}
+
+/** /u/{id} for an unknown id, or a player without a finished battle (the same answer). */
+export function PlayerNotFound() {
+  return (
+    <main
+      className="mx-auto flex min-h-dvh max-w-xl flex-col items-center justify-center gap-5 px-6 py-16 text-center"
+      data-testid="player-not-found"
+    >
+      <p className="text-6xl" aria-hidden="true">
+        🔍
+      </p>
+      <h1 className="text-3xl font-black tracking-tight">No battles to show</h1>
+      <p className="text-zinc-600 dark:text-zinc-400">
+        This player has no finished battle yet, or the link is wrong. Battles show up here once
+        their results are in.
+      </p>
+      <Link
+        href="/"
+        className="rounded-lg bg-emerald-600 px-5 py-3 font-semibold text-white hover:bg-emerald-700"
+      >
+        Play a battle
+      </Link>
     </main>
   );
 }
@@ -228,13 +217,13 @@ function HistoryItem({ battle: b }: { battle: HistoryBattle }) {
         {voted && shipped && (
           <VoteTally votes={b.build.votes} total={b.build.total_votes} compact />
         )}
-        <Link
+        <a
           href={`/battles/${b.battle_id}`}
           className="mt-1 self-start text-sm font-semibold underline"
           data-testid="history-battle-link"
         >
           Full results →
-        </Link>
+        </a>
       </div>
     </li>
   );

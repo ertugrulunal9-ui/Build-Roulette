@@ -1,14 +1,16 @@
-import Link from 'next/link';
 import type { ReactNode } from 'react';
+import type { RpcResult } from '../../lib/admin/client';
 import { assessHealth, formatAge } from '../../lib/admin/health';
-import { adminRpc } from '../../lib/admin/session';
 import type { OpsHealth } from '../../lib/admin/types';
-import { sendTestErrorAction } from './actions';
 
 /**
- * /admin "Health" (T-030): `admin_ops_health` with the admin's own token. The findings at
- * the top name the runbook to open (docs/runbooks/); the tables below are the raw signals
- * the runbooks refer to. Server-rendered on every load (the RPC is cheap and bounded).
+ * /admin "Health" (T-030): `admin_ops_health`, called in the browser with the moderator's
+ * own session (AdminConsole loads it on every page load and after every action; the RPC is
+ * cheap and bounded). The findings at the top name the runbook to open (docs/runbooks/); the
+ * tables below are the raw signals the runbooks refer to.
+ *
+ * "Send a test error to Sentry" (T-037: the browser's reporting, there is no server) calls
+ * `onTestError`.
  */
 
 const card =
@@ -38,8 +40,13 @@ function since(iso: string | null | undefined, now: number): string {
   return `${formatAge(Math.max(0, Math.round((now - Date.parse(iso)) / 1000)))} ago`;
 }
 
-export async function HealthView({ token }: { token: string }) {
-  const res = await adminRpc<OpsHealth>(token, 'admin_ops_health', {});
+export function HealthView({
+  res,
+  onTestError,
+}: {
+  res: RpcResult<OpsHealth>;
+  onTestError: () => void;
+}) {
   if (!res.data) {
     return (
       <section className={card} data-testid="admin-health" data-status="error">
@@ -78,15 +85,14 @@ export async function HealthView({ token }: { token: string }) {
           </span>
         </h2>
         <span className="text-xs text-zinc-500">as of {h.generated_at.slice(11, 19)} UTC</span>
-        <form action={sendTestErrorAction}>
-          <button
-            type="submit"
-            data-testid="admin-test-error"
-            className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm font-semibold hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
-          >
-            Send a test error to Sentry
-          </button>
-        </form>
+        <button
+          type="button"
+          onClick={onTestError}
+          data-testid="admin-test-error"
+          className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm font-semibold hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+        >
+          Send a test error to Sentry
+        </button>
       </div>
 
       {findings.length > 0 && (
@@ -140,9 +146,9 @@ export async function HealthView({ token }: { token: string }) {
                     <td className={td}>{o.stuck}</td>
                     <td className={td}>{o.waiting_for_captures}</td>
                     <td className={td}>
-                      <Link href={`/admin?q=${o.oldest_battle_id}`} className="font-mono underline">
+                      <a href={`/admin?q=${o.oldest_battle_id}`} className="font-mono underline">
                         {o.oldest_battle_id.slice(0, 8)}
-                      </Link>{' '}
+                      </a>{' '}
                       ({formatAge(o.oldest_overdue_s)})
                     </td>
                   </tr>
@@ -156,12 +162,12 @@ export async function HealthView({ token }: { token: string }) {
               <>
                 {' '}
                 (oldest{' '}
-                <Link
+                <a
                   href={`/admin?q=${battles.destroy_pending.oldest_battle_id}`}
                   className="font-mono underline"
                 >
                   {battles.destroy_pending.oldest_battle_id.slice(0, 8)}
-                </Link>
+                </a>
                 , {formatAge(battles.destroy_pending.oldest_s)})
               </>
             )}
@@ -282,12 +288,12 @@ export async function HealthView({ token }: { token: string }) {
                 <>
                   {' '}
                   (
-                  <Link
+                  <a
                     href={`/admin?q=${ttl.oldest_battle_past_ttl_id}`}
                     className="font-mono underline"
                   >
                     {ttl.oldest_battle_past_ttl_id.slice(0, 8)}
-                  </Link>
+                  </a>
                   )
                 </>
               )}

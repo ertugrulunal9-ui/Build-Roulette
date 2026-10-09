@@ -21,10 +21,10 @@ const RoomApp = dynamic(() => import('./RoomApp'), { ssr: false, loading: Loadin
 const noSubscription = () => () => undefined;
 
 /**
- * `/r/{code}`: every room shares one prerendered page (app/r/page.tsx, reached through a
- * rewrite in next.config.ts), so the code comes from the browser's URL. The server (and the
- * hydration render) show the loading screen; the room starts once the page runs in the
- * browser. T-033: the page is answered from the cache instead of rendered per request.
+ * `/r/{code}`: every room shares one exported page (app/r/page.tsx, reached through the
+ * host's rewrite, src/lib/hosting/shells.ts), so the code comes from the browser's URL. The
+ * exported HTML (and the hydration render) show the loading screen; the room starts once the
+ * page runs in the browser (T-033, T-037).
  */
 export function RoomLoader() {
   const pathname = usePathname();

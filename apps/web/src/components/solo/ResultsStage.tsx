@@ -5,7 +5,6 @@
  * completion time, the auto-awards, the challenge). Right: the last look at the live build
  * until DESTROY, then the destroy moment, and links to the permanent page and a new game.
  */
-import Link from 'next/link';
 import { myBuild, type SoloController, type SoloState } from '../../lib/solo/controller';
 import {
   CAPTURE_TEXT,
@@ -132,20 +131,20 @@ export function ResultsStage({ controller, state, remaining }: ResultsStageProps
                   : 'Deleting the source and bundle from the server…'}
               </p>
               <div className="flex flex-wrap gap-3">
-                <Link
+                <a
                   href={`/battles/${battle.id}`}
                   data-testid="permanent-link"
                   className="rounded-lg bg-zinc-900 px-4 py-2 text-sm font-bold text-white dark:bg-zinc-100 dark:text-zinc-900"
                 >
                   View the permanent results
-                </Link>
-                <Link
+                </a>
+                <a
                   href={`/u/${snapshot.me.user_id}`}
                   data-testid="my-history-link"
                   className="rounded-lg border border-zinc-300 px-4 py-2 text-sm font-semibold dark:border-zinc-700"
                 >
                   Your battle history
-                </Link>
+                </a>
                 <button
                   type="button"
                   data-testid="play-again"

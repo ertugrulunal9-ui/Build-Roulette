@@ -1,12 +1,12 @@
 'use client';
 
 /**
- * "Your battle history" on the server-rendered results page, for a viewer whose browser
- * has a (possibly anonymous) session. The page itself never knows who views it, and
- * `get_public_battle` names players without ids, so this only ever links the viewer to
- * their own history. The Supabase client loads lazily, after the page.
+ * "Your battle history" on the results page, for a viewer whose browser has a (possibly
+ * anonymous) session. The results come from `get_public_battle` with the anon key, which
+ * names players without ids, so this only ever links the viewer to their own history. The
+ * Supabase client loads lazily, after the page. A plain link: `/u/{id}` is a static shell
+ * behind a host rewrite (T-037).
  */
-import Link from 'next/link';
 import { useEffect, useState } from 'react';
 
 export function MyHistoryLink({ className }: { className?: string }) {
@@ -25,8 +25,8 @@ export function MyHistoryLink({ className }: { className?: string }) {
   }, []);
   if (!userId) return null;
   return (
-    <Link href={`/u/${userId}`} className={className} data-testid="my-history-link">
+    <a href={`/u/${userId}`} className={className} data-testid="my-history-link">
       Your battle history
-    </Link>
+    </a>
   );
 }

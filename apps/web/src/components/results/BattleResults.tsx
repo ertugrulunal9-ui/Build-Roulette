@@ -1,10 +1,4 @@
-import type { Metadata } from 'next';
 import Link from 'next/link';
-import { notFound } from 'next/navigation';
-import { REMOVED_TEXT, RemovedCard } from '../../../components/moderation/Removed';
-import { ReportButton } from '../../../components/moderation/ReportButton';
-import { MyHistoryLink } from '../../../components/results/MyHistoryLink';
-import { AwardBadges, ChallengeCards, VoteTally } from '../../../components/results/ResultPieces';
 import {
   CAPTURE_TEXT,
   STATUS_TEXT,
@@ -12,65 +6,23 @@ import {
   formatCompletion,
   formatTimeLimit,
   isWinner,
-} from '../../../lib/solo/format';
-import { battleOgImage } from '../../../lib/solo/og-image';
-import { getPublicBattle } from '../../../lib/solo/public-battle';
-import { screenshotUrl } from '../../../lib/supabase/config';
+} from '../../lib/solo/format';
+import type { PublicBattle } from '../../lib/solo/types';
+import { screenshotUrl } from '../../lib/supabase/config';
+import { REMOVED_TEXT, RemovedCard } from '../moderation/Removed';
+import { ReportButton } from '../moderation/ReportButton';
+import { MyHistoryLink } from './MyHistoryLink';
+import { AwardBadges, ChallengeCards, VoteTally } from './ResultPieces';
 
 /**
- * The permanent, shareable results page (docs/01 §1.3). Server-rendered from
- * `get_public_battle` with the anon key: only permanent data, no code.
- *
- * ISR (T-026): rendered on the first visit, then served from the cache (the R2 incremental
- * cache on Cloudflare). The page lives as long as its data (`loadPublicBattle`, see
- * lib/cache/policy.ts): seconds while the battle can still change, an hour once it is
- * DESTROYED with `destroyed_at` set; a takedown revalidates it at once (tag `battle:{id}`).
- * `force-static`: the page never reads cookies or headers (the viewer's own history link is
- * a client component), and Next would hand it empty ones anyway, so a cached copy holds
- * nothing about the viewer.
+ * The permanent, shareable results of a battle (docs/01 §1.3): only permanent data from
+ * `get_public_battle`, no code. Rendered by /battles/{id} (BattleView) once the data is in.
  *
  * A build a moderator removed after RESULTS (T-028) keeps its place and rank ("#1 Removed
  * by moderators") and its vote counts, but no Winner banner, gold ring or awards; the next
  * build does not become the winner.
- *
- * The social image is the rank-1 screenshot or a static card (lib/solo/og-image.ts), not a
- * card drawn per battle: T-033, Workers Free's CPU limit.
  */
-
-export const dynamic = 'force-static';
-/**
- * The longest a copy is cached: SETTLED_BATTLE.revalidate, as a literal (Next reads it at
- * build time). Also the lifetime when no `cacheLife` applies.
- */
-export const revalidate = 3600;
-
-interface BattlePageProps {
-  params: Promise<{ id: string }>;
-}
-
-export async function generateMetadata({ params }: BattlePageProps): Promise<Metadata> {
-  const { id } = await params;
-  const data = await getPublicBattle(id);
-  if (!data) return { title: 'Battle not found' };
-  const top = data.builds[0];
-  const title = top?.name
-    ? `${top.name} by ${top.builder_name}`
-    : `${data.challenge.build.text} · Battle results`;
-  const description = `BUILD: ${data.challenge.build.text} · RULE: ${data.challenge.rule.text} · STYLE: ${data.challenge.style.text} · ${formatTimeLimit(data.challenge.time_limit_seconds)}`;
-  // An existing image, never one drawn per request (T-033, lib/solo/og-image.ts).
-  const image = battleOgImage(data);
-  return {
-    title,
-    description,
-    openGraph: { title, description, type: 'article', images: [image] },
-    twitter: { card: 'summary_large_image', title, description, images: [image] },
-  };
-}
-
-export default async function BattlePage({ params }: BattlePageProps) {
-  const { id } = await params;
-  const data = await getPublicBattle(id);
-  if (!data) notFound();
+export function BattleResults({ data }: { data: PublicBattle }) {
   const { battle, challenge, builds, awards } = data;
   const when = battle.finished_at ?? battle.created_at;
   const voted = builds.some((b) => b.votes !== null && b.votes !== undefined);

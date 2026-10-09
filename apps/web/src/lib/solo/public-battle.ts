@@ -1,24 +1,26 @@
 /**
- * Server-side read of a battle's permanent results (`get_public_battle`, callable with the
- * anon key). Used by /battles/[id] (page and metadata). Plain fetch, so it runs the same on
- * Node and on Cloudflare Workers.
+ * A battle's permanent results (`get_public_battle`, callable with the anon key). Read in the
+ * browser by /battles/{id} (components/results/BattleView, T-037: the page is a static shell
+ * and loads its data itself). Plain fetch with the public anon key, no session: the answer is
+ * the same for every viewer, and nothing about the viewer is sent.
  *
- * Cached (T-026): `loadPublicBattle` is a `'use cache'` function whose lifetime depends on
- * the answer (lib/cache/policy.ts: seconds while the battle can still change, an hour once
- * it is settled) and is tagged `battle:{id}`, which a takedown revalidates. The ISR pages
- * that read it inherit both.
+ * No cache anywhere: every page load asks the database, so a takedown shows on the very next
+ * load (T-026's ISR and tag revalidation are gone with the server).
  */
-import { cacheLife, cacheTag } from 'next/cache';
-import { cache } from 'react';
-import { battleLifetime, battleTags } from '../cache/policy';
 import { supabaseConfig, type SupabaseConfig } from '../supabase/config';
 import type { PublicBattle } from './types';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
+/** Whether `id` can be a battle id at all (anything else is "not found" without a request). */
+export function isBattleId(id: string): boolean {
+  return UUID.test(id.toLowerCase());
+}
+
 /**
  * The battle's public results, or null when it does not exist or is not public yet
- * (`battle_not_found` covers both). Throws on other failures (the server is down).
+ * (`battle_not_found` covers both) or `id` is not a battle id. Throws on other failures (the
+ * server is down), so the page can tell "not found" from "could not load".
  */
 export async function fetchPublicBattle(
   id: string,
@@ -36,7 +38,6 @@ export async function fetchPublicBattle(
     method: 'POST',
     headers,
     body: JSON.stringify({ p_battle_id: battleId }),
-    // The data cache stays out of it: loadPublicBattle caches the parsed answer instead.
     cache: 'no-store',
   });
   if (res.ok) return (await res.json()) as PublicBattle;
@@ -44,18 +45,3 @@ export async function fetchPublicBattle(
   if (body?.message === 'battle_not_found') return null;
   throw new Error(`get_public_battle failed: HTTP ${String(res.status)} ${body?.message ?? ''}`);
 }
-
-/**
- * `fetchPublicBattle`, cached across requests (see the top of this file). A failed read
- * throws and is not cached: an ISR page then keeps serving its last good copy.
- */
-export async function loadPublicBattle(id: string): Promise<PublicBattle | null> {
-  'use cache';
-  cacheTag(...battleTags(id));
-  const data = await fetchPublicBattle(id);
-  cacheLife(battleLifetime(id, data));
-  return data;
-}
-
-/** Deduplicated per request (generateMetadata and the page both read it). */
-export const getPublicBattle = cache((id: string) => loadPublicBattle(id.toLowerCase()));

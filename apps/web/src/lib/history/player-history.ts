@@ -1,16 +1,9 @@
 /**
- * Server-side read of a player's history (`get_player_history`, callable with the anon key;
- * supabase/README.md "Player history"). Used by /u/[id]. Plain fetch, like the results
- * page, so it runs the same on Node and on Cloudflare Workers.
- *
- * Cached (T-026): `loadPlayerHistory` is a `'use cache'` function (lib/cache/policy.ts: at
- * most a minute old; 5 s while the page is empty or lists a battle that is not settled)
- * tagged with the player and with every battle on the page, so a takedown in any of them
- * revalidates it at once.
+ * A player's history (`get_player_history`, callable with the anon key; supabase/README.md
+ * "Player history"). Read in the browser by /u/{id} (components/results/PlayerHistoryView,
+ * T-037: the page is a static shell and loads its data itself). Plain fetch with the public
+ * anon key, like the results page; no cache, so a takedown shows on the next page load.
  */
-import { cacheLife, cacheTag } from 'next/cache';
-import { cache } from 'react';
-import { historyLifetime, historyTags } from '../cache/policy';
 import type { AwardKind, BuildStatus, CaptureStatus, VoteCounts } from '../solo/types';
 import { supabaseConfig, type SupabaseConfig } from '../supabase/config';
 
@@ -70,8 +63,8 @@ export interface PlayerHistory {
  * missing or malformed (a malformed one shows the first page rather than an error).
  */
 export function parseCursor(params: {
-  before?: string | string[];
-  before_battle?: string | string[];
+  before?: string | string[] | null;
+  before_battle?: string | string[] | null;
 }): HistoryCursor | null {
   const before = typeof params.before === 'string' ? params.before : null;
   const battle =
@@ -94,7 +87,7 @@ export function isUserId(id: string): boolean {
 
 /**
  * One page of the player's history, or null when `id` is not a uuid. Throws when the
- * server fails (the page then shows Next's error page, not "no battles").
+ * server fails (the page then says it could not load, not "no battles").
  */
 export async function fetchPlayerHistory(
   id: string,
@@ -119,35 +112,9 @@ export async function fetchPlayerHistory(
       p_before_battle: cursor?.before_battle ?? null,
       p_limit: limit,
     }),
-    // The data cache stays out of it: loadPlayerHistory caches the parsed answer instead.
     cache: 'no-store',
   });
   if (res.ok) return (await res.json()) as PlayerHistory;
   const body = (await res.json().catch(() => null)) as { message?: string } | null;
   throw new Error(`get_player_history failed: HTTP ${String(res.status)} ${body?.message ?? ''}`);
 }
-
-/**
- * `fetchPlayerHistory`, cached across requests (see the top of this file). A failed read
- * throws and is not cached.
- */
-export async function loadPlayerHistory(
-  id: string,
-  before: string | null,
-  beforeBattle: string | null,
-): Promise<PlayerHistory | null> {
-  'use cache';
-  const data = await fetchPlayerHistory(
-    id,
-    before && beforeBattle ? { before, before_battle: beforeBattle } : null,
-  );
-  cacheLife(historyLifetime(data));
-  cacheTag(...historyTags(id, data));
-  return data;
-}
-
-/** Deduplicated per request (generateMetadata and the page both read it). */
-export const getPlayerHistory = cache(
-  (id: string, before: string | null, beforeBattle: string | null) =>
-    loadPlayerHistory(id.toLowerCase(), before, beforeBattle?.toLowerCase() ?? null),
-);

@@ -5,7 +5,9 @@ import {
   captureCsp,
   captureHeaders,
   PERMISSIONS_POLICY,
+  PUBLIC_ESM_SH_URL,
   RESET_HEADERS,
+  cdnOriginOf,
   renderHeadersFile,
   securityHeaders,
   shellCsp,
@@ -132,5 +134,32 @@ describe('shell headers', () => {
       { pattern: '/v1/reset', headers: { C: '3' } },
     ]);
     expect(file).toBe('/*\n  A: 1\n  B: two\n\n/v1/reset\n  C: 3\n');
+  });
+});
+
+describe('the package CDN setting (T-035)', () => {
+  it('turns a base URL into the origin the CSP allows', () => {
+    expect(PUBLIC_ESM_SH_URL).toBe('https://esm.sh');
+    expect(cdnOriginOf('https://esm.sh')).toBe('https://esm.sh');
+    expect(cdnOriginOf(' https://esm.sh/ ')).toBe('https://esm.sh');
+    expect(cdnOriginOf('https://pkg.example.net/esm/')).toBe('https://pkg.example.net');
+    expect(cdnOriginOf('http://localhost:4322')).toBe('http://localhost:4322');
+    expect(() => cdnOriginOf('esm.sh')).toThrow(/not a URL/);
+    expect(() => cdnOriginOf('ftp://esm.sh')).toThrow(/http\(s\)/);
+    expect(() => cdnOriginOf('https://u:p@esm.sh')).toThrow(/credentials/);
+  });
+
+  it('with esm.sh, every module it serves (entry URLs and /x@v/es2022/… paths) is allowed', () => {
+    const esm = { appOrigins: ['https://build-roulette-web.pages.dev'], cdnOrigin: 'https://esm.sh' };
+    for (const csp of [shellCsp(esm), captureCsp(esm)]) {
+      expect(csp).toContain("script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: https://esm.sh;");
+      // Package CSS is inlined by the bundler; its url()s and fonts load from the CDN.
+      expect(csp).toContain("style-src 'self' 'unsafe-inline' blob: https:;");
+      expect(csp).toContain('img-src * data: blob:');
+      expect(csp).toContain('font-src * data:');
+      // WebAssembly and data files that packages fetch from the CDN.
+      expect(csp).toContain("connect-src 'self' https: wss:;");
+    }
+    expect(shellCsp(esm)).toContain('frame-ancestors https://build-roulette-web.pages.dev');
   });
 });

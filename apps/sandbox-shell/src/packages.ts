@@ -17,6 +17,12 @@
  *   the same way: a cached copy answers at once, anything else goes to the network and fails,
  *   errors or hangs. Those are named: "Package server unreachable: zustand@5.0.15".
  *
+ * Both follow a module's own imports from the CDN's origin (T-035): esm.sh answers
+ * `/react@19.3.0` with a few lines that re-export an internal build path
+ * (`/react@19.3.0/es2022/react.mjs`), and that path is what really runs. @br/pkg-cdn serves
+ * React as one module, so there is nothing more to follow there. A failure behind an entry
+ * URL is reported under the entry URL: the package the build imports.
+ *
  * Nothing here can put content into the cache: only the CDN's own responses are stored, as
  * for any page fetch. Cache Storage and service workers are not used (the build could write
  * to them, see docs/03), and the shell's wipe still removes them.
@@ -25,6 +31,7 @@ import {
   describePackageFailures,
   describePackageStall,
   errorDetail,
+  moduleImportUrls,
   type ImportMap,
   type PackageFailure,
 } from '@br/protocol';
@@ -39,6 +46,12 @@ export const STALL_MS = 8000;
 export const WARM_DELAY_MS = 1000;
 /** Most URLs checked per load. */
 export const MAX_CHECKS = 64;
+/**
+ * Most module URLs followed behind the entry URLs, per check and per warm-up. esm.sh's React
+ * set is a handful of modules; a package with a deeper graph is followed this far, which is
+ * enough to name it.
+ */
+export const MAX_FOLLOWED = 64;
 
 /**
  * What to check for a load: `primary` are the URLs the bundle imports itself (the load's
@@ -73,33 +86,63 @@ export function packageCandidates(
   return { primary, secondary: take(mapped) };
 }
 
-/** Checks one URL through the HTTP cache: null when it is available, else how it failed. */
+type Fetched = { ok: true; imports: string[] } | { ok: false; failure: PackageFailure };
+
+/** One request through the HTTP cache, read to the end; on success, its same-origin imports. */
+async function fetchModule(url: string, fetchFn: FetchLike, signal: AbortSignal): Promise<Fetched> {
+  try {
+    // Same request as the module loader's for a cross-origin URL: CORS, no credentials.
+    const res = await fetchFn(url, { cache: 'force-cache', credentials: 'same-origin', signal });
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      const detail = errorDetail(body);
+      return {
+        ok: false,
+        failure: { url, kind: 'http', status: res.status, ...(detail ? { detail } : {}) },
+      };
+    }
+    // Read to the end, so a copy that came from the network is stored whole.
+    const body = await res.text();
+    return { ok: true, imports: moduleImportUrls(body, res.url || url, MAX_FOLLOWED) };
+  } catch {
+    return { ok: false, failure: { url, kind: signal.aborted ? 'timeout' : 'unreachable' } };
+  }
+}
+
+/**
+ * Checks one URL through the HTTP cache, then the modules it imports from the CDN's origin,
+ * level by level, within `timeoutMs` in all. Null when every one is available, else the
+ * first failure, reported for `url`. `seen` (URLs this call or a sibling check already has)
+ * and `budget` (how many more imports may be followed) are shared by `checkPackages`.
+ */
 export async function checkPackage(
   url: string,
   fetchFn: FetchLike,
   timeoutMs = CHECK_TIMEOUT_MS,
+  seen: Set<string> = new Set([url]),
+  budget = { left: MAX_FOLLOWED },
 ): Promise<PackageFailure | null> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => {
     ctrl.abort();
   }, timeoutMs);
   try {
-    // Same request as the module loader's for a cross-origin URL: CORS, no credentials.
-    const res = await fetchFn(url, {
-      cache: 'force-cache',
-      credentials: 'same-origin',
-      signal: ctrl.signal,
-    });
-    if (!res.ok) {
-      const body = await res.text().catch(() => '');
-      const detail = errorDetail(body);
-      return { url, kind: 'http', status: res.status, ...(detail ? { detail } : {}) };
+    let level = [url];
+    while (level.length > 0) {
+      const results = await Promise.all(level.map((u) => fetchModule(u, fetchFn, ctrl.signal)));
+      const next: string[] = [];
+      for (const r of results) {
+        if (!r.ok) return { ...r.failure, url };
+        for (const dep of r.imports) {
+          if (seen.has(dep) || budget.left <= 0) continue;
+          seen.add(dep);
+          budget.left--;
+          next.push(dep);
+        }
+      }
+      level = next;
     }
-    // Read it to the end, so a copy that came from the network is stored whole.
-    await res.arrayBuffer();
     return null;
-  } catch {
-    return ctrl.signal.aborted ? { url, kind: 'timeout' } : { url, kind: 'unreachable' };
   } finally {
     clearTimeout(timer);
   }
@@ -111,7 +154,11 @@ export async function checkPackages(
   fetchFn: FetchLike,
   timeoutMs = CHECK_TIMEOUT_MS,
 ): Promise<PackageFailure[]> {
-  const results = await Promise.all(urls.map((u) => checkPackage(u, fetchFn, timeoutMs)));
+  const seen = new Set(urls);
+  const budget = { left: MAX_FOLLOWED };
+  const results = await Promise.all(
+    urls.map((u) => checkPackage(u, fetchFn, timeoutMs, seen, budget)),
+  );
   return results.filter((r): r is PackageFailure => r !== null);
 }
 
@@ -158,9 +205,10 @@ export async function explainStall(
 }
 
 /**
- * Fetches each URL not warmed yet into the HTTP cache, one after another. `warmed` belongs to
- * the shell realm (a new preview iframe starts empty); a URL that fails is tried again by the
- * next warm-up.
+ * Fetches each URL not warmed yet into the HTTP cache, with the modules it imports from the
+ * CDN's origin (at most `MAX_FOLLOWED` of those per call), one request after another.
+ * `warmed` belongs to the shell realm (a new preview iframe starts empty); a URL whose module
+ * or imports failed is tried again by the next warm-up. Returns the requests that succeeded.
  */
 export async function warmPackages(
   urls: readonly string[],
@@ -169,12 +217,32 @@ export async function warmPackages(
   timeoutMs = CHECK_TIMEOUT_MS * 5,
 ): Promise<number> {
   let fetched = 0;
+  let followed = 0;
   for (const url of urls) {
     if (warmed.has(url) || !/^https?:\/\//.test(url)) continue;
     warmed.add(url);
-    const failure = await checkPackage(url, fetchFn, timeoutMs);
-    if (failure) warmed.delete(url);
-    else fetched++;
+    const tree = [url];
+    let failed = false;
+    for (let i = 0; i < tree.length && !failed; i++) {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => {
+        ctrl.abort();
+      }, timeoutMs);
+      const r = await fetchModule(tree[i] ?? url, fetchFn, ctrl.signal);
+      clearTimeout(timer);
+      if (!r.ok) {
+        failed = true;
+        continue;
+      }
+      fetched++;
+      for (const dep of r.imports) {
+        if (warmed.has(dep) || followed >= MAX_FOLLOWED) continue;
+        warmed.add(dep);
+        followed++;
+        tree.push(dep);
+      }
+    }
+    if (failed) for (const u of tree) warmed.delete(u);
   }
   return fetched;
 }

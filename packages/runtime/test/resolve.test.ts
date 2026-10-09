@@ -309,6 +309,56 @@ describe('buildImportMap', () => {
   });
 });
 
+/**
+ * T-035: the public esm.sh is production's CDN on the free plan, @br/pkg-cdn stays the local
+ * and future option. The CDN is configuration only: the same base URL setting, and the same
+ * URL shapes, which esm.sh documents (`/pkg@x.y.z[/sub]`, `?external=`, `?deps=`).
+ */
+describe('esm.sh as the package CDN (T-035)', () => {
+  const TEMPLATE = { react: '19.3.0', 'react-dom': '19.3.0' };
+
+  it('builds the import map on esm.sh: exact versions, React external everywhere but react itself', () => {
+    for (const base of ['https://esm.sh', 'https://esm.sh/']) {
+      expect(buildImportMap(TEMPLATE, base)).toEqual({
+        imports: {
+          react: 'https://esm.sh/react@19.3.0',
+          'react/jsx-runtime': 'https://esm.sh/react@19.3.0/jsx-runtime?external=react,react-dom',
+          'react/jsx-dev-runtime':
+            'https://esm.sh/react@19.3.0/jsx-dev-runtime?external=react,react-dom',
+          'react-dom': 'https://esm.sh/react-dom@19.3.0?external=react,react-dom',
+          'react-dom/client': 'https://esm.sh/react-dom@19.3.0/client?external=react,react-dom',
+        },
+      });
+    }
+  });
+
+  it('gives the same paths and queries on esm.sh and on @br/pkg-cdn, only the origin differs', () => {
+    const deps = { ...TEMPLATE, three: '0.186.1', '@react-three/fiber': '9.8.1', leaflet: '1.9.4' };
+    const specs = [
+      'three',
+      'three/examples/jsm/controls/OrbitControls.js',
+      '@react-three/fiber',
+      'leaflet/dist/leaflet.css',
+    ];
+    const ours = specs.map((s) => resolveBareImport(s, deps, 'http://localhost:4400'));
+    const esm = specs.map((s) => resolveBareImport(s, deps, 'https://esm.sh'));
+    const q = '?external=react,react-dom&deps=@react-three/fiber@9.8.1,leaflet@1.9.4,three@0.186.1';
+    expect(esm).toEqual([
+      { kind: 'cdn', url: `https://esm.sh/three@0.186.1${q}` },
+      { kind: 'cdn', url: `https://esm.sh/three@0.186.1/examples/jsm/controls/OrbitControls.js${q}` },
+      { kind: 'cdn', url: `https://esm.sh/@react-three/fiber@9.8.1${q}` },
+      // Raw file: no query, so esm.sh serves the file as it is in the package.
+      { kind: 'cdn-css', url: 'https://esm.sh/leaflet@1.9.4/dist/leaflet.css' },
+    ]);
+    expect(
+      ours.map((r) => (r.kind === 'cdn' || r.kind === 'cdn-css' ? r.url.replace('http://localhost:4400', 'https://esm.sh') : r)),
+    ).toEqual(esm.map((r) => (r.kind === 'cdn' || r.kind === 'cdn-css' ? r.url : r)));
+    // No `target=`: esm.sh picks it from the User-Agent (Vary: User-Agent), pkg-cdn defaults
+    // to es2022. Adding one here would split pkg-cdn's peer URLs from the user's imports.
+    for (const r of esm) expect(r.kind !== 'error' && r.url).not.toContain('target=');
+  });
+});
+
 describe('loaderForPath / decodeAsset', () => {
   it('picks loaders by extension', () => {
     expect(loaderForPath('a.tsx')).toBe('tsx');

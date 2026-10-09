@@ -11,9 +11,12 @@
  * `/v{N}/capture` only after checking the HMAC (src/capture-gate.ts). The secret is the
  * Pages secret `CAPTURE_HMAC_SECRET`; it is not part of the build.
  *
- * Env (placeholders until the production domains exist, see docs/BOARD.md):
+ * Env:
  *   BR_APP_ORIGINS  comma-separated app origins (frame-ancestors + postMessage targets)
- *   BR_CDN_ORIGIN   package CDN origin
+ *   BR_PKG_CDN_URL  the package CDN's base URL, the same value as the web app's
+ *                   NEXT_PUBLIC_PKG_CDN_URL and the capture worker's PKG_CDN_URL; its origin
+ *                   goes into `script-src`. Default: https://esm.sh (the free plan, T-035).
+ *                   BR_CDN_ORIGIN (the older name, an origin) is still read.
  */
 import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -22,8 +25,10 @@ import { gzipSync } from 'node:zlib';
 import { buildPagesWorker, buildShell, SHELL_BASE_PATH } from '../src/build-shell';
 import { CAPTURE_PATH } from '../src/capture-gate';
 import {
+  PUBLIC_ESM_SH_URL,
   RESET_ENDPOINT,
   captureHeaders,
+  cdnOriginOf,
   renderHeadersFile,
   staticHeaderRules,
 } from '../src/headers';
@@ -33,7 +38,10 @@ const appOrigins = (process.env['BR_APP_ORIGINS'] ?? 'https://buildroulette.app'
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean);
-const cdnOrigin = process.env['BR_CDN_ORIGIN'] ?? 'https://pkg.buildroulette-cdn.net';
+const setting = (name: string) => process.env[name]?.trim() || undefined;
+const cdnOrigin = cdnOriginOf(
+  setting('BR_PKG_CDN_URL') ?? setting('BR_CDN_ORIGIN') ?? PUBLIC_ESM_SH_URL,
+);
 
 const built = await buildShell({ appOrigins, minify: true });
 const dist = path.join(ROOT, 'dist');

@@ -3,10 +3,39 @@
  * both the static host (`dist/_headers`, Cloudflare Pages format) and the local dev server.
  */
 
+/**
+ * The package CDN of production on the free plan (T-035, docs/08-free-tier.md §4): the public
+ * esm.sh. `@br/pkg-cdn` (our own esm.sh-compatible CDN) is the alternative; switching is the
+ * same base URL in every component's build settings, nothing else.
+ */
+export const PUBLIC_ESM_SH_URL = 'https://esm.sh';
+
+/**
+ * The origin to allow in the CSP for a package CDN base URL (`https://esm.sh`,
+ * `https://pkg.example.net/`, `http://localhost:4322`). Every module the CDN serves comes from
+ * that origin: entry URLs, and esm.sh's internal build paths (`/react@19.3.0/es2022/…`), which
+ * are root-relative. Throws for anything but an http(s) URL without credentials.
+ */
+export function cdnOriginOf(baseUrl: string): string {
+  let url: URL;
+  try {
+    url = new URL(baseUrl.trim());
+  } catch {
+    throw new Error(`package CDN URL is not a URL: ${JSON.stringify(baseUrl)}`);
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+    throw new Error(`package CDN URL must be http(s): ${JSON.stringify(baseUrl)}`);
+  }
+  if (url.username || url.password) {
+    throw new Error('package CDN URL must not hold credentials');
+  }
+  return url.origin;
+}
+
 export interface ShellHeaderOptions {
   /** Origins allowed to frame the shell (`frame-ancestors`). */
   appOrigins: readonly string[];
-  /** Origin of the package CDN (module scripts and package CSS). */
+  /** Origin of the package CDN (module scripts and package CSS), see `cdnOriginOf`. */
   cdnOrigin: string;
   /** Extra script hosts (e.g. the Tailwind browser runtime host for the tailwind template). */
   extraScriptSrc?: readonly string[];

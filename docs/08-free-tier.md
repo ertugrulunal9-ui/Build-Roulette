@@ -367,9 +367,10 @@ web app still has no service key (the build fails if any file in `out/` holds on
   `BroadcastChannel` named after the storage key, which any page of the origin can listen to
   (a player tab would hear the moderator's tokens). Cost: a new tab signs in again; closing
   the tab ends the session in that browser.
-- **Sign-out** revokes the session at Supabase Auth (its refresh token stops working: checked
-  by the moderation e2e) and removes it from memory and sessionStorage. A real account that is
-  not an admin is signed out at once, with the same answer as a wrong password.
+- **Sign-out** revokes this session at Supabase Auth (its refresh token stops working: checked
+  by the moderation e2e; the account's sessions elsewhere stay) and removes it from memory
+  and sessionStorage. A real account that is not an admin is signed out at once, with the
+  same answer as a wrong password.
 - **Sign-in** sends a Turnstile token when Turnstile is configured (Supabase Auth's CAPTCHA
   protection also covers password sign-ins; T-024's server-side sign-in sent none).
 - The sign-in button stays disabled until the page runs, so a form submitted before hydration

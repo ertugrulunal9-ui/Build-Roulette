@@ -19,8 +19,8 @@
  *   also announces every sign-in and token refresh, session included, on a `BroadcastChannel`
  *   that any page of the origin can listen to, so a player tab would hear the moderator's
  *   tokens. A new tab signs in again; closing the tab ends the session in this browser.
- * - **Sign-out** revokes the session at Supabase Auth (its refresh token stops working) and
- *   removes it from memory and from sessionStorage.
+ * - **Sign-out** revokes this session at Supabase Auth (its refresh token stops working; the
+ *   account's other sessions stay) and removes it from memory and from sessionStorage.
  */
 import { createClient, type Session, type SupabaseClient } from '@supabase/supabase-js';
 import { supabaseConfig, type SupabaseConfig } from '../supabase/config';
@@ -201,14 +201,18 @@ export async function signInAdmin(
   return 'ok';
 }
 
-/** Revokes the session at Supabase Auth and removes it from this tab. Never throws. */
+/**
+ * Revokes this session at Supabase Auth (`scope: 'local'`: this session's refresh token stops
+ * working; the account's sessions in other tabs or browsers are not touched) and removes it
+ * from memory and from this tab. supabase-js drops the local copy even when the revocation
+ * fails (offline). Never throws.
+ */
 export async function signOutAdmin(client: AdminClient): Promise<void> {
   try {
-    await client.supabase.auth.signOut();
+    await client.supabase.auth.signOut({ scope: 'local' });
   } catch {
-    // Offline: the local copy goes anyway (below).
+    // The local copy goes anyway (below).
   }
-  await client.supabase.auth.signOut({ scope: 'local' }).catch(() => undefined);
   forget(client.store);
 }
 

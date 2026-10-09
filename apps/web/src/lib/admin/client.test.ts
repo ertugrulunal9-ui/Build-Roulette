@@ -195,6 +195,8 @@ describe('the moderator client', () => {
     await signOutAdmin(client);
     const logout = fake.seen.find((s) => s.path.startsWith('/auth/v1/logout'));
     expect(logout?.auth).toBe(`Bearer ${fake.access}`);
+    // This session only: the account's other sessions (another tab, browser) stay.
+    expect(logout?.path).toBe('/auth/v1/logout?scope=local');
     expect(window.sessionStorage.getItem(ADMIN_STORAGE_KEY)).toBeNull();
     expect((await client.supabase.auth.getSession()).data.session).toBeNull();
   });

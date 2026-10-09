@@ -114,8 +114,9 @@ Error reporting (Sentry) and product analytics (PostHog), both **off unless conf
     localStorage (it would outlive the tab and reach every tab of the origin), and not
     supabase-js's own persistence (it broadcasts every token refresh, session included, on
     a `BroadcastChannel` any page of the origin can read).
-  - **Sign-out** revokes the session at Supabase Auth (the refresh token stops working) and
-    removes it from memory and sessionStorage, then goes to `/`.
+  - **Sign-out** revokes this session at Supabase Auth (its refresh token stops working; the
+    account's sessions in other tabs or browsers stay) and removes it from memory and
+    sessionStorage, then goes to `/`.
   - **The trade-off against T-024's httpOnly cookies:** script on the app origin (an XSS)
     could read a moderator's session in that tab, which it could not read from an httpOnly
     cookie. Against that: the app origin serves no user-generated HTML or script (builds run

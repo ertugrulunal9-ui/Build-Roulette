@@ -4,9 +4,11 @@ import { buildFrame, openPlayground } from './helpers';
 
 /**
  * The static site as Cloudflare Pages serves it (T-037), through `wrangler pages dev out/`
- * (playwright.config.ts): the shells behind `_redirects` rewrites, the 404 page, the headers
- * of `_headers`, and no CSP violation on any page. Needs no Supabase stack: every page is
- * checked in a state it reaches without data (a malformed id, no session).
+ * (playwright.config.ts): the shells behind `_redirects` rewrites (and `/battles/{id}` behind
+ * T-038's link-preview Function), the 404 page, the headers of `_headers`, and no CSP
+ * violation on any page. Needs no Supabase stack: every page is checked in a state it
+ * reaches without data (a malformed id, no session). The Function's other cases need the
+ * stack: link-preview.spec.ts.
  */
 
 const MALFORMED = 'not-a-uuid';
@@ -29,17 +31,24 @@ test('every page is a file: the shells keep their URL, unknown paths get the 404
     expect(res.status(), path).toBe(200);
     expect(res.headers()['content-type'], path).toMatch(/^text\/html/);
   }
-  // The rewrites (`/battles/:id /battles 200` …): one path segment, the URL stays.
-  for (const path of ['/battles/x', '/u/x', '/r/K7QXM']) {
+  // The rewrites (`/u/:id /u 200` …): one path segment, the URL stays.
+  for (const path of ['/u/x', '/r/K7QXM']) {
     expect((await request.get(path, { maxRedirects: 0 })).status(), path).toBe(200);
   }
+  // `/battles/{id}` is answered by the link-preview Function (T-038), with the same shell: a
+  // malformed id is a 404 (the shell's HTML, so the page still shows its not-found view).
+  const malformed = await request.get('/battles/x', { maxRedirects: 0 });
+  expect(malformed.status()).toBe(404);
+  expect(malformed.headers()['x-br-preview']).toBe('malformed');
+  expect(await malformed.text()).toContain('<title>Battle not found · Build Roulette</title>');
   for (const path of ['/nope', '/battles/x/y', '/r/K7QXM/extra', '/admin/nope']) {
     const res = await request.get(path, { maxRedirects: 0 });
     expect(res.status(), path).toBe(404);
     expect(await res.text(), path).toContain('This page could not be found.');
   }
 
-  await page.goto(`/battles/${MALFORMED}`);
+  const battleRes = await page.goto(`/battles/${MALFORMED}`);
+  expect(battleRes?.status()).toBe(404);
   await expect(page.getByTestId('battle-not-found')).toBeVisible();
   await expect(page).toHaveURL(new RegExp(`/battles/${MALFORMED}$`));
   await expect(page).toHaveTitle('Battle not found · Build Roulette');

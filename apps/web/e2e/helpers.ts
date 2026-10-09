@@ -129,7 +129,7 @@ export async function waitForBuild(page: Page): Promise<void> {
 }
 
 /**
- * The static social card (public/og-card.png) as an absolute `og:image` URL. Every shell
- * carries it until T-038 writes per-battle tags at the edge.
+ * The static social card (public/og-card.png) as an absolute `og:image` URL: the shells' own
+ * default, and a battle's preview when rank 1 has no screenshot or was taken down (T-038).
  */
 export const STATIC_CARD = /^https?:\/\/[^/]+\/og-card\.png$/;

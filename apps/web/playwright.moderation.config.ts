@@ -2,10 +2,11 @@ import { defineConfig } from '@playwright/test';
 import { APP_SERVER_ENV, appServerCommand } from './e2e/app-server';
 
 /**
- * E2E for moderation (T-024, `e2e/moderation.spec.ts`) against the REAL local Supabase
- * stack, with the capture worker running (its takedown loop deletes the screenshot):
- * `pnpm --filter @br/web test:e2e:moderation` (builds first). The stack must be up
- * (`supabase start`); the tests insert finished battles with psql, seed an email admin with
+ * E2E for moderation (T-024, `e2e/moderation.spec.ts`) and the per-battle link previews
+ * (T-038, `e2e/link-preview.spec.ts`: the Pages Function on `/battles/*`) against the REAL
+ * local Supabase stack, with the capture worker running (its takedown loop deletes the
+ * screenshot): `pnpm --filter @br/web test:e2e:moderation` (builds first). The stack must be
+ * up (`supabase start`); the tests insert finished battles with psql, seed an email admin with
  * supabase/scripts/seed-admin.mjs, and commit their data. Same servers as the solo e2e.
  *
  * scripts/solo-services.ts starts the sandbox shell (with the capture gate), the mock CDN and
@@ -20,7 +21,7 @@ const APP_ORIGIN = `http://localhost:${String(APP_PORT)}`;
 
 export default defineConfig({
   testDir: './e2e',
-  testMatch: /moderation\.spec\.ts$/,
+  testMatch: /(moderation|link-preview)\.spec\.ts$/,
   // One stack, one capture worker, one job queue (and one admin): run serially.
   workers: 1,
   fullyParallel: false,

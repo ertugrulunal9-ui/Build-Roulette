@@ -235,8 +235,13 @@ describe('/battles/{id} with a removed rank-1 build (T-028)', () => {
     expect(chipsOf(cardOf('mallory'))).toEqual(['overall']);
   });
 
-  it('the page title does not name the removed build', () => {
-    expect(battleMeta(removedWinnerBattle()).title).toBe('A pomodoro timer · Battle results');
+  it('the page title and description name neither the removed build nor a new winner', () => {
+    const meta = battleMeta(removedWinnerBattle());
+    expect(meta.title).toBe('A pomodoro timer · Battle results');
+    // Ana (rank 2) is not the winner in Mallory's place.
+    expect(meta.description).toBe(
+      'BUILD: A pomodoro timer · RULE: Only one button · STYLE: Brutalist · 5 min',
+    );
   });
 });
 
@@ -268,7 +273,8 @@ describe('the social image of a battle (T-028, T-033; used by T-038)', () => {
     );
     expect(battleMeta(data)).toEqual({
       title: 'Free Gift Card by Mallory',
-      description: 'BUILD: A pomodoro timer · RULE: Only one button · STYLE: Brutalist · 5 min',
+      description:
+        'Winner: Free Gift Card by Mallory. BUILD: A pomodoro timer · RULE: Only one button · STYLE: Brutalist · 5 min',
       image: {
         url: `http://127.0.0.1:54321/storage/v1/object/public/screenshots/${BATTLE}/mallory.webp`,
         width: 1280,

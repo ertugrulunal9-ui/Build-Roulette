@@ -7,9 +7,11 @@ import { STATIC_OG_CARD } from '../../lib/solo/og-image';
  * Cloudflare Pages rewrites `/battles/{id}` here (`out/_redirects`, src/lib/hosting/shells.ts)
  * and the browser reads the id from the URL and loads `get_public_battle` (BattleView).
  *
- * The meta tags below are the same for every battle: a crawler does not run the page's
- * script, so link previews show the static card (public/og-card.png) and this text until a
- * Pages Function writes each battle's own tags (T-038, with lib/solo/battle-meta.ts).
+ * The meta tags below are the same for every battle: the shell's defaults. A crawler does not
+ * run the page's script, so the link-preview Pages Function (T-038,
+ * lib/hosting/preview-worker.ts) replaces them and the title with each battle's own at the
+ * edge; when it cannot (Supabase slow or down), these stay: the static card
+ * (public/og-card.png) and this text.
  */
 
 const title = 'Battle results';

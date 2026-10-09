@@ -1,13 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
-import {
-  STATIC_CARD,
-  buildFrame,
-  clickRouted,
-  replaceEditorText,
-  startBattle,
-  waitForBuild,
-} from './helpers';
+import { buildFrame, clickRouted, replaceEditorText, startBattle, waitForBuild } from './helpers';
 import { watchCsp } from './csp';
+import { crawl, one } from './link-preview';
 import { battleRow, ephemeralObjects, sql } from './stack';
 
 /**
@@ -190,10 +184,14 @@ test('ship: spin → build → ship → results (screenshot, speedrun) → destr
   const shotFile = await page.request.get(shotUrl ?? '');
   expect(shotFile.status()).toBe(200);
   expect(shotFile.headers()['content-type']).toMatch(/^image\/(webp|png|jpeg)$/);
-  // The page is a static shell (T-037): its social image is the static card for every battle
-  // until T-038 writes each battle's own (this screenshot) at the edge.
-  await expect(page.locator('meta[property="og:image"]')).toHaveAttribute('content', STATIC_CARD);
-  await expect(page).toHaveTitle(/· Build Roulette$/);
+  // The page is a static shell (T-037); its link preview is written at the edge (T-038): a
+  // crawler, which runs no script, gets this battle's title and this screenshot.
+  const preview = await crawl(page.request, `/battles/${battle}`);
+  expect(preview.status).toBe(200);
+  expect(one(preview, 'og:image')).toBe(shotUrl);
+  expect(one(preview, 'og:title')).toMatch(/^E2E Rocket by /);
+  expect(preview.titles).toEqual([await page.title()]);
+  await expect(page).toHaveTitle(/^E2E Rocket by .* · Build Roulette$/);
   await snap(page, 'battle-page');
 
   // Play again starts over.

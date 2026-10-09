@@ -32,11 +32,14 @@ What the public RPC returns, exactly as the page reads it (no cache on the way):
 curl -sS -X POST "$SUPABASE_URL/rest/v1/rpc/get_public_battle" -H "apikey: $SUPABASE_ANON_KEY" -H "content-type: application/json" -d "{\"p_battle_id\":\"$BATTLE_ID\"}" | head -c 600; echo
 ```
 
-The page itself is a static file; its HTML holds no battle data (the browser revalidates it on
-every load: `max-age=0, must-revalidate`):
+The page is the static shell; only its head is per battle: the link-preview Function (T-038)
+writes the title and `og:*` tags from the same RPC on every request, nothing cached
+(`max-age=0, must-revalidate`). What a crawler reads now (`x-br-preview: battle` is the
+battle's own head; `fail-open` means Supabase did not answer in 1.5 s and the generic head
+with the static card was served):
 
 ```sh check
-curl -sS -o /dev/null -D - "$APP_ORIGIN/battles/$BATTLE_ID" | grep -i -E '^(HTTP|cache-control|age|cf-cache-status)'
+curl -sS -D - -A 'Slackbot-LinkExpanding 1.0' "$APP_ORIGIN/battles/$BATTLE_ID" | grep -i -o -E '^(HTTP[^ ]* [0-9]+|cache-control: .*|x-br-preview: .*)|<meta property="og:(title|image)" content="[^"]*"'
 ```
 
 The screenshot's deletion (the capture worker's takedown job):
@@ -58,9 +61,11 @@ where j.kind = 'takedown' and j.ref_id = '{{build_id}}';
    "Retry the screenshot delete" in `/admin`'s resolved reports, or
    [capture-backlog.md](capture-backlog.md) step 4. Once deleted, browsers and Supabase's CDN
    may still hold it for up to 5 minutes (the upload's `max-age=300`).
-4. **A link preview:** social networks and chat apps cache previews on their side; most offer
-   a refresh tool (e.g. a debugger page) for the URL. Until T-038 every battle's preview is the
-   static card anyway, never a screenshot.
+4. **A link preview:** our side changes on the very next request (the check above: after the
+   takedown of rank 1 the head shows the static card and names no winner; T-028). Social
+   networks and chat apps cache previews on their side, from minutes to days; most offer a
+   refresh tool (e.g. a debugger page) for the URL. A removed rank-1 screenshot also stops
+   loading once the takedown job deleted it (step 3).
 
 ## Verify
 

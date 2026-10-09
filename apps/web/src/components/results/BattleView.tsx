@@ -9,8 +9,10 @@
  *
  * States: loading, the results (BattleResults), "not found" (an unknown id, a battle that is
  * not in RESULTS yet, or a malformed id: one answer, like the RPC's), or "could not load"
- * with a retry (the server failed). The tab title follows; the shell's meta tags are the
- * generic ones (link previews per battle: T-038).
+ * with a retry (the server failed). The tab title follows. The HTML a crawler gets already has
+ * the battle's title and `og:*` tags, written at the edge by T-038's link-preview Function
+ * (lib/hosting/preview-worker.ts), with a 404 status for an unknown battle; this view works
+ * the same either way.
  */
 import { shellParam } from '../../lib/hosting/shells';
 import { useBrowserUrl } from '../../lib/hosting/use-browser-url';

@@ -21,10 +21,14 @@ export function isBattleId(id: string): boolean {
  * The battle's public results, or null when it does not exist or is not public yet
  * (`battle_not_found` covers both) or `id` is not a battle id. Throws on other failures (the
  * server is down), so the page can tell "not found" from "could not load".
+ *
+ * Also called at the edge by T-038's link-preview Function (lib/hosting/preview-worker.ts),
+ * with a `signal` that aborts a slow answer.
  */
 export async function fetchPublicBattle(
   id: string,
   config: SupabaseConfig = supabaseConfig,
+  { signal }: { signal?: AbortSignal } = {},
 ): Promise<PublicBattle | null> {
   const battleId = id.toLowerCase();
   if (!UUID.test(battleId)) return null;
@@ -39,6 +43,7 @@ export async function fetchPublicBattle(
     headers,
     body: JSON.stringify({ p_battle_id: battleId }),
     cache: 'no-store',
+    ...(signal ? { signal } : {}),
   });
   if (res.ok) return (await res.json()) as PublicBattle;
   const body = (await res.json().catch(() => null)) as { message?: string } | null;

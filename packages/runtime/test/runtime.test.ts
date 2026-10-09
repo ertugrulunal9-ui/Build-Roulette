@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EsmBrowserRuntime } from '../src/runtime';
 import type { BuildResult } from '../src/types';
 import { FakeWorker, flush, settledWithin, trackUnhandledRejections } from './fake-worker';
@@ -65,7 +65,7 @@ describe('EsmBrowserRuntime lifecycle', () => {
       {
         severity: 'error',
         code: 'bundler-init-failed',
-        text: 'The bundler could not start: esbuild-wasm failed to initialize: wasm 404',
+        text: "Couldn't start the bundler: esbuild-wasm failed to initialize: wasm 404",
       },
     ]);
     // The scheduled build tried a fresh init instead of reusing the rejected one.
@@ -117,6 +117,45 @@ describe('EsmBrowserRuntime lifecycle', () => {
       status: 'rejected',
       reason: { name: 'AbortError' },
     });
+  });
+});
+
+describe('EsmBrowserRuntime start timeout (T-039)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('a start that stalls twice: boot() rejects and a waiting build reports it as a diagnostic', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const { rt, spawned } = runtimeWith(new FakeWorker('manual'), new FakeWorker('manual'));
+    const results: BuildResult[] = [];
+    rt.onBuild((r) => results.push(r));
+    const boot = rt.boot({ files: FILES, manifest: MANIFEST });
+    const bootFailure = boot.catch((e: unknown) => e);
+    const build = rt.build();
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(await bootFailure).toMatchObject({ name: 'BundlerInitTimeoutError', attempts: 2 });
+    const r = await build;
+    expect(r.ok).toBe(false);
+    expect(r.diagnostics).toEqual([
+      {
+        severity: 'error',
+        code: 'bundler-init-failed',
+        text: "Couldn't start the bundler: the download stalled (no progress for 15 s, 2 attempts)",
+      },
+    ]);
+    expect(results).toEqual([r]);
+    expect(spawned).toHaveLength(2);
+  });
+
+  it('a start that stalls once boots on the automatic retry', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const { rt, spawned } = runtimeWith(new FakeWorker('manual'), new FakeWorker('ok'));
+    const boot = rt.boot({ files: FILES, manifest: MANIFEST });
+    await vi.advanceTimersByTimeAsync(15_000);
+    await expect(boot).resolves.toMatchObject({ attempts: 2 });
+    await expect(rt.build()).resolves.toMatchObject({ ok: true });
+    expect(spawned).toHaveLength(2);
   });
 });
 

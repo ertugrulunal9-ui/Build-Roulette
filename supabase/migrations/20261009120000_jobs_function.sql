@@ -20,6 +20,8 @@
 --   * It is a narrow capability: a run only processes jobs that are due anyway, so a leak
 --     costs function invocations, never data. The service role key in SQL would hand out
 --     the whole database (it would also sit in plain text wherever the request is logged).
+-- pg_net holds each request, header included, in net.http_request_queue until it is sent
+-- (about a second); that schema is not exposed by the Data API.
 -- The function compares it with its own secret JOBS_CRON_SECRET in constant time. Set both
 -- (apps/web/DEPLOY.md "Screenshots and jobs (Edge Function)"):
 --   select vault.create_secret('https://<ref>.supabase.co/functions/v1/jobs', 'br_jobs_function_url');

@@ -775,7 +775,12 @@ pg_cron 'br-jobs-run' (every minute)
   The cron secret is a narrow capability: it starts a run, and a run only processes jobs that
   are due anyway, so a leak costs invocations, never data. The service key would expose the
   whole database wherever SQL or request logs show it. The function compares the header in
-  constant time; `verify_jwt = false` for this one function (`supabase/config.toml`).
+  constant time; `verify_jwt = false` for this one function (`supabase/config.toml`). One
+  place the secret does appear in clear: pg_net keeps each request, header included, in
+  `net.http_request_queue` until its background worker sends it (about a second). Supabase's
+  pg_net grants that table to every role, but the Data API exposes only `public` and
+  `graphql_public`, so players cannot read it (measured locally: the grants, and the
+  `config.toml` schemas).
 - **Wall time.** New jobs are claimed for 50 s (`JOBS_RUN_WINDOW_MS`), so runs rarely overlap
   the next minute's. When they do, `claim_job`'s SKIP LOCKED keeps them apart and the budget
   is atomic. A capture job ends within 72 s (35 s REST timeout, pacing, one short 429 wait,
@@ -861,8 +866,12 @@ answer, and a refused token (logged as an error). Other free limits (3 concurren
 
 **Budget math.**
 
-- Browser time per capture, **measured** with the local stand-in (warm local Chromium; no
-  browser start, no network): **0.9 s** for a React build that calls `ready()` (the solo e2e), **6.6 s** for one that never paints (the 6 s cap; the solo CDN-outage e2e).
+- Browser time per capture, **measured** with the local stand-in (local Chromium, no
+  network): **0.9 s** for a React build that calls `ready()` in a warm browser (the solo
+  e2e), **3.1 s** for the same kind of build when the capture also starts the browser (the
+  first capture of `test:function`; Cloudflare starts a browser for every REST call), and
+  **6.5–6.6 s** for one that never paints (the 6 s cap; the solo CDN-outage e2e and
+  `test:function`).
 - **Assumed** for Cloudflare: about **3 s** with the ready signal (browser start + page + React
   from esm.sh + shot) and about **8–9 s** without it (the 6 s cap). Check `used_ms / renders`
   in `private.browser_budget` after the first days (runbook below).

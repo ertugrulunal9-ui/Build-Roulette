@@ -466,7 +466,7 @@ test('6 players under chaos: skewed clocks, a network drop, refreshes, the host 
   ).toHaveAttribute('data-rank', '1');
   await fay.page.reload();
   await expect(fay.page.getByTestId('results')).toBeVisible({ timeout: 30_000 });
-  // Every final build gets its screenshot from the capture worker.
+  // Every final build gets its screenshot from the jobs function.
   await expect
     .poll(
       () =>
@@ -861,7 +861,7 @@ test('all clients closed at T-0: pg_cron alone ends BUILD, auto-ships the autosa
     status: 'shipped',
     name: 'Ivy Shipped',
   });
-  // The capture worker screenshots all three.
+  // The jobs function screenshots all three.
   await expect
     .poll(
       () =>
@@ -1027,7 +1027,7 @@ test('Realtime stops delivering the battle events mid-REVEAL (channels still sub
   // after the drop, whenever the test happened to run across that tick).
   const feedGuard = keepRealtimeDatabaseFeedDown();
   counting = true;
-  // The capture worker screenshots the builds meanwhile: more versions nobody hears of, so
+  // The jobs function screenshots the builds meanwhile: more versions nobody hears of, so
   // the host's Next is likely to go out with a stale version (resent by the controller).
   await expect
     .poll(

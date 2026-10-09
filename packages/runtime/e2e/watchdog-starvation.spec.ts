@@ -166,8 +166,11 @@ test('whole-browser starvation (every renderer stopped for 7 s, both pages throt
   expect(crash.data.silentForMs).toBeGreaterThan(5000);
   expect(crash.data.silentForMs).toBeLessThanOrEqual(5600);
   expect(crash.data.stalledMs).toBeGreaterThan(2500);
-  // Wall clock: 4.0–5.25 s of awake time after the loop started, plus the 3 s stop.
-  expect(detectionMs).toBeGreaterThanOrEqual(6900);
+  // Wall clock: 4.0–5.25 s of awake time after the loop started, plus the 3 s stop, less
+  // the up to 300 ms (one tick + jitter) of awake time the first tick after the stop
+  // credits: at least 4000 + 3000 - 300 = 6700 ms (6899 ms was seen once against an older,
+  // too tight 6900 ms bound).
+  expect(detectionMs).toBeGreaterThanOrEqual(6700);
   expect(detectionMs).toBeLessThanOrEqual(9500);
   await expect(page.locator('#preview')).toHaveCount(0);
 });

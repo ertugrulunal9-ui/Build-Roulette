@@ -33,7 +33,7 @@ import {
   type BuildRow,
   type Job,
 } from './backend';
-import type { CaptureBudget } from './budget';
+import type { BudgetTicket, CaptureBudget } from './budget';
 import { afterNoRender, classifyRenderFailure, type NoRenderKind } from './capture-policy';
 import type { CaptureImaging } from './imaging';
 import { errorMessage, type Logger } from './log';
@@ -132,7 +132,13 @@ async function renderWithBudget(
   const { budget, config } = deps;
   const req = { url, viewport: config.viewport, timeoutMs: config.captureTimeoutMs, signal };
   if (!budget) return { result: await deps.renderer.render(req) };
-  const ticket = await budget.reserve();
+  let ticket: BudgetTicket | null;
+  try {
+    ticket = await budget.reserve();
+  } catch (e) {
+    // The database, not the build: retried before any fallback (capture-policy.ts).
+    throw new RenderError('unavailable', `browser budget: ${errorMessage(e)}`);
+  }
   if (!ticket) return { spent: true };
   let browserMs = 0;
   let rateLimited = false;

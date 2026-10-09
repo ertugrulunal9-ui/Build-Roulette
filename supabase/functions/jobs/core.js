@@ -834,7 +834,12 @@ async function renderWithBudget(deps, url, signal) {
   const { budget, config } = deps;
   const req = { url, viewport: config.viewport, timeoutMs: config.captureTimeoutMs, signal };
   if (!budget) return { result: await deps.renderer.render(req) };
-  const ticket = await budget.reserve();
+  let ticket;
+  try {
+    ticket = await budget.reserve();
+  } catch (e) {
+    throw new RenderError("unavailable", `browser budget: ${errorMessage(e)}`);
+  }
   if (!ticket) return { spent: true };
   let browserMs = 0;
   let rateLimited = false;

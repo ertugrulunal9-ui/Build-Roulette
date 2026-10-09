@@ -39,9 +39,11 @@ const SHOT = `${BATTLE}/${BUILD}.webp`;
 
 class FakeBudget implements CaptureBudget {
   granted = true;
+  down = false;
   reserved = 0;
   settled: { ticket: BudgetTicket; browserMs: number; rateLimited: boolean }[] = [];
   reserve(): Promise<BudgetTicket | null> {
+    if (this.down) return Promise.reject(new Error('PostgREST: HTTP 503'));
     if (!this.granted) return Promise.resolve(null);
     this.reserved++;
     return Promise.resolve({ day: '2026-10-09', reservedMs: 20_000 });
@@ -166,6 +168,17 @@ describe('capture job with Browser Rendering (WebP, no sharp)', () => {
     const out = await processCaptureJob(deps(renderer), await claim(), never);
     expect(out).toMatchObject({ result: 'retry', attempts: 1 });
     expect(backend.jobs[0]?.last_error).toContain('budget');
+  });
+
+  it('the budget cannot be read (a database blip): retried, not a thumbnail for good', async () => {
+    budget.down = true;
+    shippedBuild({ 'thumb.webp': thumb });
+    const renderer = new FakeRenderer(() => Promise.reject(new Error('must not render')));
+    const out = await processCaptureJob(deps(renderer), await claim(), never);
+    expect(out).toMatchObject({ result: 'retry', attempts: 1 });
+    expect(backend.jobs[0]?.last_error).toContain('browser budget: PostgREST: HTTP 503');
+    expect(renderer.requests).toHaveLength(0);
+    expect(backend.get(BUCKET_SCREENSHOTS, SHOT)).toBeUndefined();
   });
 
   it(`a 429: handed back on attempts 1–${String(SERVICE_FALLBACK_ATTEMPT - 1)}, the thumbnail from attempt ${String(SERVICE_FALLBACK_ATTEMPT)}`, async () => {

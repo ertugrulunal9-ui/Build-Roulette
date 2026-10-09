@@ -345,13 +345,20 @@ describe('esm.sh as the package CDN (T-035)', () => {
     const q = '?external=react,react-dom&deps=@react-three/fiber@9.8.1,leaflet@1.9.4,three@0.186.1';
     expect(esm).toEqual([
       { kind: 'cdn', url: `https://esm.sh/three@0.186.1${q}` },
-      { kind: 'cdn', url: `https://esm.sh/three@0.186.1/examples/jsm/controls/OrbitControls.js${q}` },
+      {
+        kind: 'cdn',
+        url: `https://esm.sh/three@0.186.1/examples/jsm/controls/OrbitControls.js${q}`,
+      },
       { kind: 'cdn', url: `https://esm.sh/@react-three/fiber@9.8.1${q}` },
       // Raw file: no query, so esm.sh serves the file as it is in the package.
       { kind: 'cdn-css', url: 'https://esm.sh/leaflet@1.9.4/dist/leaflet.css' },
     ]);
     expect(
-      ours.map((r) => (r.kind === 'cdn' || r.kind === 'cdn-css' ? r.url.replace('http://localhost:4400', 'https://esm.sh') : r)),
+      ours.map((r) =>
+        r.kind === 'cdn' || r.kind === 'cdn-css'
+          ? r.url.replace('http://localhost:4400', 'https://esm.sh')
+          : r,
+      ),
     ).toEqual(esm.map((r) => (r.kind === 'cdn' || r.kind === 'cdn-css' ? r.url : r)));
     // No `target=`: esm.sh picks it from the User-Agent (Vary: User-Agent), pkg-cdn defaults
     // to es2022. Adding one here would split pkg-cdn's peer URLs from the user's imports.

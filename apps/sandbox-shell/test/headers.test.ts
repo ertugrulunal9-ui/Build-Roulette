@@ -150,9 +150,14 @@ describe('the package CDN setting (T-035)', () => {
   });
 
   it('with esm.sh, every module it serves (entry URLs and /x@v/es2022/… paths) is allowed', () => {
-    const esm = { appOrigins: ['https://build-roulette-web.pages.dev'], cdnOrigin: 'https://esm.sh' };
+    const esm = {
+      appOrigins: ['https://build-roulette-web.pages.dev'],
+      cdnOrigin: 'https://esm.sh',
+    };
     for (const csp of [shellCsp(esm), captureCsp(esm)]) {
-      expect(csp).toContain("script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: https://esm.sh;");
+      expect(csp).toContain(
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: https://esm.sh;",
+      );
       // Package CSS is inlined by the bundler; its url()s and fonts load from the CDN.
       expect(csp).toContain("style-src 'self' 'unsafe-inline' blob: https:;");
       expect(csp).toContain('img-src * data: blob:');

@@ -139,7 +139,9 @@ describe('moduleImportUrls', () => {
   it('resolves path and same-origin imports, and leaves bare and foreign ones out', () => {
     const source =
       'import "react";import "/react@19.3.0/es2022/react.mjs";import "./x.mjs?y#z";import "https://esm.sh/a@1.0.0";import "https://evil.example/b.mjs";import "/react@19.3.0/es2022/react.mjs";';
-    expect(moduleImportUrls(source, 'https://esm.sh/react@19.3.0/jsx-runtime?external=react')).toEqual([
+    expect(
+      moduleImportUrls(source, 'https://esm.sh/react@19.3.0/jsx-runtime?external=react'),
+    ).toEqual([
       'https://esm.sh/react@19.3.0/es2022/react.mjs',
       'https://esm.sh/react@19.3.0/x.mjs?y',
       'https://esm.sh/a@1.0.0',

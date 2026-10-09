@@ -22,3 +22,6 @@ cpu-results/
 # Markdown is hand-formatted (aligned tables, intentional line breaks in the design docs).
 # Remove this line and run `pnpm format` to bring it under Prettier.
 *.md
+
+# Generated: the jobs Edge Function bundle (apps/capture-worker build:function, T-034)
+supabase/functions/jobs/core.js

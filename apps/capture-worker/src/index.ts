@@ -16,3 +16,4 @@ export * from './runner';
 export * from './supabase';
 export * from './takedown-job';
 export * from './webp';
+export * from './stand-in';

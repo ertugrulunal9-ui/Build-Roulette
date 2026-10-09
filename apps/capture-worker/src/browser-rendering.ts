@@ -167,7 +167,7 @@ function decodeEntities(s: string): string {
 export function htmlElementAttributes(html: string): Map<string, string> | null {
   let i = 0;
   for (;;) {
-    while (i < html.length && /[\s﻿]/.test(html[i] ?? '')) i++;
+    while (i < html.length && /\s/.test(html[i] ?? '')) i++; // \s includes the BOM
     if (html.startsWith('<!--', i)) {
       const end = html.indexOf('-->', i + 4);
       if (end < 0) return null;

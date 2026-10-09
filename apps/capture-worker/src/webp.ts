@@ -115,9 +115,10 @@ function parse(bytes: Uint8Array): Parsed {
   const names = chunks.map((c) => c.fourcc);
   if (names.includes('ANIM') || names.includes('ANMF')) throw new WebpError('animated');
   const images = chunks.filter((c) => c.fourcc === 'VP8 ' || c.fourcc === 'VP8L');
-  if (images.length !== 1)
+  const [image] = images;
+  if (images.length !== 1 || !image) {
     throw new WebpError(`expected one image, found ${String(images.length)}`);
-  const image = images[0] as Chunk;
+  }
   const alphs = chunks.filter((c) => c.fourcc === 'ALPH');
   if (alphs.length > 1) throw new WebpError('several ALPH chunks');
   const alph = alphs[0] ?? null;

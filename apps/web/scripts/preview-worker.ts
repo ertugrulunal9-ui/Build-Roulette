@@ -56,7 +56,8 @@ export async function bundlePreviewWorker(opts: PreviewWorkerOptions): Promise<s
     format: 'esm',
     platform: 'neutral',
     target: 'es2022',
-    // Readable in a stack trace or `wrangler pages deployment tail`; it is a few KiB.
+    // Readable in a stack trace or `wrangler pages deployment tail`; it is 13 KiB. Minified
+    // (8 KiB) it costs the same CPU (measured: docs/08-free-tier.md §3.3).
     minify: false,
     legalComments: 'none',
     logLevel: 'silent',

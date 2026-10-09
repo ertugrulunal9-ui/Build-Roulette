@@ -37,6 +37,8 @@ export interface Measurement {
   wallMs: number;
   /** The user isolate's CPU from the profile (null when not profiled). */
   isolate: IsolateCpu | null;
+  /** The raw V8 profile (null when not profiled): `--profiles` saves it as a .cpuprofile. */
+  profile: CpuProfile | null;
   /** workerd main thread CPU. */
   threadMs: number;
 }
@@ -351,9 +353,11 @@ export class WorkersRuntime {
     if (holdMs > 0) await sleep(holdMs);
     const after = await settle(() => threadCpuMs(pid), noise);
     let isolate: IsolateCpu | null = null;
+    let raw: CpuProfile | null = null;
     if (profile) {
       const result = (await inspector.send('Profiler.stop')) as { profile: CpuProfile };
-      isolate = isolateCpu(result.profile, this.opts.samplingUs);
+      raw = result.profile;
+      isolate = isolateCpu(raw, this.opts.samplingUs);
     }
     return {
       status: res.status,
@@ -363,6 +367,7 @@ export class WorkersRuntime {
       bytes,
       wallMs,
       isolate,
+      profile: raw,
       threadMs: after - before,
     };
   }

@@ -11,7 +11,7 @@
  *
  *   pnpm --filter @br/web build             # the static export in out/, with the Function
  *   npx -y supabase@2.119.0 start -x …      # the local stack (docs/WORKFLOW.md)
- *   pnpm --filter @br/web measure:cpu [--warm 40] [--cold 20] [--only <regex>]
+ *   pnpm --filter @br/web measure:cpu [--warm 40] [--cold 20] [--only <regex>] [--profiles]
  *                                     [--skip-calibration] [--sampling-us 100] [--out cpu-results]
  *
  * The battles are inserted into the local stack (fixtures.ts). Supabase slow and down run on a
@@ -44,6 +44,9 @@ const { values: argv } = parseArgs({
     'skip-calibration': { type: 'boolean', default: false },
     'sampling-us': { type: 'string', default: '100' },
     out: { type: 'string', default: 'cpu-results' },
+    // Saves every profiled sample as `profiles/<scenario>-<warm|cold>-<n>.cpuprofile` (opens
+    // in Chrome DevTools → Performance, or any .cpuprofile viewer).
+    profiles: { type: 'boolean', default: false },
   },
 });
 const WARM = Number(argv.warm);
@@ -242,6 +245,14 @@ function record(s: Scenario, isolate: Sample['isolate'], profiled: boolean, m: M
   };
   all.push(sample);
   appendFileSync(samplesFile, `${JSON.stringify(sample)}\n`);
+  if (argv.profiles && m.profile) {
+    mkdirSync(`${outDir}/profiles`, { recursive: true });
+    const n = all.filter((x) => x.scenario === s.id && x.isolate === isolate).length;
+    writeFileSync(
+      `${outDir}/profiles/${s.id}-${isolate}-${String(n)}.cpuprofile`,
+      JSON.stringify(m.profile),
+    );
+  }
   const cpu = sample.isolateMs !== null ? `isolate ${fmt(sample.isolateMs)} ms, ` : '';
   log(
     `${isolate.padEnd(4)} ${s.id.padEnd(17)} ${String(m.status)} ${cpu}thread ${fmt(sample.threadMs)} ms, wall ${fmt(sample.wallMs)} ms${sample.ok ? '' : `  (UNEXPECTED: x-br-preview "${m.preview}"; kept out of the stats)`}`,

@@ -128,10 +128,11 @@ Nothing to configure for it to work; four things to know:
    works). Keep it that way: the project's Functions settings offer "Fail open" (the default)
    or "Fail closed" (an error page, Error 1027). Cloudflare's docs describe the choice; the
    exact place in the dashboard is not verified here (no account).
-2. **CPU:** 1–3 ms per request warm and 3–6 ms in a fresh isolate on this machine, against the
-   10 ms limit (docs/08-free-tier.md §3.3). After a deploy, Workers & Pages →
-   `build-roulette-web` → Functions (metrics) shows the CPU time per invocation; it should
-   stay far below 10 ms, and the error rate near zero.
+2. **CPU:** measured locally at 1.2–1.7 ms per request warm (median; p95 ≤ 3.2 ms) and
+   3.2–4.2 ms in a fresh isolate (median; worst sample 8.8 ms), against the 10 ms limit
+   (docs/08-free-tier.md §3.3; Cloudflare's own CPUs may be slower or faster). After a
+   deploy, the project's Functions metrics in Workers & Pages show the CPU time per
+   invocation: it should stay well below 10 ms, with errors near zero.
 3. **Its log:** `wrangler pages deployment tail --project-name build-roulette-web` shows a
    line `battle preview: fail open (timeout|error|shape) for /battles/<id>` whenever Supabase
    did not answer in 1.5 s; the page itself is unaffected.
@@ -276,7 +277,7 @@ gone with the server):
 |---|---|---|
 | Requests to static files | unlimited, free, not Worker invocations | every request but `/battles/*` |
 | Pages Functions requests | 100,000 a day, shared with every Worker of the account (Workers Free); fail open by default | one per view of `/battles/{id}` (people and crawlers) |
-| CPU per Function request | 10 ms (Workers Free) | 1–3 ms warm, 3–6 ms fresh (§3.3 of docs/08) |
+| CPU per Function request | 10 ms (Workers Free) | median 1.2–1.7 ms warm, 3.2–4.2 ms in a fresh isolate (docs/08 §3.3) |
 | `_routes.json` | 100 rules, 100 characters each | 1 rule |
 | Files per deployment | 20,000 | 94 |
 | One file | 25 MiB | `esbuild.wasm` 13.3 MiB |

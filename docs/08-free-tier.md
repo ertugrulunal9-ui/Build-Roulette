@@ -3,7 +3,8 @@
 The user decided on 2026-10-09 to deploy on free plans only (docs/BOARD.md, T-033…T-036).
 This document collects what that takes. §1 is the web app on Workers Free (T-033: it does
 not fit); §2 is what replaced it, the web app as a static site on Cloudflare Pages (T-037);
-the other free-tier tasks add their own sections.
+§3 is the one piece of edge code left, the per-battle link previews (T-038: a Pages Function
+that fits); the other free-tier tasks add their own sections.
 
 ## 1. Web app on Workers Free (T-033)
 
@@ -307,7 +308,7 @@ export served by **Cloudflare Pages** (Free), with every piece of data loaded in
 No Next.js server and no Worker run for the app, so the 10 ms CPU limit and the 100,000
 requests a day of Workers Free do not apply to it: static requests on Pages are free,
 unlimited and not Worker invocations. Per-battle link previews come back with a small Pages
-Function in T-038, measured against the 10 ms first.
+Function on `/battles/*` in T-038, measured against the 10 ms first (§3).
 
 ### 2.1 What changed
 
@@ -338,12 +339,12 @@ list as `_redirects`: `src/lib/hosting/shells.ts`).
 
 | | What it costs | Mitigation / owner |
 |---|---|---|
-| **Link previews** | Crawlers do not run scripts: every battle shares one preview (the generic title and `og-card.png`) instead of its own title and rank-1 screenshot (T-033's `og:image` rule) | T-038: a Pages Function on `/battles/*` writes the tags with `HTMLRewriter` (`lib/solo/battle-meta.ts` already computes them) |
-| **Status codes** | A shell answers 200 for an unknown battle or player, and `/admin` answers 200 to everyone (the page shows the 404 screen); truly unknown paths still get a real 404 | T-038's Function can answer 404 for an unknown battle; `/admin` is `noindex` (`X-Robots-Tag`) |
+| **Link previews** | Crawlers do not run scripts: every battle shares one preview (the generic title and `og-card.png`) instead of its own title and rank-1 screenshot (T-033's `og:image` rule) | **Done in T-038** (§3): a Pages Function on `/battles/*` writes the tags with `HTMLRewriter`. `/u/{id}` and `/r/{code}` keep the generic preview |
+| **Status codes** | A shell answers 200 for an unknown battle or player, and `/admin` answers 200 to everyone (the page shows the 404 screen); truly unknown paths still get a real 404 | **Done in T-038 for battles** (§3: a real 404 for an unknown, not-yet-public or malformed battle id); `/u/{id}` still 200; `/admin` is `noindex` (`X-Robots-Tag`) |
 | **First paint** | Results and history appear after one RPC round trip from the browser (the HTML is a loading screen); before, the HTML held them | The answer is small: ~3 KB per battle (750–950 bytes gzip, 3–4 builds, measured locally) |
 | **Supabase load** | Every view of a results page is one `get_public_battle` call (before: at most one per hour per battle, from the edge cache). A link seen 10,000 times is 10,000 small reads (~10 MB of egress, gzip) | Well inside Supabase's quotas (docs/07 §7); T-036 reviews the Free plan's |
 | **Admin session** | In the tab's `sessionStorage`, readable by script on the app origin (an XSS), where T-024's httpOnly cookies were not | §2.3 |
-| **SEO of `/u/{id}`, `/battles/{id}`** | No content in the HTML for crawlers | T-038 for previews; full server rendering is what §1 ruled out |
+| **SEO of `/u/{id}`, `/battles/{id}`** | No content in the HTML for crawlers | T-038 (§3) gives `/battles/{id}` its own title, description and canonical link; the body stays the shell; full server rendering is what §1 ruled out |
 | **Takedown safety net** | Gone, and not needed: a takedown is visible on the next load, whether made in `/admin` or with SQL (T-026's "an SQL takedown stays cached for up to an hour" caveat is gone) | — |
 
 ### 2.3 The admin session in the browser
@@ -424,6 +425,7 @@ warm and 0.5–1.4 ms in a fresh isolate for `/`, the shells, a JS chunk, `og-ca
 404. That is wrangler's local shim, which Cloudflare does not run or bill for static files;
 the tool is kept for T-038's Function on `/battles/*`, which must fit 10 ms (its fixtures,
 battles with and without a rank-1 screenshot, are in `scripts/measure-cpu/fixtures.ts`).
+Since T-038 production runs one Worker, that Function, and only for `/battles/*` (§3).
 
 ### 2.6 Verification
 
@@ -435,3 +437,215 @@ moderation (a takedown visible on the next load; the admin session's storage, it
 from the player session and from another tab, sign-out revoking the refresh token), rooms,
 telemetry (the admin's test error from the browser, no server events) and the three chaos
 shards.
+
+## 3. Link previews (T-038)
+
+**Question:** can a Pages Function give every battle its own link preview (title, `og:*`
+with the rank-1 screenshot) and a real 404 for an unknown battle, within Workers Free's 10 ms
+of CPU per request, without ever breaking the page?
+
+### 3.1 Verdict
+
+**GO.** On this machine the Function costs **1.2–1.7 ms** of isolate CPU per request in a warm
+isolate (median; p95 1.8–3.2 ms) and **3.2–4.2 ms** in a fresh one (median; p95 4.3–7.3 ms,
+worst of 60 fresh samples 8.8 ms), in every case: a battle with its screenshot, a removed
+rank 1, an unknown id, a malformed id, Supabase slow and Supabase down. That is a 6× margin
+warm and 2.4× at the fresh-isolate median. The numbers include wrangler's local routing shim
+(about 0.4 ms warm and 1.2 ms fresh: the cost of a static path in the same table), which
+Cloudflare does not run in the Function's isolate. The caveat is the fresh-isolate tail on a
+slower core (§3.3). It is no reason to simplify further: the Function's own code is a small
+share of it.
+
+### 3.2 Design
+
+**A Pages "advanced mode" worker.** `pnpm build` (scripts/pages-config.ts) bundles
+`src/lib/hosting/preview-worker.ts` with esbuild into `out/_worker.js` (13 KiB, 5 KiB gzip) and
+writes `out/_routes.json` with `"include": ["/battles/*"]`: every other path is a static file
+that invokes nothing. It is a `_worker.js` rather than a `functions/` directory for the same
+reason as the sandbox shell's capture gate: its settings are inlined at build time, like the
+bundles', so the Function, the bundles and the CSP always agree.
+
+- **Supabase:** the URL and the anon key are the build's `NEXT_PUBLIC_SUPABASE_URL` and
+  `NEXT_PUBLIC_SUPABASE_ANON_KEY` (or `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`), inlined into the
+  worker exactly as Next inlines them into the bundles (`lib/supabase/config.ts`; the build
+  fails if the worker still reads `process.env`). The anon key is public by design and already
+  in every bundle. **No Pages environment variable is involved:** nothing to set on Pages and
+  no second copy of the settings to keep in sync. (Pages env vars would have needed the
+  values in `wrangler.jsonc`, the project's source of truth once it has one, or in the
+  dashboard, and could drift from the build.)
+- **The site's origin** for `og:url` and the canonical link: `NEXT_PUBLIC_SITE_URL` (already
+  the origin of `metadataBase`), else the request's own origin.
+- **The headers:** the `/*` rule of `_headers` (the CSP and the rest), so the Function can set
+  them itself (below).
+
+**Per request** (`src/lib/hosting/preview-handler.ts`):
+
+| Request | Supabase | Status | Head | `x-br-preview` |
+|---|---|---|---|---|
+| `/battles/{id}`, a public battle (RESULTS or DESTROYED) | `get_public_battle` | 200 | the battle's | `battle` |
+| an unknown id, or a battle not public yet | `get_public_battle` (`battle_not_found`) | **404** | "Battle not found", `noindex` | `not-found` |
+| a malformed id (not a UUID, or a broken escape) | **not called** | **404** | "Battle not found", `noindex` | `malformed` |
+| Supabase does not answer within **1.5 s**, answers an error, or answers something without `get_public_battle`'s shape | called, given up | 200 | the shell's own (generic title, static card) | `fail-open; reason=timeout\|error\|shape` |
+| anything that throws in the Function | — | what Pages serves without it | the shell's own | — |
+| `/battles`, `/battles/{id}/more`, a method other than GET/HEAD | — | Pages' own answer | — | — |
+
+The shell (`/battles` from `env.ASSETS`) and `get_public_battle` (with the anon key over
+PostgREST: `fetchPublicBattle`, the page's own call) are requested at the same time. A 404 is
+still the shell's HTML, so in a browser the page loads its data and shows its not-found view
+as before (e2e). HEAD gets the same status and headers without a body.
+
+**The head** (`src/lib/hosting/battle-preview.ts`, from `battleMeta` and `battleOgImage`, the
+same text as the tab title): `HTMLRewriter` removes the shell's `<title>`, `description`,
+`robots`, `og:*`, `twitter:*` and canonical tags and appends the battle's to `<head>`:
+
+- `<title>` and `og:title`/`twitter:title`: "{rank-1 build} by {builder}", or "{challenge} ·
+  Battle results" when rank 1 was taken down;
+- `description`, `og:description`, `twitter:description`: "Winner: {build} by {builder}." when
+  there is a winner (rank 1, not removed), then "BUILD: … · RULE: … · STYLE: … · {time}";
+- `og:image` (with `og:image:width`/`height`/`type`/`alt` when known) and `twitter:image`:
+  T-033's rule, the rank-1 screenshot in Storage, or the static card when rank 1 has none or
+  was taken down. **T-028:** a removed rank 1 is never named and its screenshot never shown,
+  and the next build is not promoted (no "Winner:", no runner-up screenshot);
+- `og:url` and `<link rel="canonical">`: `{origin}/battles/{id}`; `og:type` `article`,
+  `og:site_name`, `twitter:card` `summary_large_image`.
+
+**Escaping.** Build and player names are user data, challenge texts deck data. Every value is
+HTML-escaped (`& < > " '`) into tags that the module writes itself; nothing from the data is
+parsed as HTML. The unit tests round-trip `"><script>alert(1)</script>`,
+`'><img src=x onerror=…>`, `</title><script>`, a fake `og:image` tag and already-escaped text
+through an HTML parser (each value comes back exactly, no element is added; weakening the
+escaping fails 4 of them), and the e2e inserts a real build named
+`"><script>alert(1)</script>` by `Ana <b>&amp;</b>`.
+
+**Headers and the CSP.** The injected tags are `<meta>`, `<title>` and `<link>`, not
+scripts, and the shell's inline scripts are untouched, so the hash-based CSP (§2.4) is
+unchanged. Cloudflare's docs say `_headers` does not apply to responses generated by a Pages
+Function; whether it applies to a shell fetched through `env.ASSETS` is not documented. The
+Function therefore sets the `/*` headers itself on every answer it writes (locally,
+`wrangler pages dev` applies `_headers` either way; the e2e check the CSP, `X-Frame-Options`
+and `nosniff` on the Function's 200s, 404s and fail-opens). It keeps the shell's
+`Cache-Control` and drops its `ETag` (the body differs per battle and per moment).
+
+**In the browser** the page hydrates as before and reads the battle itself. React then
+re-adds the shell's generic `og:*` tags after the battle's (it matches head tags by
+content); only crawlers read those tags, and they read the HTML as sent, where the battle's
+tags are the only ones. React claims the injected `<title>`, so the tab title stays right.
+
+### 3.3 CPU
+
+**Method:** T-033's tool (§1.2), `pnpm --filter @br/web measure:cpu`, on `wrangler pages dev`
+4.147.0 (workerd 1.20261001.1) with the local stack. It inserts two settled battles with 4
+builds and a 1280×800 PNG screenshot of rank 1 (in one, rank 1 is then taken down), then
+measures each case 40 times warm (20 profiled) and 20 times in a fresh isolate (workerd
+restarted before each sample, 10 profiled). Supabase slow and down run on a variant of the
+built site whose Function is bundled against a local stand-in that never answers or refuses
+connections (`scripts/preview-variant.ts`). A sample whose `x-br-preview` is not its case's
+is reported and left out (none of the 600 was). Run on 2026-10-09; per-scenario statistics:
+[data/t038-cpu.csv](data/t038-cpu.csv).
+
+| Request | Isolate CPU warm: median / p95 (n=20) | Fresh isolate: median / p95 / max (n=10) | workerd thread warm / fresh (median, unprofiled) | Wall, warm (median) |
+|---|---|---|---|---|
+| `/battles/{id}`: settled battle, rank-1 PNG screenshot | 1.5 / 2.4 | 4.2 / 7.3 / 8.8 | 5.9 / 16.1 | 13.7 |
+| `/battles/{id}`: rank 1 taken down (static card) | 1.5 / 2.3 | 4.2 / 5.5 / 5.5 | 5.4 / 13.5 | 13.0 |
+| `/battles/{unknown id}` (404) | 1.2 / 3.2 | 4.2 / 5.0 / 5.5 | 5.3 / 14.1 | 11.7 |
+| `/battles/{malformed id}` (404, no Supabase call) | 1.3 / 2.0 | 3.2 / 4.7 / 5.2 | 4.4 / 13.7 | 10.6 |
+| Supabase hangs (1.5 s timeout, fail open) | 1.7 / 2.6 | 4.2 / 5.2 / 5.2 | 7.5 / 15.9 | 1,511 |
+| Supabase refuses connections (fail open) | 1.2 / 1.8 | 4.0 / 4.3 / 4.3 | 6.1 / 14.6 | 11.9 |
+| *For comparison, no Function:* `/`, `/r/{code}`, a JS chunk, the 404 page | 0.3–0.5 / 0.9–1.1 | 1.1–1.3 / 1.3–1.7 / 1.4–1.9 | 3.5–4.3 / 11.9–13.7 | 9–11 |
+
+All in ms. The last row is wrangler's local routing shim, which runs in the same isolate
+(`_routes.json` matching, asset forwarding); in production a static path invokes no Worker,
+and the Function's isolate does not run the shim. The workerd thread column is an upper bound
+(it adds the local asset server and routing on the same thread, §1.2).
+
+Where a fresh isolate's ~4.5 ms goes (5 saved profiles of the screenshot case,
+`measure:cpu --profiles`): ~1.6 ms in the runtime itself (its first `fetch`, the
+`HTMLRewriter` transform, `Headers`) and ~3 ms of JavaScript, of which ~1 ms is wrangler's
+shim and the rest the first, lazily compiled run of the Function's ~15 small functions; no
+function takes more than 0.2 ms of self time. Waiting for Supabase is not CPU (the slow case's
+1.5 s costs the same as a fast answer). A malformed id, which skips the fetch and the JSON,
+saves ~1 ms; so injecting only `og:image` and `og:title`, or any other trimming of the head,
+would save a fraction of a millisecond. A minified bundle (8 KiB) measured the same (fresh
+4.6, warm 2.1 ms median; n=8 and 5).
+
+**Against the 10 ms limit.** Warm: at most 3.4 ms in any sample. Fresh isolate: median
+3.2–4.2 ms, one sample of 60 at 8.8 ms. **The remaining uncertainty is Cloudflare's CPU
+speed** (§1.2): this VM (Xeon @ 2.10 GHz) ran the calibration loops about 1.5× faster than
+T-033's (loop 10⁶: 33.6 ms on the thread against 50.8 ms), so on a core as slow as T-033's VM
+the fresh-isolate median would be ~6 ms and the tail could reach 10 ms; warm requests stay far
+below either way. Fresh isolates are a minority of requests (§1.3, §1.5), the shim's ~1.2 ms
+is not part of the production Function, and a request that went over would first draw on the
+per-isolate rollover leeway (§1.3). After the first deploy, the Function's CPU time per
+invocation in the Workers & Pages metrics settles it (apps/web/DEPLOY.md).
+
+Method check of this run (calibrate.ts):
+
+| Workload | workerd thread, unprofiled (median) | isolate CPU from the profile (median) | wall (median) |
+|---|---|---|---|
+| empty request | 2.7 ms | 0.2 ms | 7.3 ms |
+| wait 300 ms on a fetch | 4.4 ms | 0.5 ms | 309.4 ms |
+| loop 2·10⁵ | 8.2 ms | 6.4 ms | 12.3 ms |
+| loop 10⁶ | 33.6 ms | 32.9 ms | 40.7 ms |
+| loop 4·10⁶ | 124.7 ms | 135.9 ms | 139.0 ms |
+
+### 3.4 Caching, and how long a preview can lag
+
+**Decision: no cache.** The Function reads `get_public_battle` on every request and answers
+with the shell's `Cache-Control: public, max-age=0, must-revalidate` and no `ETag`, so a
+browser or crawler gets a fresh answer every time. Considered and rejected:
+
+- **The Cache API for settled battles** (DESTROYED with `destroyed_at`): it would save the
+  Supabase round trip (wall time: ~3 ms locally, 13.7 against 10.6 ms without the call, tens
+  of ms to a hosted project; not CPU: waiting is free, and the cache lookup is itself a call
+  into the runtime), but a takedown would then reach the preview only
+  when the entry expires. Settled battles are exactly the ones takedowns are about (a report
+  usually comes after RESULTS), and purging the entry from `/admin` would need a second moving
+  part. The Cache API also only stores on a zone the account controls (a custom domain), not
+  reliably on `*.pages.dev` (assumed, not testable here).
+- **`Cache-Control` with a lifetime on the HTML:** browsers and Cloudflare's edge would serve
+  a stale preview to the next visitor: the same takedown problem, and the page (which reads
+  its own data) gains nothing.
+- **The cost of not caching:** one ~1 KB (gzip) read of `get_public_battle` per view, next to
+  the one the browser already makes: well inside Supabase Free (docs/07 §7). Each view of
+  `/battles/*` is one Function request either way (a cache does not avoid the invocation).
+
+**How long a preview can lag on our side: 0.** The request right after a takedown, or right
+after a screenshot lands, gets the new head (moderation.spec.ts checks the static card and no
+winner on the first request after the takedown). What can lag is outside our control: **the
+networks' own preview caches** (Slack, Discord, X, Facebook and LinkedIn keep a URL's preview
+from minutes to days; most have a refresh or debugger tool), and the screenshot file itself,
+until the takedown job deletes it (seconds), plus up to 5 minutes in Storage's CDN
+(docs/runbooks/removed-content-still-visible.md).
+
+### 3.5 Limits and failure modes
+
+- **Requests:** every view of `/battles/{id}` (people and crawlers) is one Function request,
+  counted in Workers Free's **100,000 a day**, shared with every Worker of the account (T-034's
+  cron Worker included) and reset at 00:00 UTC. Static requests are not counted
+  (`_routes.json`). Past the allowance, Pages Functions **fail open by default**: the request
+  skips the Function and gets the static shell through `_redirects`, i.e. the page as in
+  T-037 (the generic preview, 200 for an unknown battle). "Fail closed" (Error 1027) is the
+  other setting; keep fail open (Cloudflare's docs, read through search; DEPLOY.md).
+- **CPU:** §3.3. Error 1102 would be the failure mode if a request exceeded the limit with no
+  rollover left; no warm sample came within 6 ms of it.
+- **Supabase slow:** a crawler waits up to 1.5 s more, then gets the generic preview (crawlers
+  generally allow several seconds per page; assumed). The browser reads its data itself, as
+  before. Each fail-open is logged (`battle preview: fail open (…)`, visible with
+  `wrangler pages deployment tail`).
+- **Supabase down:** the generic preview at once (connection refused) or after 1.5 s.
+- **Previews of `/u/{id}` and `/r/{code}`** stay generic (not in scope).
+- **WebP screenshots** as `og:image` rely on the crawler accepting WebP (T-033's note); the
+  image is fetched from Supabase Storage and counts against its egress.
+- **Startup:** the worker's global scope only defines constants (13 KiB), far from the 1 s
+  startup limit.
+
+### 3.6 Verification
+
+```sh
+pnpm --filter @br/web test                 # battle-preview.test.ts (head, escaping, T-028), preview-handler.test.ts (every case)
+pnpm --filter @br/web test:e2e             # static-site.spec: /battles/x is the Function's 404; other paths untouched
+pnpm --filter @br/web test:e2e:moderation  # link-preview.spec (crawler view, 404s, Supabase slow and down) + the takedown
+pnpm --filter @br/web test:e2e:solo        # og:image = the solo build's screenshot
+pnpm --filter @br/web test:e2e:multi       # og:image = the winner's screenshot
+pnpm --filter @br/web measure:cpu          # §3.3 (~25 min; --only/--warm/--cold to narrow it)
+```

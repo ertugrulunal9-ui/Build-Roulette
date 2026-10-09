@@ -110,27 +110,48 @@ function cmdline(pid: number): string {
   }
 }
 
+/**
+ * The runtime process went away under a measurement: `wrangler dev` restarted workerd (it
+ * rebuilds when a file of the bundle's graph changes, package.json files included). The
+ * caller restarts the runtime and measures the sample again.
+ */
+export class RuntimeReloaded extends Error {}
+
 /** CPU time of one thread so far, milliseconds (ns resolution). */
 export function threadCpuMs(pid: number, tid = pid): number {
-  const ns = readFileSync(`/proc/${String(pid)}/task/${String(tid)}/schedstat`, 'utf8').split(
-    ' ',
-  )[0];
-  return Number(ns) / 1e6;
+  let text: string;
+  try {
+    text = readFileSync(`/proc/${String(pid)}/task/${String(tid)}/schedstat`, 'utf8');
+  } catch {
+    throw new RuntimeReloaded(`process ${String(pid)} is gone`);
+  }
+  return Number(text.split(' ')[0]) / 1e6;
 }
 
-/** Waits until `read()` stops growing (less than 0.1 ms per `quietMs`). */
-async function settle(read: () => number): Promise<number> {
+/**
+ * Waits until `read()` stops growing: less than `noiseMs` + 0.1 ms per 20 ms tick for
+ * `quietMs`. `noiseMs` is the thread's own idle rate (a running CPU profiler signals the
+ * thread every sampling interval, even when no JavaScript runs).
+ */
+async function settle(read: () => number, noiseMs = 0): Promise<number> {
   const start = Date.now();
   let last = read();
   let quietSince = Date.now();
   while (Date.now() - start < settleTimeoutMs) {
     await sleep(20);
     const now = read();
-    if (now - last > 0.1) quietSince = Date.now();
+    if (now - last > noiseMs + 0.1) quietSince = Date.now();
     last = now;
     if (Date.now() - quietSince >= quietMs) break;
   }
   return last;
+}
+
+/** The thread's CPU per 20 ms while idle (measured over 200 ms). */
+async function idleRate(read: () => number): Promise<number> {
+  const a = read();
+  await sleep(200);
+  return ((read() - a) / 200) * 20;
 }
 
 interface DevtoolsMessage {
@@ -195,6 +216,8 @@ export interface WorkersOptions {
   /** Profiler sampling interval, microseconds. */
   samplingUs: number;
   logFile: string;
+  /** Another Worker's wrangler config (the calibration Worker); default: the app's. */
+  config?: string;
 }
 
 /**
@@ -229,10 +252,16 @@ export class WorkersRuntime {
         '--inspector-port',
         String(this.opts.inspectorPort),
         '--show-interactive-dev-session=false',
+        ...(this.opts.config ? ['--config', this.opts.config] : []),
       ],
       {
         cwd: webDir,
-        env: { ...process.env, WRANGLER_SEND_METRICS: 'false', NEXT_TELEMETRY_DISABLED: '1' },
+        env: {
+          ...process.env,
+          WRANGLER_SEND_METRICS: 'false',
+          WRANGLER_CI_DISABLE_CONFIG_WATCHING: 'true',
+          NEXT_TELEMETRY_DISABLED: '1',
+        },
         stdio: ['ignore', 'pipe', 'pipe'],
         detached: true,
       },
@@ -294,7 +323,11 @@ export class WorkersRuntime {
     const inspector = this.inspector;
     if (!inspector) throw new Error('runtime not started');
     const pid = this.runtimePid;
-    if (profile) await inspector.send('Profiler.start');
+    let noise = 0;
+    if (profile) {
+      await inspector.send('Profiler.start');
+      noise = await idleRate(() => threadCpuMs(pid));
+    }
     const before = threadCpuMs(pid);
     const t0 = performance.now();
     const res = await fetch(this.origin + spec.path, {
@@ -306,7 +339,7 @@ export class WorkersRuntime {
     const bytes = await readBody(res);
     const wallMs = performance.now() - t0;
     if (holdMs > 0) await sleep(holdMs);
-    const after = await settle(() => threadCpuMs(pid));
+    const after = await settle(() => threadCpuMs(pid), noise);
     let isolate: IsolateCpu | null = null;
     if (profile) {
       const result = (await inspector.send('Profiler.stop')) as { profile: CpuProfile };

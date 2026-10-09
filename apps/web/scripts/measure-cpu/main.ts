@@ -6,12 +6,14 @@
  *
  *   pnpm --filter @br/web cf:build          # the Worker (and the .next build next start uses)
  *   npx -y supabase@2.119.0 start -x …      # the local stack (docs/WORKFLOW.md)
- *   pnpm --filter @br/web measure:cpu [--warm 20] [--cold 6] [--node-cold 3] [--only <regex>]
- *                                     [--skip-node] [--skip-workers] [--skip-startup]
+ *   pnpm --filter @br/web measure:cpu [--warm 20] [--cold 6] [--node-warm 10] [--node-cold 3]
+ *                                     [--only <regex>] [--skip-node] [--skip-workers]
+ *                                     [--skip-startup] [--skip-calibration]
  *                                     [--sampling-us 100] [--out cpu-results]
  *
  * Writes `cpu-results/<timestamp>/samples.jsonl` (every sample), `summary.csv` and
- * `summary.md` (median/p95 per scenario), and prints the table. Fixtures (battles, players,
+ * `summary.md` (median/p95 per scenario, the method check of calibrate.ts, the startup
+ * profile), and prints the table. Fixtures (battles, players,
  * reports, an admin) are inserted into the local database and committed.
  */
 import { execFileSync } from 'node:child_process';
@@ -20,6 +22,7 @@ import { appendFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
+import { calibrate, calibrationTable } from './calibrate';
 import {
   Fixtures,
   adminCookie,
@@ -30,6 +33,7 @@ import {
 import { fmt, stats } from './profile';
 import {
   NodeRuntime,
+  RuntimeReloaded,
   WorkersRuntime,
   type Measurement,
   type RequestSpec,
@@ -48,6 +52,7 @@ const { values: argv } = parseArgs({
     'skip-node': { type: 'boolean', default: false },
     'skip-workers': { type: 'boolean', default: false },
     'skip-startup': { type: 'boolean', default: false },
+    'skip-calibration': { type: 'boolean', default: false },
     'sampling-us': { type: 'string', default: '100' },
     out: { type: 'string', default: 'cpu-results' },
   },
@@ -143,7 +148,6 @@ async function primed(ctx: Ctx, path: string, headers: Record<string, string> = 
 
 let shared: {
   hit: BattleFixture;
-  ogHit: BattleFixture;
   user: string;
   lookup: BattleFixture;
   partner: string[];
@@ -157,7 +161,6 @@ async function sharedFixtures() {
   for (let i = 0; i < 10; i++) await fx.battle({ users: [user, ...partner] });
   shared = {
     hit: await fx.battle({ players: 4, screenshot: 'png' }),
-    ogHit: await fx.battle({ players: 4, screenshot: 'png' }),
     user,
     lookup: await fx.battle({ players: 4 }),
     partner,
@@ -323,31 +326,25 @@ const scenarios: Scenario[] = [
     next: () => Promise.resolve({ path: `/battles/${randomUUID()}` }),
     expect: { status: [404] },
   },
-  // The OG image (satori + resvg).
   {
-    id: 'og-miss-png',
-    label: '/battles/[id]/opengraph-image MISS (PNG screenshot)',
-    route: '/battles/[id]/opengraph-image',
-    next: async () => ({ path: `/battles/${(await fx.battle({ players: 4, screenshot: 'png' })).battle}/opengraph-image` }),
-    expect: { status: [200], cache: ['MISS'] },
-  },
-  {
-    id: 'og-miss-text',
-    label: '/battles/[id]/opengraph-image MISS (no screenshot)',
-    route: '/battles/[id]/opengraph-image',
-    next: async () => ({ path: `/battles/${(await fx.battle({ players: 4 })).battle}/opengraph-image` }),
-    expect: { status: [200], cache: ['MISS'] },
-  },
-  {
-    id: 'og-hit',
-    label: '/battles/[id]/opengraph-image HIT',
-    route: '/battles/[id]/opengraph-image',
+    id: 'battle-malformed',
+    label: '/battles/<malformed id> (404, cached 1 h)',
+    route: '/battles/[id]',
     next: async (ctx) => {
-      const path = `/battles/${(await sharedFixtures()).ogHit.battle}/opengraph-image`;
-      await primed(ctx, path);
-      return { path };
+      await ctx.server.request({ path: '/battles/not-a-battle' });
+      return { path: '/battles/not-a-battle' };
     },
-    expect: { status: [200], cache: ['HIT'] },
+    expect: { status: [404] },
+  },
+  // The social image: a static asset since T-033 (before: /battles/[id]/opengraph-image,
+  // drawn per battle by satori + resvg, ~300 ms; docs/08-free-tier.md §1). In production
+  // Cloudflare serves assets without running the Worker; locally they pass the asset router.
+  {
+    id: 'og-card',
+    label: '/og-card.png (static asset)',
+    route: 'static assets',
+    next: () => Promise.resolve({ path: '/og-card.png' }),
+    expect: { status: [200] },
   },
   // /u/[id]: dynamic, its data cached ('use cache').
   {
@@ -383,7 +380,14 @@ const scenarios: Scenario[] = [
     expect: { status: [404] },
   },
   // Dynamic pages without data.
-  { id: 'room', label: '/r/[code]', route: '/r/[code]', next: () => Promise.resolve({ path: '/r/ABCDE' }), expect: { status: [200] } },
+  // One prerendered page for every room since T-033 (a rewrite to /r).
+  {
+    id: 'room',
+    label: '/r/[code] (prerendered, rewritten to /r)',
+    route: '/r/[code]',
+    next: () => Promise.resolve({ path: '/r/ABCDE' }),
+    expect: { status: [200], cache: ['HIT'] },
+  },
   { id: 'notfound', label: '/<unknown path> (404)', route: '404', next: () => Promise.resolve({ path: `/no-such-page-${randomUUID().slice(0, 8)}` }), expect: { status: [404] } },
   // /admin
   { id: 'admin-signin', label: '/admin/sign-in', route: '/admin', next: () => Promise.resolve({ path: '/admin/sign-in' }), expect: { status: [200] } },
@@ -553,6 +557,7 @@ async function measureWorkers(): Promise<void> {
     logFile: `${outDir}/wrangler.log`,
   });
   const ctx: Ctx = { server: rt, runtime: 'workers' };
+  running.push(rt);
   try {
     await rt.start();
     // Warm: one unmeasured request of the scenario first, then alternate profiled/not.
@@ -563,8 +568,16 @@ async function measureWorkers(): Promise<void> {
       for (let i = 0; i < n; i++) {
         const spec = await s.next(ctx);
         const profiled = i % 2 === 0;
-        const m = await measureHeld(rt, spec, profiled, s);
-        record(s, 'workers', 'warm', profiled, m, null);
+        try {
+          const m = await measureHeld(rt, spec, profiled, s);
+          record(s, 'workers', 'warm', profiled, m, null);
+        } catch (e) {
+          if (!(e instanceof RuntimeReloaded)) throw e;
+          log(`workerd restarted under ${s.id} (a watched file changed): sample dropped`);
+          await rt.restart();
+          await rt.request(await s.next(ctx));
+          i--;
+        }
       }
     }
     // Cold: a fresh isolate for every sample.
@@ -574,8 +587,14 @@ async function measureWorkers(): Promise<void> {
         const spec = await s.next(ctx);
         await rt.restart();
         const profiled = i % 2 === 0;
-        const m = await measureHeld(rt, spec, profiled, s);
-        record(s, 'workers', 'cold', profiled, m, rt.startupThreadMs);
+        try {
+          const m = await measureHeld(rt, spec, profiled, s);
+          record(s, 'workers', 'cold', profiled, m, rt.startupThreadMs);
+        } catch (e) {
+          if (!(e instanceof RuntimeReloaded)) throw e;
+          log(`workerd restarted under ${s.id} (a watched file changed): sample dropped`);
+          i--;
+        }
       }
     }
   } finally {
@@ -600,6 +619,7 @@ async function measureNode(): Promise<void> {
   const rt = new NodeRuntime({ port: 3197, probePort: 3198, logFile: `${outDir}/next.log` });
   const ctx: Ctx = { server: rt, runtime: 'node' };
   const nodeScenarios = selected.filter((s) => !s.workersOnly);
+  running.push(rt);
   try {
     await rt.start();
     for (const s of nodeScenarios) {
@@ -644,7 +664,7 @@ function measureStartup(): string {
 }
 
 // ─── Summary ────────────────────────────────────────────────────────────────────
-function summarize(startup: string | null): void {
+function summarize(startup: string | null, calibration: string | null): void {
   const rows: string[][] = [];
   const csv: string[] = [
     'scenario,label,route,runtime,isolate,metric,n,median_ms,p95_ms,min_ms,max_ms,unexpected',
@@ -708,7 +728,11 @@ function summarize(startup: string | null): void {
     ...rows.map((r) => `| ${r.join(' | ')} |`),
   ].join('\n');
   writeFileSync(`${outDir}/summary.csv`, `${csv.join('\n')}\n`);
-  writeFileSync(`${outDir}/summary.md`, `${md}\n\n${startup ?? ''}`);
+  writeFileSync(
+    `${outDir}/summary.md`,
+    `${md}\n\n${calibration ? `Method check:\n\n${calibration}\n\n` : ''}${startup ?? ''}`,
+  );
+  if (calibration) process.stdout.write(`\nMethod check:\n\n${calibration}\n`);
   process.stdout.write(`\n${md}\n\n`);
   const unexpected = all.filter((x) => !x.ok);
   if (unexpected.length > 0) {
@@ -719,6 +743,14 @@ function summarize(startup: string | null): void {
 }
 
 // ─── Run ────────────────────────────────────────────────────────────────────────
+// Stop the servers (their own process groups) on Ctrl+C.
+const running: { stop: () => Promise<void> }[] = [];
+for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+  process.on(signal, () => {
+    void Promise.all(running.map((r) => r.stop())).finally(() => process.exit(130));
+  });
+}
+
 log(`results in ${outDir}`);
 log('fixtures: an admin, battles, players…');
 tokens = await fx.admin(ADMIN_EMAIL, ADMIN_PASSWORD);
@@ -728,6 +760,11 @@ await sharedFixtures();
 for (let i = 0; i < 3; i++) await reported();
 
 const startup = argv['skip-startup'] ? null : measureStartup();
+let calibration: string | null = null;
+if (!argv['skip-calibration']) {
+  log('method check on a calibration Worker (calibrate.ts)…');
+  calibration = calibrationTable(await calibrate(`${outDir}/calibration`, SAMPLING_US));
+}
 if (!argv['skip-workers']) await measureWorkers();
 if (!argv['skip-node']) await measureNode();
-summarize(startup);
+summarize(startup, calibration);

@@ -48,6 +48,9 @@ const nextConfig: NextConfig = {
     NEXT_PUBLIC_POSTHOG_HOST: process.env.NEXT_PUBLIC_POSTHOG_HOST ?? '',
   },
   poweredByHeader: false,
+  // Every room shares one prerendered page (app/r/page.tsx; the code is read in the browser),
+  // so `/r/{code}` is answered from the cache instead of rendered per request (T-033).
+  rewrites: () => Promise.resolve([{ source: '/r/:code', destination: '/r' }]),
   // `next dev` would otherwise write AGENTS.md and CLAUDE.md into apps/web when it detects an
   // AI coding agent. The repository keeps its agent instructions at the root.
   agentRules: false,

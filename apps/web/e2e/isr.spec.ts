@@ -1,16 +1,24 @@
 import { expect, test, type APIRequestContext, type Browser } from '@playwright/test';
-import { APP_SERVER, bodyHash, cacheStatus, cachedCopy, sMaxAge } from './cache';
-import { anonymousUserId, assertUuid, seedAdmin, sql, uploadScreenshot } from './stack';
+import { APP_SERVER, STATIC_CARD, cacheStatus, cachedCopy, ogImage, sMaxAge } from './cache';
+import {
+  anonymousUserId,
+  assertUuid,
+  publicScreenshotUrl,
+  seedAdmin,
+  sql,
+  uploadScreenshot,
+} from './stack';
 
 /**
  * ISR of the permanent pages (T-026) against the real local stack, on `next start`
  * (playwright.moderation.config.ts) or on the Workers preview (`E2E_APP_SERVER=workers`: the
  * OpenNext build with R2, D1 and the Durable Object queue emulated by wrangler):
  *
- * - a settled battle (DESTROYED, `destroyed_at` set): `/battles/[id]` and its OG image come
- *   from the cache on the second request, and keep doing so while the database changes
- *   underneath; so does the builder's history data (`/u/[id]`). An admin takedown then shows
- *   "Removed by moderators" on all three at once, and the fresh copy is cached again;
+ * - a settled battle (DESTROYED, `destroyed_at` set): `/battles/[id]` (with its `og:image`,
+ *   the rank-1 screenshot) comes from the cache on the second request, and keeps doing so
+ *   while the database changes underneath; so does the builder's history data (`/u/[id]`).
+ *   An admin takedown then shows "Removed by moderators" on both at once (the `og:image`
+ *   becomes the static card, T-028/T-033), and the fresh copy is cached again;
  * - a battle that is not public yet: its 404 is cached for seconds only, so the page shows up
  *   once the battle reaches RESULTS.
  *
@@ -106,8 +114,9 @@ test('a settled battle is served from the cache until a takedown revalidates it'
   const fx = await createBattle('destroyed', true);
   await addScreenshot(browser, fx);
   const battlePath = `/battles/${fx.battle}`;
-  const ogPath = `${battlePath}/opengraph-image`;
   const historyPath = `/u/${fx.iris.user}`;
+  // The social image is Iris's screenshot itself (T-033: no card drawn per request).
+  const shot = publicScreenshotUrl(`${fx.battle}/${fx.iris.build}.png`);
 
   // ─── First visits fill the cache; the second request is a hit ───────────────────
   const first = await get(request, battlePath);
@@ -118,11 +127,10 @@ test('a settled battle is served from the cache until a takedown revalidates it'
   expect(second.headers()['set-cookie']).toBeUndefined();
   // Settled: an hour (SETTLED_BATTLE in lib/cache/policy.ts).
   expect(sMaxAge(second)).toBeGreaterThan(3500);
-
-  const og1 = await get(request, ogPath);
-  expect(og1.headers()['content-type']).toBe('image/png');
-  const ogBefore = await bodyHash(og1);
-  expect(await bodyHash(await cachedCopy(request, ogPath))).toBe(ogBefore);
+  expect(ogImage(await second.text())).toBe(shot);
+  const image = await request.get(shot);
+  expect(image.status()).toBe(200);
+  expect(image.headers()['content-type']).toBe('image/png');
 
   const history1 = await get(request, historyPath);
   expect(await history1.text()).toContain('Probe One');
@@ -137,7 +145,7 @@ test('a settled battle is served from the cache until a takedown revalidates it'
   const cachedHtml = await cached.text();
   expect(cachedHtml).toContain('Probe One');
   expect(cachedHtml).not.toContain('(renamed)');
-  expect(await bodyHash(await get(request, ogPath))).toBe(ogBefore);
+  expect(ogImage(cachedHtml)).toBe(shot);
   const cachedHistory = await (await get(request, historyPath)).text();
   expect(cachedHistory).toContain('Probe One');
   expect(cachedHistory).not.toContain('(renamed)');
@@ -172,15 +180,22 @@ test('a settled battle is served from the cache until a takedown revalidates it'
   // A full re-render from fresh data: Juno's rename shows up too.
   expect(afterHtml).toContain('Probe Two (renamed)');
 
-  expect(await bodyHash(await get(request, ogPath))).not.toBe(ogBefore);
+  // T-028: the removed build's screenshot is gone from the social image too; the static
+  // card replaces it (Juno's build is not promoted).
+  expect(ogImage(afterHtml)).toMatch(STATIC_CARD);
+  expect(afterHtml).not.toContain(shot);
+  const card = await request.get('/og-card.png');
+  expect(card.status()).toBe(200);
+  expect(card.headers()['content-type']).toBe('image/png');
 
   const historyAfter = await (await get(request, historyPath)).text();
   expect(historyAfter).toContain('Removed by moderators');
   expect(historyAfter).not.toContain('Probe One');
 
   // ─── …and the fresh copies are cached again ─────────────────────────────────────
-  expect(await (await cachedCopy(request, battlePath)).text()).toContain('Removed by moderators');
-  expect(await bodyHash(await cachedCopy(request, ogPath))).not.toBe(ogBefore);
+  const again = await (await cachedCopy(request, battlePath)).text();
+  expect(again).toContain('Removed by moderators');
+  expect(ogImage(again)).toMatch(STATIC_CARD);
 
   // ─── The second expiry, TAKEDOWN_REEXPIRE_MS (10 s) after the takedown ──────────
   // It throws away a copy rendered from data read just before the takedown and stored just

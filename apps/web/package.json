@@ -27,6 +27,7 @@
     "test:e2e:cf": "pnpm run cf:build && E2E_APP_SERVER=workers playwright test",
     "test:e2e:cf:moderation": "pnpm run cf:build && E2E_APP_SERVER=workers playwright test -c playwright.moderation.config.ts",
     "measure:cpu": "tsx scripts/measure-cpu/main.ts",
+    "og-card": "tsx scripts/og-card.ts",
     "test:e2e:cf:telemetry": "NEXT_PUBLIC_SENTRY_DSN=http://public@127.0.0.1:4399/1 NEXT_PUBLIC_SENTRY_ENVIRONMENT=e2e NEXT_PUBLIC_POSTHOG_KEY=phc_e2e_test NEXT_PUBLIC_POSTHOG_HOST=http://127.0.0.1:4399 pnpm run cf:build && E2E_APP_SERVER=workers E2E_TELEMETRY=on playwright test -c playwright.telemetry.config.ts"
   },
   "dependencies": {

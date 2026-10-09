@@ -176,14 +176,14 @@ test('ship: spin → build → ship → results (screenshot, speedrun) → destr
         .evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth),
     )
     .toBe(1280);
-  await expect(page.locator('meta[property="og:image"]')).toHaveAttribute(
-    'content',
-    new RegExp(`/battles/${battle}/opengraph-image`),
-  );
+  // The social image is the screenshot itself (T-033: no card drawn per request).
+  const shot = await page.getByTestId('public-screenshot').getAttribute('src');
+  expect(shot).toContain(`/storage/v1/object/public/screenshots/${battle}/`);
+  await expect(page.locator('meta[property="og:image"]')).toHaveAttribute('content', shot ?? '');
   await snap(page, 'battle-page');
-  const og = await page.request.get(`/battles/${battle}/opengraph-image`);
+  const og = await page.request.get(shot ?? '');
   expect(og.status()).toBe(200);
-  expect(og.headers()['content-type']).toBe('image/png');
+  expect(og.headers()['content-type']).toMatch(/^image\/(webp|png|jpeg)$/);
 
   // Play again starts over.
   await page.goto('/play');

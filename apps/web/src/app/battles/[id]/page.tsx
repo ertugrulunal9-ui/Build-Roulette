@@ -13,6 +13,7 @@ import {
   formatTimeLimit,
   isWinner,
 } from '../../../lib/solo/format';
+import { battleOgImage } from '../../../lib/solo/og-image';
 import { getPublicBattle } from '../../../lib/solo/public-battle';
 import { screenshotUrl } from '../../../lib/supabase/config';
 
@@ -31,6 +32,9 @@ import { screenshotUrl } from '../../../lib/supabase/config';
  * A build a moderator removed after RESULTS (T-028) keeps its place and rank ("#1 Removed
  * by moderators") and its vote counts, but no Winner banner, gold ring or awards; the next
  * build does not become the winner.
+ *
+ * The social image is the rank-1 screenshot or a static card (lib/solo/og-image.ts), not a
+ * card drawn per battle: T-033, Workers Free's CPU limit.
  */
 
 export const dynamic = 'force-static';
@@ -53,11 +57,13 @@ export async function generateMetadata({ params }: BattlePageProps): Promise<Met
     ? `${top.name} by ${top.builder_name}`
     : `${data.challenge.build.text} · Battle results`;
   const description = `BUILD: ${data.challenge.build.text} · RULE: ${data.challenge.rule.text} · STYLE: ${data.challenge.style.text} · ${formatTimeLimit(data.challenge.time_limit_seconds)}`;
+  // An existing image, never one drawn per request (T-033, lib/solo/og-image.ts).
+  const image = battleOgImage(data);
   return {
     title,
     description,
-    openGraph: { title, description, type: 'article' },
-    twitter: { card: 'summary_large_image', title, description },
+    openGraph: { title, description, type: 'article', images: [image] },
+    twitter: { card: 'summary_large_image', title, description, images: [image] },
   };
 }
 

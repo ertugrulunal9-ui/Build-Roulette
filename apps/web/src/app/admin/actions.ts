@@ -7,8 +7,8 @@
  * posts, and the cookies are SameSite=Strict, httpOnly and scoped to /admin.
  *
  * Of these, only a takedown changes public pages (T-026): it expires the cached copies of
- * the battle's page, its OG image and the history pages that list it. Dismissing reports
- * changes nothing public (reports are never shown).
+ * the battle's page (with its `og:image`) and the history pages that list it. Dismissing
+ * reports changes nothing public (reports are never shown).
  *
  * T-030 (runbooks): "Refresh public copies" expires a battle's cached pages by hand (after a
  * takedown made with SQL, or a revalidation that went missing; docs/runbooks/
@@ -99,15 +99,15 @@ export async function signOutAction(): Promise<void> {
 }
 
 /**
- * Expires every cached copy that shows battle `battleId` (its page, its OG image, the history
- * pages that list it): the next visitor waits for a fresh render instead of getting the old
- * copy while it regenerates. The id comes from the RPC's answer, not from the form.
+ * Expires every cached copy that shows battle `battleId` (its page, the history pages that
+ * list it): the next visitor waits for a fresh render instead of getting the old copy while
+ * it regenerates. The id comes from the RPC's answer, not from the form.
  *
  * A render that read the battle just before the takedown can store its copy just after
- * this, and that copy would look newer than the expiry. So the battle's page and OG image
- * are expired once more a little later, after the response (`after`: `waitUntil` on
- * Workers), by path: OpenNext writes a tag only once per request, and a path expiry also
- * reaches the cached data those two read. (A history's data is at most a minute old anyway.)
+ * this, and that copy would look newer than the expiry. So the battle's page is expired once
+ * more a little later, after the response (`after`: `waitUntil` on Workers), by path:
+ * OpenNext writes a tag only once per request, and a path expiry also reaches the cached data
+ * the page read. (A history's data is at most a minute old anyway.)
  */
 function expirePublicCopies(battleId: unknown): void {
   const tags = takedownTags(battleId);
@@ -167,9 +167,9 @@ export async function takeDownAction(formData: FormData): Promise<void> {
 }
 
 /**
- * Expires the cached copies of one battle's public pages (page, OG image, the histories that
- * list it), like a takedown does. The battle id is checked through `admin_battle_log` (which
- * also logs the lookup), so only an existing battle is touched.
+ * Expires the cached copies of one battle's public pages (page, the histories that list
+ * it), like a takedown does. The battle id is checked through `admin_battle_log` (which also
+ * logs the lookup), so only an existing battle is touched.
  */
 export async function refreshPublicCopiesAction(formData: FormData): Promise<void> {
   const token = await adminToken();

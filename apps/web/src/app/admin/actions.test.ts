@@ -75,7 +75,7 @@ describe('takeDownAction', () => {
     });
     expect(m.updateTag).toHaveBeenCalledExactlyOnceWith(`battle:${BATTLE}`);
 
-    // The second expiry (the page and the OG image, by path) runs after the response.
+    // The second expiry (the page, by path) runs after the response.
     expect(m.after).toHaveBeenCalledTimes(1);
     expect(m.revalidatePath).not.toHaveBeenCalled();
     vi.useFakeTimers();
@@ -85,10 +85,7 @@ describe('takeDownAction', () => {
     expect(m.revalidatePath).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
     await done;
-    expect(m.revalidatePath.mock.calls).toEqual([
-      [`/battles/${BATTLE}`],
-      [`/battles/${BATTLE}/opengraph-image`],
-    ]);
+    expect(m.revalidatePath.mock.calls).toEqual([[`/battles/${BATTLE}`]]);
   });
 
   it('also on a retry of the screenshot delete', async () => {

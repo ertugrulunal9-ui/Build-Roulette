@@ -23,7 +23,7 @@ const html = `<!doctype html>
   <div style="display:flex;gap:18px;margin-bottom:46px">
     ${chip('BUILD', '#0ea5e9', '#ffffff')}${chip('RULE', '#f59e0b', '#1c1917')}${chip('STYLE', '#d946ef', '#ffffff')}
   </div>
-  <div style="font-size:42px;font-weight:800;color:#d4d4d8">Builds are temporary. Results are permanent.</div>
+  <div style="font-size:36px;font-weight:800;color:#d4d4d8;white-space:nowrap">Builds are temporary. Results are permanent.</div>
 </div>
 </body></html>`;
 

@@ -6,7 +6,7 @@
  *   wrangler's inspector proxy) and the workerd main thread's CPU from
  *   `/proc/<pid>/task/<pid>/schedstat` (nanoseconds; every isolate of the local runtime runs
  *   on that thread, so it also counts the emulated R2/D1/Durable Object and routing workers).
- * - **Node**: `next start` with a preload (node-hook.cjs) that reads `process.threadCpuUsage()`
+ * - **Node**: `next start` with a preload (node-hook.mjs) that reads `process.threadCpuUsage()`
  *   around each request.
  *
  * A measurement waits until the server is quiet again ("settled"), so work after the response
@@ -267,17 +267,19 @@ export class WorkersRuntime {
       },
     );
     this.child = child;
-    let ready = false;
+    const state = { ready: false };
     const onData = (c: Buffer) => {
       log.write(c);
-      if (c.toString().includes('Ready on')) ready = true;
+      if (c.toString().includes('Ready on')) state.ready = true;
     };
-    child.stdout?.on('data', onData);
-    child.stderr?.on('data', onData);
+    child.stdout.on('data', onData);
+    child.stderr.on('data', onData);
     const deadline = Date.now() + 90_000;
-    while (!ready) {
-      if (child.exitCode !== null) throw new Error(`wrangler dev exited (see ${this.opts.logFile})`);
-      if (Date.now() > deadline) throw new Error(`wrangler dev not ready (see ${this.opts.logFile})`);
+    while (!state.ready) {
+      if (child.exitCode !== null)
+        throw new Error(`wrangler dev exited (see ${this.opts.logFile})`);
+      if (Date.now() > deadline)
+        throw new Error(`wrangler dev not ready (see ${this.opts.logFile})`);
       await sleep(50);
     }
     // The runtime is the workerd process with the inspector (the other one is wrangler's proxy).
@@ -295,7 +297,9 @@ export class WorkersRuntime {
       await sleep(50);
     }
     this.startupThreadMs = threadCpuMs(this.runtimePid);
-    this.inspector = await Inspector.connect(`ws://127.0.0.1:${String(this.opts.inspectorPort)}/ws`);
+    this.inspector = await Inspector.connect(
+      `ws://127.0.0.1:${String(this.opts.inspectorPort)}/ws`,
+    );
     await this.inspector.send('Profiler.enable');
     await this.inspector.send('Profiler.setSamplingInterval', { interval: this.opts.samplingUs });
   }
@@ -386,7 +390,7 @@ interface ProbeAnswer {
   settledMs: number;
 }
 
-/** `next start` with node-hook.cjs preloaded (the cross-check on Node). */
+/** `next start` with node-hook.mjs preloaded (the cross-check on Node). */
 export class NodeRuntime {
   readonly origin: string;
   private child: ChildProcess | null = null;
@@ -398,7 +402,7 @@ export class NodeRuntime {
 
   async start(): Promise<void> {
     const log = createWriteStream(this.opts.logFile, { flags: 'a' });
-    const hook = fileURLToPath(new URL('./node-hook.cjs', import.meta.url));
+    const hook = fileURLToPath(new URL('./node-hook.mjs', import.meta.url));
     const child = spawn(
       process.execPath,
       ['node_modules/next/dist/bin/next', 'start', '-p', String(this.opts.port), '-H', '127.0.0.1'],
@@ -407,7 +411,7 @@ export class NodeRuntime {
         env: {
           ...process.env,
           NEXT_TELEMETRY_DISABLED: '1',
-          NODE_OPTIONS: `--require ${hook}`,
+          NODE_OPTIONS: `--import ${hook}`,
           CPU_PROBE_PORT: String(this.opts.probePort),
         },
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -415,8 +419,8 @@ export class NodeRuntime {
       },
     );
     this.child = child;
-    child.stdout?.on('data', (c: Buffer) => log.write(c));
-    child.stderr?.on('data', (c: Buffer) => log.write(c));
+    child.stdout.on('data', (c: Buffer) => log.write(c));
+    child.stderr.on('data', (c: Buffer) => log.write(c));
     const deadline = Date.now() + 60_000;
     for (;;) {
       if (child.exitCode !== null) throw new Error(`next start exited (see ${this.opts.logFile})`);

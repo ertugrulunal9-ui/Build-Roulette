@@ -1,13 +1,11 @@
 // Preloaded into `next start` by the CPU measurement (T-033, runtime.ts NodeRuntime):
-// `NODE_OPTIONS=--require …/node-hook.cjs CPU_PROBE_PORT=…`. For each request carrying an
+// `NODE_OPTIONS=--import …/node-hook.mjs CPU_PROBE_PORT=…`. For each request carrying an
 // `x-cpu-probe: <id>` header it reads the main thread's CPU time (`process.threadCpuUsage`)
 // when the request arrives and when the response finishes, then keeps sampling every 50 ms
 // until the thread has been quiet for 100 ms, to also count work after the response (`after()`,
 // the cache write); `x-cpu-probe-hold: <ms>` keeps it sampling at least that long. `GET /settle/<id>` on CPU_PROBE_PORT answers with both numbers once that
 // is known (the client asks a moment later, so its own request is not counted).
-'use strict';
-
-const http = require('node:http');
+import http from 'node:http';
 
 const port = Number(process.env.CPU_PROBE_PORT);
 const probes = new Map();

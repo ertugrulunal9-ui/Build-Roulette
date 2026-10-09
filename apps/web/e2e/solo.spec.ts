@@ -177,11 +177,11 @@ test('ship: spin → build → ship → results (screenshot, speedrun) → destr
     )
     .toBe(1280);
   // The social image is the screenshot itself (T-033: no card drawn per request).
-  const shot = await page.getByTestId('public-screenshot').getAttribute('src');
-  expect(shot).toContain(`/storage/v1/object/public/screenshots/${battle}/`);
-  await expect(page.locator('meta[property="og:image"]')).toHaveAttribute('content', shot ?? '');
+  const shotUrl = await page.getByTestId('public-screenshot').getAttribute('src');
+  expect(shotUrl).toContain(`/storage/v1/object/public/screenshots/${battle}/`);
+  await expect(page.locator('meta[property="og:image"]')).toHaveAttribute('content', shotUrl ?? '');
   await snap(page, 'battle-page');
-  const og = await page.request.get(shot ?? '');
+  const og = await page.request.get(shotUrl ?? '');
   expect(og.status()).toBe(200);
   expect(og.headers()['content-type']).toMatch(/^image\/(webp|png|jpeg)$/);
 

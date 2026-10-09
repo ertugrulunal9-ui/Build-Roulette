@@ -253,23 +253,51 @@ async function reported(): Promise<BattleFixture> {
 
 const scenarios: Scenario[] = [
   // Prerendered at build time: cache interception answers from R2 before Next loads.
-  { id: 'home', label: '/ (prerendered)', route: '/', next: () => Promise.resolve({ path: '/' }), expect: { status: [200], cache: ['HIT'] } },
-  { id: 'play', label: '/play (prerendered)', route: '/play', next: () => Promise.resolve({ path: '/play' }), expect: { status: [200], cache: ['HIT'] } },
-  { id: 'playground', label: '/playground (prerendered)', route: '/playground', next: () => Promise.resolve({ path: '/playground' }), expect: { status: [200], cache: ['HIT'] } },
-  { id: 'icon', label: '/icon.svg (static route)', route: '/icon.svg', next: () => Promise.resolve({ path: '/icon.svg' }), expect: { status: [200] } },
+  {
+    id: 'home',
+    label: '/ (prerendered)',
+    route: '/',
+    next: () => Promise.resolve({ path: '/' }),
+    expect: { status: [200], cache: ['HIT'] },
+  },
+  {
+    id: 'play',
+    label: '/play (prerendered)',
+    route: '/play',
+    next: () => Promise.resolve({ path: '/play' }),
+    expect: { status: [200], cache: ['HIT'] },
+  },
+  {
+    id: 'playground',
+    label: '/playground (prerendered)',
+    route: '/playground',
+    next: () => Promise.resolve({ path: '/playground' }),
+    expect: { status: [200], cache: ['HIT'] },
+  },
+  {
+    id: 'icon',
+    label: '/icon.svg (static route)',
+    route: '/icon.svg',
+    next: () => Promise.resolve({ path: '/icon.svg' }),
+    expect: { status: [200] },
+  },
   // /battles/[id]: ISR.
   {
     id: 'battle-miss',
     label: '/battles/[id] MISS (render, 4 builds)',
     route: '/battles/[id]',
-    next: async () => ({ path: `/battles/${(await fx.battle({ players: 4, screenshot: 'png' })).battle}` }),
+    next: async () => ({
+      path: `/battles/${(await fx.battle({ players: 4, screenshot: 'png' })).battle}`,
+    }),
     expect: { status: [200], cache: ['MISS'] },
   },
   {
     id: 'battle-miss-8',
     label: '/battles/[id] MISS (render, 8 builds)',
     route: '/battles/[id]',
-    next: async () => ({ path: `/battles/${(await fx.battle({ players: 8, screenshot: 'png' })).battle}` }),
+    next: async () => ({
+      path: `/battles/${(await fx.battle({ players: 8, screenshot: 'png' })).battle}`,
+    }),
     expect: { status: [200], cache: ['MISS'] },
   },
   {
@@ -307,6 +335,8 @@ const scenarios: Scenario[] = [
       return { path: `${path}?_rsc=probe`, headers: { rsc: '1' } };
     },
     expect: { status: [200] },
+    // next start answers a made-up `_rsc` value with a redirect to the right one.
+    workersOnly: true,
   },
   {
     id: 'battle-prefetch',
@@ -318,6 +348,7 @@ const scenarios: Scenario[] = [
       return { path: `${path}?_rsc=probe2`, headers: { rsc: '1', 'next-router-prefetch': '1' } };
     },
     expect: { status: [200] },
+    workersOnly: true,
   },
   {
     id: 'battle-404',
@@ -388,10 +419,28 @@ const scenarios: Scenario[] = [
     next: () => Promise.resolve({ path: '/r/ABCDE' }),
     expect: { status: [200], cache: ['HIT'] },
   },
-  { id: 'notfound', label: '/<unknown path> (404)', route: '404', next: () => Promise.resolve({ path: `/no-such-page-${randomUUID().slice(0, 8)}` }), expect: { status: [404] } },
+  {
+    id: 'notfound',
+    label: '/<unknown path> (404)',
+    route: '404',
+    next: () => Promise.resolve({ path: `/no-such-page-${randomUUID().slice(0, 8)}` }),
+    expect: { status: [404] },
+  },
   // /admin
-  { id: 'admin-signin', label: '/admin/sign-in', route: '/admin', next: () => Promise.resolve({ path: '/admin/sign-in' }), expect: { status: [200] } },
-  { id: 'admin-anon', label: '/admin, not signed in (404)', route: '/admin', next: () => Promise.resolve({ path: '/admin' }), expect: { status: [404] } },
+  {
+    id: 'admin-signin',
+    label: '/admin/sign-in',
+    route: '/admin',
+    next: () => Promise.resolve({ path: '/admin/sign-in' }),
+    expect: { status: [200] },
+  },
+  {
+    id: 'admin-anon',
+    label: '/admin, not signed in (404)',
+    route: '/admin',
+    next: () => Promise.resolve({ path: '/admin' }),
+    expect: { status: [404] },
+  },
   {
     id: 'admin-queue',
     label: '/admin (report queue)',
@@ -403,14 +452,21 @@ const scenarios: Scenario[] = [
     id: 'admin-lookup',
     label: '/admin?q=<battle> (event log)',
     route: '/admin',
-    next: async () => ({ path: `/admin?q=${(await sharedFixtures()).lookup.battle}`, headers: adminHeaders() }),
+    next: async () => ({
+      path: `/admin?q=${(await sharedFixtures()).lookup.battle}`,
+      headers: adminHeaders(),
+    }),
     expect: { status: [200] },
   },
   {
     id: 'action-signin',
     label: 'action: sign in',
     route: '/admin actions',
-    next: async (ctx) => actionRequest('/admin/sign-in', await action(ctx, 'admin-sign-in-submit'), { email: ADMIN_EMAIL, password: ADMIN_PASSWORD }),
+    next: async (ctx) =>
+      actionRequest('/admin/sign-in', await action(ctx, 'admin-sign-in-submit'), {
+        email: ADMIN_EMAIL,
+        password: ADMIN_PASSWORD,
+      }),
     expect: { status: [200, 303] },
   },
   {
@@ -420,7 +476,12 @@ const scenarios: Scenario[] = [
     next: async (ctx) => {
       const id = await action(ctx, 'admin-dismiss');
       const b = await reported();
-      return actionRequest('/admin', id, { build_id: b.builds[0]?.build ?? '', view: 'open', note: '' }, adminHeaders());
+      return actionRequest(
+        '/admin',
+        id,
+        { build_id: b.builds[0]?.build ?? '', view: 'open', note: '' },
+        adminHeaders(),
+      );
     },
     expect: { status: [200, 303] },
   },
@@ -431,7 +492,12 @@ const scenarios: Scenario[] = [
     next: async (ctx) => {
       const id = await action(ctx, 'admin-take-down-confirm');
       const b = await reported();
-      return actionRequest('/admin', id, { build_id: b.builds[0]?.build ?? '', view: 'open', note: 'cpu' }, adminHeaders());
+      return actionRequest(
+        '/admin',
+        id,
+        { build_id: b.builds[0]?.build ?? '', view: 'open', note: 'cpu' },
+        adminHeaders(),
+      );
     },
     expect: { status: [200, 303] },
     holdMs: 10_500,
@@ -680,7 +746,10 @@ function summarize(startup: string | null, calibration: string | null): void {
     const pick = (runtime: Sample['runtime'], isolate: Sample['isolate']) =>
       all.filter((x) => x.scenario === s.id && x.runtime === runtime && x.isolate === isolate);
     const cell = (xs: Sample[], f: (x: Sample) => number | null) => {
-      const v = xs.filter((x) => x.ok).map(f).filter((x): x is number => x !== null);
+      const v = xs
+        .filter((x) => x.ok)
+        .map(f)
+        .filter((x): x is number => x !== null);
       return stats(v);
     };
     const groups: [Sample['runtime'], Sample['isolate']][] = [
@@ -709,18 +778,46 @@ function summarize(startup: string | null, calibration: string | null): void {
       for (const [metric, f, subset] of metrics) {
         const st = cell(subset, f);
         csv.push(
-          [s.id, JSON.stringify(s.label), JSON.stringify(s.route), runtime, isolate, metric, st.n, fmt(st.median), fmt(st.p95), fmt(st.min), fmt(st.max), bad].join(','),
+          [
+            s.id,
+            JSON.stringify(s.label),
+            JSON.stringify(s.route),
+            runtime,
+            isolate,
+            metric,
+            st.n,
+            fmt(st.median),
+            fmt(st.p95),
+            fmt(st.min),
+            fmt(st.max),
+            bad,
+          ].join(','),
         );
       }
     }
     const iso = (isolate: Sample['isolate']) => {
-      const st = cell(pick('workers', isolate).filter((x) => x.profiled), (x) => x.isolateMs);
+      const st = cell(
+        pick('workers', isolate).filter((x) => x.profiled),
+        (x) => x.isolateMs,
+      );
       return st.n ? `${fmt(st.median)} / ${fmt(st.p95)} (n=${String(st.n)})` : '–';
     };
     const thr = (isolate: Sample['isolate']) =>
-      fmt(cell(pick('workers', isolate).filter((x) => !x.profiled), (x) => x.threadMs).median);
-    const node = (isolate: Sample['isolate']) => fmt(cell(pick('node', isolate), (x) => x.threadMs).median);
-    rows.push([s.label, iso('warm'), iso('cold'), `${thr('warm')} / ${thr('cold')}`, `${node('warm')} / ${node('cold')}`]);
+      fmt(
+        cell(
+          pick('workers', isolate).filter((x) => !x.profiled),
+          (x) => x.threadMs,
+        ).median,
+      );
+    const node = (isolate: Sample['isolate']) =>
+      fmt(cell(pick('node', isolate), (x) => x.threadMs).median);
+    rows.push([
+      s.label,
+      iso('warm'),
+      iso('cold'),
+      `${thr('warm')} / ${thr('cold')}`,
+      `${node('warm')} / ${node('cold')}`,
+    ]);
   }
   const md = [
     `| ${head.join(' | ')} |`,

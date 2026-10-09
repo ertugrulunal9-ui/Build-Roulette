@@ -50,7 +50,11 @@ export async function calibrate(dir: string, samplingUs: number): Promise<Calibr
   );
   writeFileSync(
     `${dir}/wrangler.jsonc`,
-    JSON.stringify({ name: 'cpu-calibration', main: 'worker.js', compatibility_date: '2026-10-01' }),
+    JSON.stringify({
+      name: 'cpu-calibration',
+      main: 'worker.js',
+      compatibility_date: '2026-10-01',
+    }),
   );
   const rt = new WorkersRuntime({
     port: 8798,
@@ -101,7 +105,8 @@ export function calibrationTable(rows: CalibrationRow[]): string {
     '| Workload | workerd thread, unprofiled (median) | isolate CPU from the profile (median) | wall (median) |',
     '|---|---|---|---|',
     ...rows.map(
-      (r) => `| ${r.workload} | ${fmt(r.threadMs)} ms | ${fmt(r.isolateMs)} ms | ${fmt(r.wallMs)} ms |`,
+      (r) =>
+        `| ${r.workload} | ${fmt(r.threadMs)} ms | ${fmt(r.isolateMs)} ms | ${fmt(r.wallMs)} ms |`,
     ),
   ].join('\n');
 }

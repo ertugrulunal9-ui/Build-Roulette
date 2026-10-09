@@ -273,9 +273,9 @@ describe('battleOgImage', () => {
   it('the static card: no builds, no screenshot, or a removed top build', () => {
     expect(battleOgImage(battle(null), config)).toBe(STATIC_OG_CARD);
     expect(battleOgImage(battle({ screenshot_path: null }), config)).toBe(STATIC_OG_CARD);
-    expect(
-      battleOgImage(battle({ screenshot_path: 'b/top.webp', taken_down: true }), config),
-    ).toBe(STATIC_OG_CARD);
+    expect(battleOgImage(battle({ screenshot_path: 'b/top.webp', taken_down: true }), config)).toBe(
+      STATIC_OG_CARD,
+    );
     expect(STATIC_OG_CARD).toMatchObject({ url: '/og-card.png', width: 1200, height: 630 });
   });
 });

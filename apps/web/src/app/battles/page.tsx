@@ -17,7 +17,8 @@ const description =
   'The permanent results of a Build Roulette battle: the challenge, the ranked builds, the votes and the awards.';
 
 export const metadata: Metadata = {
-  title,
+  // The tab title is BattleView's own `<title>` (components/DocumentTitle.tsx).
+  title: null,
   description,
   openGraph: { title, description, type: 'article', images: [STATIC_OG_CARD] },
   twitter: { card: 'summary_large_image', title, description, images: [STATIC_OG_CARD] },

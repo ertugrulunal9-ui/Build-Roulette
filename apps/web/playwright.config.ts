@@ -1,31 +1,25 @@
 import { defineConfig } from '@playwright/test';
+import { APP_SERVER_ENV, appServerCommand } from './e2e/app-server';
 
 /**
- * E2E for /playground against a production build (`next build && next start`), plus the
- * local sandbox shell and mock CDN (scripts/sandbox-servers.ts). Run with
- * `pnpm --filter @br/web test:e2e` (builds first). Not part of `pnpm test`.
+ * E2E for /playground against the static export served like Cloudflare Pages serves it
+ * (`wrangler pages dev out/`, e2e/app-server.ts), plus the local sandbox shell and mock CDN
+ * (scripts/sandbox-servers.ts). Run with `pnpm --filter @br/web test:e2e` (builds first).
+ * Not part of `pnpm test`.
  *
  * The shell and CDN ports are the defaults baked into the build (src/lib/playground/config.ts).
- *
- * `E2E_APP_SERVER=workers` runs the same tests against the Cloudflare Workers build instead
- * (OpenNext output served by `wrangler dev`, i.e. workerd). Build it first with
- * `pnpm cf:build`; `pnpm test:e2e:cf` does both.
  */
 const APP_PORT = Number(process.env['APP_PORT'] ?? 3100);
 const APP_ORIGIN = `http://localhost:${String(APP_PORT)}`;
-const APP_SERVER_COMMAND =
-  process.env['E2E_APP_SERVER'] === 'workers'
-    ? `opennextjs-cloudflare preview --port ${String(APP_PORT)}`
-    : `next start -p ${String(APP_PORT)}`;
 
 export default defineConfig({
   testDir: './e2e',
   // The solo game and the rooms need the Supabase stack: playwright.solo.config.ts
   // (`test:e2e:solo`), playwright.multi.config.ts (`test:e2e:multi`) and
-  // playwright.chaos.config.ts (`test:e2e:chaos`); moderation and the ISR cache:
-  // playwright.moderation.config.ts (`test:e2e:moderation`, `test:e2e:cf:moderation`);
-  // error reporting and analytics: playwright.telemetry.config.ts (`test:e2e:telemetry`).
-  testIgnore: /(solo|multiplayer|chaos|moderation|isr|telemetry).*\.spec\.ts$/,
+  // playwright.chaos.config.ts (`test:e2e:chaos`); moderation:
+  // playwright.moderation.config.ts (`test:e2e:moderation`); error reporting and analytics:
+  // playwright.telemetry.config.ts (`test:e2e:telemetry`).
+  testIgnore: /(solo|multiplayer|chaos|moderation|telemetry).*\.spec\.ts$/,
   // One shared mock CDN and shell, and timing-sensitive watchdog checks: run serially.
   workers: 1,
   fullyParallel: false,
@@ -51,9 +45,9 @@ export default defineConfig({
       timeout: 60_000,
     },
     {
-      command: APP_SERVER_COMMAND,
+      command: appServerCommand(APP_PORT),
       url: `${APP_ORIGIN}/playground`,
-      env: { NEXT_TELEMETRY_DISABLED: '1', WRANGLER_SEND_METRICS: 'false' },
+      env: APP_SERVER_ENV,
       reuseExistingServer: false,
       stdout: 'pipe',
       timeout: 60_000,

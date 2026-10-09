@@ -31,8 +31,8 @@ import {
 } from '../../lib/admin/client';
 import type { AdminAction, BattleLog, OpsHealth, QueueItem, RoomLog } from '../../lib/admin/types';
 import { useBrowserUrl } from '../../lib/hosting/use-browser-url';
-import { documentTitle } from '../../lib/solo/battle-meta';
 import { TEST_ERROR_MESSAGE, errorReportingEnabled } from '../../lib/telemetry/config';
+import { DocumentTitle } from '../DocumentTitle';
 import { NotFoundView } from '../NotFoundView';
 import {
   ActionLog,
@@ -68,30 +68,47 @@ export function AdminApp() {
     };
   }, [attempt]);
 
+  // Until the session is known to be an admin's, the tab names nothing.
+  const neutral = <title>Build Roulette</title>;
   if (gate === 'checking' || !client) {
-    return <main className="min-h-dvh" data-testid="admin-checking" aria-busy="true" />;
+    return (
+      <>
+        {neutral}
+        <main className="min-h-dvh" data-testid="admin-checking" aria-busy="true" />
+      </>
+    );
   }
-  if (gate === 'none') return <NotFoundView testId="admin-not-found" />;
+  if (gate === 'none') {
+    return (
+      <>
+        {neutral}
+        <NotFoundView testId="admin-not-found" />
+      </>
+    );
+  }
   if (gate === 'error') {
     return (
-      <main
-        className="mx-auto flex min-h-dvh max-w-md flex-col items-center justify-center gap-4 px-6 text-center"
-        data-testid="admin-check-error"
-      >
-        <p className="text-sm text-zinc-600 dark:text-zinc-400">
-          Could not reach the server to check this session.
-        </p>
-        <button
-          type="button"
-          className={smallButton}
-          onClick={() => {
-            setGate('checking');
-            setAttempt((n) => n + 1);
-          }}
+      <>
+        {neutral}
+        <main
+          className="mx-auto flex min-h-dvh max-w-md flex-col items-center justify-center gap-4 px-6 text-center"
+          data-testid="admin-check-error"
         >
-          Try again
-        </button>
-      </main>
+          <p className="text-sm text-zinc-600 dark:text-zinc-400">
+            Could not reach the server to check this session.
+          </p>
+          <button
+            type="button"
+            className={smallButton}
+            onClick={() => {
+              setGate('checking');
+              setAttempt((n) => n + 1);
+            }}
+          >
+            Try again
+          </button>
+        </main>
+      </>
     );
   }
   return <AdminConsole client={client} />;
@@ -129,10 +146,6 @@ function AdminConsole({ client }: { client: AdminClient }) {
   const [refresh, setRefresh] = useState(0);
   const [busy, setBusy] = useState(false);
   const [flash, setFlash] = useState<Flash | null>(null);
-
-  useEffect(() => {
-    document.title = documentTitle('Moderation');
-  }, []);
 
   useEffect(() => {
     if (url === null) return;
@@ -211,6 +224,7 @@ function AdminConsole({ client }: { client: AdminClient }) {
 
   return (
     <main className="mx-auto flex min-h-dvh max-w-6xl flex-col gap-6 px-4 py-8" data-testid="admin">
+      <DocumentTitle title="Moderation" />
       <header className="flex flex-wrap items-center gap-3">
         <div className="mr-auto">
           <p className="text-sm font-semibold text-zinc-500">Build Roulette</p>

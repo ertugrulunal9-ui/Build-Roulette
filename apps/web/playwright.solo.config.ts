@@ -1,4 +1,5 @@
 import { defineConfig } from '@playwright/test';
+import { APP_SERVER_ENV, appServerCommand } from './e2e/app-server';
 
 /**
  * E2E for the solo game (`e2e/solo*.spec.ts`) against the REAL local Supabase stack, with
@@ -7,9 +8,11 @@ import { defineConfig } from '@playwright/test';
  * psql as the superuser, like the DB tests, and commit their data.
  *
  * scripts/solo-services.ts starts the sandbox shell (with the capture gate), the mock CDN and
- * the capture worker; Playwright starts `next start`. The production build uses the default
- * (local) Supabase URL and anon key. `E2E_REUSE_SERVERS=1` reuses servers already running
- * (e.g. `tsx scripts/solo-services.ts` + `next start -p 3100`) while iterating.
+ * the capture worker; Playwright serves the static export with `wrangler pages dev`
+ * (e2e/app-server.ts). The production build uses the default (local) Supabase URL and anon
+ * key. `E2E_REUSE_SERVERS=1` reuses servers already running (e.g. `tsx
+ * scripts/solo-services.ts` + `wrangler pages dev --port 3100 --ip localhost`) while
+ * iterating.
  */
 const APP_PORT = Number(process.env['APP_PORT'] ?? 3100);
 const APP_ORIGIN = `http://localhost:${String(APP_PORT)}`;
@@ -45,9 +48,9 @@ export default defineConfig({
       timeout: 120_000,
     },
     {
-      command: `next start -p ${String(APP_PORT)}`,
+      command: appServerCommand(APP_PORT),
       url: `${APP_ORIGIN}/play`,
-      env: { NEXT_TELEMETRY_DISABLED: '1' },
+      env: APP_SERVER_ENV,
       reuseExistingServer: process.env['E2E_REUSE_SERVERS'] === '1',
       stdout: 'pipe',
       timeout: 60_000,

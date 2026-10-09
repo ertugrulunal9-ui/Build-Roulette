@@ -3,8 +3,9 @@
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { useEffect, useSyncExternalStore } from 'react';
+import { useSyncExternalStore } from 'react';
 import { roomCodeFromPath } from '../../lib/room/path';
+import { DocumentTitle } from '../DocumentTitle';
 
 function Loading() {
   return (
@@ -35,24 +36,38 @@ export function RoomLoader() {
   );
   const code = hydrated ? roomCodeFromPath(pathname) : null;
 
-  useEffect(() => {
-    if (code) document.title = `Room ${code.toUpperCase().slice(0, 12)} · Build Roulette`;
-  }, [code]);
+  // The tab title (the page's metadata has none: components/DocumentTitle.tsx).
+  const title = <DocumentTitle title={code ? `Room ${code.toUpperCase().slice(0, 12)}` : 'Room'} />;
 
-  if (code === null) return <Loading />;
+  if (code === null) {
+    return (
+      <>
+        {title}
+        <Loading />
+      </>
+    );
+  }
   if (code === '') {
     return (
-      <main className="grid h-dvh place-items-center p-6 text-center">
-        <p className="flex flex-col gap-3 text-sm text-zinc-500">
-          This link has no room code.
-          <Link href="/" className="font-semibold text-zinc-900 underline dark:text-zinc-100">
-            Create or join a room
-          </Link>
-        </p>
-      </main>
+      <>
+        {title}
+        <main className="grid h-dvh place-items-center p-6 text-center">
+          <p className="flex flex-col gap-3 text-sm text-zinc-500">
+            This link has no room code.
+            <Link href="/" className="font-semibold text-zinc-900 underline dark:text-zinc-100">
+              Create or join a room
+            </Link>
+          </p>
+        </main>
+      </>
     );
   }
   // A new room (a client-side navigation from one /r/{code} to another) starts afresh, as it
   // did when every code was its own page.
-  return <RoomApp key={code} code={code} />;
+  return (
+    <>
+      {title}
+      <RoomApp key={code} code={code} />
+    </>
+  );
 }

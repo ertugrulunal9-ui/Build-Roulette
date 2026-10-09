@@ -10,7 +10,6 @@
  * States: loading, the history, "No battles to show" (an unknown or malformed id, or a player
  * without a finished battle: one answer on purpose), or "could not load" with a retry.
  */
-import { useEffect } from 'react';
 import {
   fetchPlayerHistory,
   isUserId,
@@ -21,9 +20,12 @@ import { PLAYER_NOT_FOUND_TITLE, playerMeta } from '../../lib/history/player-met
 import { shellParam } from '../../lib/hosting/shells';
 import { useBrowserUrl } from '../../lib/hosting/use-browser-url';
 import { useRemote } from '../../lib/hosting/use-remote';
-import { documentTitle } from '../../lib/solo/battle-meta';
+import { DocumentTitle } from '../DocumentTitle';
 import { LoadErrorView, LoadingView } from './LoadStates';
 import { PlayerHistory, PlayerNotFound } from './PlayerHistory';
+
+/** The shell's title until the player is known (also the exported HTML's). */
+export const PLAYER_SHELL_TITLE = 'Player history';
 
 function cursorOf(search: URLSearchParams): HistoryCursor | null {
   return parseCursor({ before: search.get('before'), before_battle: search.get('before_battle') });
@@ -41,26 +43,27 @@ export function PlayerHistoryView() {
   const found = state.status === 'ready' && state.value?.player ? state.value : null;
   const title =
     state.status !== 'ready'
-      ? null
+      ? PLAYER_SHELL_TITLE
       : found?.player
         ? playerMeta({ ...found, player: found.player }).title
         : PLAYER_NOT_FOUND_TITLE;
-  useEffect(() => {
-    if (title) document.title = documentTitle(title);
-  }, [title]);
 
-  if (state.status === 'loading') {
-    return <LoadingView text="Loading the battles…" testId="player-loading" />;
-  }
-  if (state.status === 'error') {
-    return (
-      <LoadErrorView
-        testId="player-load-error"
-        text="The battles could not be loaded. Check your connection, then try again."
-        onRetry={retry}
-      />
-    );
-  }
-  if (!found?.player || !id) return <PlayerNotFound />;
-  return <PlayerHistory id={id} cursor={cursor} data={{ ...found, player: found.player }} />;
+  return (
+    <>
+      <DocumentTitle title={title} />
+      {state.status === 'loading' ? (
+        <LoadingView text="Loading the battles…" testId="player-loading" />
+      ) : state.status === 'error' ? (
+        <LoadErrorView
+          testId="player-load-error"
+          text="The battles could not be loaded. Check your connection, then try again."
+          onRetry={retry}
+        />
+      ) : !found?.player || !id ? (
+        <PlayerNotFound />
+      ) : (
+        <PlayerHistory id={id} cursor={cursor} data={{ ...found, player: found.player }} />
+      )}
+    </>
+  );
 }

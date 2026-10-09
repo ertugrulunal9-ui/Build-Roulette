@@ -1,32 +1,26 @@
 import { defineConfig } from '@playwright/test';
+import { APP_SERVER_ENV, appServerCommand } from './e2e/app-server';
 
 /**
- * E2E for moderation (T-024, `e2e/moderation.spec.ts`) and the ISR cache of the permanent
- * pages (T-026, `e2e/isr.spec.ts`) against the REAL local Supabase stack, with the capture
- * worker running (its takedown loop deletes the screenshot):
+ * E2E for moderation (T-024, `e2e/moderation.spec.ts`) against the REAL local Supabase
+ * stack, with the capture worker running (its takedown loop deletes the screenshot):
  * `pnpm --filter @br/web test:e2e:moderation` (builds first). The stack must be up
- * (`supabase start`); the tests insert finished battles with psql, seed an email admin
- * with supabase/scripts/seed-admin.mjs, and commit their data. Same servers as the solo e2e.
+ * (`supabase start`); the tests insert finished battles with psql, seed an email admin with
+ * supabase/scripts/seed-admin.mjs, and commit their data. Same servers as the solo e2e.
  *
  * scripts/solo-services.ts starts the sandbox shell (with the capture gate), the mock CDN and
- * the capture worker; Playwright starts `next start`. The production build uses the default
- * (local) Supabase URL and anon key. `E2E_REUSE_SERVERS=1` reuses servers already running
- * (e.g. `tsx scripts/solo-services.ts` + `next start -p 3100`) while iterating.
- *
- * `E2E_APP_SERVER=workers` runs them against the Cloudflare Workers build instead (the
- * OpenNext preview: workerd with R2, D1 and the Durable Object queue emulated):
- * `pnpm --filter @br/web test:e2e:cf:moderation` (runs `cf:build` first).
+ * the capture worker; Playwright serves the static export with `wrangler pages dev`
+ * (e2e/app-server.ts), the way Cloudflare Pages serves it. The production build uses the
+ * default (local) Supabase URL and anon key. `E2E_REUSE_SERVERS=1` reuses servers already
+ * running (e.g. `tsx scripts/solo-services.ts` + `wrangler pages dev --port 3100 --ip
+ * localhost`) while iterating.
  */
 const APP_PORT = Number(process.env['APP_PORT'] ?? 3100);
 const APP_ORIGIN = `http://localhost:${String(APP_PORT)}`;
-const APP_SERVER_COMMAND =
-  process.env['E2E_APP_SERVER'] === 'workers'
-    ? `opennextjs-cloudflare preview --port ${String(APP_PORT)}`
-    : `next start -p ${String(APP_PORT)}`;
 
 export default defineConfig({
   testDir: './e2e',
-  testMatch: /(moderation|isr)\.spec\.ts$/,
+  testMatch: /moderation\.spec\.ts$/,
   // One stack, one capture worker, one job queue (and one admin): run serially.
   workers: 1,
   fullyParallel: false,
@@ -55,9 +49,9 @@ export default defineConfig({
       timeout: 120_000,
     },
     {
-      command: APP_SERVER_COMMAND,
+      command: appServerCommand(APP_PORT),
       url: `${APP_ORIGIN}/play`,
-      env: { NEXT_TELEMETRY_DISABLED: '1', WRANGLER_SEND_METRICS: 'false' },
+      env: APP_SERVER_ENV,
       reuseExistingServer: process.env['E2E_REUSE_SERVERS'] === '1',
       stdout: 'pipe',
       timeout: 60_000,

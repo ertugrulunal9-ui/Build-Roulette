@@ -1,5 +1,6 @@
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from '@playwright/test';
+import { APP_SERVER_ENV, appServerCommand } from './e2e/app-server';
 
 /**
  * E2E for rooms (`e2e/multiplayer*.spec.ts`): several browser contexts (each one an
@@ -9,8 +10,8 @@ import { defineConfig } from '@playwright/test';
  * the tests move deadlines with psql as the superuser and commit their data.
  *
  * Same servers as the solo e2e (scripts/solo-services.ts, here with `--realtime`, which
- * fails fast when Realtime is not running) and `next start`. `E2E_REUSE_SERVERS=1` reuses
- * servers that are already running.
+ * fails fast when Realtime is not running) and the static export served by `wrangler pages
+ * dev` (e2e/app-server.ts). `E2E_REUSE_SERVERS=1` reuses servers that are already running.
  */
 const APP_PORT = Number(process.env['APP_PORT'] ?? 3100);
 const APP_ORIGIN = `http://localhost:${String(APP_PORT)}`;
@@ -51,9 +52,9 @@ export default defineConfig({
       timeout: 120_000,
     },
     {
-      command: `next start -p ${String(APP_PORT)}`,
+      command: appServerCommand(APP_PORT),
       url: `${APP_ORIGIN}/`,
-      env: { NEXT_TELEMETRY_DISABLED: '1' },
+      env: APP_SERVER_ENV,
       reuseExistingServer: process.env['E2E_REUSE_SERVERS'] === '1',
       stdout: 'pipe',
       timeout: 60_000,

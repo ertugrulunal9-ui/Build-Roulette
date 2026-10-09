@@ -43,11 +43,13 @@ placeholder geo data.
 
 1. **Create a Cloudflare account** at <https://dash.cloudflare.com/sign-up>.
 2. **Choose the Workers Paid plan** (Workers & Pages → Plans, about US$5/month). The free
-   plan allows only 10 ms of CPU per request, which server rendering React pages can exceed,
-   and caps the Worker at 3 MB compressed. Today's Worker is about 2.2 MB compressed
-   (`wrangler deploy --dry-run`, T-030; 2.1 MB before error reporting, 1.9 MB before the
-   cache), and a `proxy.ts`
-   (middleware) would add about 1.2 MB (measured in the T-012 spike). Paid allows 10 MB.
+   plan allows only 10 ms of CPU per request, and every server render of this app takes
+   more (measured in [docs/08-free-tier.md](../../docs/08-free-tier.md) §1, T-033: only cached
+   answers fit). Today's Worker is about 1.3 MB compressed, 6.4 MB raw
+   (`wrangler deploy --dry-run`, T-033 after dropping `next/og`; 2.2 MB compressed before),
+   and a `proxy.ts` (middleware) would add about 1.2 MB (measured in the T-012 spike). The
+   size limit was 3 MB compressed on Free and 10 MB on Paid; Cloudflare's docs now list
+   64 MiB uncompressed on both (docs/08 §1.3).
 3. **Log in from your machine** (opens a browser once):
    ```sh
    pnpm --filter @br/web exec wrangler login
@@ -282,7 +284,7 @@ showing at once on the page (and its `og:image`) and `/u/[id]`, the second expir
 
 | Limit | Value | Us today |
 |---|---|---|
-| Worker size | 3 MB free / 10 MB paid, compressed (since September 2026 Cloudflare's docs list 64 MiB uncompressed on both plans instead; docs/08 §1) | see docs/08 §1 (T-033 removed `next/og` and its wasm) |
+| Worker size | 3 MB free / 10 MB paid, compressed (since September 2026 Cloudflare's docs list 64 MiB uncompressed on both plans instead; docs/08 §1.3) | ~1.3 MB compressed, 6.4 MB raw (T-033) |
 | One static asset | 25 MiB | `esbuild.wasm` is 13.3 MiB |
 | Static asset count | 20,000 per version | ~25 |
 | CPU per request | 10 ms free / 30 s default on paid | measured in docs/08 §1: cached answers fit, renders do not |

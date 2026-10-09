@@ -550,12 +550,20 @@ Production runs on Cloudflare Workers through OpenNext (`open-next.config.ts`,
 account; the normal `build` is unaffected. See [DEPLOY.md](DEPLOY.md) for the account setup,
 deploys, secrets, custom domain and caching.
 
+**CPU per request (T-033).** `pnpm --filter @br/web measure:cpu` (after `cf:build`, with the
+local stack up; about an hour) measures the CPU time of every route class on workerd, in a
+warm and in a fresh isolate, and on `next start` for comparison: a V8 CPU profile of the
+Worker's isolate per request plus the workerd thread's CPU (`scripts/measure-cpu/`). The
+results and what they mean for Workers Free (10 ms per request) are in
+[docs/08-free-tier.md](../../docs/08-free-tier.md) §1; raw data lands in `cpu-results/`
+(gitignored).
+
 ## Known limitations
 
-- **The OG image embeds the screenshot only when it is PNG or JPEG.** `next/og` cannot decode
-  WebP, which is what the local capture worker stores, so the card then shows the build name
-  in a frame instead. Fix options: the capture worker also writes a PNG card image, or
-  Cloudflare image transformations in production.
+- **A battle's `og:image` is the screenshot as stored** (T-033): WebP from the local capture
+  worker. Most link-preview crawlers accept WebP (assumed, not tested here); where one does
+  not, the preview has no image. A PNG/JPEG screenshot (Browser Rendering can produce
+  either, T-034) avoids the question.
 - **The solo game polls** `get_battle_snapshot` (every 2–10 s depending on the phase, and
   right after each deadline; T-029: no longer every 250 ms once a deadline has passed);
   rooms use Realtime.

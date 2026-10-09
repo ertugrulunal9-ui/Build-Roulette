@@ -3,16 +3,25 @@
  * controller can be unit tested with a fake runtime (the wasm asset import and the worker URL
  * only work inside the Next.js build).
  */
-import { EsmBrowserRuntime } from '@br/runtime';
+import { EsmBrowserRuntime, type InitAttemptReport } from '@br/runtime';
 // Turbopack emits the wasm file as a content-hashed static asset and returns its URL
 // (`turbopack.rules['*.wasm']` in next.config.ts).
 import wasmUrl from 'esbuild-wasm/esbuild.wasm';
 import type { PlaygroundConfig } from './config';
 
-export function createPlaygroundRuntime(config: PlaygroundConfig): EsmBrowserRuntime {
+export interface PlaygroundRuntimeHooks {
+  /** Each bundler worker start that ended: ready, stalled or failed (T-039 telemetry). */
+  onInitAttempt?: (report: InitAttemptReport) => void;
+}
+
+export function createPlaygroundRuntime(
+  config: PlaygroundConfig,
+  hooks: PlaygroundRuntimeHooks = {},
+): EsmBrowserRuntime {
   return new EsmBrowserRuntime({
     wasmUrl,
     cdnBaseUrl: config.cdnBaseUrl,
+    ...hooks,
     // The literal `new Worker(new URL(...))` is what lets Turbopack find and bundle the
     // worker entry, so the worker is created here rather than from a `workerUrl`.
     createWorker: () =>

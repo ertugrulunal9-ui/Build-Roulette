@@ -13,12 +13,16 @@
  *   (≥ 1 s) and their total, and the silences the pre-T-031 watchdog would have called a
  *   crash (`sparedSilences`: they ended with a pong). Summed over every preview of the battle
  *   in this tab, including those still running, and taken once by the room's `sync_health`.
+ * - **`bundler_start`** (T-039), one per bundler worker start that stalled (no progress for
+ *   15 s) or failed, and for the automatic retry after a stall whatever its outcome: how far
+ *   it got (`worker`, `download`, `compile`), the attempt, the time and the wasm bytes
+ *   received. A clean first start sends nothing.
  *
  * Privacy (T-030 rules): no build code, no console output, no names, no URLs: only the
  * battle's random UUID, enums and numbers. Every event goes through `track`, a no-op
  * without `NEXT_PUBLIC_POSTHOG_KEY` or with DNT/GPC.
  */
-import type { PreviewCrash, PreviewStats } from '@br/runtime';
+import type { InitAttemptReport, PreviewCrash, PreviewStats } from '@br/runtime';
 import {
   flushAnalytics,
   track as defaultTrack,
@@ -180,6 +184,22 @@ export class PreviewHealth {
     if (!this.pending || (key !== null && this.pending.key !== key)) return;
     this.tally.add(this.opts.battleId, { restarts: 1 });
     this.settle(true);
+  }
+
+  /**
+   * A bundler worker start ended (T-039). Stalls and errors are sent, and so is the automatic
+   * retry after a stall (did it help?); a clean first start is not.
+   */
+  bundlerStart(r: InitAttemptReport): void {
+    if (this.closed || (r.outcome === 'ready' && r.attempt === 1)) return;
+    this.track('bundler_start', {
+      battle_id: this.opts.battleId,
+      outcome: r.outcome,
+      stage: r.stage,
+      attempt: r.attempt,
+      elapsed_ms: Math.round(r.elapsedMs),
+      loaded_bytes: r.loadedBytes,
+    });
   }
 
   /** The slot goes away: a crash still pending was not restarted. */

@@ -2,11 +2,12 @@
 /**
  * The crashed notice of the playground preview: the watchdog's reason and phase read
  * differently (could not start / froze while loading / froze while running), and the
- * notice carries them as data attributes for the e2e failure diagnostics.
+ * notice carries them as data attributes for the e2e failure diagnostics. Also the
+ * bundler's failed state and its Retry (T-039).
  */
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { createElement, createRef } from 'react';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { SandboxSnapshot } from '../../lib/playground/sandbox';
 import { PreviewPane } from './PreviewPane';
 
@@ -34,6 +35,7 @@ function renderCrashed(crash: NonNullable<SandboxSnapshot['crash']>) {
       snapshot,
       shellUrl: 'http://127.0.0.1:4311/v1/',
       onRestart: noop,
+      onRetryBundler: noop,
       onDismissErrors: noop,
       onClearConsole: noop,
       onOpenDiagnostic: noop,
@@ -109,6 +111,7 @@ describe('PreviewPane package errors (T-032)', () => {
         snapshot,
         shellUrl: 'http://127.0.0.1:4311/v1/',
         onRestart: noop,
+        onRetryBundler: noop,
         onDismissErrors: noop,
         onClearConsole: noop,
         onOpenDiagnostic: noop,
@@ -131,5 +134,57 @@ describe('PreviewPane package errors (T-032)', () => {
     );
     expect(overlay.textContent).toContain('The build is still loading');
     expect(overlay.textContent).not.toContain('failed');
+  });
+});
+
+describe('PreviewPane bundler states (T-039)', () => {
+  function renderBundler(bundler: SandboxSnapshot['bundler'], bundlerError: string | null) {
+    const onRetryBundler = vi.fn();
+    const snapshot: SandboxSnapshot = {
+      bundler,
+      bundlerError,
+      building: bundler === 'booting',
+      lastBuild: null,
+      preview: 'connecting',
+      crash: null,
+      runtimeErrors: [],
+      console: [],
+      readyCount: 0,
+    };
+    render(
+      createElement(PreviewPane, {
+        hostRef: createRef<HTMLDivElement>(),
+        snapshot,
+        shellUrl: 'http://127.0.0.1:4311/v1/',
+        onRestart: noop,
+        onRetryBundler,
+        onDismissErrors: noop,
+        onClearConsole: noop,
+        onOpenDiagnostic: noop,
+      }),
+    );
+    return onRetryBundler;
+  }
+
+  it('a bundler that could not start shows why and a Retry button that restarts it', () => {
+    const onRetry = renderBundler(
+      'failed',
+      "Couldn't start the bundler: the download stalled (no progress for 15 s, 2 attempts)",
+    );
+    const panel = screen.getByTestId('bundler-failed');
+    expect(panel.getAttribute('role')).toBe('alert');
+    expect(screen.getByTestId('bundler-error').textContent).toBe(
+      "Couldn't start the bundler: the download stalled (no progress for 15 s, 2 attempts)",
+    );
+    expect(panel.textContent).toContain('Your code is saved');
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(onRetry).toHaveBeenCalledTimes(1);
+  });
+
+  it('while the bundler starts there is no failure and no Retry', () => {
+    renderBundler('booting', null);
+    expect(screen.getByText('Starting the bundler…')).toBeTruthy();
+    expect(screen.queryByTestId('bundler-failed')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
   });
 });

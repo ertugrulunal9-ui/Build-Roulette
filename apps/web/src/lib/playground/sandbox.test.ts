@@ -11,17 +11,26 @@ import {
   type PreviewEventMap,
   type PreviewHandle,
 } from '@br/runtime';
+import { BundlerInitTimeoutError } from '@br/runtime';
 import { createWorkspace } from '@br/workspace';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AnalyticsEvents } from '../telemetry/analytics';
 import { PreviewHealth, SandboxHealthTally } from '../telemetry/sandbox-health';
 import type { FrameScheduler } from './frame-batcher';
+import type { PlaygroundRuntimeHooks } from './runtime-factory';
 import { SandboxController, type PlaygroundRuntime } from './sandbox';
 
-// The real factory imports the esbuild wasm asset, which only Next.js can resolve.
+// The real factory imports the esbuild wasm asset, which only Next.js can resolve. Tests pass
+// a fake runtime; one that needs the factory's hooks sets `factory.next` and reads `hooks`.
+const factory = vi.hoisted(() => ({
+  next: null as PlaygroundRuntime | null,
+  hooks: null as PlaygroundRuntimeHooks | null,
+}));
 vi.mock('./runtime-factory', () => ({
-  createPlaygroundRuntime: () => {
-    throw new Error('tests pass a fake runtime');
+  createPlaygroundRuntime: (_config: unknown, hooks: PlaygroundRuntimeHooks) => {
+    factory.hooks = hooks;
+    if (!factory.next) throw new Error('tests pass a fake runtime');
+    return factory.next;
   },
 }));
 
@@ -91,9 +100,12 @@ class FakeRuntime implements PlaygroundRuntime {
   edits = 0;
   /** When true, `build()` waits for `finishBuilds()`. */
   manual = false;
+  /** When set, builds report that the bundler could not start, with this text. */
+  startFailure: string | null = null;
   private readonly running: (() => void)[] = [];
   private buildListener: ((r: BuildResult) => void) | null = null;
-  boot = () => Promise.resolve({ coldStartMs: 1, wasmInitMs: 1 });
+  boot: PlaygroundRuntime['boot'] = () =>
+    Promise.resolve({ coldStartMs: 1, wasmInitMs: 1, attempts: 1 });
   writeFile = () => {
     this.edits++;
   };
@@ -138,6 +150,17 @@ class FakeRuntime implements PlaygroundRuntime {
     this.buildListener?.(this.result(js));
   }
   private result(js: string): BuildResult {
+    if (this.startFailure !== null) {
+      // What EsmBrowserRuntime.build() resolves with when the bundler cannot start.
+      return {
+        ok: false,
+        js: '',
+        css: '',
+        importMap: { imports: {} },
+        diagnostics: [{ severity: 'error', code: 'bundler-init-failed', text: this.startFailure }],
+        durationMs: 0,
+      };
+    }
     return {
       ok: true,
       js,
@@ -178,8 +201,9 @@ function fakeHost(): HTMLElement {
   return { ownerDocument: doc, replaceChildren: () => undefined } as unknown as HTMLElement;
 }
 
-async function setup(health?: PreviewHealth) {
+async function setup(health?: PreviewHealth, configure?: (runtime: FakeRuntime) => void) {
   const runtime = new FakeRuntime();
+  configure?.(runtime);
   const frames = new Frames();
   const controller = new SandboxController(
     fakeHost(),
@@ -436,5 +460,153 @@ describe('SandboxController.replace (reset to a template, paste-import in replac
     runtime.finishBuilds();
     await settle();
     expect(loaded(preview)).toEqual(['build 1', 'build 3']);
+  });
+});
+
+describe('SandboxController bundler start failures (T-039)', () => {
+  const STALLED =
+    "Couldn't start the bundler: the download stalled (no progress for 15 s, 2 attempts)";
+  const stalledBoot = (runtime: FakeRuntime) => {
+    runtime.boot = () => Promise.reject(new BundlerInitTimeoutError('download', 15_000, 2));
+  };
+
+  afterEach(() => {
+    factory.next = null;
+    factory.hooks = null;
+  });
+
+  it('a start that stalled: the failed state says so, and nothing was built or loaded', async () => {
+    const { controller, runtime, preview } = await setup(undefined, stalledBoot);
+    expect(controller.getSnapshot()).toMatchObject({
+      bundler: 'failed',
+      bundlerError: STALLED,
+      building: false,
+      lastBuild: null,
+    });
+    expect(runtime.builds).toBe(0);
+    expect(preview.loads).toEqual([]);
+  });
+
+  it('Retry starts the bundler again and builds the current files into the preview', async () => {
+    const { controller, runtime, preview } = await setup(undefined, stalledBoot);
+    runtime.manual = true;
+    const edits = runtime.edits;
+    controller.retryBundler();
+    expect(controller.getSnapshot()).toMatchObject({
+      bundler: 'booting',
+      bundlerError: null,
+      building: true,
+    });
+    expect(runtime.builds).toBe(1);
+    runtime.finishBuilds();
+    await settle();
+    expect(controller.getSnapshot()).toMatchObject({
+      bundler: 'ready',
+      bundlerError: null,
+      building: false,
+      lastBuild: { ok: true },
+    });
+    expect(loaded(preview)).toEqual(['build 1']);
+    // Only the bundler restarted: no file was written, deleted or replaced.
+    expect(runtime.edits).toBe(edits);
+  });
+
+  it('a Retry that fails again is back in the failed state, with the new reason', async () => {
+    const { controller, runtime, preview } = await setup(undefined, (rt) => {
+      rt.boot = () => Promise.reject(new Error('esbuild-wasm failed to initialize: wasm 404'));
+    });
+    expect(controller.getSnapshot().bundlerError).toBe(
+      "Couldn't start the bundler: esbuild-wasm failed to initialize: wasm 404",
+    );
+    runtime.startFailure = STALLED;
+    controller.retryBundler();
+    await settle();
+    expect(controller.getSnapshot()).toMatchObject({
+      bundler: 'failed',
+      bundlerError: STALLED,
+      building: false,
+    });
+    expect(preview.loads).toEqual([]);
+    // And the next Retry works.
+    runtime.startFailure = null;
+    controller.retryBundler();
+    await settle();
+    expect(controller.getSnapshot().bundler).toBe('ready');
+    expect(preview.loads).toHaveLength(1);
+  });
+
+  it('Retry does nothing while the bundler runs, or after dispose', async () => {
+    const { controller, runtime } = await setup();
+    expect(runtime.builds).toBe(1);
+    controller.retryBundler();
+    expect(runtime.builds).toBe(1);
+    expect(controller.getSnapshot().bundler).toBe('ready');
+
+    const failed = await setup(undefined, stalledBoot);
+    failed.controller.dispose();
+    failed.controller.retryBundler();
+    expect(failed.runtime.builds).toBe(0);
+  });
+
+  it('bundler starts that stalled or failed become bundler_start events', () => {
+    const BATTLE = '9d8e7f6a-5b4c-4d3e-8f2a-1b0c9d8e7f6a';
+    const sent: AnalyticsEvents['bundler_start'][] = [];
+    const health = new PreviewHealth({
+      mode: 'live',
+      battleId: BATTLE,
+      tally: new SandboxHealthTally(),
+      win: null,
+      track: (name, props) => {
+        if (name === 'bundler_start') sent.push(props as AnalyticsEvents['bundler_start']);
+      },
+    });
+    factory.next = new FakeRuntime();
+    const controller = new SandboxController(
+      fakeHost(),
+      { shellUrl: 'https://b1.usercontent.example/v1/', cdnBaseUrl: 'https://pkg.example' },
+      { frames: new Frames(), health },
+    );
+    const report = factory.hooks?.onInitAttempt;
+    if (!report) throw new Error('the controller passed no onInitAttempt hook');
+    report({ attempt: 1, outcome: 'ready', stage: 'compile', elapsedMs: 210, loadedBytes: 1 });
+    expect(sent).toEqual([]); // a clean start is not news
+    report({
+      attempt: 1,
+      outcome: 'stalled',
+      stage: 'download',
+      elapsedMs: 15_000.4,
+      loadedBytes: 4_200_000,
+    });
+    report({ attempt: 2, outcome: 'ready', stage: 'compile', elapsedMs: 300, loadedBytes: 1e7 });
+    report({ attempt: 1, outcome: 'error', stage: 'worker', elapsedMs: 12, loadedBytes: 0 });
+    expect(sent).toEqual([
+      {
+        battle_id: BATTLE,
+        outcome: 'stalled',
+        stage: 'download',
+        attempt: 1,
+        elapsed_ms: 15_000,
+        loaded_bytes: 4_200_000,
+      },
+      {
+        battle_id: BATTLE,
+        outcome: 'ready',
+        stage: 'compile',
+        attempt: 2,
+        elapsed_ms: 300,
+        loaded_bytes: 1e7,
+      },
+      {
+        battle_id: BATTLE,
+        outcome: 'error',
+        stage: 'worker',
+        attempt: 1,
+        elapsed_ms: 12,
+        loaded_bytes: 0,
+      },
+    ]);
+    controller.dispose();
+    report({ attempt: 1, outcome: 'stalled', stage: 'worker', elapsedMs: 1, loadedBytes: 0 });
+    expect(sent).toHaveLength(3);
   });
 });

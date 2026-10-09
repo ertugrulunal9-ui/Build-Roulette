@@ -62,9 +62,10 @@ export const RPC_ERROR_CODES = [
 export type RpcErrorCode = (typeof RPC_ERROR_CODES)[number];
 
 /**
- * Codes only the service-role functions raise (capture/destroy workers). `complete_capture`
- * also raises `build_not_found`, which is listed in {@link RPC_ERROR_CODES} since
- * `cast_vote` raises it too.
+ * Codes only the service-role functions raise (the capture/destroy jobs, and the jobs Edge
+ * Function's Browser Rendering budget, T-034). `complete_capture` also raises
+ * `build_not_found`, which is listed in {@link RPC_ERROR_CODES} since `cast_vote` raises it
+ * too.
  */
 export const SERVICE_ERROR_CODES = [
   'invalid_capture_status',
@@ -73,6 +74,9 @@ export const SERVICE_ERROR_CODES = [
   'job_not_running',
   'not_capturable',
   'not_taken_down',
+  'invalid_reserve_ms',
+  'invalid_limit_ms',
+  'invalid_settlement',
 ] as const;
 
 /**

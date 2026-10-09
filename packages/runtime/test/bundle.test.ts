@@ -70,7 +70,8 @@ describe('bundle() with esbuild-wasm', () => {
     // React entry points stay bare (import map); other packages are pinned CDN URLs.
     expect(r.js).toMatch(/from\s*"react\/jsx-runtime"/);
     expect(r.js).toMatch(/from\s*"react-dom\/client"/);
-    const q = '?external=react,react-dom&deps=animate.css@4.1.1,zustand@5.0.15';
+    // Every other package of the manifest is external (T-040), animate.css included.
+    const q = '?external=animate.css,react,react-dom';
     expect(r.js).toContain(`"${CDN}/zustand@5.0.15${q}"`);
     expect(r.js).toContain(`"${CDN}/zustand@5.0.15/middleware${q}"`);
     expect(r.js).not.toMatch(/from\s*"zustand"/);
@@ -88,11 +89,14 @@ describe('bundle() with esbuild-wasm', () => {
     expect(r.css).toContain(`${CDN}/animate.css@4.1.1/extra.css`);
     expect(r.css).toContain('url(data:image/png;base64,');
     expect(r.importMap.imports['react']).toBe(`${CDN}/react@19.3.0`);
+    // zustand's URL in the import map is the bundle's, for CDN modules that import it.
+    expect(r.importMap.imports['zustand']).toBe(`${CDN}/zustand@5.0.15${q}`);
+    expect(r.importMap.imports['scheduler']).toBe(`${CDN}/scheduler@0.28.0`);
     expect(r.durationMs).toBeGreaterThan(0);
     // T-032: the CDN URLs the bundle imports, once each (the shell names them on failure).
     // React entry points as their import map URLs; not react/jsx-dev-runtime (not imported).
     expect(r.packages).toEqual([
-      `${CDN}/react-dom@19.3.0/client?external=react,react-dom`,
+      `${CDN}/react-dom@19.3.0/client?external=react,react-dom,scheduler`,
       `${CDN}/react@19.3.0/jsx-runtime?external=react,react-dom`,
       `${CDN}/zustand@5.0.15/middleware${q}`,
       `${CDN}/zustand@5.0.15${q}`,
@@ -221,7 +225,7 @@ describe('bundle() with esbuild-wasm', () => {
     expect(r.diagnostics).toEqual([expect.objectContaining({ severity: 'warning' })]);
   });
 
-  it('warns (and still builds without deps pins) above the CDN deps limit', async () => {
+  it('warns (and still builds with React externals only) above the CDN externals limit', async () => {
     const deps: Record<string, string> = { react: '19.3.0', 'react-dom': '19.3.0' };
     for (let i = 0; i <= 32; i++) deps[`pkg-${String(i)}`] = '1.0.0';
     const r = await bundle(esbuild, input({ 'src/main.tsx': `import 'pkg-1';` }, deps), {

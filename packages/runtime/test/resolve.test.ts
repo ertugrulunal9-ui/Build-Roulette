@@ -1,8 +1,10 @@
+import { ImportMapSchema } from '@br/protocol';
 import { describe, expect, it } from 'vitest';
 import {
-  MAX_CDN_DEPS,
+  MAX_CDN_EXTERNALS,
+  REACT_DOM_SCHEDULER,
   buildImportMap,
-  cdnDepsPins,
+  cdnExternals,
   decodeAsset,
   isPinnedVersion,
   loaderForPath,
@@ -10,9 +12,11 @@ import {
   parseBareSpecifier,
   resolveBareImport,
   resolveWorkspaceImport,
+  schedulerPin,
 } from '../src/bundler/resolve';
 
 const CDN = 'https://pkg.example.net/';
+const TEMPLATE = { react: '19.3.0', 'react-dom': '19.3.0' };
 const DEPS = {
   react: '19.3.0',
   'react-dom': '19.3.0',
@@ -22,9 +26,10 @@ const DEPS = {
   'animate.css': '4.1.1',
   loose: '^1.0.0',
 };
-/** The query every JS CDN URL of a build with DEPS carries (sorted by package name). */
-const Q =
-  '?external=react,react-dom&deps=@scope/ui@1.2.3-beta.1,animate.css@4.1.1,three@0.170.0,zustand@5.0.15';
+/** The build's externals with DEPS (T-040): React, React DOM and every exact package, sorted. */
+const EXTERNALS = ['@scope/ui', 'animate.css', 'react', 'react-dom', 'three', 'zustand'];
+/** The query of a JS CDN URL of `name` in a build with DEPS: every other package external. */
+const q = (name: string) => `?external=${EXTERNALS.filter((n) => n !== name).join(',')}`;
 
 describe('normalizePath', () => {
   it('strips leading ./ and /, collapses . and ..', () => {
@@ -164,28 +169,38 @@ describe('resolveBareImport (cdn-rewrite)', () => {
     ]) {
       expect(resolveBareImport(s, DEPS, CDN)).toEqual({ kind: 'import-map' });
     }
+    // `scheduler` only when the manifest lists it (an undeclared import stays an error).
+    expect(resolveBareImport('scheduler', DEPS, CDN).kind).toBe('error');
+    expect(resolveBareImport('scheduler', { ...DEPS, scheduler: '0.28.0' }, CDN)).toEqual({
+      kind: 'import-map',
+    });
   });
-  it('rewrites other packages to pinned CDN URLs with React externals and deps pins, keeping subpaths', () => {
+  it('rewrites other packages to pinned CDN URLs that externalize every other package, keeping subpaths', () => {
     expect(resolveBareImport('zustand', DEPS, CDN)).toEqual({
       kind: 'cdn',
-      url: `https://pkg.example.net/zustand@5.0.15${Q}`,
+      url: `https://pkg.example.net/zustand@5.0.15${q('zustand')}`,
     });
     expect(resolveBareImport('three/examples/jsm/controls/OrbitControls.js', DEPS, CDN)).toEqual({
       kind: 'cdn',
-      url: `https://pkg.example.net/three@0.170.0/examples/jsm/controls/OrbitControls.js${Q}`,
+      url: `https://pkg.example.net/three@0.170.0/examples/jsm/controls/OrbitControls.js${q('three')}`,
     });
     expect(resolveBareImport('@scope/ui/button', DEPS, CDN)).toEqual({
       kind: 'cdn',
-      url: `https://pkg.example.net/@scope/ui@1.2.3-beta.1/button${Q}`,
-    });
-    expect(resolveBareImport('react-dom/server', DEPS, CDN)).toEqual({
-      kind: 'cdn',
-      url: `https://pkg.example.net/react-dom@19.3.0/server${Q}`,
+      url: `https://pkg.example.net/@scope/ui@1.2.3-beta.1/button${q('@scope/ui')}`,
     });
   });
-  it('gives the user import of a peer the same URL the CDN emits for that peer', () => {
-    // pkg-cdn emits a peer as `/<peer>@<deps pin>` + the query of the request it serves, so
-    // `three` imported by the user and by @react-three/fiber must carry the same query.
+  it('gives the React set fixed queries, whatever else the manifest holds', () => {
+    // React DOM's own subpaths externalize its pinned scheduler (T-040), React's do not.
+    expect(resolveBareImport('react-dom/server', DEPS, CDN)).toEqual({
+      kind: 'cdn',
+      url: 'https://pkg.example.net/react-dom@19.3.0/server?external=react,react-dom,scheduler',
+    });
+    expect(resolveBareImport('react/compiler-runtime', DEPS, CDN)).toEqual({
+      kind: 'cdn',
+      url: 'https://pkg.example.net/react@19.3.0/compiler-runtime?external=react,react-dom',
+    });
+  });
+  it("gives a package the same URL in the bundle as in the import map, so another package's import of it is the one instance", () => {
     const deps = {
       react: '19.3.0',
       'react-dom': '19.3.0',
@@ -194,15 +209,25 @@ describe('resolveBareImport (cdn-rewrite)', () => {
     };
     const three = resolveBareImport('three', deps, CDN);
     const fiber = resolveBareImport('@react-three/fiber', deps, CDN);
-    const query = '?external=react,react-dom&deps=@react-three/fiber@9.4.0,three@0.170.0';
-    expect(three).toEqual({ kind: 'cdn', url: `https://pkg.example.net/three@0.170.0${query}` });
+    expect(three).toEqual({
+      kind: 'cdn',
+      url: 'https://pkg.example.net/three@0.170.0?external=@react-three/fiber,react,react-dom',
+    });
+    // fiber leaves `three` bare: the import map sends it to the URL above.
     expect(fiber).toEqual({
       kind: 'cdn',
-      url: `https://pkg.example.net/@react-three/fiber@9.4.0${query}`,
+      url: 'https://pkg.example.net/@react-three/fiber@9.4.0?external=react,react-dom,three',
     });
+    const map = buildImportMap(deps, CDN);
+    expect(three.kind === 'cdn' && three.url).toBe(map.imports['three']);
+    expect(fiber.kind === 'cdn' && fiber.url).toBe(map.imports['@react-three/fiber']);
   });
-  it('accepts a precomputed deps list (one per build)', () => {
-    expect(resolveBareImport('zustand', DEPS, CDN, [])).toEqual({
+  it('accepts precomputed externals (one list per build), null meaning React only', () => {
+    expect(resolveBareImport('zustand', DEPS, CDN, ['react', 'react-dom', 'zustand'])).toEqual({
+      kind: 'cdn',
+      url: 'https://pkg.example.net/zustand@5.0.15?external=react,react-dom',
+    });
+    expect(resolveBareImport('zustand', DEPS, CDN, null)).toEqual({
       kind: 'cdn',
       url: 'https://pkg.example.net/zustand@5.0.15?external=react,react-dom',
     });
@@ -233,26 +258,29 @@ describe('resolveBareImport (cdn-rewrite)', () => {
   });
 });
 
-describe('cdnDepsPins', () => {
-  it('lists every non-external manifest dependency as name@version, sorted by name', () => {
-    expect(cdnDepsPins(DEPS)).toEqual([
-      '@scope/ui@1.2.3-beta.1',
-      'animate.css@4.1.1',
-      'three@0.170.0',
-      'zustand@5.0.15',
+describe('cdnExternals', () => {
+  it('lists React, React DOM and every exact manifest package, sorted as the CDN sorts them', () => {
+    expect(cdnExternals(DEPS)).toEqual(EXTERNALS);
+    // Sorted as strings, like apps/pkg-cdn's `parseQuery` ('-' < '@' < letters).
+    expect(cdnExternals({ 'a-b': '1.0.0', a: '2.0.0' })).toEqual([
+      'a',
+      'a-b',
+      'react',
+      'react-dom',
     ]);
-    // By name, as pkg-cdn sorts them: sorting the `name@version` strings would put
-    // "a-b@1.0.0" before "a@2.0.0" ('-' < '@').
-    expect(cdnDepsPins({ 'a-b': '1.0.0', a: '2.0.0' })).toEqual(['a@2.0.0', 'a-b@1.0.0']);
-    expect(cdnDepsPins({ react: '19.3.0', 'react-dom': '19.3.0' })).toEqual([]);
+    expect(cdnExternals({ react: '19.3.0', 'react-dom': '19.3.0' })).toEqual([
+      'react',
+      'react-dom',
+    ]);
+    expect(cdnExternals({})).toEqual(['react', 'react-dom']);
   });
   it('is deterministic regardless of manifest key order', () => {
     const reversed = Object.fromEntries(Object.entries(DEPS).reverse());
-    expect(cdnDepsPins(reversed)).toEqual(cdnDepsPins(DEPS));
+    expect(cdnExternals(reversed)).toEqual(cdnExternals(DEPS));
   });
   it('leaves out entries the CDN would reject', () => {
     expect(
-      cdnDepsPins({
+      cdnExternals({
         ok: '1.0.0',
         ranged: '^1.0.0',
         meta: '1.0.0+build.5', // build metadata: not an exact version for the CDN
@@ -260,75 +288,167 @@ describe('cdnDepsPins', () => {
         'tilde~name': '1.0.0',
         node_modules: '1.0.0',
         'a&external=evil': '1.0.0', // never reaches the query string
+        'a,b': '1.0.0',
         lead0: '01.0.0',
+        long: `1.0.0-${'x'.repeat(200)}`,
       }),
-    ).toEqual(['ok@1.0.0']);
+    ).toEqual(['ok', 'react', 'react-dom']);
   });
-  it('returns null above the CDN limit, so no URL carries a deps list the CDN rejects', () => {
+  it('returns null above the CDN limit; URLs then externalize React only', () => {
     const many: Record<string, string> = { react: '19.3.0', 'react-dom': '19.3.0' };
-    for (let i = 0; i < MAX_CDN_DEPS; i++) many[`pkg-${String(i)}`] = '1.0.0';
-    expect(cdnDepsPins(many)).toHaveLength(MAX_CDN_DEPS);
+    for (let i = 0; i < MAX_CDN_EXTERNALS - 1; i++) many[`pkg-${String(i)}`] = '1.0.0';
+    // The package itself is never in its own list: 32 others is the most.
+    expect(cdnExternals(many)).toHaveLength(MAX_CDN_EXTERNALS + 1);
     many['one-more'] = '1.0.0';
-    expect(cdnDepsPins(many)).toBeNull();
+    expect(cdnExternals(many)).toBeNull();
     expect(resolveBareImport('pkg-1', many, CDN)).toEqual({
       kind: 'cdn',
       url: 'https://pkg.example.net/pkg-1@1.0.0?external=react,react-dom',
     });
+    // The import map then holds the React set only.
+    expect(Object.keys(buildImportMap(many, CDN).imports).sort()).toEqual(
+      Object.keys(buildImportMap({ react: '19.3.0', 'react-dom': '19.3.0' }, CDN).imports).sort(),
+    );
+  });
+  it('returns null when the list would not fit in a URL', () => {
+    const long: Record<string, string> = {};
+    for (let i = 0; i < 6; i++) long[`@scope-${String(i)}/${'n'.repeat(200)}`] = '1.0.0';
+    expect(cdnExternals(long)).toBeNull();
+  });
+});
+
+describe('schedulerPin', () => {
+  it("pins the scheduler of the manifest's React DOM minor", () => {
+    expect(schedulerPin({ 'react-dom': '19.3.0' })).toBe('0.28.0');
+    expect(schedulerPin({ 'react-dom': '19.2.4' })).toBe('0.27.0');
+    expect(schedulerPin({ 'react-dom': '19.0.8' })).toBe('0.25.0');
+    expect(Object.values(REACT_DOM_SCHEDULER).every((v) => isPinnedVersion(v))).toBe(true);
+  });
+  it("prefers the manifest's own scheduler pin", () => {
+    expect(schedulerPin({ 'react-dom': '19.3.0', scheduler: '0.27.0' })).toBe('0.27.0');
+    expect(schedulerPin({ scheduler: '0.28.0' })).toBe('0.28.0');
+    expect(schedulerPin({ 'react-dom': '19.3.0', scheduler: '^0.28.0' })).toBeNull();
+  });
+  it('is null for an unknown, unpinned or prerelease React DOM', () => {
+    expect(schedulerPin({})).toBeNull();
+    expect(schedulerPin({ 'react-dom': '18.3.1' })).toBeNull();
+    expect(schedulerPin({ 'react-dom': '^19.3.0' })).toBeNull();
+    expect(schedulerPin({ 'react-dom': '19.3.0-canary-d5736f09-20260507' })).toBeNull();
   });
 });
 
 describe('buildImportMap', () => {
-  it('maps React entry points to one pinned instance', () => {
-    expect(buildImportMap(DEPS, 'http://localhost:4312')).toEqual({
+  it('maps the React set to one pinned instance each, scheduler included (T-040)', () => {
+    expect(buildImportMap(TEMPLATE, 'http://localhost:4312')).toEqual({
       imports: {
         react: 'http://localhost:4312/react@19.3.0',
         'react/jsx-runtime':
           'http://localhost:4312/react@19.3.0/jsx-runtime?external=react,react-dom',
         'react/jsx-dev-runtime':
           'http://localhost:4312/react@19.3.0/jsx-dev-runtime?external=react,react-dom',
-        'react-dom': 'http://localhost:4312/react-dom@19.3.0?external=react,react-dom',
+        'react/': 'http://localhost:4312/react@19.3.0&external=react,react-dom/',
+        'react-dom': 'http://localhost:4312/react-dom@19.3.0?external=react,react-dom,scheduler',
         'react-dom/client':
-          'http://localhost:4312/react-dom@19.3.0/client?external=react,react-dom',
+          'http://localhost:4312/react-dom@19.3.0/client?external=react,react-dom,scheduler',
+        'react-dom/': 'http://localhost:4312/react-dom@19.3.0&external=react,react-dom,scheduler/',
+        scheduler: 'http://localhost:4312/scheduler@0.28.0',
       },
     });
   });
+  it('keeps the React set the same whatever else the manifest holds (T-032 cache)', () => {
+    const template = buildImportMap(TEMPLATE, CDN).imports;
+    const withMore = buildImportMap(DEPS, CDN).imports;
+    for (const [k, v] of Object.entries(template)) expect(withMore[k], k).toBe(v);
+  });
+  it('maps every other exact package of the manifest, with a prefix for its subpaths', () => {
+    const map = buildImportMap(DEPS, CDN).imports;
+    expect(map['zustand']).toBe(`https://pkg.example.net/zustand@5.0.15${q('zustand')}`);
+    expect(map['three']).toBe(`https://pkg.example.net/three@0.170.0${q('three')}`);
+    expect(map['three/']).toBe(
+      'https://pkg.example.net/three@0.170.0&external=@scope%252Fui,animate.css,react,react-dom,zustand/',
+    );
+    expect(map['@scope/ui']).toBe(
+      `https://pkg.example.net/@scope/ui@1.2.3-beta.1${q('@scope/ui')}`,
+    );
+    expect(map['@scope/ui/']).toBe(
+      'https://pkg.example.net/@scope/ui@1.2.3-beta.1&external=animate.css,react,react-dom,three,zustand/',
+    );
+    // Not pinned: never mapped.
+    expect(map['loose']).toBeUndefined();
+    expect(Object.keys(map)).toHaveLength(8 + 2 * 4);
+  });
+  it('resolves a subpath through the prefix to the same build arguments as the main URL', () => {
+    const map = buildImportMap(DEPS, CDN).imports;
+    const viaPrefix = new URL('examples/jsm/controls/OrbitControls.js', map['three/']);
+    // What the CDN reads from the path (decode once, split at `&`, read it as a query).
+    const path = decodeURIComponent(viaPrefix.pathname);
+    const head = path.slice(1, path.indexOf('/', 1));
+    const query = new URLSearchParams(head.slice(head.indexOf('&') + 1));
+    const main = new URL(map['three'] ?? '');
+    expect(query.get('external')).toBe(main.searchParams.get('external'));
+    expect(path.slice(head.length + 1)).toBe('/examples/jsm/controls/OrbitControls.js');
+  });
   it('only has exact-version URLs: no redirect hop that expires (T-032)', () => {
-    const exact = /^(?:@[^/@]+\/)?[^/@]+@\d+\.\d+\.\d+(?:-[\w.]+)?(?:\/[^?]*)?$/;
-    const map = buildImportMap(DEPS, 'https://pkg.example.net');
-    expect(Object.keys(map.imports)).toHaveLength(5);
-    for (const url of Object.values(map.imports)) {
-      expect(new URL(url).pathname.slice(1), url).toMatch(exact);
+    const exact = /^(?:@[^/@]+\/)?[^/@]+@\d+\.\d+\.\d+(?:-[\w.]+)?(?:[&/].*)?$/;
+    for (const deps of [TEMPLATE, DEPS]) {
+      for (const url of Object.values(buildImportMap(deps, 'https://pkg.example.net').imports)) {
+        expect(decodeURIComponent(new URL(url).pathname).slice(1), url).toMatch(exact);
+      }
     }
     // A range or tag is never mapped (it would be a 302 that is only cached for 5 minutes).
     expect(buildImportMap({ react: '^19.3.0', 'react-dom': 'latest' }, CDN)).toEqual({
       imports: {},
     });
   });
-  it('is empty without React (vanilla templates)', () => {
-    expect(buildImportMap({ zustand: '5.0.15' }, CDN)).toEqual({ imports: {} });
+  it('maps React DOM without scheduler when its scheduler is not known', () => {
+    expect(buildImportMap({ react: '18.3.1', 'react-dom': '18.3.1' }, CDN).imports).toEqual({
+      react: 'https://pkg.example.net/react@18.3.1',
+      'react/jsx-runtime':
+        'https://pkg.example.net/react@18.3.1/jsx-runtime?external=react,react-dom',
+      'react/jsx-dev-runtime':
+        'https://pkg.example.net/react@18.3.1/jsx-dev-runtime?external=react,react-dom',
+      'react/': 'https://pkg.example.net/react@18.3.1&external=react,react-dom/',
+      'react-dom': 'https://pkg.example.net/react-dom@18.3.1?external=react,react-dom',
+      'react-dom/client':
+        'https://pkg.example.net/react-dom@18.3.1/client?external=react,react-dom',
+      'react-dom/': 'https://pkg.example.net/react-dom@18.3.1&external=react,react-dom/',
+    });
+  });
+  it('maps packages without React too (vanilla templates)', () => {
+    expect(buildImportMap({ zustand: '5.0.15' }, CDN)).toEqual({
+      imports: {
+        zustand: 'https://pkg.example.net/zustand@5.0.15?external=react,react-dom',
+        'zustand/': 'https://pkg.example.net/zustand@5.0.15&external=react,react-dom/',
+      },
+    });
+  });
+  it('stays within the bridge limits for the largest manifest it accepts', () => {
+    const many: Record<string, string> = { ...TEMPLATE };
+    for (let i = 0; i < MAX_CDN_EXTERNALS - 1; i++) many[`@scope-${String(i)}/pkg`] = '10.20.30';
+    expect(cdnExternals(many)).not.toBeNull();
+    const parsed = ImportMapSchema.safeParse(buildImportMap(many, 'https://esm.sh'));
+    expect(parsed.success).toBe(true);
+    expect(Object.keys(parsed.data?.imports ?? {})).toHaveLength(8 + 2 * (MAX_CDN_EXTERNALS - 1));
   });
 });
 
 /**
  * T-035: the public esm.sh is production's CDN on the free plan, @br/pkg-cdn stays the local
  * and future option. The CDN is configuration only: the same base URL setting, and the same
- * URL shapes, which esm.sh documents (`/pkg@x.y.z[/sub]`, `?external=`, `?deps=`).
+ * URL shapes, which esm.sh documents (`/pkg@x.y.z[/sub]`, `?external=`, `/pkg@x.y.z&external=…/`).
  */
-describe('esm.sh as the package CDN (T-035)', () => {
-  const TEMPLATE = { react: '19.3.0', 'react-dom': '19.3.0' };
-
-  it('builds the import map on esm.sh: exact versions, React external everywhere but react itself', () => {
+describe('esm.sh as the package CDN (T-035, T-040)', () => {
+  it('builds the import map on esm.sh: exact versions, the same as on any other base URL', () => {
     for (const base of ['https://esm.sh', 'https://esm.sh/']) {
-      expect(buildImportMap(TEMPLATE, base)).toEqual({
-        imports: {
-          react: 'https://esm.sh/react@19.3.0',
-          'react/jsx-runtime': 'https://esm.sh/react@19.3.0/jsx-runtime?external=react,react-dom',
-          'react/jsx-dev-runtime':
-            'https://esm.sh/react@19.3.0/jsx-dev-runtime?external=react,react-dom',
-          'react-dom': 'https://esm.sh/react-dom@19.3.0?external=react,react-dom',
-          'react-dom/client': 'https://esm.sh/react-dom@19.3.0/client?external=react,react-dom',
-        },
-      });
+      const map = buildImportMap(TEMPLATE, base).imports;
+      expect(map).toEqual(
+        Object.fromEntries(
+          Object.entries(buildImportMap(TEMPLATE, 'http://localhost:4312').imports).map(
+            ([k, v]) => [k, v.replace('http://localhost:4312', 'https://esm.sh')],
+          ),
+        ),
+      );
+      expect(map['scheduler']).toBe('https://esm.sh/scheduler@0.28.0');
     }
   });
 
@@ -342,14 +462,19 @@ describe('esm.sh as the package CDN (T-035)', () => {
     ];
     const ours = specs.map((s) => resolveBareImport(s, deps, 'http://localhost:4400'));
     const esm = specs.map((s) => resolveBareImport(s, deps, 'https://esm.sh'));
-    const q = '?external=react,react-dom&deps=@react-three/fiber@9.8.1,leaflet@1.9.4,three@0.186.1';
     expect(esm).toEqual([
-      { kind: 'cdn', url: `https://esm.sh/three@0.186.1${q}` },
       {
         kind: 'cdn',
-        url: `https://esm.sh/three@0.186.1/examples/jsm/controls/OrbitControls.js${q}`,
+        url: 'https://esm.sh/three@0.186.1?external=@react-three/fiber,leaflet,react,react-dom',
       },
-      { kind: 'cdn', url: `https://esm.sh/@react-three/fiber@9.8.1${q}` },
+      {
+        kind: 'cdn',
+        url: 'https://esm.sh/three@0.186.1/examples/jsm/controls/OrbitControls.js?external=@react-three/fiber,leaflet,react,react-dom',
+      },
+      {
+        kind: 'cdn',
+        url: 'https://esm.sh/@react-three/fiber@9.8.1?external=leaflet,react,react-dom,three',
+      },
       // Raw file: no query, so esm.sh serves the file as it is in the package.
       { kind: 'cdn-css', url: 'https://esm.sh/leaflet@1.9.4/dist/leaflet.css' },
     ]);
@@ -360,9 +485,12 @@ describe('esm.sh as the package CDN (T-035)', () => {
           : r,
       ),
     ).toEqual(esm.map((r) => (r.kind === 'cdn' || r.kind === 'cdn-css' ? r.url : r)));
-    // No `target=`: esm.sh picks it from the User-Agent (Vary: User-Agent), pkg-cdn defaults
-    // to es2022. Adding one here would split pkg-cdn's peer URLs from the user's imports.
-    for (const r of esm) expect('url' in r ? r.url : '').not.toContain('target=');
+    // No `target=` and no `deps=`: esm.sh picks the target from the User-Agent, and every
+    // package of the manifest is external, so there is nothing left for `deps=` to pin.
+    for (const r of esm) {
+      expect('url' in r ? r.url : '').not.toContain('target=');
+      expect('url' in r ? r.url : '').not.toContain('deps=');
+    }
   });
 });
 

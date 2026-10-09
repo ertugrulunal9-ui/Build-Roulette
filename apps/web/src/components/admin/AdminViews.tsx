@@ -4,7 +4,7 @@
  * and to the public pages are plain `<a>`: every one is a page load (T-037: static pages).
  */
 import { REPORT_REASON_LABELS, isReportReason } from '@br/game';
-import { useState, type FormEvent, type ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import type { RpcResult } from '../../lib/admin/client';
 import type { AdminAction, BattleLog, LogEvent, QueueItem, RoomLog } from '../../lib/admin/types';
 import { screenshotUrl } from '../../lib/supabase/config';
@@ -84,10 +84,6 @@ export function QueueView({
 function QueueCard({ item, actions }: { item: QueueItem; actions: QueueActions }) {
   const publicPage = item.battle_phase === 'results' || item.battle_phase === 'destroyed';
   const [note, setNote] = useState('');
-  const takeDown = (e: FormEvent) => {
-    e.preventDefault();
-    actions.takeDown(item.build_id, note);
-  };
   return (
     <article
       className={`${card} grid grid-cols-1 gap-4 md:grid-cols-[16rem_minmax(0,1fr)]`}
@@ -202,7 +198,13 @@ function QueueCard({ item, actions }: { item: QueueItem; actions: QueueActions }
               >
                 Take down…
               </summary>
-              <form onSubmit={takeDown} className="mt-2 flex flex-col gap-2">
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  actions.takeDown(item.build_id, note);
+                }}
+                className="mt-2 flex flex-col gap-2"
+              >
                 <textarea
                   name="note"
                   maxLength={500}

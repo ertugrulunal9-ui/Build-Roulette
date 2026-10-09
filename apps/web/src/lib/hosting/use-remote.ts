@@ -9,9 +9,7 @@
 import { useCallback, useEffect, useState } from 'react';
 
 export type Remote<T> =
-  | { status: 'loading' }
-  | { status: 'ready'; value: T }
-  | { status: 'error'; message: string };
+  { status: 'loading' } | { status: 'ready'; value: T } | { status: 'error'; message: string };
 
 export function useRemote<T>(
   key: string | null,
@@ -50,7 +48,7 @@ export function useRemote<T>(
     setAttempt((n) => n + 1);
   }, []);
   const current =
-    result && result.key === key && result.attempt === attempt
+    result?.key === key && result.attempt === attempt
       ? result.state
       : { status: 'loading' as const };
   return { state: current, retry };

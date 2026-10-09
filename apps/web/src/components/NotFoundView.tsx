@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import type { ReactNode } from 'react';
 
 /**
@@ -21,9 +22,9 @@ export function NotFoundView({
       <p className="font-mono text-5xl font-black text-zinc-300 dark:text-zinc-700">404</p>
       <h1 className="text-xl font-semibold">This page could not be found.</h1>
       {children}
-      <a href="/" className="text-sm font-semibold text-zinc-500 underline">
+      <Link href="/" className="text-sm font-semibold text-zinc-500 underline">
         Build Roulette
-      </a>
+      </Link>
     </main>
   );
 }

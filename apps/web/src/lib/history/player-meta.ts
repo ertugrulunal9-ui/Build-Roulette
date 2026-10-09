@@ -8,9 +8,10 @@ import type { PlayerHistory } from './player-history';
 
 export const PLAYER_NOT_FOUND_TITLE = 'Player not found';
 
-export function playerMeta(
-  data: PlayerHistory & { player: { display_name: string } },
-): { title: string; description: string } {
+export function playerMeta(data: PlayerHistory & { player: { display_name: string } }): {
+  title: string;
+  description: string;
+} {
   const { player } = data;
   const wins = data.battles.filter((b) => isWinner(b.build)).length;
   const title = `${player.display_name}'s battles`;

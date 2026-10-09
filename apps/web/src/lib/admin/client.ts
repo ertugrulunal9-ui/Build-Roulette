@@ -133,8 +133,9 @@ export async function adminRpc<T>(
   fn: string,
   args: Record<string, unknown> = {},
 ): Promise<RpcResult<T>> {
-  const { data, error, status } = await supabase.rpc(fn, args);
-  if (!error) return { data: data as T, error: null, details: null, status };
+  const res = await supabase.rpc(fn, args);
+  const { error, status } = res;
+  if (!error) return { data: res.data as T, error: null, details: null, status };
   return {
     data: null,
     error: error.message || `http_${String(status)}`,
@@ -186,12 +187,12 @@ export async function signInAdmin(
 ): Promise<'ok' | 'denied'> {
   if (!email || !password) return 'denied';
   const captchaToken = await captcha();
-  const { data, error } = await client.supabase.auth.signInWithPassword({
+  const { error } = await client.supabase.auth.signInWithPassword({
     email,
     password,
     ...(captchaToken ? { options: { captchaToken } } : {}),
   });
-  if (error || !data.session) return 'denied';
+  if (error) return 'denied';
   const admin = await adminRpc<boolean>(client, 'is_admin');
   if (admin.data !== true) {
     await signOutAdmin(client);

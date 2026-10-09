@@ -23,3 +23,14 @@ export function useBrowserUrl(): URL | null {
   const current = useSyncExternalStore(subscribe, href, none);
   return current === null ? null : new URL(current);
 }
+
+const noSubscription = () => () => undefined;
+
+/** False in the exported HTML and during hydration, true once the page runs in the browser. */
+export function useHydrated(): boolean {
+  return useSyncExternalStore(
+    noSubscription,
+    () => true,
+    () => false,
+  );
+}

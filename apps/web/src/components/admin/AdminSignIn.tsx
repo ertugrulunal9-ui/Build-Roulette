@@ -7,8 +7,10 @@
  * A wrong password and a real account without the role get the same answer. A tab that is
  * already signed in as an admin goes straight to /admin.
  */
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useState } from 'react';
 import { checkAdmin, getAdminClient, signInAdmin } from '../../lib/admin/client';
+import { loadPage, replacePage } from '../../lib/hosting/navigate';
+import { useHydrated } from '../../lib/hosting/use-browser-url';
 
 export function AdminSignIn() {
   const [email, setEmail] = useState('');
@@ -17,21 +19,19 @@ export function AdminSignIn() {
   const [error, setError] = useState(false);
   // The button stays disabled until the page runs: a form submitted natively before that
   // would put the password in the URL (a GET to this page).
-  const [ready, setReady] = useState(false);
+  const ready = useHydrated();
 
   useEffect(() => {
-    setReady(true);
     let live = true;
     void checkAdmin(getAdminClient()).then((gate) => {
-      if (live && gate === 'admin') window.location.replace('/admin');
+      if (live && gate === 'admin') replacePage('/admin');
     });
     return () => {
       live = false;
     };
   }, []);
 
-  const submit = async (e: FormEvent) => {
-    e.preventDefault();
+  const submit = async () => {
     if (busy) return;
     setBusy(true);
     setError(false);
@@ -39,7 +39,7 @@ export function AdminSignIn() {
       () => 'denied' as const,
     );
     if (result === 'ok') {
-      window.location.assign('/admin');
+      loadPage('/admin');
       return;
     }
     setError(true);
@@ -54,7 +54,8 @@ export function AdminSignIn() {
       </header>
       <form
         onSubmit={(e) => {
-          void submit(e);
+          e.preventDefault();
+          void submit();
         }}
         className="flex flex-col gap-3"
         data-testid="admin-sign-in"

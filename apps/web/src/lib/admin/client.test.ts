@@ -55,7 +55,11 @@ interface Seen {
 /** A fake Supabase: Auth (password, refresh, user, logout) and the `is_admin` RPC. */
 function fakeSupabase(opts: { admin: boolean; password?: string }) {
   const seen: Seen[] = [];
-  const access = jwt({ sub: USER.id, exp: Math.floor(Date.now() / 1000) + 3600, role: 'authenticated' });
+  const access = jwt({
+    sub: USER.id,
+    exp: Math.floor(Date.now() / 1000) + 3600,
+    role: 'authenticated',
+  });
   const fetchImpl = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(input instanceof Request ? input.url : String(input));
     const headers = new Headers(init?.headers);
@@ -77,12 +81,16 @@ function fakeSupabase(opts: { admin: boolean; password?: string }) {
       const grant = url.searchParams.get('grant_type');
       const b = JSON.parse(body) as { password?: string };
       if (grant === 'password' && b.password !== (opts.password ?? 'right')) {
-        return json(400, { error: 'invalid_grant', error_description: 'Invalid login credentials' });
+        return json(400, {
+          error: 'invalid_grant',
+          error_description: 'Invalid login credentials',
+        });
       }
       return json(200, tokenAnswer(access, `refresh-${String(seen.length)}`));
     }
     if (url.pathname === '/auth/v1/user') return json(200, USER);
-    if (url.pathname === '/auth/v1/logout') return Promise.resolve(new Response(null, { status: 204 }));
+    if (url.pathname === '/auth/v1/logout')
+      return Promise.resolve(new Response(null, { status: 204 }));
     if (url.pathname === '/rest/v1/rpc/is_admin') return json(200, opts.admin);
     if (url.pathname === '/rest/v1/rpc/admin_report_queue') {
       return headers.get('authorization') === `Bearer ${access}`
@@ -103,8 +111,10 @@ describe('the moderator client', () => {
   it('an admin signs in: the session goes to this tab’s sessionStorage under its own key, never localStorage', async () => {
     const fake = fakeSupabase({ admin: true });
     window.localStorage.setItem('br-auth', 'the player session');
-    const client = createAdminClient(CONFIG, window.sessionStorage, fake.fetchImpl as typeof fetch);
-    expect(await signInAdmin(client, 'mod@example.test', 'right', () => Promise.resolve(undefined))).toBe('ok');
+    const client = createAdminClient(CONFIG, window.sessionStorage, fake.fetchImpl);
+    expect(
+      await signInAdmin(client, 'mod@example.test', 'right', () => Promise.resolve(undefined)),
+    ).toBe('ok');
 
     const saved = JSON.parse(window.sessionStorage.getItem(ADMIN_STORAGE_KEY) ?? '{}') as {
       access_token?: string;
@@ -122,8 +132,10 @@ describe('the moderator client', () => {
 
   it('a Turnstile token goes with the password sign-in when one is configured', async () => {
     const fake = fakeSupabase({ admin: true });
-    const client = createAdminClient(CONFIG, window.sessionStorage, fake.fetchImpl as typeof fetch);
-    await signInAdmin(client, 'mod@example.test', 'right', () => Promise.resolve('turnstile-token'));
+    const client = createAdminClient(CONFIG, window.sessionStorage, fake.fetchImpl);
+    await signInAdmin(client, 'mod@example.test', 'right', () =>
+      Promise.resolve('turnstile-token'),
+    );
     const signIn = fake.seen.find((s) => s.path.startsWith('/auth/v1/token'));
     expect(JSON.parse(signIn?.body ?? '{}')).toMatchObject({
       gotrue_meta_security: { captcha_token: 'turnstile-token' },
@@ -132,13 +144,17 @@ describe('the moderator client', () => {
 
   it('wrong details, or a real account that is not an admin: denied, and no session is left', async () => {
     const wrong = fakeSupabase({ admin: true });
-    const a = createAdminClient(CONFIG, window.sessionStorage, wrong.fetchImpl as typeof fetch);
-    expect(await signInAdmin(a, 'mod@example.test', 'nope', () => Promise.resolve(undefined))).toBe('denied');
+    const a = createAdminClient(CONFIG, window.sessionStorage, wrong.fetchImpl);
+    expect(await signInAdmin(a, 'mod@example.test', 'nope', () => Promise.resolve(undefined))).toBe(
+      'denied',
+    );
     expect(window.sessionStorage.getItem(ADMIN_STORAGE_KEY)).toBeNull();
 
     const player = fakeSupabase({ admin: false });
-    const b = createAdminClient(CONFIG, window.sessionStorage, player.fetchImpl as typeof fetch);
-    expect(await signInAdmin(b, 'someone@example.test', 'right', () => Promise.resolve(undefined))).toBe('denied');
+    const b = createAdminClient(CONFIG, window.sessionStorage, player.fetchImpl);
+    expect(
+      await signInAdmin(b, 'someone@example.test', 'right', () => Promise.resolve(undefined)),
+    ).toBe('denied');
     expect(window.sessionStorage.getItem(ADMIN_STORAGE_KEY)).toBeNull();
     // The account's session was ended at once (revoked at Supabase Auth).
     expect(player.seen.some((s) => s.path.startsWith('/auth/v1/logout'))).toBe(true);
@@ -147,15 +163,15 @@ describe('the moderator client', () => {
 
   it('a reload restores the tab’s session and asks is_admin(); no session means no request', async () => {
     const fake = fakeSupabase({ admin: true });
-    const first = createAdminClient(CONFIG, window.sessionStorage, fake.fetchImpl as typeof fetch);
+    const first = createAdminClient(CONFIG, window.sessionStorage, fake.fetchImpl);
     await signInAdmin(first, 'mod@example.test', 'right', () => Promise.resolve(undefined));
 
-    const reloaded = createAdminClient(CONFIG, window.sessionStorage, fake.fetchImpl as typeof fetch);
+    const reloaded = createAdminClient(CONFIG, window.sessionStorage, fake.fetchImpl);
     expect(await checkAdmin(reloaded)).toBe('admin');
 
     window.sessionStorage.clear();
     const stranger = fakeSupabase({ admin: true });
-    const empty = createAdminClient(CONFIG, window.sessionStorage, stranger.fetchImpl as typeof fetch);
+    const empty = createAdminClient(CONFIG, window.sessionStorage, stranger.fetchImpl);
     expect(await checkAdmin(empty)).toBe('none');
     expect(stranger.seen).toEqual([]);
   });
@@ -166,14 +182,14 @@ describe('the moderator client', () => {
       ADMIN_STORAGE_KEY,
       JSON.stringify({ access_token: fake.access, refresh_token: 'r' }),
     );
-    const client = createAdminClient(CONFIG, window.sessionStorage, fake.fetchImpl as typeof fetch);
+    const client = createAdminClient(CONFIG, window.sessionStorage, fake.fetchImpl);
     expect(await checkAdmin(client)).toBe('none');
     expect(window.sessionStorage.getItem(ADMIN_STORAGE_KEY)).toBeNull();
   });
 
   it('sign-out revokes the session and removes it from memory and from sessionStorage', async () => {
     const fake = fakeSupabase({ admin: true });
-    const client = createAdminClient(CONFIG, window.sessionStorage, fake.fetchImpl as typeof fetch);
+    const client = createAdminClient(CONFIG, window.sessionStorage, fake.fetchImpl);
     await signInAdmin(client, 'mod@example.test', 'right', () => Promise.resolve(undefined));
     expect(window.sessionStorage.getItem(ADMIN_STORAGE_KEY)).not.toBeNull();
     await signOutAdmin(client);

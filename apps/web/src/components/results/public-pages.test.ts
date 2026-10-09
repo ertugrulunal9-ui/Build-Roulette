@@ -17,7 +17,10 @@
 import { cleanup, render, screen, within } from '@testing-library/react';
 import { createElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { HistoryBattle, PlayerHistory as PlayerHistoryData } from '../../lib/history/player-history';
+import type {
+  HistoryBattle,
+  PlayerHistory as PlayerHistoryData,
+} from '../../lib/history/player-history';
 import { playerMeta } from '../../lib/history/player-meta';
 import { battleMeta } from '../../lib/solo/battle-meta';
 import { STATIC_OG_CARD, battleOgImage } from '../../lib/solo/og-image';
@@ -130,7 +133,7 @@ const chipsOf = (el: HTMLElement) =>
 
 /** PostgREST's answers to the page's one RPC call, in order; every request is recorded. */
 function stubRpc(...answers: { status: number; body: unknown }[]) {
-  const fetchMock = vi.fn((_url: string, _init?: RequestInit) => {
+  const fetchMock = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>(() => {
     const next = answers.shift();
     if (!next) return Promise.reject(new Error('unexpected request'));
     return Promise.resolve(new Response(JSON.stringify(next.body), { status: next.status }));
@@ -154,7 +157,7 @@ describe('/battles/{id}: the shell loads the battle in the browser (T-037)', () 
     expect(screen.getAllByTestId('public-build')).toHaveLength(3);
     const [url, init] = fetchMock.mock.calls[0] ?? [];
     expect(url).toBe('http://127.0.0.1:54321/rest/v1/rpc/get_public_battle');
-    expect(JSON.parse(String(init?.body))).toEqual({ p_battle_id: BATTLE });
+    expect(JSON.parse(init?.body as string)).toEqual({ p_battle_id: BATTLE });
     expect(init?.cache).toBe('no-store');
     expect(document.title).toBe('A pomodoro timer · Battle results · Build Roulette');
   });
@@ -174,7 +177,10 @@ describe('/battles/{id}: the shell loads the battle in the browser (T-037)', () 
   });
 
   it('a server failure is "could not load", not "not found"; Try again loads it', async () => {
-    stubRpc({ status: 503, body: { message: 'upstream' } }, { status: 200, body: removedWinnerBattle() });
+    stubRpc(
+      { status: 503, body: { message: 'upstream' } },
+      { status: 200, body: removedWinnerBattle() },
+    );
     visit(`/battles/${BATTLE}`);
     render(createElement(BattleView));
     const failed = await screen.findByTestId('battle-load-error');
@@ -262,8 +268,7 @@ describe('the social image of a battle (T-028, T-033; used by T-038)', () => {
     );
     expect(battleMeta(data)).toEqual({
       title: 'Free Gift Card by Mallory',
-      description:
-        'BUILD: A pomodoro timer · RULE: Only one button · STYLE: Brutalist · 5 min',
+      description: 'BUILD: A pomodoro timer · RULE: Only one button · STYLE: Brutalist · 5 min',
       image: {
         url: `http://127.0.0.1:54321/storage/v1/object/public/screenshots/${BATTLE}/mallory.webp`,
         width: 1280,
@@ -384,7 +389,7 @@ describe('/u/{id}: the shell loads the history in the browser (T-037)', () => {
     await screen.findByTestId('player-name');
     const [url, init] = fetchMock.mock.calls[0] ?? [];
     expect(url).toBe('http://127.0.0.1:54321/rest/v1/rpc/get_player_history');
-    expect(JSON.parse(String(init?.body))).toEqual({
+    expect(JSON.parse(init?.body as string)).toEqual({
       p_user_id: MALLORY,
       p_before: before,
       p_before_battle: WON,
@@ -397,9 +402,9 @@ describe('/u/{id}: the shell loads the history in the browser (T-037)', () => {
       'https://x.example',
     );
     expect(older.searchParams.get('before_battle')).toBe(WON);
-    expect(
-      screen.getAllByTestId('history-battle-link').map((a) => a.getAttribute('href')),
-    ).toEqual([`/battles/${REMOVED}`, `/battles/${WON}`]);
+    expect(screen.getAllByTestId('history-battle-link').map((a) => a.getAttribute('href'))).toEqual(
+      [`/battles/${REMOVED}`, `/battles/${WON}`],
+    );
   });
 
   it('an unknown player and a malformed id: "No battles to show"', async () => {

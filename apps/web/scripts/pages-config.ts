@@ -49,7 +49,11 @@ const rel = (f: string) => relative(outDir, f);
 // ─── The pages the host needs ────────────────────────────────────────────────────
 // A top-level 404.html also keeps Pages out of its single-page-app mode (every unknown path
 // answered with index.html and a 200).
-for (const page of ['404.html', 'index.html', ...SHELLS.map((s) => `${s.destination.slice(1)}.html`)]) {
+for (const page of [
+  '404.html',
+  'index.html',
+  ...SHELLS.map((s) => `${s.destination.slice(1)}.html`),
+]) {
   if (!all.some((f) => rel(f) === page)) problems.push(`missing ${page}`);
 }
 
@@ -62,7 +66,8 @@ for (const f of all) {
   if (!textual.test(f)) continue;
   const text = readFileSync(f, 'utf8');
   for (const found of secretKeysIn(text)) problems.push(`${rel(f)} contains ${found}`);
-  for (const s of secrets) if (text.includes(s)) problems.push(`${rel(f)} contains a secret key from the environment`);
+  for (const s of secrets)
+    if (text.includes(s)) problems.push(`${rel(f)} contains a secret key from the environment`);
 }
 
 // ─── _headers and _redirects ─────────────────────────────────────────────────────
@@ -88,7 +93,8 @@ if (SHELLS.length > PAGES_LIMITS.dynamicRedirects) problems.push('too many dynam
 const sizes = all.map((f) => ({ f, bytes: statSync(f).size }));
 if (sizes.length > PAGES_LIMITS.files) problems.push(`${String(sizes.length)} files`);
 for (const { f, bytes } of sizes) {
-  if (bytes > PAGES_LIMITS.fileBytes) problems.push(`${rel(f)} is ${String(bytes)} bytes (over 25 MiB)`);
+  if (bytes > PAGES_LIMITS.fileBytes)
+    problems.push(`${rel(f)} is ${String(bytes)} bytes (over 25 MiB)`);
 }
 const kib = (n: number) => `${(n / 1024).toFixed(1)} KiB`;
 const total = sizes.reduce((n, s) => n + s.bytes, 0);

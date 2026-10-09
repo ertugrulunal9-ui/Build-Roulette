@@ -35,7 +35,8 @@ export function PlayerHistoryView() {
   const url = useBrowserUrl();
   const id = url ? shellParam('/u', url.pathname).toLowerCase() : null;
   const cursor = url ? cursorOf(url.searchParams) : null;
-  const key = id === null ? null : `${id}?${cursor ? `${cursor.before}|${cursor.before_battle}` : ''}`;
+  const key =
+    id === null ? null : `${id}?${cursor ? `${cursor.before}|${cursor.before_battle}` : ''}`;
   const { state, retry } = useRemote(key, async () =>
     id && isUserId(id) ? fetchPlayerHistory(id, cursor) : null,
   );

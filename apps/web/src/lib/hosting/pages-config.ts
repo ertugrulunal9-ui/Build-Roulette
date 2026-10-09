@@ -116,9 +116,7 @@ export function contentSecurityPolicy(s: CspSources): string {
     // Nothing frames the app (clickjacking).
     ['frame-ancestors', "'none'"],
   ];
-  return directives
-    .map(([name, ...values]) => [name, ...unique(values)].join(' '))
-    .join('; ');
+  return directives.map(([name, ...values]) => [name, ...unique(values)].join(' ')).join('; ');
 }
 
 /**
@@ -170,7 +168,9 @@ export function headersFile(rules: readonly HeaderRule[]): string {
 export function checkHeaders(rules: readonly HeaderRule[]): string[] {
   const problems: string[] = [];
   if (rules.length > PAGES_LIMITS.headerRules) {
-    problems.push(`${String(rules.length)} header rules (Pages allows ${String(PAGES_LIMITS.headerRules)})`);
+    problems.push(
+      `${String(rules.length)} header rules (Pages allows ${String(PAGES_LIMITS.headerRules)})`,
+    );
   }
   for (const r of rules) {
     for (const [k, v] of r.headers) {

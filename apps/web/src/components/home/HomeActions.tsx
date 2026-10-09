@@ -8,6 +8,7 @@
 import { normalizeRoomCode } from '@br/game';
 import Link from 'next/link';
 import { useState } from 'react';
+import { loadPage } from '../../lib/hosting/navigate';
 import { describeError, toGameError, type GameError } from '../../lib/solo/errors';
 import { randomDisplayName } from '../../lib/solo/names';
 
@@ -67,7 +68,7 @@ export function HomeActions() {
       }
       // A room is a static shell behind a host rewrite (T-037): a page load, not a client
       // navigation. Queued analytics go out on `pagehide` (keepalive).
-      window.location.assign(`/r/${room.code}`);
+      loadPage(`/r/${room.code}`);
     } catch (e) {
       setError(toGameError(e));
       setBusy(false);
@@ -80,7 +81,7 @@ export function HomeActions() {
       setCodeError('A room code has 5 letters and digits, like K7QXM.');
       return;
     }
-    window.location.assign(`/r/${normalized}`);
+    loadPage(`/r/${normalized}`);
   };
 
   return (

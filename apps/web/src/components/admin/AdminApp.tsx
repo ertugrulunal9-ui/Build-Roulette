@@ -30,6 +30,7 @@ import {
   type RpcResult,
 } from '../../lib/admin/client';
 import type { AdminAction, BattleLog, OpsHealth, QueueItem, RoomLog } from '../../lib/admin/types';
+import { loadPage } from '../../lib/hosting/navigate';
 import { useBrowserUrl } from '../../lib/hosting/use-browser-url';
 import { TEST_ERROR_MESSAGE, errorReportingEnabled } from '../../lib/telemetry/config';
 import { DocumentTitle } from '../DocumentTitle';
@@ -48,14 +49,11 @@ type Gate = 'checking' | 'admin' | 'none' | 'error';
 
 export function AdminApp() {
   const [gate, setGate] = useState<Gate>('checking');
-  const [client, setClient] = useState<AdminClient | null>(null);
   const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
-    const c = getAdminClient();
-    setClient(c);
     let live = true;
-    checkAdmin(c).then(
+    checkAdmin(getAdminClient()).then(
       (g) => {
         if (live) setGate(g);
       },
@@ -70,7 +68,7 @@ export function AdminApp() {
 
   // Until the session is known to be an admin's, the tab names nothing.
   const neutral = <title>Build Roulette</title>;
-  if (gate === 'checking' || !client) {
+  if (gate === 'checking') {
     return (
       <>
         {neutral}
@@ -111,7 +109,8 @@ export function AdminApp() {
       </>
     );
   }
-  return <AdminConsole client={client} />;
+  // The page's one moderator client (created in the browser only: the gate opens there).
+  return <AdminConsole client={getAdminClient()} />;
 }
 
 interface Flash {
@@ -219,7 +218,7 @@ function AdminConsole({ client }: { client: AdminClient }) {
   const signOut = async () => {
     setBusy(true);
     await signOutAdmin(client);
-    window.location.assign('/');
+    loadPage('/');
   };
 
   return (

@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import type { RpcResult } from '../../lib/admin/client';
-import { assessHealth, formatAge } from '../../lib/admin/health';
-import type { OpsHealth } from '../../lib/admin/types';
+import { assessHealth, formatAge, formatBytes } from '../../lib/admin/health';
+import type { OpsHealth, OpsUsage } from '../../lib/admin/types';
 
 /**
  * /admin "Health" (T-030): `admin_ops_health`, called in the browser with the moderator's
@@ -32,6 +32,111 @@ function Panel({
       <h3 className="text-sm font-black tracking-widest text-zinc-500 uppercase">{title}</h3>
       {children}
     </section>
+  );
+}
+
+/** A used/limit bar; amber from the warning threshold on. */
+function Meter({
+  label,
+  usedPct,
+  warning,
+  detail,
+  testId,
+}: {
+  label: string;
+  usedPct: number;
+  warning: boolean;
+  detail: string;
+  testId: string;
+}) {
+  return (
+    <div data-testid={testId} data-pct={usedPct} data-warning={warning ? 'true' : 'false'}>
+      <div className="flex justify-between text-sm">
+        <span className="font-semibold">{label}</span>
+        <span className={warning ? 'font-bold text-amber-700 dark:text-amber-300' : ''}>
+          {detail} ({usedPct} %)
+        </span>
+      </div>
+      <div
+        className="mt-1 h-2 overflow-hidden rounded-full bg-zinc-100 dark:bg-zinc-800"
+        role="meter"
+        aria-label={label}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={Math.min(100, usedPct)}
+      >
+        <div
+          className={`h-full ${warning ? 'bg-amber-500' : 'bg-emerald-500'}`}
+          style={{ width: `${String(Math.min(100, Math.max(0, usedPct)))}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
+/** /admin Health → "Plan usage" (T-036): Supabase Free's storage, database and MAU limits. */
+function UsagePanel({ usage: u, now }: { usage: OpsUsage; now: number }) {
+  const k = u.keep_alive;
+  return (
+    <Panel title="Plan usage (Supabase)" testId="health-usage">
+      <Meter
+        label="File storage"
+        usedPct={u.storage.used_pct}
+        warning={u.storage.warning}
+        detail={`${formatBytes(u.storage.used_bytes)} of ${formatBytes(u.storage.limit_bytes)}`}
+        testId="health-usage-storage"
+      />
+      <ul className="text-xs text-zinc-500">
+        {u.storage.buckets.map((b) => (
+          <li
+            key={b.bucket}
+            data-testid="health-usage-bucket"
+            data-bucket={b.bucket}
+            data-bytes={b.bytes}
+            data-objects={b.objects}
+          >
+            <span className="font-mono">{b.bucket}</span>: {formatBytes(b.bytes)} in {b.objects}{' '}
+            file{b.objects === 1 ? '' : 's'}
+          </li>
+        ))}
+      </ul>
+      <Meter
+        label="Database"
+        usedPct={u.database.used_pct}
+        warning={u.database.warning}
+        detail={`${formatBytes(u.database.used_bytes)} of ${formatBytes(u.database.limit_bytes)}`}
+        testId="health-usage-db"
+      />
+      <p className="text-xs text-zinc-500">
+        Largest:{' '}
+        {u.database.largest
+          .slice(0, 5)
+          .map((r) => `${r.relation} ${formatBytes(r.bytes)}`)
+          .join(' · ')}
+      </p>
+      <Meter
+        label="Monthly active users (at least)"
+        usedPct={u.auth.used_pct}
+        warning={u.auth.warning}
+        detail={`${String(u.auth.signed_in_this_month)} of ${String(u.auth.limit)}`}
+        testId="health-usage-mau"
+      />
+      <p
+        className="text-sm"
+        data-testid="health-keep-alive"
+        data-stale={k.stale ? 'true' : 'false'}
+        data-pings={k.pings}
+      >
+        Keep-alive: {k.last_ping_at ? `last ping ${since(k.last_ping_at, now)}` : 'never pinged'}
+        {k.stale && ' ⚠️'}
+      </p>
+      <p className="text-xs text-zinc-500">
+        Event logs kept {u.retention.event_log_days} days (oldest battle event{' '}
+        {since(u.retention.oldest_battle_event_at, now)}), finished jobs {u.retention.job_days}{' '}
+        days. Screenshots are never deleted on a timer. Egress, Realtime messages and function
+        invocations are only in Supabase&apos;s Usage page.
+      </p>
+    </Panel>
   );
 }
 
@@ -306,6 +411,8 @@ export function HealthView({
             </li>
           </ul>
         </Panel>
+
+        {h.usage && <UsagePanel usage={h.usage} now={now} />}
       </div>
     </section>
   );

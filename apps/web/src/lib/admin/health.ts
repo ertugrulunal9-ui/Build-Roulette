@@ -9,10 +9,11 @@ export type Runbook =
   | 'capture-backlog'
   | 'supabase-outage'
   | 'removed-content-still-visible'
-  | 'takedown-abuse';
+  | 'takedown-abuse'
+  | 'free-plan-quotas';
 
 export interface HealthFinding {
-  area: 'battles' | 'jobs' | 'cron' | 'ttl';
+  area: 'battles' | 'jobs' | 'cron' | 'ttl' | 'usage';
   text: string;
   runbook: Runbook;
 }
@@ -29,6 +30,14 @@ export const SWEEP_MAX_AGE_S: Record<string, number> = {
 
 function age(iso: string, now: number): number {
   return Math.round((now - Date.parse(iso)) / 1000);
+}
+
+/** Bytes in decimal units, as Supabase states its plan limits (1 GB, 500 MB). */
+export function formatBytes(bytes: number): string {
+  if (bytes < 1000) return `${String(bytes)} B`;
+  if (bytes < 1e6) return `${(bytes / 1e3).toFixed(1)} kB`;
+  if (bytes < 1e9) return `${(bytes / 1e6).toFixed(1)} MB`;
+  return `${(bytes / 1e9).toFixed(2)} GB`;
 }
 
 export function formatAge(seconds: number | null): string {
@@ -122,6 +131,43 @@ export function assessHealth(h: OpsHealth, now: number = Date.now()): HealthFind
       text: `TTL leftovers: ${String(t.battles_past_ttl)} battle(s) older than 24 h not destroyed, ${String(t.ephemeral_objects_past_ttl)} file(s) older than 24 h, ${String(t.ephemeral_objects_of_destroyed)} file(s) of destroyed battles`,
       runbook: 'capture-backlog',
     });
+  }
+  const u = h.usage;
+  if (u) {
+    if (u.storage.warning) {
+      const shots = u.storage.buckets.find((b) => b.bucket === 'screenshots');
+      out.push({
+        area: 'usage',
+        text: `Storage: ${formatBytes(u.storage.used_bytes)} of ${formatBytes(u.storage.limit_bytes)} (${String(u.storage.used_pct)} %)${
+          shots ? `, screenshots ${formatBytes(shots.bytes)}` : ''
+        }`,
+        runbook: 'free-plan-quotas',
+      });
+    }
+    if (u.database.warning) {
+      out.push({
+        area: 'usage',
+        text: `Database: ${formatBytes(u.database.used_bytes)} of ${formatBytes(u.database.limit_bytes)} (${String(u.database.used_pct)} %); Supabase Free turns read-only above its limit`,
+        runbook: 'free-plan-quotas',
+      });
+    }
+    if (u.auth.warning) {
+      out.push({
+        area: 'usage',
+        text: `Monthly active users: at least ${String(u.auth.signed_in_this_month)} of ${String(u.auth.limit)} (${String(u.auth.used_pct)} %)`,
+        runbook: 'free-plan-quotas',
+      });
+    }
+    if (u.keep_alive.stale) {
+      out.push({
+        area: 'usage',
+        text:
+          u.keep_alive.last_ping_at === null
+            ? 'The keep-alive has never pinged: set up the GitHub workflow (DEPLOY.md §8), or the Free project pauses after 7 days without activity'
+            : `No keep-alive ping for ${formatAge(u.keep_alive.age_s)}: the Free project pauses after 7 days without activity`,
+        runbook: 'free-plan-quotas',
+      });
+    }
   }
   return out;
 }

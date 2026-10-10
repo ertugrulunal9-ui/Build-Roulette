@@ -1,0 +1,23 @@
+relation,kind,rows_after_42_battles,heap_bytes,index_bytes,bytes_per_row,rows_per_battle,avg_tuple_bytes,bytes_per_battle
+public.battles,permanent,42,32768,81920,2731,1.0,506,2731
+public.challenges,permanent,42,57344,16384,1755,1.0,306,1755
+public.battle_players,permanent,252,32768,57344,358,6.0,63,2146
+public.builds,permanent,252,147456,139264,1138,6.0,409,6827
+public.votes,permanent,964,155648,139264,306,22.9,96,7016
+public.awards,permanent,303,32768,90112,406,7.3,99,2960
+public.battle_events,event log (T-036: 30 days),1205,262144,131072,326,28.6,170,9344
+public.room_events,"event log (with the room, 7 days after it closes; T-036: 30 days)",824,163840,98304,318,18.9,161,6023
+public.rooms,transient (purged 7 days after close),16,16384,65536,5120,0.3,148,1707
+public.room_members,transient (with the room),96,32768,32768,683,2.0,88,1365
+public.jobs,event log (T-036: finished capture/destroy jobs after 7 days),278,49152,114688,589,6.6,96,3909
+public.profiles,permanent (per player),96,8192,16384,256,2.0,72,512
+private.rate_events,transient (pruned hourly),402,155648,139264,734,8.4,72,6187
+storage.objects,screenshot rows permanent (5.6 per battle); 48 build-file rows per battle are inserted and deleted (dead tuples until vacuum reuses them),236,532480,1433600,8331,5.6,561,23211
+auth.users,permanent (per player),96,57344,139264,2048,2.0,351,4096
+auth.identities,permanent (per player),96,32768,65536,1024,,,
+auth.sessions,per session (Supabase Auth),96,16384,81920,1024,2.0,96,2048
+auth.refresh_tokens,per session (Supabase Auth),96,24576,114688,1451,2.0,144,2901
+auth.audit_log_entries,Auth audit log (Supabase Auth),192,65536,32768,512,4.0,325,2048
+auth.mfa_amr_claims,per session (Supabase Auth),96,16384,32768,512,,,
+realtime.messages,"transient (daily partitions, dropped by Realtime)",2029,1572864,,775,47.6,365,33041
+cron.job_run_details,transient (2 days: br-cron-history-cleanup),419,65536,32768,235,3.0,129,712

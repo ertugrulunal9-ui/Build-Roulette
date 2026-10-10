@@ -204,4 +204,54 @@ export interface OpsHealth {
     oldest_ephemeral_object_s: number | null;
     ephemeral_objects_of_destroyed: number;
   };
+  /**
+   * Usage against the Supabase plan (T-036, supabase/migrations/20261010120000_free_plan.sql).
+   * Optional: a database without that migration answers without it.
+   */
+  usage?: OpsUsage;
+}
+
+/** `admin_ops_health().usage` (T-036). Limits come from `private.ops_settings`. */
+export interface OpsUsage {
+  /** A meter warns at this share of its limit (80 by default). */
+  warn_pct: number;
+  storage: {
+    limit_bytes: number;
+    used_bytes: number;
+    used_pct: number;
+    warning: boolean;
+    /** Every bucket, largest first. */
+    buckets: { bucket: string; objects: number; bytes: number }[];
+  };
+  database: {
+    limit_bytes: number;
+    /** Every database of the cluster: Supabase's "database size". */
+    used_bytes: number;
+    this_database_bytes: number;
+    unreadable_databases: number;
+    used_pct: number;
+    warning: boolean;
+    /** The ten largest relations (partitions folded into their table). */
+    largest: { relation: string; bytes: number }[];
+  };
+  auth: {
+    limit: number;
+    /** Users who signed in this calendar month: a lower bound of the plan's MAU. */
+    signed_in_this_month: number;
+    used_pct: number;
+    warning: boolean;
+  };
+  keep_alive: {
+    last_ping_at: string | null;
+    age_s: number | null;
+    pings: number;
+    max_age_s: number;
+    stale: boolean;
+  };
+  retention: {
+    event_log_days: number;
+    job_days: number;
+    oldest_battle_event_at: string | null;
+    oldest_room_event_at: string | null;
+  };
 }

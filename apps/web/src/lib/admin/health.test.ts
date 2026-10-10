@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { assessHealth, formatAge } from './health';
-import type { OpsHealth } from './types';
+import { assessHealth, formatAge, formatBytes } from './health';
+import type { OpsHealth, OpsUsage } from './types';
 
 const NOW = Date.parse('2026-10-08T12:00:00Z');
 const ago = (s: number) => new Date(NOW - s * 1000).toISOString();
@@ -69,9 +69,79 @@ function healthy(): OpsHealth {
   };
 }
 
+/** The plan usage of a young Free project (T-036): far from every limit, pinged today. */
+function usage(): OpsUsage {
+  return {
+    warn_pct: 80,
+    storage: {
+      limit_bytes: 1e9,
+      used_bytes: 120e6,
+      used_pct: 12,
+      warning: false,
+      buckets: [
+        { bucket: 'screenshots', objects: 1800, bytes: 110e6 },
+        { bucket: 'ephemeral-builds', objects: 40, bytes: 10e6 },
+      ],
+    },
+    database: {
+      limit_bytes: 5e8,
+      used_bytes: 80e6,
+      this_database_bytes: 45e6,
+      unreadable_databases: 0,
+      used_pct: 16,
+      warning: false,
+      largest: [{ relation: 'public.battle_events', bytes: 4e6 }],
+    },
+    auth: { limit: 50_000, signed_in_this_month: 900, used_pct: 1.8, warning: false },
+    keep_alive: {
+      last_ping_at: ago(3600),
+      age_s: 3600,
+      pings: 30,
+      max_age_s: 129_600,
+      stale: false,
+    },
+    retention: {
+      event_log_days: 30,
+      job_days: 7,
+      oldest_battle_event_at: ago(29 * 86400),
+      oldest_room_event_at: null,
+    },
+  };
+}
+
 describe('assessHealth', () => {
   it('all clear for a healthy system', () => {
     expect(assessHealth(healthy(), NOW)).toEqual([]);
+    expect(assessHealth({ ...healthy(), usage: usage() }, NOW)).toEqual([]);
+  });
+
+  it('flags plan usage at the warning threshold and a keep-alive that stopped (T-036)', () => {
+    const u = usage();
+    u.storage = { ...u.storage, used_bytes: 812e6, used_pct: 81.2, warning: true };
+    u.storage.buckets = [{ bucket: 'screenshots', objects: 13_000, bytes: 800e6 }];
+    u.database = { ...u.database, used_bytes: 410e6, used_pct: 82, warning: true };
+    u.auth = { ...u.auth, signed_in_this_month: 41_000, used_pct: 82, warning: true };
+    u.keep_alive = { ...u.keep_alive, last_ping_at: ago(3 * 86400), age_s: 3 * 86400, stale: true };
+    const findings = assessHealth({ ...healthy(), usage: u }, NOW);
+    expect(findings.map((f) => [f.area, f.runbook])).toEqual([
+      ['usage', 'free-plan-quotas'],
+      ['usage', 'free-plan-quotas'],
+      ['usage', 'free-plan-quotas'],
+      ['usage', 'free-plan-quotas'],
+    ]);
+    expect(findings.map((f) => f.text)).toEqual([
+      'Storage: 812.0 MB of 1.00 GB (81.2 %), screenshots 800.0 MB',
+      'Database: 410.0 MB of 500.0 MB (82 %); Supabase Free turns read-only above its limit',
+      'Monthly active users: at least 41000 of 50000 (82 %)',
+      'No keep-alive ping for 3 d: the Free project pauses after 7 days without activity',
+    ]);
+  });
+
+  it('says how to set up a keep-alive that never pinged', () => {
+    const u = usage();
+    u.keep_alive = { last_ping_at: null, age_s: null, pings: 0, max_age_s: 129_600, stale: true };
+    const [finding] = assessHealth({ ...healthy(), usage: u }, NOW);
+    expect(finding?.text).toMatch(/never pinged: set up the GitHub workflow \(DEPLOY\.md §8\)/);
   });
 
   it('flags stuck battles (not RESULTS waiting for its screenshots)', () => {
@@ -138,6 +208,15 @@ describe('assessHealth', () => {
     ]);
     h.cron = { available: false, jobs: [] };
     expect(assessHealth(h, NOW).some((f) => f.area === 'cron')).toBe(true);
+  });
+});
+
+describe('formatBytes', () => {
+  it('uses decimal units, as Supabase states its limits', () => {
+    expect(formatBytes(512)).toBe('512 B');
+    expect(formatBytes(61_234)).toBe('61.2 kB');
+    expect(formatBytes(500e6)).toBe('500.0 MB');
+    expect(formatBytes(1e9)).toBe('1.00 GB');
   });
 });
 

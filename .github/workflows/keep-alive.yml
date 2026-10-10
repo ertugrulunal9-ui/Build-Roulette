@@ -1,0 +1,78 @@
+# Keeps the Supabase Free project from being paused (T-036, docs/08-free-tier.md §6.1).
+#
+# Supabase pauses a Free project after 7 days without "user database activity". Our own
+# pg_cron jobs are not user activity, and a paused project runs no cron at all, so this
+# workflow sends one request through the Data API once a day (scripts/keep-alive.sh):
+# POST /rest/v1/rpc/keep_alive with the public anon (or publishable) key, which reads and
+# writes one row. The run FAILS, and GitHub emails whoever last edited this schedule, when:
+#   - the project is paused (HTTP 540: restore it in the Supabase dashboard);
+#   - Supabase restricts it for exceeding the Free quotas (HTTP 402);
+#   - the database is read-only (over the Free plan's 500 MB: {"read_only": true});
+#   - anything else answers instead of the function (wrong URL or key, migrations missing).
+# Not configured yet (both settings empty): the run passes with a notice, so a fork or a
+# repository without a deployment does not fail every day.
+#
+# Settings (repository → Settings → Secrets and variables → Actions; DEPLOY.md §8):
+#   variable SUPABASE_URL       https://<ref>.supabase.co
+#   secret   SUPABASE_ANON_KEY  the project's anon (legacy JWT) or publishable key
+# The key is public by design (every web bundle has it), but as a secret it is masked in the
+# logs. Never write either value into this file.
+#
+# Cost: one job of under a minute a day, billed as 1 minute on a private repository (~31 of
+# the 2,000 free minutes a month); free on a public one. The jitter stays inside that minute.
+name: Keep Supabase awake
+
+on:
+  schedule:
+    # 04:23 UTC daily: off the hour (GitHub delays runs at :00 under load). Daily leaves six
+    # more tries before Supabase's 7-day limit.
+    - cron: '23 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: keep-alive
+  cancel-in-progress: false
+
+jobs:
+  ping:
+    name: Ping the Supabase project
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      # Only for the last step (re-enabling this schedule on a public repository).
+      actions: write
+    steps:
+      - name: Checkout the script
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: scripts/keep-alive.sh
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Ping keep_alive
+        env:
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          JITTER_MAX_S: ${{ github.event_name == 'schedule' && '40' || '0' }}
+        run: bash scripts/keep-alive.sh
+
+      # GitHub disables the scheduled workflows of a PUBLIC repository after 60 days without
+      # repository activity. Enabling the workflow again through the API is reported to reset
+      # that clock (third-party keep-alive tools rely on it; GitHub does not document it, so
+      # it is assumed). Private repositories are not affected and skip it.
+      - name: Keep this schedule enabled (public repositories)
+        if: ${{ always() && github.event_name == 'schedule' }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$(gh api "repos/${GITHUB_REPOSITORY}" --jq .private)" = "false" ]; then
+            gh api -X PUT "repos/${GITHUB_REPOSITORY}/actions/workflows/keep-alive.yml/enable"
+            echo "re-enabled keep-alive.yml (public repository)"
+          else
+            echo "private repository: nothing to do"
+          fi

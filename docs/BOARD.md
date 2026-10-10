@@ -2,7 +2,7 @@
 
 Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 
-## Current milestone: M5 Hardening (all tasks merged; sign-off waits on the staging runbook rehearsal)
+## Current milestone: M5 Hardening + free-tier deploy (all tasks merged; sign-off waits on the user's accounts and the runbook drills in DEPLOY.md)
 
 | ID | Task | Scope | Status | Notes |
 |---|---|---|---|---|
@@ -22,7 +22,7 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 | T-038 | Free tier: per-battle link previews. A tiny Pages Function on `/battles/*` injects `og:*` meta (rank-1 screenshot, or the static card; T-028 rule) with `HTMLRewriter`. Its CPU is measured cold/warm with the T-033 tool against the 10 ms limit; if it doesn't fit, fall back to the static card. | `apps/web/` | done | Merged: **GO** (3–5 ms fresh, ~2 ms warm) |
 | T-039 | **Bundler start can hang forever.** `BundlerClient.init()` has no timeout: a stalled `esbuild.wasm` or worker-script fetch leaves "Starting bundler…" on screen with no error and no retry. Seen once in CI run 52 (chaos shard 1, a page stuck for 30 s at the battle start; not reproduced in CI run 53 or in 3 local runs; the artifact can't be downloaded from this environment). Fix: an init timeout, one automatic retry with a fresh worker, then the failed state with a visible Retry; e2e that stalls the wasm response. | `packages/runtime/`, `apps/web/` | done | Merged |
 | T-040 | **esm.sh: one instance per package and a fully pinned template** (from CI run 60, compat against esm.sh: 52/57, React contract 1 problem). esm.sh resolves a package's own dependencies by **range** (`/scheduler@^0.28.0?target=es2022`, `/three@…`, `/chart.js@…`), cached 10 min only, and a range can resolve to a second copy. Seen as: react-dom → scheduler cached only 600 s (the template outage window); `@react-three/fiber (one three)` ok:false; `react-chartjs-2` "category is not a registered scale" (two chart.js). Fix the esm.sh way: externalize every manifest package in every other package's URL (`?external=react,react-dom,three,…`) and map each in the import map to its exact pinned URL. Pin react-dom's `scheduler` in the template map. Also look at `p5` (a dependency's missing export on esm.sh) and `pixi.js` (ready timeout; the unsafe-eval variant passes). Re-run CI compat with `compat_cdn=https://esm.sh`. | `packages/runtime/`, `apps/sandbox-shell/`, `apps/pkg-cdn/` (compat) | done | Merged; **esm.sh CI 56/58, 0 unexpected, React contract ok** |
-| T-041 | **Bundler start: the stall timer can kill a slow compile.** T-039's 15 s no-progress timer gets no messages after the last wasm byte (`compileStreaming` + esbuild `initialize`), so a compile slowed by CPU contention can be killed and retried, and the retry adds load. Seen as CI run 63, chaos shard 3 (8 players on a 4-vCPU runner): a page at "Starting bundler…" for 30 s at battle start, the same symptom as run 52. Fix: a separate, generous compile-stage bound (or worker heartbeats while compiling); keep the stall retry for real network stalls. Reproduce with CPU contention and 8 concurrent boots. | `packages/runtime/`, `apps/web/` (e2e) | in-progress | Free-tier deploy, follow-up |
+| T-041 | **Bundler start: the stall timer can kill a slow compile.** T-039's 15 s no-progress timer gets no messages after the last wasm byte (`compileStreaming` + esbuild `initialize`), so a compile slowed by CPU contention can be killed and retried, and the retry adds load. Seen as CI run 63, chaos shard 3 (8 players on a 4-vCPU runner): a page at "Starting bundler…" for 30 s at battle start, the same symptom as run 52. Fix: a separate, generous compile-stage bound (or worker heartbeats while compiling); keep the stall retry for real network stalls. Reproduce with CPU contention and 8 concurrent boots. | `packages/runtime/`, `apps/web/` (e2e) | done | Merged |
 | T-034 | Free tier: capture + destroy/takedown jobs without an always-on server. Preferred: a Supabase Edge Function (free: 2 s CPU, 500k invocations) run by pg_cron + pg_net, calling Cloudflare Browser Rendering's REST API (free: 10 browser-min/day). A Cloudflare cron Worker would face the same 10 ms CPU limit as T-033. The client thumbnail is the fallback when the budget is spent. | `supabase/` (function, cron), `apps/capture-worker/` (shared code, local stand-in) | done | Merged |
 | T-035 | Free tier: public esm.sh as the package CDN (config, CSP, import-map URL shapes); compat suite against esm.sh in GitHub CI (this container cannot reach esm.sh) | `packages/runtime/`, `apps/sandbox-shell/`, `apps/web/`, `apps/pkg-cdn/` (compat), `ci.yml` | done | Merged; CI compat on esm.sh 52/57 → follow-up T-040 |
 | T-036 | Free tier: Supabase Free adjustments (keep-alive against the 7-day pause, screenshot size/retention for the 1 GB storage, quotas in docs/07), deploy checklist rewritten for the free setup | `supabase/`, `docs/`, `DEPLOY.md` | done | Merged |
@@ -863,3 +863,23 @@ Start M5.
   - runbook check (9 runbooks) 0 failed;
   - function integration 11/11;
   - moderation 8/8, solo 3/3, multiplayer 5/5.
+
+### T-041: accepted (free-tier follow-up, from CI runs 52/63)
+- **Reproduced** on 4 vCPUs with 8 concurrent bundler starts:
+  - busy loops alone never tripped the old 15 s timer (the worst compile stage was 12.8 s, on 1 CPU);
+  - a **renderer freeze** (SIGSTOP, 17 s) did: the overdue timer fired on resume before the worker could finish `initialize`, giving false stalls at stage `compile`;
+  - a deterministic e2e (initialize held 17 s) made all 8 old-code starts stall twice and fail with about 31 s of "Starting bundler…", which is the CI symptom.
+- **Why no heartbeats:** measured, `compileStreaming` resolves 10–200 ms after the last byte and `esbuild.initialize` blocks the worker's own thread for practically all of its time, so a heartbeat couldn't be sent then.
+- **Fix:**
+  - the download stage keeps T-039's 15 s no-progress limit;
+  - after the last byte, a separate **60 s** compile limit (`initCompileMs`);
+  - both count only **page-awake time** (`AwakeClock`; at most 1 s credit per 250 ms tick, the T-031 idea);
+  - one retry, then Retry, and errors still fail at once;
+  - `bundler_start` gains `awake_ms`.
+- **Diagnostics:** `waitForBuild` now names the stage a page reached when its build is late, and chaos battles print `[metrics] battle start`. The next CI failure will say where it stopped.
+- **Tests:** 7 new or changed client tests and both new runtime e2e (`bundler-start.spec`) fail on the old client.
+- **Hub re-ran on a fresh clone with T-041 test-merged** (clean):
+  - pipeline green (runtime 177, web 436 unit tests);
+  - **runtime e2e 3× on the new code and 3× on the old (interleaved): all green** (37/37 + 8/8, and 35/35 + 8/8). The worker's flaky T-031 long-task watchdog test did not reproduce;
+  - playground 24/24, solo 3/3, multiplayer 5/5;
+  - **chaos shard 3 three times 4/4** (8-player start: esbuild ready p50 4.8–5.1 s, max 6.3–7.3 s), shards 1 3/3 and 2 2/2.

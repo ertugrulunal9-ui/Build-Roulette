@@ -17,7 +17,8 @@
  * go there too (`bundler_start`, T-039).
  *
  * A bundler that cannot start never hangs (T-039): the runtime gives up on a start with no
- * progress for 15 s and retries it once, then `boot()` rejects. The snapshot then reads
+ * progress for 15 s during the download, or not ready 60 s after it (T-041; both in
+ * page-awake time), and retries it once, then `boot()` rejects. The snapshot then reads
  * `bundler: 'failed'` with the reason, and `retryBundler()` (the Retry button) or the next
  * edit starts it again. The workspace is not touched: it stays in IndexedDB either way.
  */

@@ -121,9 +121,10 @@ Error reporting (Sentry) and product analytics (PostHog), both **off unless conf
   this tab's preview counts for the battle: crashes, restarts, app stalls of 1 s or more and
   their total, and `preview_spared` (silences the pre-T-031 watchdog would have called a
   crash). Only the battle UUID, enums and numbers: no build code, console output or names.
-  A bundler start that stalls (no progress for 15 s) or fails, and the automatic retry after a
-  stall, is a `bundler_start` event (`outcome`, `stage`, `attempt`, `elapsed_ms`,
-  `loaded_bytes`; T-039).
+  A bundler start that stalls (no progress for 15 s during the download, or not ready 60 s
+  after it; T-041) or fails, and the automatic retry after a stall, is a `bundler_start` event
+  (`outcome`, `stage`, `attempt`, `elapsed_ms`, `awake_ms` (the page-awake part the limits
+  count), `loaded_bytes`; T-039).
 - `/admin` → Health has "Send a test error to Sentry": it throws an uncaught error from the
   page's own code, the path any app error takes (the window's handler, then Sentry with the
   page's tags); with no DSN in the build it says reporting is off.
@@ -387,7 +388,8 @@ CDN (T-006) replaces it.
   `/_next/static/media/` and the import returns its URL. `next.config.ts` fails the build if
   this app's `esbuild-wasm` version differs from the one `@br/runtime` pins, because esbuild
   refuses to start with mismatched JS and wasm versions.
-- A bundler start that stalls (no progress for 15 s) is retried once with a fresh worker; if
+- A bundler start that stalls (no progress for 15 s during the esbuild.wasm download, or not
+  ready 60 s after it, both in page-awake time; T-041) is retried once with a fresh worker; if
   that stalls too, or the start fails, the preview says why ("Couldn't start the bundler: …")
   and has **Retry** (`SandboxController.retryBundler()`). An edit retries too (T-039,
   [docs/03](../../docs/03-sandbox.md#bundler-start-stall-timeout-and-retry-t-039)).

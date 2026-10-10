@@ -14,9 +14,10 @@
  *   crash (`sparedSilences`: they ended with a pong). Summed over every preview of the battle
  *   in this tab, including those still running, and taken once by the room's `sync_health`.
  * - **`bundler_start`** (T-039), one per bundler worker start that stalled (no progress for
- *   15 s) or failed, and for the automatic retry after a stall whatever its outcome: how far
- *   it got (`worker`, `download`, `compile`), the attempt, the time and the wasm bytes
- *   received. A clean first start sends nothing.
+ *   15 s during the download, or not ready 60 s after it; T-041) or failed, and for the
+ *   automatic retry after a stall whatever its outcome: how far it got (`worker`,
+ *   `download`, `compile`), the attempt, the time (wall clock, and the page-awake part the
+ *   limits count) and the wasm bytes received. A clean first start sends nothing.
  *
  * Privacy (T-030 rules): no build code, no console output, no names, no URLs: only the
  * battle's random UUID, enums and numbers. Every event goes through `track`, a no-op
@@ -198,6 +199,7 @@ export class PreviewHealth {
       stage: r.stage,
       attempt: r.attempt,
       elapsed_ms: Math.round(r.elapsedMs),
+      awake_ms: Math.round(r.awakeMs),
       loaded_bytes: r.loadedBytes,
     });
   }

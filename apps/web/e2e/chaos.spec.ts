@@ -4,6 +4,7 @@ import { buildFrame, clickRouted } from './helpers';
 import {
   autosaveNow,
   battleOf,
+  buildStartMetrics,
   createRoom,
   joinByLink,
   member,
@@ -85,6 +86,7 @@ async function startBattle(code: string, players: Player[], limitS: number): Pro
                     returning c.id`);
   expect(changed, 'the time limit must be set while the battle spins').not.toBe('');
   for (const p of players) await waitForBuild(p.page);
+  console.log(`[metrics] battle start: ${await buildStartMetrics(players.map((p) => p.page))}`);
   expect(
     sql(
       `select extract(epoch from building_ends_at - building_started_at)::int from public.battles where id = '${battleId}'`,

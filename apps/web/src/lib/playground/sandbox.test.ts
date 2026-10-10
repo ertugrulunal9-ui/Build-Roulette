@@ -568,24 +568,47 @@ describe('SandboxController bundler start failures (T-039)', () => {
     );
     const report = factory.hooks?.onInitAttempt;
     if (!report) throw new Error('the controller passed no onInitAttempt hook');
-    report({ attempt: 1, outcome: 'ready', stage: 'compile', elapsedMs: 210, loadedBytes: 1 });
+    report({
+      attempt: 1,
+      outcome: 'ready',
+      stage: 'compile',
+      elapsedMs: 210,
+      awakeMs: 210,
+      loadedBytes: 1,
+    });
     expect(sent).toEqual([]); // a clean start is not news
     report({
       attempt: 1,
       outcome: 'stalled',
       stage: 'download',
-      elapsedMs: 15_000.4,
+      elapsedMs: 19_000.4,
+      awakeMs: 15_000.4,
       loadedBytes: 4_200_000,
     });
-    report({ attempt: 2, outcome: 'ready', stage: 'compile', elapsedMs: 300, loadedBytes: 1e7 });
-    report({ attempt: 1, outcome: 'error', stage: 'worker', elapsedMs: 12, loadedBytes: 0 });
+    report({
+      attempt: 2,
+      outcome: 'ready',
+      stage: 'compile',
+      elapsedMs: 300,
+      awakeMs: 300,
+      loadedBytes: 1e7,
+    });
+    report({
+      attempt: 1,
+      outcome: 'error',
+      stage: 'worker',
+      elapsedMs: 12,
+      awakeMs: 12,
+      loadedBytes: 0,
+    });
     expect(sent).toEqual([
       {
         battle_id: BATTLE,
         outcome: 'stalled',
         stage: 'download',
         attempt: 1,
-        elapsed_ms: 15_000,
+        elapsed_ms: 19_000,
+        awake_ms: 15_000,
         loaded_bytes: 4_200_000,
       },
       {
@@ -594,6 +617,7 @@ describe('SandboxController bundler start failures (T-039)', () => {
         stage: 'compile',
         attempt: 2,
         elapsed_ms: 300,
+        awake_ms: 300,
         loaded_bytes: 1e7,
       },
       {
@@ -602,11 +626,19 @@ describe('SandboxController bundler start failures (T-039)', () => {
         stage: 'worker',
         attempt: 1,
         elapsed_ms: 12,
+        awake_ms: 12,
         loaded_bytes: 0,
       },
     ]);
     controller.dispose();
-    report({ attempt: 1, outcome: 'stalled', stage: 'worker', elapsedMs: 1, loadedBytes: 0 });
+    report({
+      attempt: 1,
+      outcome: 'stalled',
+      stage: 'worker',
+      elapsedMs: 1,
+      awakeMs: 1,
+      loadedBytes: 0,
+    });
     expect(sent).toHaveLength(3);
   });
 });

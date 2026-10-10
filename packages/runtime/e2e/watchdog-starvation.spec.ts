@@ -17,9 +17,9 @@
  *    app page's main thread is blocked for about 6.5 s and the frame's for about 3 s.
  * The old watchdog crashes in both (checked: `heartbeat-timeout`, silence 7.4 s / 6.6 s).
  */
-import { expect, test, type Browser, type Frame, type Page } from '@playwright/test';
+import { expect, test, type Frame, type Page } from '@playwright/test';
 import { REACT_MANIFEST, reactApp } from './fixtures';
-import { buildFrame, fmt, openPlayground } from './helpers';
+import { buildFrame, fmt, freezeRenderers, openPlayground } from './helpers';
 
 const THROTTLE_RATE = 6;
 
@@ -46,31 +46,6 @@ async function throttleBoth(page: Page, rate: number): Promise<void> {
   for (const target of [page, shellFrame(page)]) {
     const cdp = await page.context().newCDPSession(target);
     await cdp.send('Emulation.setCPUThrottlingRate', { rate });
-  }
-}
-
-/** The OS process ids of every renderer of this browser (app page, preview frame, spares). */
-async function rendererPids(browser: Browser): Promise<number[]> {
-  const cdp = await browser.newBrowserCDPSession();
-  try {
-    const { processInfo } = (await cdp.send('SystemInfo.getProcessInfo')) as {
-      processInfo: { type: string; id: number }[];
-    };
-    return processInfo.filter((p) => p.type === 'renderer').map((p) => p.id);
-  } finally {
-    await cdp.detach();
-  }
-}
-
-/** No renderer of the browser gets any CPU for `ms`: the app page and the preview alike. */
-async function freezeRenderers(browser: Browser, ms: number): Promise<void> {
-  const pids = await rendererPids(browser);
-  expect(pids.length).toBeGreaterThanOrEqual(2); // the app page and the preview frame
-  try {
-    for (const pid of pids) process.kill(pid, 'SIGSTOP');
-    await new Promise((resolve) => setTimeout(resolve, ms));
-  } finally {
-    for (const pid of pids) process.kill(pid, 'SIGCONT');
   }
 }
 

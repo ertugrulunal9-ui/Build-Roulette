@@ -12,6 +12,7 @@ export {
   BundlerAbortError,
   BundlerClient,
   BundlerInitTimeoutError,
+  DEFAULT_INIT_COMPILE_MS,
   DEFAULT_INIT_STALL_MS,
   INIT_ATTEMPTS,
   bundlerStartFailureText,

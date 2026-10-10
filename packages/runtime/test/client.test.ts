@@ -1,12 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BundleInput } from '../src/types';
+import { AwakeClock } from '../src/worker/awake-clock';
 import {
   BundlerClient,
+  DEFAULT_INIT_COMPILE_MS,
   DEFAULT_INIT_STALL_MS,
+  INIT_MAX_TICK_CREDIT_MS,
   type BundlerClientOptions,
   type InitAttemptReport,
 } from '../src/worker/client';
-import { FakeWorker, settledWithin } from './fake-worker';
+import { FakeWorker, settledWithin, useStartTimers } from './fake-worker';
 
 const INPUT: BundleInput = {
   files: { 'src/main.ts': 'console.log(1)' },
@@ -14,7 +17,7 @@ const INPUT: BundleInput = {
   mode: 'dev',
 };
 
-type ClientHooks = Pick<BundlerClientOptions, 'initStallMs' | 'onInitAttempt'>;
+type ClientHooks = Pick<BundlerClientOptions, 'initStallMs' | 'initCompileMs' | 'onInitAttempt'>;
 
 function clientWithOptions(
   hooks: ClientHooks,
@@ -65,7 +68,7 @@ const MB = 1024 * 1024;
 
 describe('BundlerClient start timeout (T-039)', () => {
   beforeEach(() => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    useStartTimers();
   });
   afterEach(() => {
     vi.useRealTimers();
@@ -161,15 +164,18 @@ describe('BundlerClient start timeout (T-039)', () => {
         loadedBytes: 12 * 1.1 * MB,
       }),
     ]);
-    // The retry gets as far as compiling and stops there: the error names that.
+    // The retry gets as far as compiling and stops there (for the compile limit, T-041): the
+    // error names that.
     spawned[1]?.emit({ type: 'init-progress', stage: 'compile', loaded: 13.6 * MB });
-    await vi.advanceTimersByTimeAsync(DEFAULT_INIT_STALL_MS);
+    await vi.advanceTimersByTimeAsync(DEFAULT_INIT_COMPILE_MS);
     expect(init).toMatchObject({
       status: 'rejected',
       reason: {
         name: 'BundlerInitTimeoutError',
-        message: 'esbuild-wasm stopped while starting (no progress for 15 s, 2 attempts)',
+        message:
+          'esbuild-wasm stopped while starting (not ready 60 s after the download, 2 attempts)',
         stage: 'compile',
+        stallMs: DEFAULT_INIT_COMPILE_MS,
       },
     });
   });
@@ -289,6 +295,239 @@ describe('BundlerClient start timeout (T-039)', () => {
     const init = observe(client.init());
     await vi.advanceTimersByTimeAsync(DEFAULT_INIT_STALL_MS);
     expect(init).toMatchObject({ status: 'fulfilled', value: { attempts: 2 } });
+  });
+});
+
+// T-041: after the last byte no progress comes (V8 finishes the compile, then esbuild's
+// initialize blocks the worker's thread), so the 15 s stall limit would cut off a compile that
+// a starved CPU makes slow. The compile stage has its own, generous limit.
+describe('BundlerClient compile limit (T-041)', () => {
+  beforeEach(() => {
+    useStartTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** The worker sends its first bytes, then the last one after `downloadMs`. */
+  async function downloadThenCompile(w: FakeWorker, downloadMs = 1000): Promise<void> {
+    w.emit({ type: 'init-progress', stage: 'download', loaded: 0 });
+    await vi.advanceTimersByTimeAsync(downloadMs);
+    w.emit({ type: 'init-progress', stage: 'compile', loaded: 13.6 * MB });
+  }
+
+  it('a compile stage of 40 s (no progress after the last byte) is not a stall', async () => {
+    const reports: InitAttemptReport[] = [];
+    const slow = new FakeWorker('manual');
+    const { client, spawned } = clientWithOptions(
+      { onInitAttempt: (r) => reports.push(r) },
+      slow,
+      new FakeWorker('ok'),
+    );
+    const init = observe(client.init());
+    await downloadThenCompile(slow);
+    await vi.advanceTimersByTimeAsync(40_000);
+    // The pre-T-041 client stopped it at 15 s and started a second worker.
+    expect(spawned).toHaveLength(1);
+    expect(slow.terminated).toBe(false);
+    expect(init.status).toBe('pending');
+    slow.emit({ type: 'init-done', wasmInitMs: 41_000 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(init).toMatchObject({ status: 'fulfilled', value: { attempts: 1 } });
+    expect(reports).toEqual([
+      {
+        attempt: 1,
+        outcome: 'ready',
+        stage: 'compile',
+        elapsedMs: 41_000,
+        awakeMs: 41_000,
+        loadedBytes: 13.6 * MB,
+      },
+    ]);
+  });
+
+  it('a compile stage that never ends is stopped after 60 s and retried once, then init() fails', async () => {
+    const reports: InitAttemptReport[] = [];
+    const { client, spawned } = clientWithOptions(
+      { onInitAttempt: (r) => reports.push(r) },
+      new FakeWorker('manual'),
+      new FakeWorker('manual'),
+    );
+    const init = observe(client.init());
+    const first = spawned[0];
+    if (!first) throw new Error('no worker');
+    await downloadThenCompile(first);
+    await vi.advanceTimersByTimeAsync(DEFAULT_INIT_COMPILE_MS - 1);
+    expect(spawned).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(first.terminated).toBe(true);
+    expect(spawned).toHaveLength(2);
+    const second = spawned[1];
+    if (!second) throw new Error('no retry');
+    await downloadThenCompile(second);
+    await vi.advanceTimersByTimeAsync(DEFAULT_INIT_COMPILE_MS);
+    expect(init).toMatchObject({
+      status: 'rejected',
+      reason: {
+        name: 'BundlerInitTimeoutError',
+        message:
+          'esbuild-wasm stopped while starting (not ready 60 s after the download, 2 attempts)',
+        stage: 'compile',
+        stallMs: DEFAULT_INIT_COMPILE_MS,
+        attempts: 2,
+      },
+    });
+    expect(reports.map((r) => [r.attempt, r.outcome, r.stage, r.elapsedMs])).toEqual([
+      [1, 'stalled', 'compile', 1000 + DEFAULT_INIT_COMPILE_MS],
+      [2, 'stalled', 'compile', 1000 + DEFAULT_INIT_COMPILE_MS],
+    ]);
+  });
+
+  it('initCompileMs sets the compile limit', async () => {
+    const { client, spawned } = clientWithOptions(
+      { initCompileMs: 5000 },
+      new FakeWorker('manual'),
+      new FakeWorker('manual'),
+    );
+    observe(client.init());
+    const first = spawned[0];
+    if (!first) throw new Error('no worker');
+    await downloadThenCompile(first);
+    await vi.advanceTimersByTimeAsync(4999);
+    expect(spawned).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(spawned).toHaveLength(2);
+  });
+
+  it('until the last byte the stall limit still applies: 15 s without a byte is a stall', async () => {
+    const reports: InitAttemptReport[] = [];
+    const w = new FakeWorker('manual');
+    const { client, spawned } = clientWithOptions(
+      { onInitAttempt: (r) => reports.push(r) },
+      w,
+      new FakeWorker('manual'),
+    );
+    observe(client.init());
+    w.emit({ type: 'init-progress', stage: 'download', loaded: 0 });
+    await vi.advanceTimersByTimeAsync(5000);
+    w.emit({ type: 'init-progress', stage: 'download', loaded: 2 * MB });
+    await vi.advanceTimersByTimeAsync(DEFAULT_INIT_STALL_MS - 1);
+    expect(spawned).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(w.terminated).toBe(true);
+    expect(spawned).toHaveLength(2);
+    expect(reports).toEqual([
+      expect.objectContaining({ outcome: 'stalled', stage: 'download', loadedBytes: 2 * MB }),
+    ]);
+  });
+
+  it('the compile limit counts from the last byte, not from the start', async () => {
+    // A slow download (2 min, bytes all along) and then a 50 s compile: neither is cut off.
+    const slow = new FakeWorker('manual');
+    const { client, spawned } = clientWith(slow);
+    const init = observe(client.init());
+    for (let i = 0; i < 12; i++) {
+      slow.emit({ type: 'init-progress', stage: 'download', loaded: i * MB });
+      await vi.advanceTimersByTimeAsync(10_000);
+    }
+    slow.emit({ type: 'init-progress', stage: 'compile', loaded: 13.6 * MB });
+    await vi.advanceTimersByTimeAsync(50_000);
+    slow.emit({ type: 'init-done', wasmInitMs: 170_000 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(init).toMatchObject({ status: 'fulfilled', value: { attempts: 1 } });
+    expect(spawned).toHaveLength(1);
+  });
+});
+
+/** Blocks this thread (the "page") for `ms`: no timer and no message runs meanwhile. */
+function freeze(ms: number): void {
+  const end = performance.now() + ms;
+  while (performance.now() < end) {
+    // A starved page: nothing of ours runs.
+  }
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// T-041 (T-031's idea): the limits count page-awake time. When the page itself does not run
+// (the renderer gets no CPU), its worker does not either, and a timer that fires late after
+// such a freeze must not call it a stall. Real timers: the freeze really blocks the thread.
+describe('BundlerClient limits count page-awake time (T-041)', () => {
+  it('a 4 s freeze against a 3 s stall limit is not a stall; a real stall afterwards still is', async () => {
+    const reports: InitAttemptReport[] = [];
+    const w = new FakeWorker('manual');
+    const { client, spawned } = clientWithOptions(
+      { initStallMs: 3000, onInitAttempt: (r) => reports.push(r) },
+      w,
+      new FakeWorker('manual'),
+    );
+    const init = observe(client.init());
+    w.emit({ type: 'init-progress', stage: 'download', loaded: 0 });
+    freeze(4000);
+    // The page runs again: the late tick counts at most INIT_MAX_TICK_CREDIT_MS. The
+    // pre-T-041 client's 3 s timer fires right here instead.
+    await sleep(600);
+    expect(spawned).toHaveLength(1);
+    expect(init.status).toBe('pending');
+
+    // No progress while the page is awake: stopped after 3 s of awake time.
+    const resumed = performance.now();
+    await expect.poll(() => spawned.length, { timeout: 5000, interval: 50 }).toBe(2);
+    const detectedAfter = performance.now() - resumed;
+    expect(detectedAfter).toBeGreaterThan(3000 - INIT_MAX_TICK_CREDIT_MS - 700);
+    expect(detectedAfter).toBeLessThan(3000);
+    const [report] = reports;
+    expect(report).toMatchObject({ attempt: 1, outcome: 'stalled', stage: 'download' });
+    if (!report) throw new Error('no report');
+    expect(report.awakeMs).toBeGreaterThanOrEqual(3000);
+    expect(report.awakeMs).toBeLessThan(3600);
+    // The wall clock includes the freeze, which was not counted.
+    expect(report.elapsedMs - report.awakeMs).toBeGreaterThan(4000 - INIT_MAX_TICK_CREDIT_MS - 100);
+    client.terminate();
+  });
+
+  it('a freeze during the compile stage is not counted against the compile limit', async () => {
+    const w = new FakeWorker('manual');
+    // Both limits at 2 s, so a wall-clock limit of either kind would fire after the freeze.
+    const { client, spawned } = clientWithOptions(
+      { initStallMs: 2000, initCompileMs: 2000 },
+      w,
+      new FakeWorker('manual'),
+    );
+    const init = observe(client.init());
+    w.emit({ type: 'init-progress', stage: 'compile', loaded: 13.6 * MB });
+    freeze(3000);
+    await sleep(400);
+    expect(spawned).toHaveLength(1);
+    w.emit({ type: 'init-done', wasmInitMs: 3400 });
+    await sleep(0);
+    expect(init).toMatchObject({ status: 'fulfilled', value: { attempts: 1 } });
+  });
+});
+
+describe('AwakeClock', () => {
+  it('follows the real clock between timely ticks', () => {
+    const clock = new AwakeClock(1000, 1000);
+    expect(clock.tick(1250)).toBe(250);
+    expect(clock.tick(1500)).toBe(500);
+    expect(clock.at(1700)).toBe(700);
+    expect(clock.tick(2400)).toBe(1400); // 900 ms late: a busy page, still counted
+  });
+
+  it('a late tick (the page did not run) adds at most the credit', () => {
+    const clock = new AwakeClock(0, 1000);
+    expect(clock.tick(250)).toBe(250);
+    expect(clock.tick(17_250)).toBe(1250);
+    expect(clock.tick(17_500)).toBe(1500);
+  });
+
+  it('readings between ticks are capped the same way and never go backwards', () => {
+    const clock = new AwakeClock(0, 1000);
+    expect(clock.at(500)).toBe(500);
+    expect(clock.at(5000)).toBe(1000);
+    expect(clock.tick(6000)).toBe(1000);
+    expect(clock.at(5000)).toBe(1000); // a reading from before the tick: no step back
+    expect(clock.at(6100)).toBe(1100);
   });
 });
 

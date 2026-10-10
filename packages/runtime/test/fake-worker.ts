@@ -2,8 +2,19 @@
  * A scripted stand-in for the bundler Web Worker, so BundlerClient / EsmBrowserRuntime
  * lifecycles (init failures, terminate races) can be tested in Node without esbuild-wasm.
  */
+import { vi } from 'vitest';
 import type { BuildResult } from '../src/types';
 import type { WorkerRequest, WorkerResponse } from '../src/worker/protocol';
+
+/**
+ * Fake timers for a bundler start: its limits tick on `setInterval` and read
+ * `performance.now()` (T-041), and the stalled start's telemetry reads it too.
+ */
+export function useStartTimers(): void {
+  vi.useFakeTimers({
+    toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance'],
+  });
+}
 
 type InitBehavior = 'ok' | 'fail' | 'manual';
 type BuildBehavior = 'ok' | 'manual';

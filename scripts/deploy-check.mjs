@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Checks a deployment of Build Roulette on the free setup (T-036, DEPLOY.md §9): the web app
+// Checks a deployment of Build Roulette on the free setup (T-036, DEPLOY.md §6): the web app
 // on Cloudflare Pages (headers and CSP, real 404s, the shells, the link-preview Function),
 // the sandbox shell (its CSP and the capture gate), and Supabase (the API, anonymous
 // sign-ins, the keep-alive RPC, the jobs Edge Function). Read-only, except that it pings

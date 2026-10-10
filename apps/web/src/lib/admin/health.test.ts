@@ -141,7 +141,7 @@ describe('assessHealth', () => {
     const u = usage();
     u.keep_alive = { last_ping_at: null, age_s: null, pings: 0, max_age_s: 129_600, stale: true };
     const [finding] = assessHealth({ ...healthy(), usage: u }, NOW);
-    expect(finding?.text).toMatch(/never pinged: set up the GitHub workflow \(DEPLOY\.md §8\)/);
+    expect(finding?.text).toMatch(/never pinged: set up the GitHub workflow \(DEPLOY\.md §5\)/);
   });
 
   it('flags stuck battles (not RESULTS waiting for its screenshots)', () => {

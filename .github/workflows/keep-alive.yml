@@ -12,7 +12,7 @@
 # Not configured yet (both settings empty): the run passes with a notice, so a fork or a
 # repository without a deployment does not fail every day.
 #
-# Settings (repository → Settings → Secrets and variables → Actions; DEPLOY.md §8):
+# Settings (repository → Settings → Secrets and variables → Actions; DEPLOY.md §5):
 #   variable SUPABASE_URL       https://<ref>.supabase.co
 #   secret   SUPABASE_ANON_KEY  the project's anon (legacy JWT) or publishable key
 # The key is public by design (every web bundle has it), but as a secret it is masked in the

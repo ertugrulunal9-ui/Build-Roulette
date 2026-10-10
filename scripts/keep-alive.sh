@@ -20,7 +20,7 @@ url="${SUPABASE_URL:-}"
 key="${SUPABASE_ANON_KEY:-}"
 
 if [ -z "$url" ] && [ -z "$key" ]; then
-  echo "::notice title=Keep-alive not configured::Set the SUPABASE_URL variable and the SUPABASE_ANON_KEY secret (DEPLOY.md §8)."
+  echo "::notice title=Keep-alive not configured::Set the SUPABASE_URL variable and the SUPABASE_ANON_KEY secret (DEPLOY.md §5)."
   exit 0
 fi
 if [ -z "$url" ] || [ -z "$key" ]; then

@@ -163,7 +163,7 @@ export function assessHealth(h: OpsHealth, now: number = Date.now()): HealthFind
         area: 'usage',
         text:
           u.keep_alive.last_ping_at === null
-            ? 'The keep-alive has never pinged: set up the GitHub workflow (DEPLOY.md §8), or the Free project pauses after 7 days without activity'
+            ? 'The keep-alive has never pinged: set up the GitHub workflow (DEPLOY.md §5), or the Free project pauses after 7 days without activity'
             : `No keep-alive ping for ${formatAge(u.keep_alive.age_s)}: the Free project pauses after 7 days without activity`,
         runbook: 'free-plan-quotas',
       });

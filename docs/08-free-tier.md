@@ -1043,7 +1043,7 @@ with the same key a player's browser uses.
 - **Cost:** one job of a few seconds a day: 1 billed minute on a private repository, about
   31 of the 2,000 free minutes a month (GitHub Free); nothing on a public one.
 
-**What could still stop it** (DEPLOY.md §8 says what to do):
+**What could still stop it** (DEPLOY.md §5 says what to do):
 
 1. *A private repository out of Actions minutes.* Then no workflow runs, the keep-alive
    included. **The CI workflow is the risk**: it runs on every push and nightly, nine jobs

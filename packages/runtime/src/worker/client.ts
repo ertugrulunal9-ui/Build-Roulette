@@ -40,10 +40,11 @@ export const DEFAULT_INIT_STALL_MS = 15_000;
  * runs Go's runtime start, which blocks the worker's thread the whole time (measured), so not
  * even a worker heartbeat could show that it moves. Nothing in it waits for the network, so
  * it never stalls like a download does; it only gets slow when the CPU is short. Measured
- * (docs/03, "Bundler start"): 0.1–0.4 s alone, at most 0.9 s for 8 concurrent starts next to
- * 8 busy loops on 4 vCPUs, at most 2.9 s for 8 starts squeezed onto 1 CPU next to 4–12 busy
- * loops. 60 s is 20 times the worst of those: it only stops a start that cannot finish (a
- * wedged worker), and still fails visibly within about 2 minutes.
+ * (docs/03, "Bundler start"): 0.1–0.4 s on an idle machine; at most 0.9 s for 8 concurrent
+ * starts next to 8 busy loops on 4 vCPUs; up to 12.8 s in the 8-player chaos battle with the
+ * browsers and services squeezed onto 1 CPU next to 3–6 busy loops, close to T-039's 15 s.
+ * 60 s is almost 5 times that: it only stops a start that cannot finish (a wedged worker), and
+ * the player still sees a failure with Retry within about 2 minutes.
  */
 export const DEFAULT_INIT_COMPILE_MS = 60_000;
 

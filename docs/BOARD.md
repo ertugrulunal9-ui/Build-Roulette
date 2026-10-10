@@ -22,10 +22,10 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 | T-038 | Free tier: per-battle link previews. A tiny Pages Function on `/battles/*` injects `og:*` meta (rank-1 screenshot, or the static card; T-028 rule) with `HTMLRewriter`. Its CPU is measured cold/warm with the T-033 tool against the 10 ms limit; if it doesn't fit, fall back to the static card. | `apps/web/` | done | Merged: **GO** (3–5 ms fresh, ~2 ms warm) |
 | T-039 | **Bundler start can hang forever.** `BundlerClient.init()` has no timeout: a stalled `esbuild.wasm` or worker-script fetch leaves "Starting bundler…" on screen with no error and no retry. Seen once in CI run 52 (chaos shard 1, a page stuck for 30 s at the battle start; not reproduced in CI run 53 or in 3 local runs; the artifact can't be downloaded from this environment). Fix: an init timeout, one automatic retry with a fresh worker, then the failed state with a visible Retry; e2e that stalls the wasm response. | `packages/runtime/`, `apps/web/` | done | Merged |
 | T-040 | **esm.sh: one instance per package and a fully pinned template** (from CI run 60, compat against esm.sh: 52/57, React contract 1 problem). esm.sh resolves a package's own dependencies by **range** (`/scheduler@^0.28.0?target=es2022`, `/three@…`, `/chart.js@…`), cached 10 min only, and a range can resolve to a second copy. Seen as: react-dom → scheduler cached only 600 s (the template outage window); `@react-three/fiber (one three)` ok:false; `react-chartjs-2` "category is not a registered scale" (two chart.js). Fix the esm.sh way: externalize every manifest package in every other package's URL (`?external=react,react-dom,three,…`) and map each in the import map to its exact pinned URL. Pin react-dom's `scheduler` in the template map. Also look at `p5` (a dependency's missing export on esm.sh) and `pixi.js` (ready timeout; the unsafe-eval variant passes). Re-run CI compat with `compat_cdn=https://esm.sh`. | `packages/runtime/`, `apps/sandbox-shell/`, `apps/pkg-cdn/` (compat) | done | Merged; **esm.sh CI 56/58, 0 unexpected, React contract ok** |
-| T-041 | **Bundler start: the stall timer can kill a slow compile.** T-039's 15 s no-progress timer gets no messages after the last wasm byte (`compileStreaming` + esbuild `initialize`), so a compile slowed by CPU contention can be killed and retried, and the retry adds load. Seen as CI run 63, chaos shard 3 (8 players on a 4-vCPU runner): a page at "Starting bundler…" for 30 s at battle start, the same symptom as run 52. Fix: a separate, generous compile-stage bound (or worker heartbeats while compiling); keep the stall retry for real network stalls. Reproduce with CPU contention and 8 concurrent boots. | `packages/runtime/`, `apps/web/` (e2e) | todo | Free-tier deploy, after T-036 |
+| T-041 | **Bundler start: the stall timer can kill a slow compile.** T-039's 15 s no-progress timer gets no messages after the last wasm byte (`compileStreaming` + esbuild `initialize`), so a compile slowed by CPU contention can be killed and retried, and the retry adds load. Seen as CI run 63, chaos shard 3 (8 players on a 4-vCPU runner): a page at "Starting bundler…" for 30 s at battle start, the same symptom as run 52. Fix: a separate, generous compile-stage bound (or worker heartbeats while compiling); keep the stall retry for real network stalls. Reproduce with CPU contention and 8 concurrent boots. | `packages/runtime/`, `apps/web/` (e2e) | in-progress | Free-tier deploy, follow-up |
 | T-034 | Free tier: capture + destroy/takedown jobs without an always-on server. Preferred: a Supabase Edge Function (free: 2 s CPU, 500k invocations) run by pg_cron + pg_net, calling Cloudflare Browser Rendering's REST API (free: 10 browser-min/day). A Cloudflare cron Worker would face the same 10 ms CPU limit as T-033. The client thumbnail is the fallback when the budget is spent. | `supabase/` (function, cron), `apps/capture-worker/` (shared code, local stand-in) | done | Merged |
 | T-035 | Free tier: public esm.sh as the package CDN (config, CSP, import-map URL shapes); compat suite against esm.sh in GitHub CI (this container cannot reach esm.sh) | `packages/runtime/`, `apps/sandbox-shell/`, `apps/web/`, `apps/pkg-cdn/` (compat), `ci.yml` | done | Merged; CI compat on esm.sh 52/57 → follow-up T-040 |
-| T-036 | Free tier: Supabase Free adjustments (keep-alive against the 7-day pause, screenshot size/retention for the 1 GB storage, quotas in docs/07), deploy checklist rewritten for the free setup | `supabase/`, `docs/`, `apps/web/DEPLOY.md` | in-progress | Free-tier deploy, task 7 (last) |
+| T-036 | Free tier: Supabase Free adjustments (keep-alive against the 7-day pause, screenshot size/retention for the 1 GB storage, quotas in docs/07), deploy checklist rewritten for the free setup | `supabase/`, `docs/`, `DEPLOY.md` | done | Merged |
 | T-019 | M4 DB layer: REVEAL (order, slots, host skip) + VOTING (categories, no self-vote, revotes, secret ballots) phases, vote-based ranking + category awards, reveal-phase storage read access, realtime `vote_progress` | `supabase/`, `packages/game/` (constants), `ci.yml` | done | Merged |
 | T-020 | M4 web: synchronized REVEAL spotlight (one live build, thumbnails, prefetch, host skip), VOTE stage, vote-based results + permanent page | `apps/web/` (+ remove the CI pre-M4 switch) | done | Merged |
 | T-021 | M4 completion: mobile reveal/vote layout, player history `/u/[id]`, chaos coverage for reveal/vote, M4 exit criteria | `apps/web/`, `supabase/` (tests) | done | Merged |
@@ -50,21 +50,21 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 
 ## Blocked on the user (only needed for deployment; nothing blocks local work)
 
+Step-by-step: **[DEPLOY.md](../DEPLOY.md)** (free plans; T-036).
+
 | Item | Needed for |
 |---|---|
-| Cloudflare account, **free plan** (decision of 2026-10-09). The app and the sandbox shell are static Pages sites (T-037); screenshots and jobs run on a cron Worker (T-034). The full free-setup checklist comes with T-036. | Deploying the app, sandbox shell and screenshots |
-| Supabase project (free plan to start) | Hosted database, auth, storage and realtime |
-| One domain for the app (optional at first; the app can run on a free Cloudflare address) | Public launch |
-| **Only if you later move to Supabase Pro: the spend cap.** (The free plan has hard limits instead.) Re-measured after T-029: with the cap's assumed Presence quota (50/s), 10 rooms × 8 players went from 4,571 room-channel closes to 0, but 50 × 8 still had 1,703 (channels down 5–45 s at a time). The cap can stay ON at launch; turn it OFF (or move to Team) before about 15 concurrent 8-player rooms are in BUILD. The 50/s figure is an assumption to check. See docs/07 §7.0. | Realtime capacity |
-| At deploy: raise the Realtime tenant `db_pool` (1 → ~10). Battle-channel joins p95 went from 23 s to 213 ms in the load test. | Realtime join latency |
-| Later: second (usercontent) domain + Public Suffix List entry (F1) | Per-build isolation as the game grows |
-| At deploy: create the admin user(s) (Supabase dashboard → Add user, then the SQL insert in `supabase/README.md`) | Moderation (`/admin`) |
-| At deploy: Turnstile site and secret keys; enable CAPTCHA in Supabase Auth together with `NEXT_PUBLIC_TURNSTILE_SITE_KEY` | Bot protection for anonymous sign-up |
-| At deploy: Cloudflare per-IP rate-limit rules and protection for `/admin` (numbers in `supabase/README.md`) | Abuse protection at the edge |
-| ~~At deploy: results-page cache (T-026)~~: obsolete since T-037. The static site has no server cache, so there is no R2, D1 or Durable Object to create. |
-| At deploy: Sentry account with one JavaScript project. Set the DSN as `NEXT_PUBLIC_SENTRY_DSN` at the static build (`pnpm --filter @br/web build`), plus `SENTRY_DSN` for the jobs worker. In the project, turn on "Prevent Storing of IP Addresses" and set Allowed Domains to the app origin. Optional: a build-time auth token for source maps. PostHog EU project: `NEXT_PUBLIC_POSTHOG_KEY` and `NEXT_PUBLIC_POSTHOG_HOST`, with "Discard client IP data" on. Steps are in `apps/web/DEPLOY.md` (Observability). | Error reporting and product analytics |
-| At deploy: package CDN. The free plan uses public esm.sh (T-035); our own CDN on Containers (T-032's edge-caching steps in `apps/pkg-cdn/README.md`) applies only if we move to a paid plan. |
-| **M5 exit criterion: rehearse every runbook once on staging.** This needs the hosted Supabase project and the Cloudflare account above. | M5 sign-off |
+| **Cloudflare, free plan.** Two Pages projects (`build-roulette-web`, `build-roulette-sandbox`) and a Browser Rendering API token. Turnstile is optional (DEPLOY.md §2, §4). | App, sandbox shell, screenshots |
+| **Supabase project, Free plan.** `db push`; Auth settings (anonymous sign-ins, URL configuration); the `jobs` function and its secrets; the two Vault secrets (DEPLOY.md §3). | Database, auth, storage, Realtime, jobs |
+| **GitHub:** the variable `SUPABASE_URL` and the secret `SUPABASE_ANON_KEY` for the daily keep-alive (DEPLOY.md §5). The repository is public, so Actions minutes are unlimited and CI's nightly run can stay. | Keeping the Free project awake (7-day pause) |
+| **First admin(s):** Auth → Add user, then the SQL insert (DEPLOY.md §3.5). | Moderation (`/admin`) |
+| Optional: Turnstile keys, with CAPTCHA turned on in Supabase after the app is built with the site key. | Bot protection |
+| Optional: Sentry (`NEXT_PUBLIC_SENTRY_DSN`) and PostHog at the web build. The jobs function logs to Supabase. | Errors, analytics |
+| Optional: Realtime authorization pool to ~10, if the Free dashboard allows it (unconfirmed). The T-029 join stagger works without it. | Join latency |
+| Optional: one domain. The app runs on `*.pages.dev`. | Public launch |
+| **Watch, then decide:** Supabase Pro ($25) when the storage meter reaches 80 % (~2,250 battles; screenshots are permanent), egress passes ~4 GB/month, Realtime messages pass ~1.6M/month, or more than ~8 rooms are regularly in BUILD at once (docs/07 §7.8; Health shows the meters). The spend-cap question applies only on Pro. | Growth |
+| **M5 exit criterion:** rehearse every runbook once (DEPLOY.md §7 has a drill for each). | M5 sign-off |
+| Later: a second usercontent domain + PSL entry (F1). | Per-build isolation |
 
 **User decisions (2026-10-04):** option A, so everything is hosted on Cloudflare and Vercel is dropped. The sandbox starts on `*.pages.dev` (already on the PSL), so there is no second domain at launch. Package CDN runs on Cloudflare Containers. Continue M2 locally.
 
@@ -838,3 +838,28 @@ Start M5.
 - **Expected on esm.sh:** 56/58, known failures matter-js named imports and p5, React contract 0 problems.
 - **CI compat against esm.sh after T-040** (run 64, workflow_dispatch): **56/58 (96.6%), 0 unexpected, 2 known** (matter-js named imports, p5), **React import-map contract ok** (12 URLs), cases with problems 1/58. Exactly as T-040 predicted: react-chartjs-2, fiber (one three), pixi.js and react-konva (scoped prefix) pass.
 - **Push run 63 at the same head:** every job green except chaos shard 3. The 8-player battle start had a page at "Starting bundler…" for 30 s, the same symptom as run 52. Hub analysis: T-039's stall timer sees no progress during the compile stage, so a CPU-starved compile can be killed and retried → **T-041**.
+
+### T-036: accepted (free-tier task 7)
+- **Keep-alive:** a daily GitHub Actions workflow (`keep-alive.yml`, 04:23 UTC + jitter) calls the new anon RPC `public.keep_alive()`. That RPC writes at most once a minute, answers `{ok, read_only, at}` and is the only new anon grant. The workflow fails loudly on a paused (540) or restricted (402) project, a read-only DB, or a wrong key/URL; with nothing configured it passes with a notice. The last ping shows in Health (flagged after 36 h). Our own pg_cron/pg_net traffic is assumed not to count as activity.
+- **Screenshots:** WebP quality 82 → **70**, measured on an 18-app corpus: mean 77 → 61 KiB (−21 %), mean SSIM 0.9926 → 0.9897; comparison images are in the hub scratchpad. 960×600 is the documented next lever. Screenshots are never deleted on a timer.
+- **Database:** about 42 KB kept per battle. The new daily `private.prune_event_logs()` removes battle events of finished battles and room events older than 30 days, plus finished capture/destroy jobs older than 7 days (configurable; takedown jobs kept). pgTAP proves public pages, histories and permanent rows stay identical; a mutant that also deleted ballots failed 2 tests.
+- **Health:** storage per bucket vs 1 GB (warning at 80 %), DB size vs 500 MB, MAU vs 50k, and the last keep-alive.
+- **Free-plan capacity** (docs/07 §7.8):
+  - storage ~2,750 battles in total (first over time);
+  - egress ~1,210 battles/month (first per month);
+  - Realtime Presence ~10 rooms in BUILD at once (first at a peak; the load test on Free quotas at 10×6: 0 channel closes);
+  - Browser Rendering ~1,000 battles/month (soft: thumbnails after that);
+  - Realtime messages ~1,340 battles/month.
+- **Docs:** root `DEPLOY.md` (accounts → Supabase → Pages → GitHub → smoke checks → runbook drills), docs/05 stale pg_net text fixed, docs/07 §7.8, docs/08 §6, a new `free-plan-quotas` runbook. `scripts/deploy-check.mjs` passed 33/33 against the local setup; it is unit-tested.
+- **Hub notes:**
+  - the repository is **public**, so Actions minutes are unlimited and the worker's "drop CI's nightly run on a private repo" advice doesn't apply;
+  - the hub rewrote "Blocked on the user" from the worker's proposal;
+  - the load test was broken since T-034 (it waits for the Node worker's log line): the hub fixes it separately.
+- **Hub re-ran on a fresh clone with T-036 test-merged onto main** (clean):
+  - pipeline green (web 436, capture-worker 136 unit tests; scripts tests included);
+  - workflow YAML parses;
+  - `supabase test db` **1347/1347**;
+  - e2e scripts 44/51/34/50/26;
+  - runbook check (9 runbooks) 0 failed;
+  - function integration 11/11;
+  - moderation 8/8, solo 3/3, multiplayer 5/5.

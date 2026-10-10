@@ -47,7 +47,10 @@ export class CaptureServices {
     this.log = createWriteStream(join(this.outDir, 'capture-services.log'));
     const child = spawn(
       join(webDir, 'node_modules/.bin/tsx'),
-      ['scripts/solo-services.ts', '--realtime'],
+      // `--worker`: since T-034 solo-services starts the jobs Edge Function by default; this
+      // test parses the Node worker's JSON log lines (`worker.started`, `job.end`, …), and the
+      // worker runs the same job contract.
+      ['scripts/solo-services.ts', '--realtime', '--worker'],
       {
         cwd: webDir,
         env: {

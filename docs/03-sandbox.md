@@ -861,7 +861,9 @@ limit and made both limits count page-awake time. The lifecycle now is:
    previous tick, but by at most 1 s (`INIT_MAX_TICK_CREDIT_MS`): a later tick shows that the
    renderer itself got no CPU, and then its worker did not run either. A busy page that runs
    its timers a few hundred ms late still counts in full, so on an awake page a real stall is
-   still stopped after 15 s.
+   still stopped after 15 s. A hidden tab runs timers once a second, which also counts in
+   full; only after 5 minutes hidden (once a minute) do the limits practically wait for the
+   tab to be shown again.
 5. **One automatic retry** with a fresh worker (and a fresh request). The player only sees
    "Starting bundler…" for longer.
 6. **Failed:** if the retry stalls too, `boot()` rejects with a `BundlerInitTimeoutError` and

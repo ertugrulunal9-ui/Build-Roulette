@@ -310,10 +310,10 @@ function warn(name, detail) {
   return { level: 'WARN', name, detail };
 }
 
-async function request(fetchImpl, url, init = {}) {
+async function request(fetchImpl, url, init = {}, timeoutMs = TIMEOUT_MS) {
   const res = await fetchImpl(url, {
     redirect: 'manual',
-    signal: AbortSignal.timeout(TIMEOUT_MS),
+    signal: AbortSignal.timeout(timeoutMs),
     ...init,
   });
   const body = init.method === 'HEAD' ? '' : await res.text();
@@ -552,10 +552,14 @@ export async function runChecks(cfg, fetchImpl = fetch) {
       );
       return out;
     }
-    const run = await request(fetchImpl, `${cfg.supabase}/functions/v1/jobs?wait=1`, {
-      method: 'POST',
-      headers: { 'x-br-cron-secret': cfg.cronSecret },
-    });
+    // ?wait=1 answers when the run is over: at once with nothing due, up to the run's hard
+    // stop (140 s) while captures are being taken.
+    const run = await request(
+      fetchImpl,
+      `${cfg.supabase}/functions/v1/jobs?wait=1`,
+      { method: 'POST', headers: { 'x-br-cron-secret': cfg.cronSecret } },
+      150_000,
+    );
     if (run.status === 200)
       out.push(pass('supabase: the jobs function runs with its secrets (200)'));
     else if (run.status === 401)

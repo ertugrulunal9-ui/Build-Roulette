@@ -7,6 +7,7 @@ import {
   assertUuid,
   publicScreenshotUrl,
   refreshWorks,
+  runKeepAlive,
   seedAdmin,
   sql,
   uploadScreenshot,
@@ -377,6 +378,48 @@ test('report → admin takedown → "Removed by moderators" and the screenshot i
   await health.getByTestId('admin-test-error').click();
   await expect(admin.getByTestId('admin-flash')).toHaveAttribute('data-done', 'test_error_off');
   expect(adminErrors).toEqual([]);
+
+  // ─── T-036: plan usage against Supabase Free ──────────────────────────────────────
+  // The screenshots uploaded above are in the storage total, the database has a size.
+  const usage = health.getByTestId('health-usage');
+  await expect(usage).toBeVisible();
+  const shotsBucket = usage.locator('[data-testid=health-usage-bucket][data-bucket=screenshots]');
+  expect(Number(await shotsBucket.getAttribute('data-bytes'))).toBeGreaterThan(0);
+  expect(
+    Number(await health.getByTestId('health-usage-db').getAttribute('data-pct')),
+  ).toBeGreaterThan(0);
+  // A keep-alive that stopped is a finding; the workflow's own script pings it again.
+  sql(`update private.keep_alive set last_ping_at = now() - interval '3 days'`);
+  await admin.goto('/admin');
+  await expect(health.getByTestId('health-keep-alive')).toHaveAttribute('data-stale', 'true');
+  await expect(
+    health
+      .locator('[data-testid=health-finding][data-area=usage]')
+      .filter({ hasText: 'keep-alive' }),
+  ).toContainText('free-plan-quotas');
+  expect(runKeepAlive()).toContain('Supabase is awake');
+  await admin.goto('/admin');
+  await expect(health.getByTestId('health-keep-alive')).toHaveAttribute('data-stale', 'false');
+  // At 80 % of the plan's storage the meter and a finding warn: the limit set to what the
+  // screenshots alone hold (they only grow here) puts the total at 100 % or more.
+  try {
+    sql(`update private.ops_settings
+            set storage_limit_bytes = (select greatest(1, sum((metadata ->> 'size')::bigint))
+                                       from storage.objects where bucket_id = 'screenshots')`);
+    await admin.goto('/admin');
+    await expect(health.getByTestId('health-usage-storage')).toHaveAttribute(
+      'data-warning',
+      'true',
+    );
+    await expect(
+      health
+        .locator('[data-testid=health-finding][data-area=usage]')
+        .filter({ hasText: 'Storage:' }),
+    ).toContainText('free-plan-quotas');
+    await snap(admin, 't036-admin-usage', true);
+  } finally {
+    sql(`update private.ops_settings set storage_limit_bytes = 1000000000`);
+  }
   await admin.goto('/admin');
   sql(`update public.builds set capture_status = 'failed' where battle_id = '${healthFx.battle}'`);
 

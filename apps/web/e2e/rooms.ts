@@ -160,6 +160,26 @@ function recordBundlerStarts(): void {
     const what = worker === undefined ? type : `worker ${String(worker)} ${type}`;
     console.debug(`[e2e bundler] ${what}${loaded ? ` (${String(loaded)} B)` : ''}`);
   };
+  // SPIN and the first build: a cheap look four times a second, and when a worker starts (the
+  // BUILD screen mounts under SPIN's reels, so SPIN is up by then).
+  let spinning = false;
+  let built = false;
+  const look = () => {
+    const spin = document.querySelector('[data-testid="spin"]') !== null;
+    if (spin && !spinning) {
+      add('spin');
+      built = false;
+    }
+    spinning = spin;
+    const status = document.querySelector('[data-testid="build-status"]')?.textContent ?? '';
+    if (status.startsWith('Built in') && !built) {
+      built = true;
+      add('built');
+    } else if (!status.startsWith('Built in')) {
+      built = false;
+    }
+  };
+  setInterval(look, 250);
   const Native = window.Worker;
   let workers = 0;
   class RecordingWorker extends Native {
@@ -168,6 +188,7 @@ function recordBundlerStarts(): void {
       if (options?.name !== 'br-bundler') return; // runtime-factory.ts names it
       const n = ++workers;
       let requested = false;
+      look();
       add('created', n);
       this.addEventListener('message', (e: MessageEvent<{ type?: unknown; stage?: unknown }>) => {
         const m = e.data;
@@ -189,24 +210,6 @@ function recordBundlerStarts(): void {
     }
   }
   window.Worker = RecordingWorker;
-  // SPIN and the first build: a cheap look four times a second.
-  let spinning = false;
-  let built = false;
-  setInterval(() => {
-    const spin = document.querySelector('[data-testid="spin"]') !== null;
-    if (spin && !spinning) {
-      add('spin');
-      built = false;
-    }
-    spinning = spin;
-    const status = document.querySelector('[data-testid="build-status"]')?.textContent ?? '';
-    if (status.startsWith('Built in') && !built) {
-      built = true;
-      add('built');
-    } else if (!status.startsWith('Built in')) {
-      built = false;
-    }
-  }, 250);
 }
 
 /** The page's recorded steps, and its clock now. */

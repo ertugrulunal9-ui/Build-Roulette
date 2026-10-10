@@ -924,9 +924,9 @@ the pre-T-041 client:
   (a synchronous request to the dev server's `/__test/hold` blocks the worker's thread like
   the real initialize, without using CPU): the old client stopped all 8 after 15 s, again on
   the retry, and failed every start ("esbuild-wasm stopped while starting (no progress for
-  15 s, 2 attempts)"), the CI symptom. Now every start is ready on its first worker, and a
-  9th case in the same test, a wasm request that never answers, is still stopped after
-  15.25–15.75 s and ready on the retry.
+  15 s, 2 attempts)"), the CI symptom. Now no held start is stopped, and one page whose
+  first wasm request never answers (in the same test, under the same load) is still stopped
+  after 15.25–15.75 s and ready on the retry.
 - 8 starts held 6 s in their compile stage while every renderer is stopped (SIGSTOP) for 17 s,
   with the compile limit lowered to 15 s: the old client's timer fired on resume for all 8
   (retried, ready ~7 s later); now none, and each report shows about 16.2 s of the 17 s stop

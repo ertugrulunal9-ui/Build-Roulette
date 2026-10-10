@@ -2,7 +2,8 @@
 -- later migrations to `public` or `private` are covered automatically.
 --
 -- The rule: anon can execute exactly get_public_battle (the permanent results
--- page, T-014) and get_player_history (the player history page, T-021);
+-- page, T-014), get_player_history (the player history page, T-021) and
+-- keep_alive (the daily keep-alive against the Free plan's pause, T-036);
 -- authenticated can execute exactly the client RPCs plus the RLS helpers that
 -- policies call; the worker and sweep functions are service_role only; nothing
 -- in `private` is reachable by an API role.
@@ -42,8 +43,9 @@ select is_empty(
 select set_eq(
   $$ select signature from our_functions where has_function_privilege('anon', oid, 'EXECUTE') $$,
   array['public.get_public_battle(p_battle_id uuid)',
-        'public.get_player_history(p_user_id uuid, p_before timestamp with time zone, p_before_battle uuid, p_limit integer)'],
-  'anon can execute exactly get_public_battle and get_player_history (public pages)');
+        'public.get_player_history(p_user_id uuid, p_before timestamp with time zone, p_before_battle uuid, p_limit integer)',
+        'public.keep_alive()'],
+  'anon can execute exactly get_public_battle and get_player_history (public pages) and keep_alive (T-036)');
 
 select set_eq(
   $$ select signature from our_functions where has_function_privilege('authenticated', oid, 'EXECUTE') $$,

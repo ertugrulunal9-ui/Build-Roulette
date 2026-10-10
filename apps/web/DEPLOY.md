@@ -1,5 +1,11 @@
 # Deploying `@br/web` to Cloudflare Pages (free)
 
+> **The step-by-step deploy of the whole free setup** (accounts, Supabase, the jobs function,
+> both Pages projects, the keep-alive, smoke checks, the runbook rehearsal) is
+> [`DEPLOY.md`](../../DEPLOY.md) at the repository root (T-036). This file is the web app's
+> reference: what the build produces, its settings, the link-preview Function, observability
+> and caching.
+
 The web app is a **static site** (T-037, the user's option C after T-033: Next.js on Workers
 Free does not fit the 10 ms CPU limit, docs/08-free-tier.md). `next build` exports every page
 as a file (`output: 'export'`) into `apps/web/out/`, and **Cloudflare Pages** serves those
@@ -217,8 +223,9 @@ sandbox shell and the app:
 5. **Deploy the function.** `supabase/config.toml` already has `verify_jwt = false` for it:
    pg_cron sends the cron secret, not a user's token. The flag repeats it.
    ```sh
-   npx -y supabase@2.119.0 functions deploy jobs --no-verify-jwt
+   npx -y supabase@2.119.0 functions deploy jobs --no-verify-jwt --use-api
    ```
+   (`--use-api` bundles on Supabase's side, so Docker is not needed.)
 6. **Tell the database where the function is, and its secret** (Vault). Run this once in the
    SQL editor with the real values. To rotate later, use
    `vault.update_secret((select id from vault.secrets where name = 'br_jobs_cron_secret'), '<new>')`

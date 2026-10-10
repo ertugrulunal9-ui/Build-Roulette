@@ -14,6 +14,7 @@
     "dev": "tsx src/main.ts",
     "dev:shell": "tsx scripts/local-shell.ts",
     "stand-in": "tsx scripts/browser-rendering-stand-in.ts",
+    "measure:screenshots": "tsx scripts/screenshot-sizes.ts",
     "lint": "eslint . --max-warnings=0",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",

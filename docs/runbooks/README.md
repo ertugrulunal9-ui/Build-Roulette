@@ -8,7 +8,8 @@ What to do when something in production goes wrong. Each runbook has the same pa
 | [stuck-battle.md](stuck-battle.md) | A battle sits past its deadline and does not move on |
 | [capture-backlog.md](capture-backlog.md) | Screenshots or deletes pile up; Browser Rendering is down or its daily budget spent; the jobs function is not called |
 | [package-cdn-outage.md](package-cdn-outage.md) | Previews cannot load npm packages |
-| [realtime-quota.md](realtime-quota.md) | "Reconnecting…", channels closed by Realtime, the spend-cap decision |
+| [realtime-quota.md](realtime-quota.md) | "Reconnecting…", channels closed by Realtime; Free's quotas, Pro's spend-cap decision |
+| [free-plan-quotas.md](free-plan-quotas.md) | Supabase Free: the project paused (HTTP 540), storage or database near the limit (read-only), egress or MAU over quota (HTTP 402), the keep-alive workflow failed |
 | [supabase-outage.md](supabase-outage.md) | Supabase (database, Auth, Realtime, Storage) is down or degraded |
 | [takedown-abuse.md](takedown-abuse.md) | A takedown or abuse request (a build, a name, a flood) |
 | [removed-content-still-visible.md](removed-content-still-visible.md) | A removed build still shows somewhere (its screenshot file, a link preview) |
@@ -18,8 +19,9 @@ What to do when something in production goes wrong. Each runbook has the same pa
 - **`/admin` → Health** (`admin_ops_health`, T-030): battles past their deadline (stuck vs.
   RESULTS waiting for screenshots), the jobs queue per kind (pending, oldest, expired leases,
   done and failed in the last hour), screenshot outcomes of the last 24 h, the pg_cron sweeps
-  (last run, failures) and the 24 h TTL leftovers. Findings at the top name the runbook to
-  open. It also has **Send a test error to Sentry** (throws in the page: checks the build's
+  (last run, failures), the 24 h TTL leftovers, and the **plan usage** (T-036: storage per
+  bucket and the database against Supabase Free's 1 GB and 500 MB, monthly active users, the
+  keep-alive's last ping). Findings at the top name the runbook to open. It also has **Send a test error to Sentry** (throws in the page: checks the build's
   Sentry setup).
 - **Sentry** (when `NEXT_PUBLIC_SENTRY_DSN` is set at the web build and `SENTRY_DSN` for the
   workers, `apps/web/DEPLOY.md` "Observability"): browser errors (`runtime: browser`, with
@@ -36,6 +38,8 @@ What to do when something in production goes wrong. Each runbook has the same pa
   **`preview_crash`**: one event per preview crash (`reason`, `phase`, `mode`, `silent_ms`
   in app-awake time, `wall_silent_ms`, `stalled_ms`, `longest_stall_ms`, `restarted`). Many
   crashes with a large `stalled_ms` point at overloaded player machines, not at loops.
+- **GitHub Actions → Keep Supabase awake** (T-036, daily): a failed run is an email; its error
+  title says PAUSED, RESTRICTED, READ-ONLY or what else answered.
 - **Logs:** Supabase dashboard → Logs (Postgres: `sweep_deadlines: battle … not advanced`
   warnings; Realtime; Auth), Edge Functions → `jobs` → Logs (the screenshot and delete jobs on
   the free plan, T-034: one JSON object per event, `run.*`, `capture.*`, `budget.*`), the

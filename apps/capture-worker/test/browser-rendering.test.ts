@@ -87,7 +87,7 @@ async function renderError(p: Promise<unknown>): Promise<RenderError> {
 }
 
 describe('the REST request', () => {
-  it('is a /snapshot call: viewport at DPR 1, load, the ready selector capped at 6 s, WebP at 82', () => {
+  it('is a /snapshot call: viewport at DPR 1, load, the ready selector capped at 6 s, WebP at 70', () => {
     expect(snapshotUrl(BROWSER_RENDERING_API_URL, 'acc123')).toBe(
       'https://api.cloudflare.com/client/v4/accounts/acc123/browser-rendering/snapshot?cacheTTL=0',
     );
@@ -98,7 +98,7 @@ describe('the REST request', () => {
       waitForSelector: { selector: CAPTURE_SIGNAL_SELECTOR, timeout: 6000 },
       bestAttempt: true,
       actionTimeout: 10_000,
-      screenshotOptions: { type: 'webp', quality: 82, fullPage: false },
+      screenshotOptions: { type: 'webp', quality: 70, fullPage: false },
     });
     expect(CAPTURE_SIGNAL_SELECTOR).toBe('html[data-br-capture]');
   });

@@ -101,7 +101,7 @@ export async function encodeWebp(
   input: Uint8Array,
   opts: { fit?: { width: number; height: number } } = {},
 ): Promise<Uint8Array> {
-  for (const quality of [SCREENSHOT_WEBP_QUALITY, 70, 55, 40]) {
+  for (const quality of [SCREENSHOT_WEBP_QUALITY, 55, 40]) {
     let img = sharp(input, { limitInputPixels: MAX_INPUT_PIXELS }).removeAlpha();
     if (opts.fit) {
       img = img.resize({

@@ -1,0 +1,81 @@
+<!doctype html>
+<!-- BUILD "A habit tracker for exactly one habit" × STYLE "Kawaii pastel": gradients, emoji. -->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      body {
+        margin: 0;
+        height: 100vh;
+        background: linear-gradient(160deg, #ffe4f1, #e3f0ff 55%, #fff6d6);
+        font-family: 'Comic Neue', 'DejaVu Sans', sans-serif;
+        color: #6b4b5b;
+        display: grid;
+        place-items: center;
+      }
+      .card {
+        width: 760px;
+        background: rgba(255, 255, 255, 0.85);
+        border-radius: 36px;
+        padding: 32px;
+        box-shadow: 0 20px 50px rgba(214, 140, 180, 0.35);
+      }
+      h1 {
+        margin: 0 0 6px;
+        font-size: 40px;
+        color: #ff7eb6;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(10, 1fr);
+        gap: 12px;
+        margin: 24px 0;
+      }
+      .d {
+        aspect-ratio: 1;
+        border-radius: 50%;
+        display: grid;
+        place-items: center;
+        font-size: 28px;
+        background: #ffeef6;
+      }
+      .d.on {
+        background: radial-gradient(circle at 35% 30%, #fff, #ffb3d6 60%, #ff86bd);
+      }
+      .streak {
+        font-size: 22px;
+      }
+      .blob {
+        position: fixed;
+        border-radius: 50%;
+        filter: blur(2px);
+        opacity: 0.6;
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      class="blob"
+      style="width: 180px; height: 180px; left: 60px; top: 80px; background: #c9f2ff"
+    ></div>
+    <div
+      class="blob"
+      style="width: 120px; height: 120px; right: 90px; bottom: 70px; background: #fff1a8"
+    ></div>
+    <div class="card">
+      <h1>Drink water 💧 (≧◡≦)</h1>
+      <div class="streak">Streak: 17 days 🌸 Best: 21 · Mochi is proud of you 🐰</div>
+      <div class="grid" id="g"></div>
+      <div class="streak">Tap today's bubble! ✨ 🍓 🌈 🍡</div>
+    </div>
+    <script>
+      const faces = ['😊', '🥰', '😺', '🐣', '🌟', '🍰', '😴', '🙈'];
+      let h = '';
+      for (let i = 0; i < 30; i++) {
+        const on = i < 17 || i === 19 || i === 22;
+        h += `<div class="d ${on ? 'on' : ''}">${on ? faces[i % faces.length] : ''}</div>`;
+      }
+      document.getElementById('g').innerHTML = h;
+    </script>
+  </body>
+</html>

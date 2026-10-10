@@ -1,0 +1,112 @@
+<!doctype html>
+<!-- BUILD "A pixel art editor" × STYLE "Bauhaus": a 16×16 drawing, a palette, flat shapes. -->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      body {
+        margin: 0;
+        height: 100vh;
+        background: #f1ebdd;
+        font-family: 'DejaVu Sans', sans-serif;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 60px;
+      }
+      #grid {
+        display: grid;
+        grid-template-columns: repeat(16, 36px);
+        grid-template-rows: repeat(16, 36px);
+        border: 6px solid #111;
+        background: #fff;
+      }
+      #grid div {
+        border-right: 1px solid #eee;
+        border-bottom: 1px solid #eee;
+      }
+      .side {
+        display: flex;
+        flex-direction: column;
+        gap: 20px;
+      }
+      .pal {
+        display: grid;
+        grid-template-columns: repeat(4, 56px);
+        gap: 10px;
+      }
+      .pal div {
+        height: 56px;
+        border: 3px solid #111;
+      }
+      .circle {
+        width: 140px;
+        height: 140px;
+        border-radius: 50%;
+        background: #d62828;
+      }
+      .tri {
+        width: 0;
+        height: 0;
+        border-left: 70px solid transparent;
+        border-right: 70px solid transparent;
+        border-bottom: 120px solid #1d3557;
+      }
+      h1 {
+        margin: 0;
+        font-size: 44px;
+        text-transform: uppercase;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="grid"></div>
+    <div class="side">
+      <h1>Pixel Haus</h1>
+      <div class="pal" id="pal"></div>
+      <div style="display: flex; gap: 20px; align-items: end">
+        <div class="circle"></div>
+        <div class="tri"></div>
+      </div>
+    </div>
+    <script>
+      const pal = [
+        '#111',
+        '#fff',
+        '#d62828',
+        '#f7b801',
+        '#1d3557',
+        '#2a9d8f',
+        '#f4a261',
+        '#8d99ae',
+      ];
+      document.getElementById('pal').innerHTML = pal
+        .map((c) => `<div style="background:${c}"></div>`)
+        .join('');
+      // A heart with a highlight and a few stray pixels.
+      const art = [
+        '................',
+        '................',
+        '...222....222...',
+        '..22222..22222..',
+        '.2211222222222..',
+        '.2212222222222..',
+        '.2222222222222..',
+        '..22222222222...',
+        '...222222222....',
+        '....2222222.....',
+        '.....22222......',
+        '......222.......',
+        '.......2........',
+        '................',
+        '..33........55..',
+        '..33........55..',
+      ];
+      document.getElementById('grid').innerHTML = art
+        .join('')
+        .split('')
+        .map((ch) => `<div style="background:${ch === '.' ? 'transparent' : pal[+ch]}"></div>`)
+        .join('');
+    </script>
+  </body>
+</html>

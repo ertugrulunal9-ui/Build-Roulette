@@ -104,6 +104,25 @@ export async function refreshWorks(refreshToken: string): Promise<boolean> {
   return res.ok;
 }
 
+/**
+ * Runs the daily keep-alive (T-036: scripts/keep-alive.sh, the step of
+ * .github/workflows/keep-alive.yml) against the local API with the anon key; returns its
+ * output. Throws when the script fails.
+ */
+export function runKeepAlive(): string {
+  return execFileSync('bash', ['scripts/keep-alive.sh'], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      SUPABASE_URL: stackEnv('API_URL'),
+      SUPABASE_ANON_KEY: stackEnv('ANON_KEY'),
+      KEEP_ALIVE_ALLOW_HTTP: '1',
+      JITTER_MAX_S: '0',
+    },
+  });
+}
+
 /** Runs SQL as the superuser; returns the unaligned, tuples-only output. */
 export function sql(query: string): string {
   return execFileSync(

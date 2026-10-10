@@ -18,7 +18,9 @@ completion time, a screenshot, the awards and the battle results.
 
 ## Status
 
-Design phase. Nothing is implemented yet. Start with the design docs:
+Milestones M1–M5 are implemented (docs/BOARD.md); M5's sign-off waits on a rehearsal on a
+deployed copy. **To deploy it on free plans** (Cloudflare Pages, Supabase Free, esm.sh), follow
+[DEPLOY.md](DEPLOY.md) step by step. The design docs:
 
 | # | Document | Covers |
 |---|----------|--------|
@@ -28,7 +30,9 @@ Design phase. Nothing is implemented yet. Start with the design docs:
 | 4 | [Multiplayer state machine](docs/04-state-machine.md) | Room / battle / player / build states, transitions, timers, realtime, reconnects |
 | 5 | [Database schema](docs/05-database.md) | Postgres DDL, RLS, RPCs, storage buckets, jobs, retention |
 | 6 | [Implementation plan](docs/06-roadmap.md) | Milestones with exit criteria, riskiest work first |
-| 7 | [Capacity and cost](docs/07-capacity-and-cost.md) | Load-test results, quotas, cost per 1,000 battles, bottlenecks |
+| 7 | [Capacity and cost](docs/07-capacity-and-cost.md) | Load-test results, quotas, cost per 1,000 battles, bottlenecks; the Free plan in battles per month (§7.8) |
+| 8 | [Free tier](docs/08-free-tier.md) | What running on free plans takes: the static site, link previews, esm.sh, screenshots without a server, Supabase Free |
+| — | [Deploy](DEPLOY.md) · [Runbooks](docs/runbooks/README.md) | The free-plan deploy checklist; what to do when something breaks in production |
 | — | [Workflow](docs/WORKFLOW.md) · [Board](docs/BOARD.md) | How the hub and worker agents operate; live task status |
 
 ## Planned stack (summary)

@@ -266,7 +266,7 @@ describe('the jobs Edge Function on the local stack', () => {
     expect(after.reserved_ms).toBe(0);
   });
 
-  it('the request body is the one the unit tests pin (viewport, webp at 82, ready selector, cap)', () => {
+  it('the request body is the one the unit tests pin (viewport, webp at 70, ready selector, cap)', () => {
     const body = snapshotRequestBody({
       url: 'https://x/v1/capture',
       viewport: { width: 1280, height: 800 },
@@ -275,7 +275,7 @@ describe('the jobs Edge Function on the local stack', () => {
       viewport: { width: 1280, height: 800, deviceScaleFactor: 1 },
       waitForSelector: { selector: 'html[data-br-capture]', timeout: 6000 },
       bestAttempt: true,
-      screenshotOptions: { type: 'webp', quality: 82 },
+      screenshotOptions: { type: 'webp', quality: 70 },
     });
   });
 

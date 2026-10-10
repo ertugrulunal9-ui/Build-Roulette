@@ -339,7 +339,8 @@ depend on them. In particular:
 The `jobs` Supabase Edge Function (docs/08-free-tier.md §5) captures with one
 `POST …/browser-rendering/snapshot` per build. It sends the signed capture URL at 1280×800
 DPR 1, `waitForSelector: html[data-br-capture]` with a **6 s** timeout plus `bestAttempt`
-(this timeout **is the cap**), `actionTimeout` 10 s, and a WebP at quality 82. `/snapshot`
+(this timeout **is the cap**), `actionTimeout` 10 s, and a WebP at quality 70 (82 until T-036;
+docs/08 §6.3). `/snapshot`
 returns the screenshot and the page's HTML from the same session, so the capture page
 reports on `<html>`:
 

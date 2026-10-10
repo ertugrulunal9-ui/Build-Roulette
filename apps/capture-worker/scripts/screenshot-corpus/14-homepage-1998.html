@@ -1,0 +1,110 @@
+<!doctype html>
+<!-- BUILD "A plant watering reminder" × STYLE "Personal homepage, 1998": a tiled background,
+     rainbow text, a visitor counter. -->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      body {
+        margin: 0;
+        height: 100vh;
+        font-family: 'Comic Sans MS', 'Comic Neue', 'DejaVu Sans', sans-serif;
+        color: #000080;
+      }
+      .wrap {
+        width: 760px;
+        margin: 30px auto;
+        background: #fff;
+        border: 4px ridge #ff00ff;
+        padding: 16px;
+        text-align: center;
+      }
+      h1 {
+        font-size: 40px;
+        margin: 4px;
+      }
+      h1 span:nth-child(6n + 1) {
+        color: red;
+      }
+      h1 span:nth-child(6n + 2) {
+        color: orange;
+      }
+      h1 span:nth-child(6n + 3) {
+        color: #cc0;
+      }
+      h1 span:nth-child(6n + 4) {
+        color: green;
+      }
+      h1 span:nth-child(6n + 5) {
+        color: blue;
+      }
+      h1 span:nth-child(6n + 6) {
+        color: purple;
+      }
+      table {
+        margin: 12px auto;
+        border: 3px outset #999;
+      }
+      td {
+        border: 2px inset #999;
+        padding: 6px 12px;
+        font-size: 16px;
+      }
+      .counter {
+        font-family: 'DejaVu Sans Mono', monospace;
+        background: #000;
+        color: #0f0;
+        padding: 2px 8px;
+        letter-spacing: 4px;
+      }
+      .uc {
+        background: repeating-linear-gradient(45deg, #000 0 14px, #ff0 14px 28px);
+        height: 20px;
+        margin: 10px 0;
+      }
+    </style>
+  </head>
+  <body id="body">
+    <div class="wrap">
+      <h1 id="h"></h1>
+      <div class="uc"></div>
+      <p><b>!!! WELCOME 2 MY PLANT PAGE !!!</b> Sign my guestbook!! Best viewed in Netscape 4.</p>
+      <table id="t"></table>
+      <p>You are visitor number <span class="counter">0004217</span></p>
+      <div class="uc"></div>
+      <marquee>
+        🌱 Fern needs water in 2 days 🌵 Cactus is fine forever 🌻 Sunflower is THIRSTY
+      </marquee>
+    </div>
+    <script>
+      document.getElementById('h').innerHTML = [...'Kevin’s Plant Zone']
+        .map((ch) => `<span>${ch}</span>`)
+        .join('');
+      const rows = [
+        ['🌿 Fern', 'every 3 days', 'tomorrow', '😊'],
+        ['🌵 Cactus', 'never??', 'in 3 weeks', '😎'],
+        ['🌻 Sunflower', 'daily', 'NOW', '😱'],
+        ['🪴 Monstera', 'weekly', 'in 4 days', '🙂'],
+        ['🌷 Tulip', 'every 2 days', 'today', '😬'],
+      ];
+      document.getElementById('t').innerHTML = rows
+        .map((r) => '<tr>' + r.map((c) => `<td>${c}</td>`).join('') + '</tr>')
+        .join('');
+      // The tile: a 64×64 canvas pattern of leaves and dots, repeated as the background.
+      const tile = document.createElement('canvas');
+      tile.width = tile.height = 64;
+      const c = tile.getContext('2d');
+      c.fillStyle = '#9fe2a0';
+      c.fillRect(0, 0, 64, 64);
+      let s = 9;
+      const r = () => (s = (s * 16807) % 2147483647) / 2147483647;
+      for (let i = 0; i < 40; i++) {
+        c.fillStyle = `hsl(${90 + r() * 60},${50 + r() * 40}%,${30 + r() * 40}%)`;
+        c.beginPath();
+        c.ellipse(r() * 64, r() * 64, 2 + r() * 6, 1 + r() * 3, r() * 3, 0, 7);
+        c.fill();
+      }
+      document.getElementById('body').style.background = `url(${tile.toDataURL()})`;
+    </script>
+  </body>
+</html>

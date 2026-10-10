@@ -6,7 +6,9 @@ not fit); §2 is what replaced it, the web app as a static site on Cloudflare Pa
 §3 is the one piece of edge code left, the per-battle link previews (T-038: a Pages Function
 that fits); §4 is the package CDN, the public esm.sh instead of our own (T-035); §5 is the
 screenshots and the delete jobs without an always-on server (T-034: a Supabase Edge
-Function and Browser Rendering's REST API); the other free-tier tasks add their own sections.
+Function and Browser Rendering's REST API); §6 is Supabase Free itself (T-036: the 7-day pause
+and the keep-alive, storage, database, and what each quota allows per month). The step-by-step
+deploy of this setup is `DEPLOY.md` at the repository root.
 
 ## 1. Web app on Workers Free (T-033)
 
@@ -828,7 +830,7 @@ and every field below are in Cloudflare's schema):
 | `waitForSelector` | `html[data-br-capture]`, **6 s** | the build's ready signal (or a page failure); the timeout **is the 6 s cap** |
 | `bestAttempt` | `true` | the cap passing is not an error: shoot anyway ("proceed when awaited events fail or time out") |
 | `actionTimeout` | 10 s | a frozen page cannot hold the screenshot forever |
-| `screenshotOptions` | `type: 'webp'`, `quality: 82` | the worker's quality; nothing to encode, so no sharp |
+| `screenshotOptions` | `type: 'webp'`, `quality: 70` | the worker's quality (82 until T-036, §6.3); nothing to encode, so no sharp |
 
 **Why `/snapshot`, not `/screenshot`:** it takes the same options and returns the
 screenshot **and the capture page's HTML from the same browser session**. The function
@@ -960,4 +962,284 @@ supabase db reset && supabase test db             # 26_jobs_function: budget, tr
 pnpm --filter @br/capture-worker test:function    # the function in the local Edge Runtime: 11 tests
 pnpm --filter @br/web test:e2e:solo               # and :moderation, :multi: with the function in place of the worker
 pnpm --filter @br/capture-worker test:integration # the self-hosted worker, unchanged
+```
+
+## 6. Supabase Free (T-036)
+
+**Question:** what does Supabase's Free plan allow this game, what happens at each limit, and
+what keeps the project running unattended: the 7-day pause, 1 GB of file storage, a 500 MB
+database, and the monthly quotas?
+
+Sources are marked like §1 and §5: **confirmed** (Supabase's docs, read through a search tool
+on 2026-10-10, since this container cannot open supabase.com), **secondary** (several
+third-party summaries of the pricing page agree; the page itself was not readable here),
+**measured** (here, with the command that reproduces it), or **assumed**.
+
+### 6.1 Verdict
+
+Supabase Free runs the game, with one daily keep-alive and one watch item:
+
+- **The pause** is handled by a scheduled GitHub Actions workflow that calls the database
+  through the Data API once a day and fails loudly when the project is paused, restricted or
+  read-only (§6.2).
+- **File storage is the first hard wall over time.** Screenshots are permanent, so storage
+  only grows: 1 GB holds about **2,750 battles** (6 players) at WebP quality 70, the quality
+  this task moved to from 82 (2,180 battles at 82; §6.3). At 1,000 battles a month that is
+  under three months. Nothing is deleted on a timer; `/admin` → Health warns at 80 %.
+- **Per month, egress comes first** (about 1,060–1,210 battles with the measured screenshot
+  sizes, 926 with docs/07's 100 KB assumption), about level with Browser Rendering's free
+  screenshots (~1,000 battles; past it the client thumbnail, nothing breaks) and before
+  Realtime's 2 M messages (~1,340 battles). The database lasts about 10,000 battles (§6.4).
+- **Concurrency:** Realtime's 20 Presence messages per second hold about 10 concurrent
+  6-player rooms in BUILD (5–6 of 8 players); 10 were measured clean on the Free quotas (§6.5).
+
+docs/07 §7.8 has the per-resource table and what to upgrade first, and when.
+
+### 6.2 The 7-day pause and the keep-alive
+
+What Supabase says (confirmed, "Project pausing" docs): a Free project is paused when it "does
+not receive sufficient user database activity over the past week"; "typically a few user
+requests to the database each day" are enough. The owner gets an email about a week before. A
+paused project answers every request with **HTTP 540** ("Project paused", Supabase's HTTP
+status codes page) and is restored from the dashboard (Restore project; the docs found say a
+restore is possible for 90 days to a year after the pause). Paid projects are never paused.
+
+**Is our own traffic enough? No, as far as can be told:**
+
+| Traffic | Counts as "user database activity"? |
+|---|---|
+| pg_cron: `sweep_deadlines` every 5 s, `br-jobs-run` every minute, the daily sweeps | **assumed not**: it runs inside Postgres (no request from a user), and once the project is paused there is no Postgres left to run it. The docs speak of user requests; no source says background jobs count. |
+| pg_net → the `jobs` Edge Function → PostgREST/Storage with the service key | **assumed not**, and it stops anyway: `run_jobs_function()` calls the function only when a job is due, and jobs only come from players. A quiet week sends nothing. |
+| Players and link-preview crawlers (the anon key through the Data API) | yes, but a party game can have a quiet week |
+
+One third-party answer (a GitHub discussion) claims that a connection alone does not count but
+a write does; that is not confirmed either. So the keep-alive writes, through the Data API,
+with the same key a player's browser uses.
+
+**The keep-alive** (`.github/workflows/keep-alive.yml` → `scripts/keep-alive.sh`):
+
+- **Daily at 04:23 UTC**, off the hour (GitHub delays runs at :00 under load; its schedule
+  itself adds minutes of jitter), plus a random 0–39 s sleep that stays inside the minute
+  GitHub bills anyway. Daily leaves six more tries before the 7-day limit. It can also be run
+  by hand (`workflow_dispatch`).
+- **One request:** `POST /rest/v1/rpc/keep_alive` with the anon (or publishable) key.
+  `public.keep_alive()` (migration `20261010120000_free_plan.sql`, the only new anon
+  function) updates one row of `private.keep_alive` (at most once a minute, whoever calls) and
+  answers `{ok, read_only, at}`. It reads and writes the database and goes through the API
+  gateway, PostgREST and Postgres: everything "user activity" could mean.
+- **Settings, never in the file:** the repository variable `SUPABASE_URL` and the secret
+  `SUPABASE_ANON_KEY` (public by design, but masked in logs as a secret). With neither set
+  the run passes with a notice (a fork, or before the deploy), with one of them it fails.
+- **Fails loudly** (a red run; GitHub emails the person who last changed the schedule) on:
+  540 "PAUSED: restore it", 402 "RESTRICTED: over the Free quotas", 200 with
+  `read_only: true` "READ-ONLY: over 500 MB", 401/403 wrong key, 404 wrong URL or migrations
+  missing, no answer after 3 tries, and anything that is not `keep_alive`'s answer. Each
+  error names `docs/runbooks/free-plan-quotas.md`. Tested against a local stand-in for every
+  case (`scripts/keep-alive.test.mjs`) and against the real local stack in the moderation
+  e2e.
+- **Health sees it:** `/admin` → Health → Plan usage shows the last ping; no ping for 36 h is
+  a finding (`keep_alive_max_age_s`), so a keep-alive that stopped is noticed days before the
+  pause.
+- **Cost:** one job of a few seconds a day: 1 billed minute on a private repository, about
+  31 of the 2,000 free minutes a month (GitHub Free); nothing on a public one.
+
+**What could still stop it** (DEPLOY.md §5 says what to do):
+
+1. *A private repository out of Actions minutes.* Then no workflow runs, the keep-alive
+   included. **The CI workflow is the risk**: it runs on every push and nightly, nine jobs
+   (three chaos shards), roughly 80–100 runner minutes a run (estimated from the jobs'
+   timeouts and typical lengths, not measured here), so the nightly run alone would use
+   about 2,400–3,000 minutes a month. On a private repository on GitHub Free, turn the nightly
+   CI schedule off or make the repository public.
+2. *A public repository without commits for 60 days*: GitHub disables its scheduled workflows
+   (confirmed, GitHub docs). The workflow re-enables itself through the API on each scheduled
+   run, which third-party keep-alive tools say resets that clock (**assumed**; GitHub does not
+   document it). If it is disabled anyway, Supabase's warning email a week before the pause is
+   the backstop.
+3. *A rotated anon key* not copied into the repository secret: the run fails with "Key
+   refused".
+
+### 6.3 Storage: screenshots
+
+**What is stored.** Per final build, one permanent screenshot in the public `screenshots`
+bucket: the Browser Rendering capture (1280×800 WebP), or the client thumbnail (640×400 WebP)
+when the daily browser budget is spent or the render was blank. The build files in
+`ephemeral-builds` (source, bundles, thumbnail, autosaves: 581 KiB uploaded per 6-player
+battle, docs/07 §7.3) are deleted at DESTROY, minutes after RESULTS, 24 h at the latest.
+
+**Measured screenshot sizes** (`pnpm --filter @br/capture-worker measure:screenshots`, data in
+[data/t036-screenshot-sizes.csv](data/t036-screenshot-sizes.csv)). The e2e's own test builds
+are tiny (5–10 KB, docs/07 §7.3) and say nothing about real apps, so the script renders 18
+sample apps in `apps/capture-worker/scripts/screenshot-corpus/` (the react-ts starter and 17
+BUILD × STYLE cards of the deck, from "Zen minimal" to film grain, halftone dots and a tiled
+1998 homepage), each at the capture viewport in Playwright Chromium, and takes the screenshot
+the way Browser Rendering does: CDP `Page.captureScreenshot` with `format: 'webp'`, which is
+Chromium's own encoder behind Puppeteer's `screenshotOptions` (smaller sizes through
+`clip.scale`, which Browser Rendering's schema also has). SSIM and PSNR are against a lossless
+PNG of the same frame (the encoding loss only):
+
+| Stored as | Size | Median | Mean | p90 | Max | 18 apps | SSIM mean / min |
+|---|---|---|---|---|---|---|---|
+| PNG (reference) | 1280×800 | 115.2 KiB | 219.1 KiB | 456.6 KiB | 1,258.5 KiB | 3.9 MiB | 1 |
+| **WebP q82 (before T-036)** | 1280×800 | 25.5 KiB | **77.0 KiB** | 205.8 KiB | 403.0 KiB | 1,385.8 KiB | 0.9926 / 0.9475 |
+| WebP q75 | 1280×800 | 20.8 KiB | 63.7 KiB | 167.2 KiB | 336.8 KiB | 1,146.4 KiB | 0.9906 / 0.9401 |
+| **WebP q70 (T-036)** | 1280×800 | 19.8 KiB | **60.9 KiB** | 158.4 KiB | 325.6 KiB | 1,095.8 KiB | 0.9897 / 0.9386 |
+| WebP q60 | 1280×800 | 18.2 KiB | 55.6 KiB | 141.9 KiB | 298.8 KiB | 999.9 KiB | 0.9886 / 0.9359 |
+| WebP q50 | 1280×800 | 16.7 KiB | 50.7 KiB | 127.8 KiB | 272.6 KiB | 911.9 KiB | 0.9865 / 0.9272 |
+| WebP q82, `clip.scale` 0.75 | 960×600 | 17.9 KiB | 51.4 KiB | 141.8 KiB | 235.3 KiB | 925.5 KiB | 0.9927 / 0.9518 |
+| WebP q70, `clip.scale` 0.75 | 960×600 | 13.7 KiB | 40.3 KiB | 108.5 KiB | 185.8 KiB | 725.3 KiB | 0.9873 / 0.9163 |
+| ≈ the client thumbnail (q80) | 640×400 | 10.3 KiB | 24.1 KiB | 69.4 KiB | 95.9 KiB | 434.2 KiB | 0.9871 / 0.8944 |
+
+The distribution is skewed: flat UIs take 7–35 KiB, text-dense pages 85–170 KiB, and noise,
+halftone or tiled backgrounds 180–400 KiB (they dominate the mean). WebP loses to PNG only on
+flat repeating patterns. Deterministic up to the Chromium build and the fonts (the pages seed
+their randomness).
+
+**The lever: quality 82 → 70** (`SCREENSHOT_WEBP_QUALITY`, used by the REST request and by
+the self-hosted worker's sharp encoding; `core.js` rebuilt). It stores 21 % less (mean
+77.0 → 60.9 KiB, median 25.5 → 19.8 KiB), and in side-by-side crops at 2× zoom (text, neon
+gradients, film grain) no difference is visible; at 60 and below, gradients start to show
+blocks. **Not taken:** 960×600 (`clip.scale` 0.75) would save another third, but text is
+visibly softer when the screenshot is shown 1,200 device pixels wide (the results page on a
+high-density screen) and for link previews; it is the next lever if storage gets tight
+(runbook). The thumbnail fallback is untouched.
+
+**Per battle and in 1 GB** (6 players, 5.7 final builds per battle, docs/07 §7.4.2; 1 GB taken
+as 10⁹ bytes, the smaller reading; 20 MB kept free for the build files of running battles):
+
+| Screenshots | Permanent per battle | Battles in 1 GB | At 1,000 battles a month |
+|---|---|---|---|
+| WebP q82 (before) | 439 KiB | ~2,180 | 2.2 months |
+| **WebP q70 (now)** | **347 KiB** | **~2,760** | **2.8 months** |
+| WebP q70 at 960×600 (not taken) | 230 KiB | ~4,170 | 4.2 months |
+| client thumbnails only | 137 KiB | ~6,970 | 7 months |
+
+The ephemeral build files need no room of their own beyond the reserve: a running battle holds
+about 0.6 MB until DESTROY, so 20 MB covers ~30 battles at once or a day of failed deletes. Up
+to ~1,000 battles a month every screenshot is a capture (Browser Rendering's 10 free minutes a
+day, §5.4); beyond that the rest are thumbnails, which also slows the growth.
+
+**What 1 GB means:** the screenshots of the first ~2,750 battles. Results are permanent and
+nothing deletes them on a timer (a takedown deletes one); Health's storage meter warns at 80 %
+(about 2,250 battles), and the runbook's options are the upgrade (Pro: 100 GB, docs/07 §7.8),
+the 960×600 setting, or moving the bucket to Cloudflare R2 (10 GB free and no egress fees;
+a code change: signing, CSP, previews and takedowns).
+
+### 6.4 Database: 500 MB
+
+Over 500 MB a Free database turns **read-only** (confirmed, "Database size" docs: "Free Plan
+projects enter read-only mode when your database size exceeds 500 MB"; writes fail with
+`cannot execute INSERT in a read-only transaction`, and it turns read-write again below the
+limit). The size Supabase counts is `sum(pg_database_size(…))` over every database of the
+cluster (confirmed, the same docs' query); a new project starts at 40–60 MB.
+
+**Measured** on the local stack (Postgres 17, `supabase db reset`, then the load test on the
+Free Realtime quotas: 6 rooms × 6 players × 2 battles, then 10 × 6 × 3; per-table numbers in
+[data/t036-db-growth.csv](data/t036-db-growth.csv): rows per battle from the second run, bytes
+per row from each table's size after both, so first-page overhead is spread over 42 battles):
+
+- **Baseline:** 44.7 MB for every database of a fresh stack (13.8 MB of it `postgres`).
+- **Whole database over the 30 battles of the second run:** 97 KB per battle, transient tables
+  included: `realtime.messages` 33 KB (daily partitions that Realtime drops after a few days;
+  assumed), `storage.objects` 23 KB (mostly the 48 build-file rows per battle that are inserted
+  and deleted: dead rows until vacuum reuses the space), rate-limit events 6 KB (pruned hourly).
+- **What stays, per 6-player battle:**
+
+| Data | Per battle | Kept |
+|---|---|---|
+| Results: battle, challenge, roster, builds, votes, awards | ~23 KB (battles 2.7, challenges 1.8, roster 2.1, builds 6.8, votes 7.0, awards 3.0) | forever |
+| Screenshot rows in `storage.objects` | ~5.6 KB (5.6 rows; ~1 KB each with indexes, assumed) | forever |
+| Players: profile and Supabase Auth rows (users, identities, sessions, refresh tokens, audit log) | ~13 KB (2 new players per battle at 3 battles per player) | forever (Auth's own) |
+| **Event logs:** `battle_events` 28.6 rows | **9.3 KB** | **30 days since T-036** (was forever) |
+| **Finished jobs** (capture, destroy) 6.6 rows | **3.9 KB** | **7 days since T-036** (was forever) |
+| `room_events` 18.9 rows | 6.0 KB | with the room (7 days after it closes); 30 days since T-036 |
+
+So ~55 KB per battle stayed forever before T-036, of which the event logs and finished jobs
+were 13 KB (24 %; `battle_events` is the largest single table per battle); with the sweep
+~42 KB stay.
+
+**The sweep** (`private.prune_event_logs()`, pg_cron `br-event-logs-prune` daily at 04:41
+UTC): `battle_events` older than `event_log_retention_days` (30) **of battles that are over**,
+`room_events` older than 30 days, and finished capture and destroy jobs older than
+`job_retention_days` (7), in batches of 5,000. It never touches results, ballots, awards or
+screenshots, nor takedown jobs (a failed one is what `/admin` retries). The only visible
+effect: `/admin`'s battle log of a battle older than 30 days is empty (its results are not).
+pgTAP (`27_free_plan`) checks that `get_public_battle`, `get_player_history` and every
+permanent row and file of a pruned battle are unchanged; a variant that also deletes old
+ballots fails it. The settings are in `private.ops_settings` (runbook).
+
+**Capacity:** 500 MB − 60 MB for a new project (the docs' upper figure) − ~15 MB of
+transient data (two days of pg_cron history, ~9 MB at 17,000 sweep runs a day; Realtime's
+recent partitions; rooms) ≈ 425 MB → **~10,000 battles** with the sweep (~7,700 without):
+about ten months at 1,000 battles a month. Health warns at 80 % (400 MB).
+
+Not changed (Supabase's own): Auth's tables (users, sessions, the audit log) and anonymous
+users that never come back; they are ~13 KB per two players. Removing old anonymous users
+would remove their names from results, so it is not done.
+
+### 6.5 Realtime, egress, functions and MAU per month
+
+docs/07's measured per-battle numbers (§7.4.4, 6 players, 10-minute build, after T-029):
+**1,490 Realtime messages** and **5.4 MB of egress**, with screenshots assumed at 100 KB and
+viewed 34 times per battle (§7.3), i.e. ~3.4 MB of the 5.4 MB. With the measured sizes the
+screenshot views cost 2.1 MB at q70 (60.9 KiB) and 2.7 MB at q82: **4.1 MB** per battle now
+(4.7 MB at q82).
+
+| Free quota | Status | Per battle | Battles a month | Note |
+|---|---|---|---|---|
+| Egress 5 GB (uncached) | secondary | 4.1 MB (q70; 5.4 MB with docs/07's 100 KB) | **~1,210** (926) | each extra view of a results page adds ~0.35 MB; Storage CDN hits may count as the separate 5 GB of cached egress (assumed, not counted) |
+| Browser Rendering 10 min/day (Cloudflare) | confirmed (§5.4) | 5.7 captures × ~3 s (assumed) | ~1,000 rendered | then client thumbnails: soft |
+| Realtime messages 2 M | secondary | 1,490 | **~1,340** | |
+| Realtime Presence 20 messages/s | confirmed | 1.7–2.1/s per 6-player room in BUILD | ~10 rooms in BUILD at once ≈ 11,000 a month at a peak factor of 4 | measured: 10 rooms × 6 players on the Free quotas, 0 channels closed (below) |
+| Realtime connections 200 | confirmed | 6 (one socket per player) | 33 battles at once ≈ 18,900 a month at a peak factor of 4 | |
+| Realtime messages/s 100, joins/s 100 | confirmed | | not reached | the compressed run peaked at 144 inbound/s across 60 clients, no closes |
+| Edge Function invocations 500,000 | secondary | 2–4 runs | never | pg_cron starts the `jobs` function at most once a minute: ≤ 43,200 a month |
+| MAU 50,000 | secondary | 2 new players | ~25,000 | 3 battles per player a month (docs/07 §7.4.2); anonymous sign-ins count |
+| Pages Functions 100,000 requests/day (Cloudflare) | confirmed (§3.5) | one per results-page view | not reached | fails open |
+
+**Load test on the Free Realtime quotas (measured, 2026-10-10):** `pnpm --filter @br/loadtest
+loadtest --realtime-limits free` (200 connections, 100 messages/s, 20 Presence messages/s,
+100 joins/s set on the local tenant) with 6 rooms × 6 players × 2 battles and 10 rooms × 6 ×
+3 (`BR_JOBS=worker`, see below): 42/42 battles DESTROYED, phase propagation p95 19–23 ms,
+100 % of broadcasts delivered, **0 channels closed by Realtime**, Presence sends throttled to
+1.75 per client-minute. Phases are compressed ~10× (docs/07 §7.1.3), Presence is not
+(the client throttle is per wall-clock minute), so the Presence load per room in BUILD is the
+real one. The load generator still needs `BR_JOBS=worker`: since T-034 its capture services
+wait for the Node worker's start line, which the function never prints.
+
+**Which limit bites first:** per month, egress (~1,210 battles), with Browser Rendering's free
+captures at ~1,000 (soft: thumbnails) and Realtime messages at ~1,340; over time, file storage
+(~2,750 battles in total); at a peak, Presence (~10 busy 6-player rooms). What happens past a
+monthly quota on Free (secondary): an email, a grace period, then restrictions (HTTP 402 on
+the API). The runbook is [free-plan-quotas.md](runbooks/free-plan-quotas.md); Realtime's is
+[realtime-quota.md](runbooks/realtime-quota.md).
+
+### 6.6 What `/admin` → Health shows
+
+`admin_ops_health()` has a `usage` section (`private.ops_usage()`; T-030's signals moved
+unchanged to `private.ops_health_signals`), shown as **Plan usage (Supabase)**:
+
+- **File storage:** the sum of `storage.objects.metadata.size` (what Supabase bills) per bucket
+  and in total, against `storage_limit_bytes` (10⁹).
+- **Database:** `sum(pg_database_size)` over the cluster against `database_limit_bytes`
+  (5·10⁸), and the five largest relations (partitions folded into their table).
+- **Monthly active users (at least):** users who signed in this calendar month against
+  `mau_limit` (50,000). A lower bound: Supabase also counts token refreshes.
+- **Keep-alive:** the last ping.
+- **Retention:** the event-log settings and the oldest event kept.
+
+A meter at `usage_warn_pct` (80) or more, and a keep-alive older than 36 h, are findings that
+name the runbook. Egress, Realtime messages and function invocations are not readable from
+SQL: they are on Supabase's Usage page. The limits live in one row, `private.ops_settings`; after an
+upgrade, set them to the new plan's (runbook).
+
+### 6.7 Verification
+
+```sh
+supabase db reset && supabase test db             # 27_free_plan: keep_alive, usage, the sweep keeps every result (+ 04, 09)
+pnpm test:scripts                                 # keep-alive.sh against a stand-in; deploy-check.mjs parsing and checks
+pnpm --filter @br/web test                        # health.test: the usage findings
+pnpm --filter @br/web test:e2e:moderation         # Health → Plan usage, the 80 % warning, the keep-alive script against the stack
+pnpm --filter @br/capture-worker measure:screenshots --csv out.csv --compare dir/   # §6.3
+BR_JOBS=worker pnpm --filter @br/loadtest loadtest --rooms 10 --players 6 --battles-per-room 3 --realtime-limits free   # §6.4, §6.5
 ```

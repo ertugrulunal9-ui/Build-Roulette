@@ -1,0 +1,57 @@
+<!doctype html>
+<!-- BUILD "A lava lamp" × STYLE "Vaporwave": smooth metaball gradients on a canvas. -->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      body {
+        margin: 0;
+        height: 100vh;
+        background: linear-gradient(135deg, #ff71ce, #01cdfe 50%, #b967ff);
+        display: grid;
+        place-items: center;
+        font-family: 'DejaVu Sans', sans-serif;
+      }
+      canvas {
+        border-radius: 140px 140px 40px 40px;
+        box-shadow: 0 30px 80px rgba(60, 0, 90, 0.5);
+      }
+      p {
+        position: fixed;
+        bottom: 16px;
+        color: #fff;
+        letter-spacing: 12px;
+        font-size: 22px;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="c" width="360" height="680"></canvas>
+    <p>ｒｅｌａｘ　ａｅｓｔｈｅｔｉｃ</p>
+    <script>
+      const W = 360;
+      const H = 680;
+      const ctx = document.getElementById('c').getContext('2d');
+      const img = ctx.createImageData(W, H);
+      const balls = [
+        [120, 160, 70],
+        [230, 300, 90],
+        [150, 450, 60],
+        [250, 560, 80],
+        [90, 600, 50],
+      ];
+      for (let y = 0; y < H; y++)
+        for (let x = 0; x < W; x++) {
+          let f = 0;
+          for (const [bx, by, br] of balls) f += (br * br) / ((x - bx) ** 2 + (y - by) ** 2 + 1);
+          const i = (y * W + x) * 4;
+          const t = Math.min(1, f / 2.5);
+          img.data[i] = 40 + 215 * t;
+          img.data[i + 1] = 10 + 90 * t * t;
+          img.data[i + 2] = 90 + 60 * (1 - t);
+          img.data[i + 3] = 255;
+        }
+      ctx.putImageData(img, 0, 0);
+    </script>
+  </body>
+</html>

@@ -264,7 +264,7 @@ function sanitizeWebp(bytes, limits) {
 
 // src/imaging.ts
 var MAX_SCREENSHOT_BYTES = 2 * 1024 * 1024;
-var SCREENSHOT_WEBP_QUALITY = 82;
+var SCREENSHOT_WEBP_QUALITY = 70;
 var webpImaging = {
   screenshot(render, viewport) {
     if (render.format !== "webp") {

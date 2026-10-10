@@ -1,0 +1,76 @@
+<!doctype html>
+<!-- BUILD "A countdown to a holiday you just made up" × STYLE "Synthwave": sunset gradient,
+     neon perspective grid, chrome lettering. -->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      body {
+        margin: 0;
+        height: 100vh;
+        overflow: hidden;
+        background: linear-gradient(
+          #120024 0%,
+          #3b0a5c 40%,
+          #ff3d81 62%,
+          #ffb347 64%,
+          #120024 64.2%
+        );
+        font-family: 'DejaVu Sans', sans-serif;
+        color: #fff;
+      }
+      .sun {
+        position: absolute;
+        left: 50%;
+        top: 140px;
+        width: 380px;
+        height: 380px;
+        margin-left: -190px;
+        border-radius: 50%;
+        background: linear-gradient(#ffe259, #ff7a59 60%, #ff2e88);
+        mask: repeating-linear-gradient(#000 0 22px, transparent 22px 30px);
+      }
+      .grid {
+        position: absolute;
+        left: -50%;
+        right: -50%;
+        bottom: -200px;
+        height: 520px;
+        background:
+          repeating-linear-gradient(90deg, #ff2bd6 0 2px, transparent 2px 80px),
+          repeating-linear-gradient(0deg, #ff2bd6 0 2px, transparent 2px 60px);
+        transform: perspective(300px) rotateX(60deg);
+        opacity: 0.8;
+      }
+      h1 {
+        position: absolute;
+        top: 40px;
+        width: 100%;
+        text-align: center;
+        font-size: 72px;
+        margin: 0;
+        font-style: italic;
+        background: linear-gradient(#fff 0%, #9be7ff 45%, #2b3a67 50%, #fff 55%, #c0c0ff 100%);
+        -webkit-background-clip: text;
+        color: transparent;
+        filter: drop-shadow(0 0 12px #ff2bd6);
+      }
+      .count {
+        position: absolute;
+        top: 560px;
+        width: 100%;
+        text-align: center;
+        font-size: 64px;
+        font-weight: bold;
+        letter-spacing: 6px;
+        text-shadow: 0 0 18px #00e5ff;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>NATIONAL NAP DAY</h1>
+    <div class="sun"></div>
+    <div class="grid"></div>
+    <div class="count">12d 07h 44m 19s</div>
+  </body>
+</html>

@@ -63,8 +63,8 @@ rendering, or a single flat colour. A white page with one short word of 16 px te
 above (roughly 4–7); WebP noise on a flat image stays far below.
 
 **WebP**: `sharp` 0.35 with the prebuilt libvips from npm (`@img/sharp-linux-x64`, no build
-step, no install script). Quality 82, stepping down if a screenshot would exceed the bucket's
-2 MB limit. Typical sizes: 10–15 KB for the test builds.
+step, no install script). Quality 70 (82 until T-036, docs/08-free-tier.md §6.3), stepping down
+if a screenshot would exceed the bucket's 2 MB limit. Typical sizes: 10–15 KB for the test builds.
 
 ## Readiness (decided here, never by the page)
 

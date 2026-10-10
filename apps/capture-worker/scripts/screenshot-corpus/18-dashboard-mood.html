@@ -1,0 +1,127 @@
+<!doctype html>
+<!-- BUILD "A mood tracker with a week view" × a plain dark dashboard: SVG charts, cards, small
+     text. What a "default" vibe-coded app with a UI kit tends to look like. -->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      body {
+        margin: 0;
+        height: 100vh;
+        background: #0f172a;
+        color: #e2e8f0;
+        font-family: 'DejaVu Sans', system-ui, sans-serif;
+        display: grid;
+        grid-template-columns: 220px 1fr;
+      }
+      aside {
+        background: #111827;
+        padding: 24px 16px;
+        border-right: 1px solid #1f2937;
+      }
+      aside div {
+        padding: 10px 12px;
+        border-radius: 8px;
+        color: #94a3b8;
+        font-size: 14px;
+      }
+      aside div.on {
+        background: #1e293b;
+        color: #fff;
+      }
+      main {
+        padding: 28px;
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        grid-auto-rows: min-content;
+        gap: 18px;
+      }
+      .c {
+        background: #1e293b;
+        border-radius: 14px;
+        padding: 18px;
+        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+      }
+      .k {
+        font-size: 13px;
+        color: #94a3b8;
+      }
+      .v {
+        font-size: 30px;
+        font-weight: 700;
+        margin-top: 6px;
+      }
+      .wide {
+        grid-column: span 2;
+      }
+      .tall {
+        grid-row: span 2;
+      }
+      .day {
+        display: flex;
+        justify-content: space-between;
+        padding: 8px 0;
+        border-bottom: 1px solid #334155;
+        font-size: 14px;
+      }
+    </style>
+  </head>
+  <body>
+    <aside>
+      <div class="on">📊 Overview</div>
+      <div>📅 Week</div>
+      <div>📝 Journal</div>
+      <div>⚙️ Settings</div>
+    </aside>
+    <main>
+      <div class="c">
+        <div class="k">Average mood</div>
+        <div class="v">7.2 / 10</div>
+      </div>
+      <div class="c">
+        <div class="k">Best day</div>
+        <div class="v">Saturday 🌞</div>
+      </div>
+      <div class="c tall" id="days"><div class="k">This week</div></div>
+      <div class="c wide">
+        <div class="k">Mood over 30 days</div>
+        <svg id="line" width="100%" height="220"></svg>
+      </div>
+      <div class="c wide">
+        <div class="k">Feelings</div>
+        <svg id="bars" width="100%" height="160"></svg>
+      </div>
+    </main>
+    <script>
+      let s = 13;
+      const r = () => (s = (s * 16807) % 2147483647) / 2147483647;
+      const pts = Array.from({ length: 30 }, (_, i) => [i * 22 + 10, 190 - (60 + r() * 110)]);
+      const d = pts.map((p, i) => (i ? 'L' : 'M') + p.join(',')).join(' ');
+      document.getElementById('line').innerHTML =
+        `<defs><linearGradient id="g" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#6366f1" stop-opacity=".6"/><stop offset="1" stop-color="#6366f1" stop-opacity="0"/></linearGradient></defs>` +
+        `<path d="${d} L 648,200 L 10,200 Z" fill="url(#g)"/><path d="${d}" stroke="#818cf8" stroke-width="3" fill="none"/>` +
+        pts.map(([x, y]) => `<circle cx="${x}" cy="${y}" r="3" fill="#c7d2fe"/>`).join('');
+      const feel = ['happy', 'calm', 'tired', 'anxious', 'excited', 'bored', 'grumpy'];
+      document.getElementById('bars').innerHTML = feel
+        .map((f, i) => {
+          const h = 20 + r() * 110;
+          return `<rect x="${i * 92 + 10}" y="${130 - h}" width="56" height="${h}" rx="6" fill="hsl(${i * 50},70%,60%)"/><text x="${i * 92 + 38}" y="152" fill="#94a3b8" font-size="12" text-anchor="middle">${f}</text>`;
+        })
+        .join('');
+      document.getElementById('days').innerHTML += [
+        'Mon 😐',
+        'Tue 🙂',
+        'Wed 😫',
+        'Thu 🙂',
+        'Fri 😄',
+        'Sat 🌞',
+        'Sun 😌',
+      ]
+        .map(
+          (t, i) =>
+            `<div class="day"><span>${t}</span><span>${(5 + r() * 5).toFixed(1)}</span></div>`,
+        )
+        .join('');
+    </script>
+  </body>
+</html>

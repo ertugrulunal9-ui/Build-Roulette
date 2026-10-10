@@ -1,0 +1,87 @@
+<!doctype html>
+<!-- BUILD "A reaction-time tester" × STYLE "Cyberpunk neon": glow, scanlines, rain. -->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      body {
+        margin: 0;
+        height: 100vh;
+        overflow: hidden;
+        background: radial-gradient(ellipse at 50% 120%, #3a0a4a, #07020f 70%);
+        color: #fff;
+        font-family: 'DejaVu Sans Mono', monospace;
+      }
+      canvas {
+        position: fixed;
+        inset: 0;
+      }
+      .hud {
+        position: relative;
+        display: grid;
+        place-items: center;
+        height: 100vh;
+        text-align: center;
+      }
+      .ms {
+        font-size: 150px;
+        font-weight: bold;
+        color: #00f0ff;
+        text-shadow:
+          0 0 10px #00f0ff,
+          0 0 40px #00a0ff,
+          3px 0 0 #ff2bd6;
+      }
+      .go {
+        display: inline-block;
+        margin-top: 20px;
+        padding: 18px 60px;
+        border: 3px solid #ff2bd6;
+        color: #ff2bd6;
+        font-size: 30px;
+        box-shadow:
+          0 0 20px #ff2bd6,
+          inset 0 0 20px #ff2bd6;
+      }
+      .scan {
+        position: fixed;
+        inset: 0;
+        background: repeating-linear-gradient(
+          0deg,
+          rgba(255, 255, 255, 0.04) 0 2px,
+          transparent 2px 4px
+        );
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="c" width="1280" height="800"></canvas>
+    <div class="hud">
+      <div>
+        <div class="ms">213ms</div>
+        <div>BEST 187MS · AVG 241MS · CHOOM RANK: NETRUNNER</div>
+        <div class="go">TAP WHEN PINK</div>
+      </div>
+    </div>
+    <div class="scan"></div>
+    <script>
+      const c = document.getElementById('c').getContext('2d');
+      let s = 11;
+      const r = () => (s = (s * 16807) % 2147483647) / 2147483647;
+      for (let i = 0; i < 400; i++) {
+        const x = r() * 1280;
+        const y = r() * 800;
+        const l = 10 + r() * 40;
+        c.strokeStyle = `rgba(${r() < 0.5 ? '0,240,255' : '255,43,214'},${0.15 + r() * 0.4})`;
+        c.beginPath();
+        c.moveTo(x, y);
+        c.lineTo(x - 3, y + l);
+        c.stroke();
+      }
+      for (let i = 0; i < 14; i++) {
+        c.fillStyle = `rgba(${[255, 43, 214].join(',')},0.08)`;
+        c.fillRect(r() * 1280, 560 + r() * 200, 40 + r() * 140, 240);
+      }
+    </script>
+  </body>
+</html>

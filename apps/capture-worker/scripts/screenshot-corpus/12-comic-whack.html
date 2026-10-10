@@ -1,0 +1,80 @@
+<!doctype html>
+<!-- BUILD "Whack-a-mole" × STYLE "Comic book": halftone dots, speech bubbles, bold outlines. -->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      body {
+        margin: 0;
+        height: 100vh;
+        background:
+          radial-gradient(circle, #e8483b 3px, transparent 3.5px) 0 0 / 12px 12px,
+          #ffd84a;
+        font-family: 'DejaVu Sans', sans-serif;
+        font-weight: 900;
+      }
+      .board {
+        position: absolute;
+        inset: 120px 160px 60px;
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 26px;
+      }
+      .hole {
+        border: 6px solid #000;
+        border-radius: 50% / 40%;
+        background:
+          radial-gradient(circle, #222 3px, transparent 3.5px) 0 0 / 9px 9px,
+          #6b3e1e;
+        position: relative;
+      }
+      .mole {
+        position: absolute;
+        left: 22%;
+        right: 22%;
+        bottom: 18%;
+        top: 8%;
+        background: #a0663a;
+        border: 5px solid #000;
+        border-radius: 50% 50% 30% 30%;
+      }
+      .bubble {
+        position: absolute;
+        background: #fff;
+        border: 5px solid #000;
+        border-radius: 30px;
+        padding: 10px 22px;
+        font-size: 34px;
+      }
+      .pow {
+        position: absolute;
+        font-size: 90px;
+        color: #fff;
+        -webkit-text-stroke: 4px #000;
+        transform: rotate(-12deg);
+      }
+      .score {
+        position: absolute;
+        top: 24px;
+        left: 40px;
+        font-size: 48px;
+        -webkit-text-stroke: 2px #000;
+        color: #3b82f6;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="score">SCORE: 4,200</div>
+    <div class="bubble" style="right: 60px; top: 20px">NOT THE FACE!!</div>
+    <div class="board" id="b"></div>
+    <div class="pow" style="left: 520px; top: 300px">POW!</div>
+    <div class="pow" style="left: 940px; top: 560px">BAM!</div>
+    <script>
+      const up = [1, 6, 8, 11];
+      document.getElementById('b').innerHTML = Array.from(
+        { length: 12 },
+        (_, i) => `<div class="hole">${up.includes(i) ? '<div class="mole"></div>' : ''}</div>`,
+      ).join('');
+    </script>
+  </body>
+</html>

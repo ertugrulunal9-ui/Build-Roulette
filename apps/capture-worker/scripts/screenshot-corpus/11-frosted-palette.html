@@ -1,0 +1,77 @@
+<!doctype html>
+<!-- BUILD "A color palette generator" × STYLE "Frosted glass": blurred panels over colorful
+     blobs. -->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      body {
+        margin: 0;
+        height: 100vh;
+        overflow: hidden;
+        background: #1b1f3a;
+        font-family: 'DejaVu Sans', sans-serif;
+        color: #fff;
+      }
+      .blob {
+        position: absolute;
+        border-radius: 50%;
+      }
+      .glass {
+        position: absolute;
+        inset: 90px 120px;
+        border-radius: 28px;
+        background: rgba(255, 255, 255, 0.14);
+        border: 1px solid rgba(255, 255, 255, 0.35);
+        backdrop-filter: blur(24px);
+        padding: 36px;
+        box-sizing: border-box;
+      }
+      .sw {
+        display: flex;
+        gap: 18px;
+        margin-top: 40px;
+        height: 380px;
+      }
+      .sw div {
+        flex: 1;
+        border-radius: 18px;
+        display: flex;
+        align-items: flex-end;
+        padding: 14px;
+        font:
+          16px 'DejaVu Sans Mono',
+          monospace;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+      }
+      h1 {
+        margin: 0;
+        font-size: 38px;
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      class="blob"
+      style="width: 520px; height: 520px; left: -80px; top: -120px; background: #ff5f9e"
+    ></div>
+    <div
+      class="blob"
+      style="width: 460px; height: 460px; right: -60px; top: 240px; background: #3fd2ff"
+    ></div>
+    <div
+      class="blob"
+      style="width: 380px; height: 380px; left: 420px; bottom: -160px; background: #ffd23f"
+    ></div>
+    <div class="glass">
+      <h1>Palette Roulette 🎨 — space to reroll, click to lock</h1>
+      <div class="sw" id="sw"></div>
+    </div>
+    <script>
+      const cols = ['#264653', '#2a9d8f', '#e9c46a', '#f4a261', '#e76f51'];
+      document.getElementById('sw').innerHTML = cols
+        .map((c, i) => `<div style="background:${c}">${c}${i === 1 ? ' 🔒' : ''}</div>`)
+        .join('');
+    </script>
+  </body>
+</html>

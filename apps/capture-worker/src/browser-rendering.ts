@@ -10,7 +10,7 @@
  *     waitForSelector: { selector: 'html[data-br-capture]', timeout: 6000 },  // the cap
  *     bestAttempt: true,          // the cap passing is not an error: shoot anyway
  *     actionTimeout: 10000,       // a frozen page cannot hold the screenshot forever
- *     screenshotOptions: { type: 'webp', quality: 82, fullPage: false } }
+ *     screenshotOptions: { type: 'webp', quality: 70, fullPage: false } }
  *
  * → `{ success, result: { content: <the page's HTML>, screenshot: <base64 WebP> } }`.
  *

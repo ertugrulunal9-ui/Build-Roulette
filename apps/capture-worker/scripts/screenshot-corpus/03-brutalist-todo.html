@@ -1,0 +1,82 @@
+<!doctype html>
+<!-- BUILD "A to-do list that judges you" × STYLE "Brutalist". -->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      body {
+        margin: 24px;
+        font-family: 'Times New Roman', serif;
+        background: #fff;
+        color: #000;
+      }
+      h1 {
+        font-size: 64px;
+        margin: 0 0 16px;
+        border-bottom: 8px solid #000;
+      }
+      form {
+        display: flex;
+        gap: 0;
+        margin-bottom: 24px;
+      }
+      input {
+        flex: 1;
+        font-size: 24px;
+        border: 4px solid #000;
+        padding: 8px;
+      }
+      button {
+        font-size: 24px;
+        border: 4px solid #000;
+        border-left: 0;
+        background: #ff0;
+        padding: 8px 24px;
+      }
+      li {
+        font-size: 22px;
+        border: 3px solid #000;
+        margin: -3px 0 0;
+        padding: 10px;
+        list-style: none;
+        display: flex;
+        justify-content: space-between;
+      }
+      ul {
+        padding: 0;
+      }
+      li i {
+        font-size: 16px;
+      }
+      .done {
+        text-decoration: line-through;
+        background: #000;
+        color: #fff;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>THINGS YOU WILL NOT DO</h1>
+    <form><input value="call mom" /><button>ADD (WHY)</button></form>
+    <ul id="list"></ul>
+    <script>
+      const items = [
+        ['Reply to that email from March', 'It has been 214 days.'],
+        ['Go to the gym', 'You bought the shoes. That counts, right?'],
+        ['Clean the fridge', 'Something in there is now sentient.'],
+        ['Learn Rust', 'Fourth time on this list.'],
+        ['Drink water', 'Coffee is not water.'],
+        ['Finish side project', 'Which one? There are nine.'],
+        ['Sleep before midnight', 'Bold of you.'],
+        ['Read the book on the nightstand', 'It is a coaster now.'],
+      ];
+      const ul = document.getElementById('list');
+      items.forEach(([t, j], i) => {
+        const li = document.createElement('li');
+        if (i === 4) li.className = 'done';
+        li.innerHTML = `<span>${t}</span><i>${j}</i>`;
+        ul.append(li);
+      });
+    </script>
+  </body>
+</html>

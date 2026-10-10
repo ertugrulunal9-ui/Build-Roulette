@@ -1,0 +1,150 @@
+<!doctype html>
+<!-- BUILD "A dice roller for tabletop night" × STYLE "Windows 95": bevels on a teal desktop. -->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      body {
+        margin: 0;
+        height: 100vh;
+        background: #008080;
+        font:
+          13px 'DejaVu Sans',
+          Tahoma,
+          sans-serif;
+      }
+      .win {
+        position: absolute;
+        left: 260px;
+        top: 120px;
+        width: 720px;
+        background: #c0c0c0;
+        border: 2px solid;
+        border-color: #fff #404040 #404040 #fff;
+        box-shadow: 1px 1px 0 #000;
+      }
+      .title {
+        background: linear-gradient(90deg, #000080, #1084d0);
+        color: #fff;
+        font-weight: bold;
+        padding: 4px 6px;
+        display: flex;
+        justify-content: space-between;
+      }
+      .title span:last-child {
+        background: #c0c0c0;
+        color: #000;
+        padding: 0 5px;
+        border: 2px solid;
+        border-color: #fff #404040 #404040 #fff;
+      }
+      .dice {
+        display: flex;
+        gap: 16px;
+        padding: 24px;
+        flex-wrap: wrap;
+      }
+      .die {
+        width: 96px;
+        height: 96px;
+        display: grid;
+        place-items: center;
+        font-size: 40px;
+        font-weight: bold;
+        background: #fff;
+        border: 2px solid;
+        border-color: #404040 #fff #fff #404040;
+      }
+      .die small {
+        font-size: 11px;
+        color: #555;
+      }
+      .bar {
+        display: flex;
+        gap: 8px;
+        padding: 0 24px 24px;
+      }
+      button {
+        font: inherit;
+        padding: 6px 18px;
+        background: #c0c0c0;
+        border: 2px solid;
+        border-color: #fff #404040 #404040 #fff;
+      }
+      .task {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        height: 30px;
+        background: #c0c0c0;
+        border-top: 2px solid #fff;
+        display: flex;
+        align-items: center;
+        padding: 0 4px;
+        gap: 6px;
+      }
+      .icon {
+        position: absolute;
+        left: 24px;
+        width: 72px;
+        text-align: center;
+        color: #fff;
+      }
+      .icon div {
+        width: 34px;
+        height: 34px;
+        margin: 0 auto 4px;
+        background: linear-gradient(135deg, #ffe680, #c89b00);
+        border: 1px solid #000;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="icon" style="top: 24px">
+      <div></div>
+      My Computer
+    </div>
+    <div class="icon" style="top: 110px">
+      <div></div>
+      Recycle Bin
+    </div>
+    <div class="icon" style="top: 196px">
+      <div></div>
+      Dice.exe
+    </div>
+    <div class="win">
+      <div class="title"><span>🎲 Dice Roller 95 — Critical Edition</span><span>×</span></div>
+      <div class="dice" id="dice"></div>
+      <div class="bar">
+        <button>Roll!</button><button>Add d20</button><button>Clear</button
+        ><span style="margin-left: auto; align-self: center">Total: <b id="total"></b></span>
+      </div>
+    </div>
+    <div class="task">
+      <button><b>Start</b></button><button>Dice Roller 95</button
+      ><span style="margin-left: auto">21:37</span>
+    </div>
+    <script>
+      const rolls = [
+        [20, 20],
+        [12, 7],
+        [8, 3],
+        [6, 6],
+        [6, 1],
+        [4, 2],
+        [10, 9],
+        [100, 42],
+        [20, 1],
+        [6, 4],
+      ];
+      let t = 0;
+      document.getElementById('dice').innerHTML = rolls
+        .map(
+          ([d, v]) => ((t += v), `<div class="die"><div>${v}<br><small>d${d}</small></div></div>`),
+        )
+        .join('');
+      document.getElementById('total').textContent = String(t);
+    </script>
+  </body>
+</html>

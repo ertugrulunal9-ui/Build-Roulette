@@ -1,0 +1,80 @@
+<!doctype html>
+<!-- BUILD "Flashcards for a subject nobody needs" × STYLE "Newspaper front page": dense text. -->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      body {
+        margin: 0;
+        padding: 24px 40px;
+        background: #f4efe3;
+        color: #1a1a1a;
+        font-family: Georgia, 'Times New Roman', serif;
+      }
+      header {
+        text-align: center;
+        border-bottom: 4px double #1a1a1a;
+      }
+      header h1 {
+        font-size: 64px;
+        margin: 0;
+        font-family: 'Times New Roman', serif;
+      }
+      header p {
+        margin: 4px 0 8px;
+        font-size: 13px;
+        letter-spacing: 2px;
+      }
+      .cols {
+        columns: 4;
+        column-gap: 28px;
+        column-rule: 1px solid #999;
+        font-size: 13.5px;
+        line-height: 1.45;
+        text-align: justify;
+        margin-top: 16px;
+      }
+      h2 {
+        font-size: 24px;
+        margin: 0 0 6px;
+        line-height: 1.1;
+      }
+      .card {
+        break-inside: avoid;
+        border: 1px solid #1a1a1a;
+        padding: 10px;
+        margin-bottom: 12px;
+        background: #fffaf0;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>The Daily Cheese Ledger</h1>
+      <p>FLASHCARDS · MEDIEVAL CHEESES · CARD 7 OF 40 · SCORE 5/6</p>
+    </header>
+    <div class="cols" id="cols"></div>
+    <script>
+      const words =
+        'cheese abbey monks brine wheel rind cellar ancient guild village market salt cave aged pasture shepherd parchment ledger recipe tithe cow goat sheep curd whey press mould crust'.split(
+          ' ',
+        );
+      let s = 3;
+      const r = (n) => ((s = (s * 48271) % 2147483647), s % n);
+      const sentence = () => {
+        const n = 8 + r(10);
+        const w = Array.from({ length: n }, () => words[r(words.length)]);
+        w[0] = w[0][0].toUpperCase() + w[0].slice(1);
+        return w.join(' ') + '.';
+      };
+      let html = '';
+      for (let i = 0; i < 9; i++) {
+        html += `<div class="card"><h2>Q${i + 1}: Which abbey aged the ${words[r(words.length)]} of ${1100 + r(300)}?</h2>`;
+        for (let p = 0; p < 2; p++)
+          html += `<p>${Array.from({ length: 4 }, sentence).join(' ')}</p>`;
+        html += '</div>';
+      }
+      document.getElementById('cols').innerHTML = html;
+    </script>
+  </body>
+</html>

@@ -22,7 +22,7 @@ describe('stand-in request validation', () => {
       waitForTimeout: 0,
       bestAttempt: true,
       actionTimeout: 10_000,
-      shot: { format: 'webp', quality: 82 },
+      shot: { format: 'webp', quality: 70 },
     });
   });
 

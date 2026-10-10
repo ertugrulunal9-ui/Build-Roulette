@@ -1,0 +1,70 @@
+<!doctype html>
+<!-- BUILD "Snake" × STYLE "8-bit arcade": a canvas grid game with chunky pixels. -->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      body {
+        margin: 0;
+        height: 100vh;
+        background: #000;
+        display: grid;
+        place-items: center;
+        font-family: 'DejaVu Sans Mono', monospace;
+        color: #fff;
+      }
+      canvas {
+        image-rendering: pixelated;
+        border: 8px solid #4040ff;
+      }
+      .hud {
+        position: fixed;
+        top: 12px;
+        left: 0;
+        right: 0;
+        display: flex;
+        justify-content: space-around;
+        font-size: 26px;
+        color: #ffde00;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="hud"><span>1UP 004210</span><span>HI 099999</span><span>INSERT COIN</span></div>
+    <canvas id="c" width="960" height="640"></canvas>
+    <script>
+      const ctx = document.getElementById('c').getContext('2d');
+      const S = 32;
+      ctx.fillStyle = '#081820';
+      ctx.fillRect(0, 0, 960, 640);
+      for (let x = 0; x < 30; x++)
+        for (let y = 0; y < 20; y++) {
+          if ((x + y) % 2) {
+            ctx.fillStyle = '#0c2430';
+            ctx.fillRect(x * S, y * S, S, S);
+          }
+        }
+      const snake = [];
+      let x = 5;
+      let y = 10;
+      const path = 'RRRRRRRRUUUURRRRRRDDDDDDDDLLLL';
+      for (const d of path) {
+        snake.push([x, y]);
+        if (d === 'R') x++;
+        if (d === 'U') y--;
+        if (d === 'D') y++;
+        if (d === 'L') x--;
+      }
+      snake.forEach(([sx, sy], i) => {
+        ctx.fillStyle = i === snake.length - 1 ? '#a8ff60' : i % 2 ? '#3ca83c' : '#58c858';
+        ctx.fillRect(sx * S + 2, sy * S + 2, S - 4, S - 4);
+        ctx.fillStyle = '#1e5c1e';
+        ctx.fillRect(sx * S + 6, sy * S + 6, 6, 6);
+      });
+      ctx.fillStyle = '#ff3030';
+      ctx.fillRect(22 * S + 6, 6 * S + 6, S - 12, S - 12);
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(22 * S + 10, 6 * S + 8, 4, 4);
+    </script>
+  </body>
+</html>

@@ -4,6 +4,8 @@
  *   GET /health                         JSON health + metrics (queues, in-flight work, cache)
  *   GET /<name>@<exact>[/sub][?...]     bundled ES module (or a raw file for .css, fonts, ...)
  *   GET /<name>[@<range|tag>][/sub]     302 to the exact-version URL (query preserved)
+ *   GET /<name>@<exact>&<query>[/sub]   the query in the path (an import-map prefix, T-040):
+ *                                       a module that re-exports `/<name>@<exact>[/sub]?<query>`
  *
  * Every request gets an AbortSignal that fires when the client disconnects or the request
  * deadline passes; queued and shared work for it is cancelled (see ./limiter.ts). Overload
@@ -11,10 +13,11 @@
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { pipeline } from 'node:stream/promises';
+import { moduleHasDefaultExport } from './bundler';
 import { PackageCdn, rawContentType, type PackageCdnOptions } from './cdn';
 import type { CdnConfig } from './config';
 import { CdnError, errorMessage } from './errors';
-import { packagePath, parseCdnUrl } from './url';
+import { effectiveSearch, formatQuery, packagePath, parseCdnUrl } from './url';
 
 /**
  * Exact-version URLs never change: browsers and the edge keep them a year without asking
@@ -182,7 +185,9 @@ export function createCdnHandler(cdn: PackageCdn, opts: HandlerOptions = {}) {
     const parsed = parseCdnUrl(url.pathname, url.search);
     const resolved = await cdn.resolve(parsed, signal);
     if (!resolved.exact) {
-      const location = packagePath(parsed.name, resolved.version, parsed.subpath) + url.search;
+      const location =
+        packagePath(parsed.name, resolved.version, parsed.subpath) +
+        effectiveSearch(parsed, url.search);
       send(
         req,
         res,
@@ -236,6 +241,24 @@ export function createCdnHandler(cdn: PackageCdn, opts: HandlerOptions = {}) {
     };
     if (out.meta.stubbedBuiltins.length > 0) {
       headers['X-Pkg-Cdn-Stubbed-Builtins'] = out.meta.stubbedBuiltins.join(',');
+    }
+    if (parsed.pathQuery !== '') {
+      // An import-map prefix reached this module (T-040). The bundle the same build imports
+      // with `?query` is the one instance: re-export it, like esm.sh's entry modules do.
+      const canonical =
+        packagePath(resolved.name, resolved.version, parsed.subpath) + formatQuery(parsed.query);
+      const target = JSON.stringify(canonical);
+      const reexport = (await moduleHasDefaultExport(out.code))
+        ? `export { default } from ${target};\n`
+        : '';
+      send(
+        req,
+        res,
+        200,
+        headers,
+        `/* @br/pkg-cdn ${resolved.name}@${resolved.version}${parsed.subpath}: query in the path, the module is ${canonical} */\nexport * from ${target};\n${reexport}`,
+      );
+      return 'reexport';
     }
     send(req, res, 200, headers, out.code);
     return out.cache;

@@ -62,9 +62,42 @@ export function caseUrls(
   return { urls, error: null };
 }
 
-/** The import map every case runs with (React at the suite's version). */
+/**
+ * The template's import map: the React set at the suite's version (React, React DOM and React
+ * DOM's pinned scheduler, T-040). Every case's map starts with it.
+ */
 export function reactImportMap(cdnBaseUrl: string): ImportMap {
   return buildImportMap({ react: REACT_VERSION, 'react-dom': REACT_VERSION }, cdnBaseUrl);
+}
+
+/**
+ * The module URLs of an import map: not its prefix entries (`"three/": "…&external=…/"`),
+ * which only resolve the subpaths a module imports (T-040).
+ */
+export function moduleUrlsOf(map: ImportMap): string[] {
+  return Object.values(map.imports).filter((u) => !u.endsWith('/'));
+}
+
+/** The import map a case runs with: the template's plus every package of its manifest. */
+export function caseImportMap(c: CompatCase, cdnBaseUrl: string): ImportMap {
+  return buildImportMap(manifestFor(c).dependencies, cdnBaseUrl);
+}
+
+/**
+ * The import-map URLs of a case's own packages (T-040): what a CDN module's bare import of a
+ * manifest package loads (`three` inside `@react-three/fiber`), whether or not the app imports
+ * it itself. The template's URLs are left out (probed once for every case).
+ */
+export function caseMapUrls(c: CompatCase, cdnBaseUrl: string): CaseUrl[] {
+  const template = new Set(moduleUrlsOf(reactImportMap(cdnBaseUrl)));
+  return Object.entries(caseImportMap(c, cdnBaseUrl).imports)
+    .filter(([, url]) => !url.endsWith('/') && !template.has(url))
+    .map(([spec, url]) => ({ spec, url, kind: 'module' as const }));
+}
+
+/** The packages a case's manifest lists (React and React DOM included). */
+export function manifestNames(c: CompatCase): Set<string> {
+  return new Set(Object.keys(manifestFor(c).dependencies));
 }
 
 /** A URL without the CDN base, for reports (`/zustand@5.0.15?external=…`). */

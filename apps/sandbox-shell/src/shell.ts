@@ -53,6 +53,7 @@ import {
   explainStall,
   packageCandidates,
   warmPackages,
+  warmRoots,
 } from './packages';
 import { captureThumbnail } from './thumbnail';
 import { SerialQueue, wipeOriginStorage } from './wipe';
@@ -200,9 +201,11 @@ function runLoad(msg: LoadMessage): void {
       settled();
       post({ type: 'ready', loadId: msg.loadId });
       if (msg.mode !== 'capture') {
-        const urls = Object.values(msg.importMap.imports);
+        const urls = warmRoots(msg.importMap, msg.packages);
         setTimeout(() => {
-          void warmPackages(urls, shellFetch, warmed).catch(() => undefined);
+          void warmPackages(urls, shellFetch, warmed, undefined, msg.importMap).catch(
+            () => undefined,
+          );
         }, WARM_DELAY_MS);
       }
     },

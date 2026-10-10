@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { CdnError } from '../src/errors';
 import {
+  effectiveSearch,
   formatQuery,
   parseCdnUrl,
   parsePackagePath,
@@ -25,11 +26,40 @@ describe('parsePackagePath', () => {
       versionText: '5.0.15',
       version: { kind: 'exact', version: '5.0.15' },
       subpath: '',
+      pathQuery: '',
     });
     expect(parsePackagePath('/three@0.186.1/examples/jsm/controls/OrbitControls.js').subpath).toBe(
       '/examples/jsm/controls/OrbitControls.js',
     );
     expect(parsePackagePath('/react-dom@19.3.0/client/').subpath).toBe('/client');
+  });
+
+  it('reads a query written in the path after the version (import-map prefixes, T-040)', () => {
+    const r = parsePackagePath('/three@0.186.1&external=react,react-dom/examples/jsm/x.js');
+    expect(r).toMatchObject({
+      name: 'three',
+      version: { kind: 'exact', version: '0.186.1' },
+      subpath: '/examples/jsm/x.js',
+      pathQuery: 'external=react,react-dom',
+    });
+    // A scoped name's `/` arrives as %252F: decoded once with the path, once more as a query.
+    const scoped = parseCdnUrl(
+      '/@react-three/fiber@9.8.1&external=@br%252Fx,react,three/dist/x.js',
+      '?dev',
+    );
+    expect(scoped).toMatchObject({
+      name: '@react-three/fiber',
+      subpath: '/dist/x.js',
+      pathQuery: 'external=@br%2Fx,react,three',
+    });
+    expect(scoped.query.external).toEqual(['@br/x', 'react', 'three']);
+    expect(scoped.query.dev).toBe(true);
+    // The in-path query comes first, like esm.sh's: its `target` wins.
+    expect(parseCdnUrl('/x@1.0.0&target=es2020', '?target=esnext').query.target).toBe('es2020');
+    expect(effectiveSearch({ pathQuery: 'external=a' }, '?dev')).toBe('?external=a&dev');
+    expect(effectiveSearch({ pathQuery: '' }, '')).toBe('');
+    expect(code(() => parseCdnUrl('/x@1.0.0&external=*', ''))).toBe('400 bad-request');
+    expect(code(() => parsePackagePath('/x@1.0.0&a/../b'))).toBe('400 bad-request');
   });
 
   it('parses scoped packages', () => {

@@ -90,7 +90,10 @@ flowchart TB
    - **`vfs`** resolves relative imports against the in-memory file map.
    - **`cdn-rewrite`** marks bare imports (`zustand`, `three/examples/jsm/...`) as
      `external` and rewrites them to `https://pkg.<cdn>/zustand@4.5.2?external=react,react-dom`
-     (subpaths are kept). React itself stays bare and is resolved by the shell's import map.
+     (subpaths are kept). Since T-040 the list holds every other package of the manifest, and
+     the import map maps each one, so a package another package imports is one instance (see
+     "One instance per package" below). React itself stays bare and is resolved by the
+     shell's import map.
    - **`css`** bundles local CSS imports into `bundle.css`. Package CSS is fetched from the
      CDN, cached in the worker and inlined. CSS modules are supported through esbuild's
      `local-css` loader.
@@ -482,8 +485,8 @@ the import map's URLs are cached like any other module URL. Every import map URL
 version (`react@19.3.0`, `react-dom@19.3.0/client?…`) served `public, max-age=31536000,
 immutable`, so there is no `302` hop that would expire after 300 s (a unit test checks the
 map). The real `@br/pkg-cdn`'s React modules import nothing but bare `react` / `react-dom`
-(through the map; checked against the npm registry's React 19.3.0), so no other URL hides
-behind them. esm.sh's do: its entry URLs re-export internal build paths, which the warm-up and
+and, since T-040, `scheduler` (through the map; checked against the npm registry's React
+19.3.0), so no other URL hides behind them. esm.sh's do: its entry URLs re-export internal build paths, which the warm-up and
 the checks follow since T-035 (see "The package CDN" below). esbuild-wasm and the bundler worker are content-hashed `immutable` assets on
 the app origin, unaffected by the CDN.
 
@@ -512,7 +515,9 @@ this task.
 
 **What the shell does** (`apps/sandbox-shell/src/packages.ts`):
 - **Warm-up:** after a build ran (`live` and `reveal`), the shell fetches every URL of its
-  import map once per shell realm with `cache: 'force-cache'`, 1 s after `ready`. A cached
+  import map once per shell realm with `cache: 'force-cache'`, 1 s after `ready`. (Since
+  T-040: the template's entries and the build's own packages, following bare imports through
+  the import map; see "One instance per package" below.) A cached
   URL costs no request. Two moments trigger it before BUILD:
   - **the room lobby** (and the spectator view), desktop only: `TemplateWarmup`
     (`apps/web/src/components/playground`) loads an empty bundle with the default
@@ -543,7 +548,8 @@ this task.
   Measured: 0 failed CDN requests, so everything came from the cache.
 - **A new uncached package:** an import this browser never loaded (for example
   `react-dom/server`; React's own entry points are warmed), or any non-React package after a
-  dependency change (adding one changes every CDN URL's `deps=` list). The overlay "The
+  dependency change (adding one changes every other package's `external=` list; the React
+  set's URLs do not change, T-040). The overlay "The
   build failed to load" names the package within about 0.2 s in the runtime e2e and
   0.7–1.0 s in the web e2e (edit → message). No watchdog crash, and the last good build keeps
   running.
@@ -611,6 +617,14 @@ the compatibility suite in CI, `compat_cdn=https://esm.sh`):
 | Errors | Text, `no-store` | A text 404, or for a failed build a `500` module that throws `[esm.sh] …`, whose message the shell and the bundler now quote |
 | `?target=`, `?dev` | `es2022` by default; `?dev` | Target from the User-Agent unless `?target=`; `?dev`. The runtime sends neither, so the URLs stay the same on both CDNs: a `target=` would split @br/pkg-cdn's peer URLs from the app's own imports |
 
+> **Corrected by T-040** (CI run 60 and esm.sh's source): `deps=` does not give a peer the
+> app's instance on esm.sh. A pinned dependency gets build arguments of its own, and an
+> unpinned one is imported by range, `/scheduler@^0.28.0?target=es2022`, answered with
+> `public, max-age=600`. Exact URLs and internal build paths are `immutable`, as assumed. The
+> runtime no longer sends `deps=`: every package of the manifest is external in every other
+> package's URL, React DOM's `scheduler` is pinned, and import-map prefixes use esm.sh's
+> in-path query (`/three@0.186.1&external=…/`). See "One instance per package" below.
+
 **What changed in the code for esm.sh:**
 - **The modules behind an entry URL.** The T-032 warm-up and the package checks used to fetch
   only the import map's (and the build's) URLs. On esm.sh those are entry modules, and what
@@ -659,6 +673,166 @@ the compatibility suite in CI, `compat_cdn=https://esm.sh`):
 URL in the three settings above and rebuild the app and the shell. No code change. Run the
 compatibility suite against the new URL first (`pnpm --filter @br/pkg-cdn compat --cdn
 <url>`, or the CI input `compat_cdn`).
+
+### One instance per package and a fully pinned template (T-040)
+
+CI run 60 (the compatibility suite against `https://esm.sh`) gave 52/57 and one problem in the
+React import-map contract. Every finding had the same cause, which esm.sh's source confirms
+(v139, `server/build_resolver.go` and `build_args.go`, read from the Go module proxy because
+this container cannot reach esm.sh or GitHub): a package's own dependencies are separate
+modules, and the URL esm.sh writes for each one depends on what the request says about that
+dependency.
+
+| The request says about a dependency | esm.sh's module imports it as |
+|---|---|
+| `external=<name>` | The bare specifier (`"three"`), which the page's import map resolves |
+| `deps=<name>@x.y.z`, in the package's dependency tree | `/<name>@x.y.z/[X-<args>/]es2022/<name>.mjs`, with the build arguments narrowed to that dependency's own dependencies |
+| Nothing | `/<name>@<range from package.json>?…&target=es2022`: an entry module cached `public, max-age=600` that resolves to the newest match |
+
+An entry URL's own build arguments are taken as given, not narrowed. So the app's
+`/chart.js@4.5.1?external=react,react-dom&deps=…` and the chart.js that react-chartjs-2 imports
+(`/chart.js@^4.1.1?target=es2022`, or with `deps=` the narrowed
+`/chart.js@4.5.1/es2022/chart.mjs`) are two builds, so two module instances even at the same
+version. That gave "\"category\" is not a registered scale" and a fiber scene that was not an
+instance of the app's `THREE.Scene`. React DOM imported `scheduler` the same way, by range and
+cached for 10 minutes, so the template did not outlast a longer outage. T-035 assumed that
+`deps=` pins a peer to the app's instance, and it does not.
+
+**The fix: every manifest package is external everywhere, with one URL in the import map.**
+
+- **URLs** (`cdnExternals`, `urlExternals` in `packages/runtime/src/bundler/resolve.ts`): every
+  package URL of a build carries `?external=` with every *other* package of the manifest, plus
+  React and React DOM, sorted the way the CDN sorts them. `deps=` is gone, because nothing is
+  left for it to pin. For `{react, react-dom, three, @react-three/fiber}`, the URLs are
+  `/three@0.186.1?external=@react-three/fiber,react,react-dom` and
+  `/@react-three/fiber@9.8.1?external=react,react-dom,three`. A package is never in its own
+  list: on esm.sh, its main build would otherwise turn its own internal modules (split chunks,
+  `exports` entries) into bare specifiers. A subpath's import of its own package instead goes
+  to the main build with the same arguments (esm.sh's self-reference, @br/pkg-cdn's rule 3), so
+  `/three@0.186.1/examples/jsm/…?external=<same list>` shares the main `three`.
+- **Import map** (`buildImportMap`, still a pure function of the manifest, because REVEAL, the
+  solo last look and the capture renderer rebuild it from a stored manifest):
+  - the React set (below);
+  - for every other package, its main URL, which is the exact URL the bundle imports, so a CDN
+    module's bare `three` is the app's instance;
+  - a prefix entry for the subpaths CDN modules import (`"konva/"` for react-konva's
+    `konva/lib/Core.js`). An import map appends the rest of a specifier to its prefix, so the
+    prefix carries its query in the in-path form that esm.sh documents for import maps:
+    `/konva@10.7.0&external=react,react-dom,react-konva/`. A scoped name's `/` in that list is
+    sent as `%252F`: esm.sh decodes the path once and then reads the part after `&` as a
+    query (`parseEsmPath`'s `extraQuery`); @br/pkg-cdn and the mock CDN do the same. A subpath
+    reached through the prefix has the main URL's build arguments, so on esm.sh it is the same
+    build module; @br/pkg-cdn answers the in-path form with a module that re-exports the
+    `?query` URL.
+- **The React set keeps fixed URLs** whatever else the manifest lists, so the template stays
+  cached across dependency changes (T-032):
+  - `react` has no query, React's subpaths get `?external=react,react-dom`, and React DOM's
+    get `?external=react,react-dom,scheduler`;
+  - `scheduler` is pinned to the exact version for the React DOM minor (`REACT_DOM_SCHEDULER`:
+    19.3 → 0.28.0). A manifest that lists `scheduler` uses its own pin. For a React DOM minor
+    that is not in the table, React DOM's URLs stay as they were before T-040, and esm.sh
+    resolves `scheduler` by range;
+  - prefix entries `react/` and `react-dom/` resolve subpaths that libraries import
+    (`react/compiler-runtime`). Before T-040 these could not resolve.
+- **Size and limits:**
+  - the template's map has 8 entries (about 0.7 KB for esm.sh). With N other packages, the map
+    has 8 + 2N entries, and each of their URLs lists N + 1 names;
+  - at most 32 externals per URL (@br/pkg-cdn's limit is 33, because its peer URLs add the
+    requesting package) and an external list of at most 1,200 characters. Above either limit,
+    URLs externalize React only and the map holds the React set, with a build warning (as for
+    the old `deps=` limit);
+  - every map URL stays under the bridge's 2,048 characters and its 200 entries
+    (`ImportMapSchema` in a unit test with the largest accepted manifest).
+- **Untrusted manifests** (REVEAL, capture): only exact pins of valid npm names are mapped,
+  always to `<CDN>/<name>@<version>…`. A build could already import any URL on the CDN
+  directly, so this grants nothing new (unit test with hostile names).
+
+**@br/pkg-cdn** already honoured arbitrary `external` lists: a listed package and its subpaths
+stay bare, for imports and CommonJS requires. T-040 added:
+- **The in-path query** (`/name@x.y.z&external=…[/sub]`), answered with a re-export of the
+  `?query` URL. Raw files ignore it, and a range keeps it on the redirect.
+- **Peer URLs** (only emitted now for a peer the manifest does not list) carry the request's
+  externals plus the requesting package. Two packages of one build that share such a peer
+  therefore ask for the same URL. Before T-040 every URL of a build had the same query, which
+  gave the same property. The old peer-URL rule (the request's query unchanged) is kept for
+  the package's own subpath → main references.
+- `MAX_EXTERNALS` is now 33 and `MAX_PATH_LENGTH` 2,048. `BUILD_FORMAT` is now `b4`, so cached
+  bundles with the old peer URLs are rebuilt.
+
+**The sandbox shell** warms the template's entries (`TEMPLATE_SPECIFIERS`) and the build's own
+packages (the load's `packages` hint), and follows each module's bare imports through the
+import map, the way the browser resolves them. The diagnosis checks the build's packages, then
+the template's entries. A manifest package the build does not import is never fetched as a
+module and never blamed. That includes one that is only CSS, like `animate.css`, whose main URL
+is not a module. Prefix entries are never fetched.
+
+**Dependencies the manifest does not list: accepted.** esm.sh still imports them by range
+(`/immer@^11.0.0?target=es2022`, `/d3-array@3?…`, `/@react-spring/core@~10.1.2?…`), and its Node
+polyfills come from `/node/*.mjs` (cached a day). The alternative is `?standalone`, esm.sh's
+current name for `bundle-deps` (its router maps `bundle`, `bundle-all`, `bundle-deps` and
+`standalone` to the same mode). It bundles every dependency except peers and externals into the
+package's own immutable module. **Not taken**, because:
+- **Duplicates.** Each manifest package would get its own copy of a dependency it shares with
+  another one: `@react-spring/web` and `@react-spring/three` would each bundle
+  `@react-spring/core` and its global state, and `framer-motion` and `motion` would each
+  bundle `motion-dom`. That is the duplicate-instance bug one level down, invisible to the
+  runtime. With range URLs, two packages asking for the same range share one module.
+- **Size.** Bigger downloads per package.
+- **Peers.** Peers stay ranges anyway.
+- @br/pkg-cdn already bundles non-peer dependencies this way (it has the duplicates and no range
+  sub-imports).
+
+What accepting means:
+- **Outage window.** A non-template package's own dependencies outlast an esm.sh outage by
+  10 minutes only (polyfills by a day). The template and every manifest package itself are
+  immutable.
+- **Floating versions.** Their versions float within the range, as they would with npm.
+- **The escape hatch.** A dependency listed in the manifest becomes external and pinned, so a
+  player who needs one immutable, or shared with the app, lists it.
+
+The compatibility contract reports these range URLs as notes with the outage window. It stays
+strict for the template, and for manifest packages: one reached by range is a problem, because
+it is a second copy.
+
+**p5 and pixi.js** (CI run 60):
+- **p5: a known esm.sh incompatibility.** For browser targets, esm.sh applies an `exports`
+  map's `browser` condition first (`resolveConditionExportEntry`; it even special-cases
+  `astring` there). p5's dependency `@davepagurek/bezier-path@0.0.7` lists `import` →
+  `build/index.js` (the ES module) before `browser` → `bezier-path.min.js`, a global script
+  with no exports. esm.sh's module therefore has no `createFromCommands`. @br/pkg-cdn follows the
+  `exports` order (esbuild) and passes. The only fix from our side would be a per-package
+  override; `?conditions=import` on p5's URL would also change how all its other dependencies
+  resolve. The case is marked `knownFailure` (esm.sh) in `compat/packages.ts`.
+- **pixi.js: expected to pass now.** CI run 60 gave "preview ready timed out after 30000 ms",
+  while the unsafe-eval variant passed right after it, with the same modules plus one (132
+  URLs). esm.sh builds a module on its first request, and pixi.js has about 130 of them. The
+  contract probe followed only 64 before the case ran, so the browser waited for cold builds.
+  The probe now follows up to 512 modules per case, so an external CDN builds them before the
+  browser asks. In production this is a first-load cost: esm.sh builds per package, version
+  and build arguments, and the arguments depend on the manifest, as they did with `deps=`. The
+  first player with a new combination waits for esm.sh's builds, and the shell shows "Still
+  waiting for the package server" after 8 s.
+- **matter-js named imports:** unchanged, a known failure on both CDNs.
+
+**Tests:**
+- **The mock CDN's `esm.sh` layout imports dependencies the way esm.sh does** (range URLs with
+  `max-age=600` that resolve to the newest version, `deps=` pins as narrowed internal paths,
+  self-references, the in-path query). It serves fixture packages with several versions
+  (`packages/runtime/test-support/fixture-packages`).
+- **`e2e/one-instance.spec.ts`** runs in both runtime e2e configs and checks:
+  - one three: a fiber-like package, its three subpath reached through the prefix entry, and
+    the app;
+  - one chart-like registry;
+  - the template fully immutable: every response behind it has `max-age` ≥ 30 days, there is
+    no range URL, and `scheduler` comes from its pinned URL.
+  On the pre-T-040 runtime all three fail in the esm.sh layout, exactly as in CI run 60.
+- **Unit tests:** resolve.test (URLs, map, limits, hostile manifests), mock-cdn.test,
+  packages.test (shell), url/server tests (@br/pkg-cdn), compat-urls/compat-contract.
+- **The compatibility suite** has a variant case, `react-konva (scoped name in a prefix)`: its
+  manifest adds a scoped package, so react-konva's `konva/lib/Core.js` goes through a prefix
+  whose in-path list holds `%252F`. No other case uses a prefix with a scoped name. This case
+  shows whether esm.sh (and the Cloudflare edge in front of it) reads that list as documented
+  above; until the CI run, that is from esm.sh's source, not observed.
 
 ### Bundler start: stall timeout and retry (T-039)
 

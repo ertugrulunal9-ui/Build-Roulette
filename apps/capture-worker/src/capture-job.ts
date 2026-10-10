@@ -109,8 +109,9 @@ export async function importMapFor(
     }
     const strings: Record<string, string> = {};
     for (const [k, v] of Object.entries(deps)) if (typeof v === 'string') strings[k] = v;
-    // buildImportMap only maps exact (pinned) react / react-dom versions; anything else in a
-    // hostile manifest is ignored, and the capture page validates the map again.
+    // buildImportMap only maps exact pins of valid package names, to URLs on the CDN (T-040);
+    // anything else in a hostile manifest is ignored, and the capture page validates the map
+    // again.
     return buildImportMap(strings, cdnUrl);
   } catch (e) {
     log.warn('capture.bad_manifest', { error: errorMessage(e) });

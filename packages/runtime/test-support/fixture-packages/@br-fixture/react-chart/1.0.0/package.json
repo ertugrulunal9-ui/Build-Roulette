@@ -1,0 +1,11 @@
+{
+  "name": "@br-fixture/react-chart",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "peerDependencies": {
+    "@br-fixture/chart": "^1.0.0",
+    "react": ">=19"
+  }
+}

@@ -100,6 +100,15 @@ function packages(): Record<string, FakePackage> {
         },
       },
     },
+    'other-lib': {
+      versions: {
+        '1.0.0': {
+          peerDependencies: { 'peer-thing': '^3.0.0' },
+          files: { 'index.mjs': "import thing from 'peer-thing';\nexport const t = thing;\n" },
+          pkg: { module: 'index.mjs', exports: { '.': './index.mjs' } },
+        },
+      },
+    },
     'peer-thing': {
       versions: {
         '3.0.0': { files: { 'index.js': 'module.exports = 3;' } },
@@ -333,12 +342,29 @@ describe('bundling', () => {
     const r = await get('/react-lib@1.0.0?external=react,react-dom');
     expect(r.status).toBe(200);
     expect(r.body).toMatch(/from\s*"react"/);
-    // Peer not in the tree: resolved to the highest matching version (3.1.0 is latest).
-    expect(r.body).toMatch(/from\s*"\/peer-thing@3\.1\.0\?external=react,react-dom"/);
+    // Peer not in the tree: resolved to the highest matching version (3.1.0 is latest), with
+    // the request's query plus the requesting package as an external (T-040).
+    expect(r.body).toMatch(/from\s*"\/peer-thing@3\.1\.0\?external=react,react-dom,react-lib"/);
     const pinned = await get('/react-lib@1.0.0?external=react,react-dom&deps=peer-thing@3.0.0');
     expect(pinned.body).toMatch(
-      /"\/peer-thing@3\.0\.0\?external=react,react-dom&deps=peer-thing@3\.0\.0"/,
+      /"\/peer-thing@3\.0\.0\?external=react,react-dom,react-lib&deps=peer-thing@3\.0\.0"/,
     );
+  });
+
+  it('leaves a peer the manifest lists bare, for the import map (T-040)', async () => {
+    const r = await get('/react-lib@1.0.0?external=peer-thing,react,react-dom');
+    expect(r.status).toBe(200);
+    expect(r.body).toMatch(/from\s*"peer-thing"/);
+    expect(r.body).not.toContain('/peer-thing@');
+  });
+
+  it('gives an unlisted peer one URL whichever package of the build imports it (T-040)', async () => {
+    // The runtime externalizes every manifest package except the one a URL is for.
+    const a = await get('/react-lib@1.0.0?external=other-lib,react,react-dom');
+    const b = await get('/other-lib@1.0.0?external=react,react-dom,react-lib');
+    const peer = '"/peer-thing@3.1.0?external=other-lib,react,react-dom,react-lib"';
+    expect(a.body).toContain(peer);
+    expect(b.body).toContain(peer);
   });
 
   it('routes a CommonJS require() of an external through an ES module import', async () => {
@@ -348,8 +374,34 @@ describe('bundling', () => {
     expect(r.body).not.toMatch(/require\("react"\)/);
     // A required peer becomes an import of its CDN URL too.
     expect(r.body).toMatch(
-      /import\s*\*\s*as\s*\w+\s*from\s*"\/peer-thing@3\.1\.0\?external=react,react-dom"/,
+      /import\s*\*\s*as\s*\w+\s*from\s*"\/peer-thing@3\.1\.0\?external=react,react-dom,react-lib"/,
     );
+  });
+
+  it('answers a query in the path with a module that re-exports the query URL (T-040)', async () => {
+    const sub = await get('/esm-lib@2.0.0&external=react/sub');
+    expect(sub.status).toBe(200);
+    expect(sub.h('cache-control')).toBe('public, max-age=31536000, immutable');
+    expect(sub.h('content-type')).toContain('javascript');
+    expect(sub.body).toContain('export * from "/esm-lib@2.0.0/sub?external=react";');
+    expect(sub.body).not.toContain('export { default }');
+    // The main entry has a default export: re-exported too.
+    const main = await get('/esm-lib@2.0.0&external=react');
+    expect(main.body).toContain('export * from "/esm-lib@2.0.0?external=react";');
+    expect(main.body).toContain('export { default } from "/esm-lib@2.0.0?external=react";');
+    // A scoped external arrives as %252F (the import map's prefix form).
+    const scoped = await get('/esm-lib@2.0.0&external=@br%252Fx,react/sub');
+    expect(scoped.status).toBe(200);
+    expect(scoped.body).toContain('export * from "/esm-lib@2.0.0/sub?external=@br/x,react";');
+    expect((await get('/esm-lib@2.0.0/sub?external=@br/x,react')).status).toBe(200);
+    // A range keeps its query on the redirect, now as `?`.
+    const range = await get('/esm-lib@^2.0.0&external=react/sub');
+    expect(range.status).toBe(302);
+    expect(range.h('location')).toBe('/esm-lib@2.0.0/sub?external=react');
+    // Raw files ignore it.
+    const css = await get('/esm-lib@2.0.0&external=react/style.css');
+    expect(css.status).toBe(200);
+    expect(css.h('content-type')).toContain('text/css');
   });
 
   it('serves React-like CJS packages with named exports for the import map', async () => {

@@ -25,8 +25,12 @@ describe('TemplateWarmup', () => {
       react: `https://pkg.example/react@${REACT_VERSION}`,
       'react/jsx-runtime': `https://pkg.example/react@${REACT_VERSION}/jsx-runtime?external=react,react-dom`,
       'react/jsx-dev-runtime': `https://pkg.example/react@${REACT_VERSION}/jsx-dev-runtime?external=react,react-dom`,
-      'react-dom': `https://pkg.example/react-dom@${REACT_VERSION}?external=react,react-dom`,
-      'react-dom/client': `https://pkg.example/react-dom@${REACT_VERSION}/client?external=react,react-dom`,
+      'react/': `https://pkg.example/react@${REACT_VERSION}&external=react,react-dom/`,
+      'react-dom': `https://pkg.example/react-dom@${REACT_VERSION}?external=react,react-dom,scheduler`,
+      'react-dom/client': `https://pkg.example/react-dom@${REACT_VERSION}/client?external=react,react-dom,scheduler`,
+      'react-dom/': `https://pkg.example/react-dom@${REACT_VERSION}&external=react,react-dom,scheduler/`,
+      // React DOM's scheduler at its exact version (T-040), warmed with the rest.
+      scheduler: 'https://pkg.example/scheduler@0.28.0',
     });
   });
 

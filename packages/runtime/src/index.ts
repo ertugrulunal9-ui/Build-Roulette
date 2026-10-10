@@ -51,4 +51,4 @@ export {
   type ConsoleEntry,
   type PreviewBudgets,
 } from './preview/budget';
-export { buildImportMap, cdnDepsPins, resolveBareImport } from './bundler/resolve';
+export { buildImportMap, cdnExternals, resolveBareImport } from './bundler/resolve';

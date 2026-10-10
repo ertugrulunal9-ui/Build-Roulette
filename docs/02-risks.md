@@ -31,6 +31,20 @@ validate it early. The roadmap ([06](06-roadmap.md)) is ordered to retire the to
 > See `apps/pkg-cdn/compat/RESULTS.md`. T-035 added two cases that check one instance across
 > the import map (react-dom's `flushSync`, fiber's `three`): 56/57 on our CDN.
 >
+> **esm.sh (CI run 60): 52/57, then T-040.** esm.sh imports a package's own dependencies by
+> range, which gave two chart.js under react-chartjs-2, two three under fiber, and React DOM's
+> `scheduler` cached for 10 minutes only. T-040 externalizes every manifest package in every
+> other package's URL, maps each one to its pinned URL (prefix entries for subpaths), and
+> pins `scheduler` in the template. A dependency the manifest does not list stays a range (a
+> contract note, not a problem). Known failures:
+> - p5 on esm.sh: esm.sh builds `@davepagurek/bezier-path` from its `browser` export, a global
+>   script without exports;
+> - matter-js named imports on both CDNs.
+>
+> pixi.js timed out while esm.sh built its ~130 modules on first request; the suite now
+> probes the whole graph first. Our CDN: 57/58 with T-040's URLs (one new variant case), 0
+> unexpected failures. The esm.sh rerun is pending in CI.
+>
 > **Production CDN on the free plan (T-035): the public esm.sh**, a third party (R10). The same
 > suite runs against it in GitHub CI (`workflow_dispatch` with `compat_cdn=https://esm.sh`;
 > this container cannot reach esm.sh), with a CDN contract check on every URL (no redirect,
@@ -46,8 +60,10 @@ has to start in under a few seconds.
 **Mitigations**
 - The bundler only bundles *local* files. Bare imports are rewritten to ESM CDN URLs
   (esm.sh already converts CJS to ESM and resolves the dependency tree on the server).
-- A single import map in the shell pins `react`, `react-dom`, `react/jsx-runtime`. Every CDN
-  package is requested with `?external=react,react-dom`, so there is exactly one React.
+- A single import map in the shell pins `react`, `react-dom`, `react/jsx-runtime` and React
+  DOM's `scheduler`. Every CDN package is requested with `?external=react,react-dom`, so
+  there is exactly one React. Since T-040 every package of the manifest is external in every
+  other package's URL and mapped once, so each manifest package is one instance too.
 - Package CSS (`import 'x/dist/x.css'`) is fetched by the worker and inlined.
 - `process.env.NODE_ENV` is defined at build time. Node built-ins are not supported, and
   the error says so clearly.
@@ -212,7 +228,10 @@ outages"). Switching CDNs is one base URL in the app, shell and capture worker s
 **In the browser (T-032):** the template's packages (React) are fetched into the
 browser's HTTP cache in the room lobby (desktop) and by the preview that runs during SPIN,
 including the template's other React entry points and, on esm.sh, the modules behind each
-entry URL (T-035). With the CDN down, edits, preview restarts, reloads,
+entry URL (T-035). Since T-040 the whole template is pinned on esm.sh too (React DOM's
+`scheduler` was a range URL cached 10 minutes). A non-template package's own dependencies that
+the manifest does not list are esm.sh range URLs, so they outlast an esm.sh outage by 10
+minutes only (listing one in the manifest pins it). With the CDN down, edits, preview restarts, reloads,
 autosave, ship and the last look keep working (measured and covered by e2e). A package the
 browser never loaded fails within about a second with "Package server unreachable: x@1.2.3"
 instead of a blank preview. In REVEAL such a build shows its screenshot.

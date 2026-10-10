@@ -8,7 +8,7 @@ import type { Loader, Plugin } from 'esbuild-wasm';
 import type { FileMap } from '../types';
 import {
   MAX_ASSET_BYTES,
-  cdnDepsPins,
+  cdnExternals,
   decodeAsset,
   isRelativeOrAbsolute,
   loaderForPath,
@@ -116,8 +116,10 @@ export function packageCssFailure(url: string, e: unknown): string {
 }
 
 /**
- * `cdn-rewrite` + package `css`: bare imports become external CDN URLs (React stays bare
- * for the import map) that pin the manifest's versions of peers (`deps=`), package CSS is
+ * `cdn-rewrite` + package `css`: bare imports become external CDN URLs (the React set stays
+ * bare for the import map) that externalize every other package of the manifest
+ * (`cdnExternals`, T-040), so a package's own import of another one goes through the import
+ * map to its single pinned URL. Package CSS is
  * fetched and inlined, undeclared packages are errors. `onModule` and `onImportMapSpecifier`
  * see what the bundle imports from the CDN (the build's `packages`, T-032).
  */
@@ -129,7 +131,7 @@ export function cdnPlugin(opts: {
   /** Sees every bare specifier left for the import map (`react`, `react-dom/client`, …). */
   onImportMapSpecifier?: (specifier: string) => void;
 }): Plugin {
-  const deps = cdnDepsPins(opts.dependencies) ?? [];
+  const externals = cdnExternals(opts.dependencies);
   return {
     name: 'cdn-rewrite',
     setup(build) {
@@ -148,7 +150,7 @@ export function cdnPlugin(opts: {
 
       build.onResolve({ filter: /^[^./]/ }, (args) => {
         if (args.kind === 'entry-point') return undefined; // handled by vfs
-        const r = resolveBareImport(args.path, opts.dependencies, opts.cdnBaseUrl, deps);
+        const r = resolveBareImport(args.path, opts.dependencies, opts.cdnBaseUrl, externals);
         switch (r.kind) {
           case 'import-map':
             opts.onImportMapSpecifier?.(args.path);

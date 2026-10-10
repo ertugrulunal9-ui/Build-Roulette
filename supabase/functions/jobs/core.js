@@ -623,8 +623,45 @@ var BrowserRenderingRenderer = class {
   }
 };
 
+// ../../packages/protocol/src/limits.ts
+var LIMITS = {
+  /** Max console arguments forwarded per call. Extra args are summarized in one marker arg. */
+  consoleMaxArgs: 20,
+  /** Max characters per serialized console argument. */
+  consoleArgMaxChars: 2e3,
+  /** Max characters of a runtime error message. */
+  errorMessageMaxChars: 2e3,
+  /** Max characters of a runtime error stack. */
+  errorStackMaxChars: 8e3,
+  /** Max console messages per second the shell forwards. Extra messages are dropped and counted. */
+  consoleMaxPerSecond: 100,
+  /** Max characters of a `load` JS bundle (app -> shell, trusted, but still bounded). */
+  bundleJsMaxChars: 1e7,
+  /** Max characters of a `load` CSS bundle. */
+  bundleCssMaxChars: 2e6,
+  /** Max import map entries. */
+  importMapMaxEntries: 200,
+  /** Max characters of an import map specifier or URL (also each `load.packages` URL). */
+  importMapValueMaxChars: 2048,
+  /** Max URLs in a `load`'s `packages` hint (T-032). */
+  loadPackagesMax: 200,
+  /** Max characters of a thumbnail data URL. */
+  thumbnailMaxChars: 2e6,
+  /** Max error strings in a storage-reset ack. */
+  storageResetMaxErrors: 20
+};
+
 // ../../packages/runtime/src/bundler/resolve.ts
 var SHARED_EXTERNALS = ["react", "react-dom"];
+var REACT_SET = ["react", "react-dom", "scheduler"];
+var REACT_DOM_SCHEDULER = {
+  "19.0": "0.25.0",
+  "19.1": "0.26.0",
+  "19.2": "0.27.0",
+  "19.3": "0.28.0"
+};
+var MAX_CDN_EXTERNALS = 32;
+var MAX_EXTERNALS_CHARS = 1200;
 var MAX_ASSET_BYTES = 200 * 1024;
 var NODE_BUILTINS = new Set(
   "assert async_hooks buffer child_process cluster console constants crypto dgram diagnostics_channel dns domain events fs http http2 https inspector module net os path perf_hooks process punycode querystring readline repl stream string_decoder sys timers tls trace_events tty url util v8 vm wasi worker_threads zlib".split(
@@ -632,30 +669,95 @@ var NODE_BUILTINS = new Set(
   )
 );
 var PINNED_VERSION_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+var CDN_NAME_RE = /^(?:@[a-z0-9-][a-z0-9._-]*\/)?[a-z0-9-][a-z0-9._-]*$/;
+var CDN_RESERVED_NAMES = /* @__PURE__ */ new Set(["node_modules", "favicon.ico"]);
+var CDN_VERSION_RE = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*)?$/;
+var CDN_MAX_VERSION_CHARS = 128;
 function isPinnedVersion(v) {
   return PINNED_VERSION_RE.test(v);
 }
 function trimBase(cdnBaseUrl) {
   return cdnBaseUrl.replace(/\/+$/, "");
 }
-function cdnModuleUrl(cdnBaseUrl, name, version, subpath, withExternals = true, deps = []) {
+function ownVersion(dependencies, name) {
+  return Object.prototype.hasOwnProperty.call(dependencies, name) ? dependencies[name] : void 0;
+}
+function isCdnPackage(name, version) {
+  return version !== void 0 && name.length <= 214 && CDN_NAME_RE.test(name) && !CDN_RESERVED_NAMES.has(name) && version.length <= CDN_MAX_VERSION_CHARS && CDN_VERSION_RE.test(version);
+}
+function schedulerPin(dependencies) {
+  const own = ownVersion(dependencies, "scheduler");
+  if (own !== void 0) return isCdnPackage("scheduler", own) ? own : null;
+  const reactDom = ownVersion(dependencies, "react-dom");
+  const minor = reactDom === void 0 ? null : /^(\d+)\.(\d+)\.\d+$/.exec(reactDom);
+  if (!minor) return null;
+  return REACT_DOM_SCHEDULER[`${minor[1] ?? ""}.${minor[2] ?? ""}`] ?? null;
+}
+function inPathName(name) {
+  return name.replace("/", "%252F");
+}
+function cdnExternals(dependencies) {
+  const names = new Set(SHARED_EXTERNALS);
+  for (const name of Object.keys(dependencies)) {
+    if (isCdnPackage(name, dependencies[name])) names.add(name);
+  }
+  const list = [...names].sort();
+  if (list.length - 1 > MAX_CDN_EXTERNALS) return null;
+  if (list.map(inPathName).join(",").length > MAX_EXTERNALS_CHARS) return null;
+  return list;
+}
+function urlExternals(name, subpath, dependencies, externals) {
+  if (subpath === "" && (name === "react" || name === "scheduler")) return [];
+  if (name === "react") return [...SHARED_EXTERNALS];
+  if (name === "react-dom" || name === "scheduler") {
+    return schedulerPin(dependencies) === null ? [...SHARED_EXTERNALS] : [...SHARED_EXTERNALS, "scheduler"];
+  }
+  if (externals === null) return [...SHARED_EXTERNALS];
+  return externals.filter((n) => n !== name);
+}
+function cdnModuleUrl(cdnBaseUrl, name, version, subpath, externals = []) {
   const url = `${trimBase(cdnBaseUrl)}/${name}@${version}${subpath}`;
-  if (!withExternals) return url;
-  const query = `?external=${SHARED_EXTERNALS.join(",")}`;
-  return deps.length > 0 ? `${url}${query}&deps=${deps.join(",")}` : `${url}${query}`;
+  return externals.length > 0 ? `${url}?external=${externals.join(",")}` : url;
+}
+function cdnPrefixUrl(cdnBaseUrl, name, version, externals) {
+  const query = externals.length > 0 ? `&external=${externals.map(inPathName).join(",")}` : "";
+  return `${trimBase(cdnBaseUrl)}/${name}@${version}${query}/`;
 }
 function buildImportMap(dependencies, cdnBaseUrl) {
   const imports = {};
-  const react = dependencies["react"];
-  const reactDom = dependencies["react-dom"];
+  const externals = cdnExternals(dependencies);
+  const set = (specifier, url2) => {
+    if (url2.length <= LIMITS.importMapValueMaxChars) imports[specifier] = url2;
+  };
+  const url = (name, version, subpath) => cdnModuleUrl(
+    cdnBaseUrl,
+    name,
+    version,
+    subpath,
+    urlExternals(name, subpath, dependencies, externals)
+  );
+  const prefix = (name, version) => cdnPrefixUrl(cdnBaseUrl, name, version, urlExternals(name, "/", dependencies, externals));
+  const react = ownVersion(dependencies, "react");
+  const reactDom = ownVersion(dependencies, "react-dom");
   if (react && isPinnedVersion(react)) {
-    imports["react"] = cdnModuleUrl(cdnBaseUrl, "react", react, "", false);
-    imports["react/jsx-runtime"] = cdnModuleUrl(cdnBaseUrl, "react", react, "/jsx-runtime");
-    imports["react/jsx-dev-runtime"] = cdnModuleUrl(cdnBaseUrl, "react", react, "/jsx-dev-runtime");
+    set("react", url("react", react, ""));
+    set("react/jsx-runtime", url("react", react, "/jsx-runtime"));
+    set("react/jsx-dev-runtime", url("react", react, "/jsx-dev-runtime"));
+    set("react/", prefix("react", react));
   }
   if (reactDom && isPinnedVersion(reactDom)) {
-    imports["react-dom"] = cdnModuleUrl(cdnBaseUrl, "react-dom", reactDom, "");
-    imports["react-dom/client"] = cdnModuleUrl(cdnBaseUrl, "react-dom", reactDom, "/client");
+    set("react-dom", url("react-dom", reactDom, ""));
+    set("react-dom/client", url("react-dom", reactDom, "/client"));
+    set("react-dom/", prefix("react-dom", reactDom));
+  }
+  const scheduler = schedulerPin(dependencies);
+  if (scheduler !== null) set("scheduler", url("scheduler", scheduler, ""));
+  for (const name of externals ?? []) {
+    if (REACT_SET.includes(name)) continue;
+    const version = ownVersion(dependencies, name);
+    if (version === void 0) continue;
+    set(name, url(name, version, ""));
+    set(`${name}/`, prefix(name, version));
   }
   return { imports };
 }

@@ -15,7 +15,7 @@ process.env['CDN_PORT'] = String(CDN_PORT);
 
 export default defineConfig({
   testDir: './e2e',
-  testMatch: ['render.spec.ts', 'cdn-outage.spec.ts'],
+  testMatch: ['render.spec.ts', 'cdn-outage.spec.ts', 'one-instance.spec.ts'],
   workers: 1,
   fullyParallel: false,
   timeout: 60_000,

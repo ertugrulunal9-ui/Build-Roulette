@@ -7,7 +7,11 @@
  *    (`react`, `react-dom`: one React instance, docs/03 §3.4).
  * 2. Peer dependencies of the requested package, and peers of a dependency that the tree does
  *    not provide, become CDN URLs (`/three@0.180.0?external=react,react-dom`), so they are
- *    a separate, shared module instead of a second copy inside this bundle.
+ *    a separate, shared module instead of a second copy inside this bundle. The peer URL
+ *    carries the request's query with the requesting package added to `external`: the
+ *    runtime externalizes every manifest package except the one a URL is for (T-040), so
+ *    every package of a build that shares a peer the manifest does not list asks for the
+ *    same URL, one instance. (A peer the manifest lists is external, so never reaches this.)
  * 3. Bare imports of the requested package itself from inside it (`three/examples/...`
  *    importing `three`) become CDN URLs of that entry, so subpaths share one instance.
  * 4. Everything else is resolved by esbuild inside the tree (`exports` with the `browser`,
@@ -35,7 +39,7 @@ import { packageLocationOf } from './tree';
 import { formatQuery, packagePath, type BuildTarget } from './url';
 
 /** Bump to invalidate every cached bundle when the output format changes. */
-export const BUILD_FORMAT = 'b3';
+export const BUILD_FORMAT = 'b4';
 
 export interface BuildRequest {
   name: string;
@@ -84,6 +88,16 @@ const RESERVED = new Set(
 const IDENT_RE = /^[A-Za-z_$][\w$]*$/;
 
 const lexersReady = Promise.all([initCjsLexer(), initEsmLexer()]);
+
+/** True when an ES module (a bundle this CDN built) has a `default` export. */
+export async function moduleHasDefaultExport(code: string): Promise<boolean> {
+  await lexersReady;
+  try {
+    return parseEsm(code)[1].some((e) => e.type !== 'reexport-all' && e.name === 'default');
+  } catch {
+    return false;
+  }
+}
 
 export const PROCESS_SHIM = `export const process = {
   env: { NODE_ENV: __PKG_CDN_NODE_ENV__ },
@@ -193,6 +207,16 @@ export async function bundlePackage(req: BuildRequest, ctx: BundleContext): Prom
     externalUrls.add(url);
     return url;
   };
+  // Peers: the request's externals plus the requesting package (see rule 2 above).
+  const peerQuery = formatQuery({
+    ...req,
+    external: [...new Set([...req.external, req.name])].sort(),
+  });
+  const peerUrl = (name: string, version: string, subpath: string): string => {
+    const url = packagePath(name, version, subpath) + peerQuery;
+    externalUrls.add(url);
+    return url;
+  };
 
   const externalRef = (kind: esbuild.ImportKind, target: string): esbuild.OnResolveResult =>
     kind === 'require-call'
@@ -274,7 +298,7 @@ export async function bundlePackage(req: BuildRequest, ctx: BundleContext): Prom
           const range = importerNode?.peers[name] ?? rootPeerRange;
           return externalRef(
             args.kind,
-            cdnUrl(name, await ctx.resolvePeerVersion(name, range), subpath),
+            peerUrl(name, await ctx.resolvePeerVersion(name, range), subpath),
           );
         }
 
@@ -307,7 +331,7 @@ export async function bundlePackage(req: BuildRequest, ctx: BundleContext): Prom
         if (peerRange !== undefined) {
           return externalRef(
             args.kind,
-            cdnUrl(name, await ctx.resolvePeerVersion(name, peerRange), subpath),
+            peerUrl(name, await ctx.resolvePeerVersion(name, peerRange), subpath),
           );
         }
         if (isNodeBuiltin(args.path)) {

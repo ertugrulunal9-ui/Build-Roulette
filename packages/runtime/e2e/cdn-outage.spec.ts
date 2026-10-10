@@ -39,7 +39,7 @@ export function App() {
   };
 }
 
-/** zustand at a `deps=` list the playground's boot never used: a URL that is not cached. */
+/** zustand at an `external=` list the playground's boot never used: a URL that is not cached. */
 const UNCACHED: { files: FileMap; manifest: Manifest } = {
   files: app('with zustand', {
     imports: `import { create } from 'zustand';\nconst useStore = create(() => ({ v: 1 }));`,

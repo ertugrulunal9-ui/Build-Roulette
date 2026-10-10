@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { CASES, REACT_VERSION } from '../compat/packages';
-import { caseUrls, importsOf, reactImportMap, shortUrl } from '../compat/urls';
+import { CASES, REACT_VERSION, knownFailureOn } from '../compat/packages';
+import {
+  caseImportMap,
+  caseMapUrls,
+  caseUrls,
+  importsOf,
+  manifestNames,
+  moduleUrlsOf,
+  reactImportMap,
+  shortUrl,
+} from '../compat/urls';
 
 const OURS = 'http://localhost:4400';
 const ESM = 'https://esm.sh';
@@ -11,38 +20,67 @@ function find(id: string) {
   return c;
 }
 
-describe('compat URLs for both CDNs (T-035)', () => {
+describe('compat URLs for both CDNs (T-035, T-040)', () => {
   it('builds the same React import map on each CDN, only the origin differs', () => {
     const esm = reactImportMap(ESM);
-    expect(esm.imports).toEqual({
-      react: `https://esm.sh/react@${REACT_VERSION}`,
-      'react/jsx-runtime': `https://esm.sh/react@${REACT_VERSION}/jsx-runtime?external=react,react-dom`,
-      'react/jsx-dev-runtime': `https://esm.sh/react@${REACT_VERSION}/jsx-dev-runtime?external=react,react-dom`,
-      'react-dom': `https://esm.sh/react-dom@${REACT_VERSION}?external=react,react-dom`,
-      'react-dom/client': `https://esm.sh/react-dom@${REACT_VERSION}/client?external=react,react-dom`,
-    });
+    expect(moduleUrlsOf(esm)).toEqual([
+      `https://esm.sh/react@${REACT_VERSION}`,
+      `https://esm.sh/react@${REACT_VERSION}/jsx-runtime?external=react,react-dom`,
+      `https://esm.sh/react@${REACT_VERSION}/jsx-dev-runtime?external=react,react-dom`,
+      `https://esm.sh/react-dom@${REACT_VERSION}?external=react,react-dom,scheduler`,
+      `https://esm.sh/react-dom@${REACT_VERSION}/client?external=react,react-dom,scheduler`,
+      // T-040: React DOM's scheduler at its exact version, not esm.sh's `^0.28.0` range.
+      'https://esm.sh/scheduler@0.28.0',
+    ]);
+    // Prefix entries (react/, react-dom/) are not modules: never probed.
+    expect(Object.keys(esm.imports)).toContain('react/');
     const ours = reactImportMap(OURS).imports;
     expect(Object.values(ours).map((u) => shortUrl(u, OURS))).toEqual(
       Object.values(esm.imports).map((u) => shortUrl(u, ESM)),
     );
   });
 
-  it('gives a case the CDN URLs of its own imports, with the deps pins of its manifest', () => {
-    const q = '?external=react,react-dom&deps=@react-three/fiber@9.8.1,three@0.186.1';
+  it('gives a case the CDN URLs of its own imports, every other package of its manifest external', () => {
     expect(caseUrls(find('@react-three/fiber (one three)'), ESM)).toEqual({
       urls: [
-        { spec: 'three', url: `https://esm.sh/three@0.186.1${q}`, kind: 'module' },
+        {
+          spec: 'three',
+          url: 'https://esm.sh/three@0.186.1?external=@react-three/fiber,react,react-dom',
+          kind: 'module',
+        },
         {
           spec: '@react-three/fiber',
-          url: `https://esm.sh/@react-three/fiber@9.8.1${q}`,
+          url: 'https://esm.sh/@react-three/fiber@9.8.1?external=react,react-dom,three',
           kind: 'module',
         },
       ],
       error: null,
     });
     expect(caseUrls(find('@react-three/fiber (one three)'), OURS).urls.map((u) => u.url)).toEqual([
-      `${OURS}/three@0.186.1${q}`,
-      `${OURS}/@react-three/fiber@9.8.1${q}`,
+      `${OURS}/three@0.186.1?external=@react-three/fiber,react,react-dom`,
+      `${OURS}/@react-three/fiber@9.8.1?external=react,react-dom,three`,
+    ]);
+    // react-chartjs-2 leaves chart.js bare; the import map sends it to the app's own URL.
+    expect(caseMapUrls(find('react-chartjs-2'), ESM)).toEqual([
+      {
+        spec: 'chart.js',
+        url: 'https://esm.sh/chart.js@4.5.1?external=react,react-chartjs-2,react-dom',
+        kind: 'module',
+      },
+      {
+        spec: 'react-chartjs-2',
+        url: 'https://esm.sh/react-chartjs-2@5.3.1?external=chart.js,react,react-dom',
+        kind: 'module',
+      },
+    ]);
+    expect(caseUrls(find('react-chartjs-2'), ESM).urls.map((u) => u.url)).toEqual(
+      caseMapUrls(find('react-chartjs-2'), ESM).map((u) => u.url),
+    );
+    expect([...manifestNames(find('react-chartjs-2'))].sort()).toEqual([
+      'chart.js',
+      'react',
+      'react-chartjs-2',
+      'react-dom',
     ]);
     const leaflet = caseUrls(find('leaflet'), ESM).urls;
     expect(leaflet.find((u) => u.kind === 'css')?.url).toBe(
@@ -72,5 +110,30 @@ describe('compat URLs for both CDNs (T-035)', () => {
       ).toEqual(ours.urls.map((u) => shortUrl(u.url, OURS)));
     }
     expect(shortUrl('https://other.example/x', ESM)).toBe('https://other.example/x');
+  });
+
+  it('has a case whose subpath goes through a prefix listing a scoped name (T-040)', () => {
+    const c = find('react-konva (scoped name in a prefix)');
+    expect(caseImportMap(c, ESM).imports['konva/']).toBe(
+      'https://esm.sh/konva@10.7.0&external=@popperjs%252Fcore,react,react-dom,react-konva/',
+    );
+    // What esm.sh reads from the URL react-konva's `konva/lib/Core.js` resolves to.
+    const url = new URL('lib/Core.js', caseImportMap(c, ESM).imports['konva/']);
+    const head = decodeURIComponent(url.pathname).split('/')[1] ?? '';
+    expect(new URLSearchParams(head.slice(head.indexOf('&') + 1)).get('external')).toBe(
+      '@popperjs/core,react,react-dom,react-konva',
+    );
+  });
+
+  it('knows which failures are known, and on which CDN (T-040)', () => {
+    expect(knownFailureOn(find('p5'), ESM)).toContain('bezier-path');
+    expect(knownFailureOn(find('p5'), OURS)).toBeNull();
+    expect(knownFailureOn(find('matter-js (named imports)'), OURS)).toContain('UMD');
+    expect(knownFailureOn(find('matter-js (named imports)'), ESM)).toContain('UMD');
+    expect(knownFailureOn(find('pixi.js'), ESM)).toBeNull();
+    expect(CASES.filter((c) => c.knownFailure).map((c) => c.id)).toEqual([
+      'matter-js (named imports)',
+      'p5',
+    ]);
   });
 });

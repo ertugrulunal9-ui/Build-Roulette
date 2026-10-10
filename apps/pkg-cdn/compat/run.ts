@@ -11,7 +11,12 @@
  * esm.sh-compatible CDN given with `--cdn <baseUrl>` / `COMPAT_CDN` (T-035: production on the
  * free plan uses https://esm.sh). Every URL a case requests, and every module those import from
  * the CDN, is also checked against what the sandbox needs from a CDN (compat/contract.ts): 200
- * without a redirect, a long cache lifetime, CORS, the content type, same-origin imports.
+ * without a redirect, a long cache lifetime, CORS, the content type, same-origin imports. Each
+ * case also probes the import-map URL of every package of its manifest (T-040: what a CDN
+ * module's bare import of it loads), and the short cache of a dependency the manifest does not
+ * list (esm.sh: a range URL) is a note, not a problem (`caseFindings`).
+ *
+ * Cases with a `knownFailure` still run and count; the report lists them apart (T-040).
  *
  * Needs network access (the npm registry, or the external CDN), so it is not part of
  * `pnpm test`.
@@ -27,6 +32,7 @@ import path from 'node:path';
 import { chromium, type Page } from '@playwright/test';
 import { APP_DIR, loadConfig } from '../src/config';
 import {
+  caseFindings,
   probeTree,
   treeProblems,
   type FetchFn,
@@ -36,9 +42,17 @@ import {
 import type { CompatApi, CompatRunReport, CompatState } from './harness/page';
 import { startHarness } from './harness/server';
 import { CompatUsageError, parseCompatArgs, resultsFileName } from './options';
-import { CASES, MAIN_TSX, type CompatCase } from './packages';
+import { CASES, MAIN_TSX, knownFailureOn, type CompatCase } from './packages';
 import { renderResults, type CaseResult, type CdnInfo, type CdnTiming } from './report';
-import { caseUrls, manifestFor, reactImportMap, shortUrl } from './urls';
+import {
+  caseMapUrls,
+  caseUrls,
+  manifestFor,
+  manifestNames,
+  moduleUrlsOf,
+  reactImportMap,
+  shortUrl,
+} from './urls';
 
 declare global {
   interface Window {
@@ -56,6 +70,13 @@ try {
 }
 const { only, keepCache, write, verbose } = options;
 const CASE_TIMEOUT_MS = 30_000;
+/**
+ * Modules followed behind a case's URLs. Deep enough for the largest graph in the list
+ * (pixi.js on esm.sh: about 130 modules), so an external CDN builds every module before the
+ * browser loads the case (T-040: esm.sh builds on first request; CI run 60's pixi.js case timed
+ * out while it did, and the next case with the same URLs passed).
+ */
+const CASE_MAX_FOLLOWED = 512;
 
 const outDir = path.join(APP_DIR, 'node_modules', '.cache', 'pkg-cdn-compat');
 const cacheDir = options.cacheDir ?? path.join(outDir, `cdn-${Date.now().toString()}`);
@@ -108,11 +129,19 @@ async function probeCase(
     timing.error = error;
     return { timing, contract };
   }
+  // The case's own imports, then the import-map URLs of its other packages (T-040).
+  const own = new Set(urls.map((u) => u.url));
+  const roots = [...urls, ...caseMapUrls(c, cdnUrl).filter((u) => !own.has(u.url))];
   // URLs an earlier case already probed (the same package and manifest) are not requested again.
-  const fresh = await probeTree(urls, fetchFn, probe, new Set(probed.keys()));
+  const fresh = await probeTree(
+    roots,
+    fetchFn,
+    { ...probe, maxFollowed: CASE_MAX_FOLLOWED },
+    new Set(probed.keys()),
+  );
   for (const r of fresh) probed.set(r.url, r);
   const records = reachable(
-    urls.map((u) => u.url),
+    roots.map((u) => u.url),
     probed,
   );
   const short = (u: string) => shortUrl(u, cdnUrl);
@@ -129,8 +158,9 @@ async function probeCase(
     timing.warmMs += await timedGet(u.url, probe.userAgent);
   }
   contract.checked = records.length;
-  contract.problems = treeProblems(records, short);
-  contract.notes = [...new Set(records.flatMap((r) => r.notes))];
+  const findings = caseFindings(records, manifestNames(c), short);
+  contract.problems = findings.problems;
+  contract.notes = findings.notes;
   return { timing, contract };
 }
 
@@ -225,8 +255,9 @@ async function main(): Promise<void> {
       userAgent: await page.evaluate(() => navigator.userAgent),
     };
 
-    // React for the import map (shared by every case), with the modules behind it.
-    const reactUrls = Object.values(reactImportMap(cdnUrl).imports);
+    // React for the import map (shared by every case), with the modules behind it: React,
+    // React DOM and React DOM's pinned scheduler (T-040), not the prefix entries.
+    const reactUrls = moduleUrlsOf(reactImportMap(cdnUrl));
     reactProbe = await probeTree(
       reactUrls.map((url) => ({ url, kind: 'module' as const })),
       fetchFn,
@@ -261,6 +292,7 @@ async function main(): Promise<void> {
           case: c,
           pass: false,
           reason: timing.error,
+          known: knownFailureOn(c, cdnUrl),
           cdn: timing,
           contract,
           buildMs: 0,
@@ -275,6 +307,7 @@ async function main(): Promise<void> {
             case: c,
             pass: reason === null,
             reason,
+            known: reason === null ? null : knownFailureOn(c, cdnUrl),
             cdn: timing,
             contract,
             buildMs: report.buildMs,
@@ -286,6 +319,7 @@ async function main(): Promise<void> {
             case: c,
             pass: false,
             reason: `harness error: ${e instanceof Error ? e.message : String(e)}`,
+            known: knownFailureOn(c, cdnUrl),
             cdn: timing,
             contract,
             buildMs: 0,
@@ -300,8 +334,10 @@ async function main(): Promise<void> {
         contract.problems.length > 0
           ? `\n     contract: ${contract.problems.slice(0, 3).join(' | ')}`
           : '';
+      const verdict = result.pass ? 'PASS' : result.known !== null ? 'FAIL (known)' : 'FAIL';
+      const known = result.known !== null ? `\n     known: ${result.known}` : '';
       console.log(
-        `${result.pass ? 'PASS' : 'FAIL'} ${c.id.padEnd(36)} ${t}, ${String(contract.checked)} URLs checked${result.reason ? `\n     ${result.reason}` : ''}${contractText}`,
+        `${verdict} ${c.id.padEnd(36)} ${t}, ${String(contract.checked)} URLs checked${result.reason ? `\n     ${result.reason}` : ''}${known}${contractText}`,
       );
     }
     if (pageErrors.length > 0) console.log(`harness page errors: ${pageErrors.join(' | ')}`);
@@ -315,8 +351,9 @@ async function main(): Promise<void> {
   const passed = results.filter((r) => r.pass).length;
   const reactProblems = treeProblems(reactProbe, (u) => shortUrl(u, cdnUrl));
   const caseProblems = results.filter((r) => r.contract.problems.length > 0).length;
+  const known = results.filter((r) => !r.pass && r.known !== null).length;
   console.log(
-    `\n${passed.toString()}/${results.length.toString()} passed (${((100 * passed) / results.length).toFixed(1)}%) against ${cdnUrl}`,
+    `\n${passed.toString()}/${results.length.toString()} passed (${((100 * passed) / results.length).toFixed(1)}%) against ${cdnUrl}; failures: ${String(results.length - passed - known)} unexpected, ${String(known)} known`,
   );
   console.log(
     `CDN contract: React import map ${reactProblems.length === 0 ? 'ok' : `${String(reactProblems.length)} problems`} (${String(reactProbe.length)} URLs); cases with problems: ${String(caseProblems)}/${String(results.length)}`,

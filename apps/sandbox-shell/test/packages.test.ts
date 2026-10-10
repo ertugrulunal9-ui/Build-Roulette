@@ -5,8 +5,12 @@ import {
   checkPackage,
   explainLoadFailure,
   explainStall,
+  isModuleUrl,
   packageCandidates,
+  resolveWithImportMap,
+  templateUrls,
   warmPackages,
+  warmRoots,
   type FetchLike,
 } from '../src/packages';
 
@@ -15,6 +19,10 @@ const REACT = `${CDN}/react@19.3.0`;
 const CLIENT = `${CDN}/react-dom@19.3.0/client?external=react,react-dom`;
 const ZUSTAND = `${CDN}/zustand@5.0.15?external=react,react-dom`;
 const IMPORT_MAP = { imports: { react: REACT, 'react-dom/client': CLIENT } };
+/** An import map prefix entry (`"zustand/"`, T-040): resolves subpaths, not a module itself. */
+const PREFIX = `${CDN}/zustand@5.0.15&external=react,react-dom/`;
+/** A manifest package that is only CSS: an import map entry nothing imports as a module. */
+const ANIMATE = `${CDN}/animate.css@4.1.1?external=react,react-dom,zustand`;
 
 /**
  * A fake `fetch` over an HTTP cache: cached URLs answer 200, others go to "the network",
@@ -49,19 +57,102 @@ afterEach(() => {
 });
 
 describe('packageCandidates', () => {
-  it('puts the build packages first and the rest of the import map second', () => {
+  it("puts the build packages first and the template's entries second", () => {
     expect(packageCandidates(IMPORT_MAP, [ZUSTAND, REACT, 'blob:x', 'javascript:1'])).toEqual({
       primary: [ZUSTAND, REACT],
       secondary: [CLIENT],
+      importMap: IMPORT_MAP,
     });
     expect(packageCandidates(IMPORT_MAP, undefined)).toEqual({
       primary: [REACT, CLIENT],
       secondary: [],
+      importMap: IMPORT_MAP,
     });
-    expect(packageCandidates(IMPORT_MAP, [ZUSTAND], 2)).toEqual({
+    expect(packageCandidates(IMPORT_MAP, [ZUSTAND], 2)).toMatchObject({
       primary: [ZUSTAND],
       secondary: [REACT],
     });
+  });
+  it('leaves out prefix entries, which are not modules (T-040)', () => {
+    const map = { imports: { ...IMPORT_MAP.imports, zustand: ZUSTAND, 'zustand/': PREFIX } };
+    expect(packageCandidates(map, [ZUSTAND])).toMatchObject({
+      primary: [ZUSTAND],
+      secondary: [REACT, CLIENT],
+    });
+    expect(packageCandidates(map, undefined).primary).toEqual([REACT, CLIENT, ZUSTAND]);
+    expect(isModuleUrl(ZUSTAND)).toBe(true);
+    expect(isModuleUrl(PREFIX)).toBe(false);
+    expect(isModuleUrl('blob:x')).toBe(false);
+  });
+  it('never blames a manifest package the build does not import (a CSS-only one, T-040)', () => {
+    const map = { imports: { ...IMPORT_MAP.imports, 'animate.css': ANIMATE, zustand: ZUSTAND } };
+    expect(packageCandidates(map, [ZUSTAND])).toMatchObject({
+      primary: [ZUSTAND],
+      secondary: [REACT, CLIENT],
+    });
+  });
+});
+
+describe('the import map (T-040)', () => {
+  const MAP = {
+    imports: {
+      ...IMPORT_MAP.imports,
+      zustand: ZUSTAND,
+      'zustand/': PREFIX,
+      'animate.css': ANIMATE,
+      scheduler: `${CDN}/scheduler@0.28.0`,
+    },
+  };
+
+  it('resolves bare specifiers like the browser: own entry, else the longest prefix', () => {
+    expect(resolveWithImportMap('zustand', MAP)).toBe(ZUSTAND);
+    expect(resolveWithImportMap('zustand/middleware', MAP)).toBe(`${PREFIX}middleware`);
+    expect(resolveWithImportMap('lodash', MAP)).toBeNull();
+    expect(resolveWithImportMap('constructor', MAP)).toBeNull();
+  });
+
+  it('warms the template and what the build imports, not every manifest package', () => {
+    expect(warmRoots(MAP, [ZUSTAND])).toEqual([REACT, CLIENT, `${CDN}/scheduler@0.28.0`, ZUSTAND]);
+    // Without a `packages` hint (an older app): every module URL, as before.
+    expect(warmRoots(MAP, undefined)).toContain(ANIMATE);
+    expect(templateUrls(MAP)).toEqual([REACT, CLIENT, `${CDN}/scheduler@0.28.0`]);
+  });
+
+  it('follows bare imports through the import map, in checks and in the warm-up', async () => {
+    const bodies: Record<string, string> = {
+      [ZUSTAND]: 'import"react";import{a}from"zustand/middleware";import"/zustand@5.0.15/x.mjs";',
+      [`${PREFIX}middleware`]: 'export const a = 1;',
+      [`${CDN}/zustand@5.0.15/x.mjs`]: 'export {};',
+      [REACT]: 'export {};',
+    };
+    const calls: string[] = [];
+    const down = new Set<string>();
+    const fn: FetchLike = (url) => {
+      calls.push(url);
+      const body = down.has(url) ? undefined : bodies[url];
+      return body === undefined
+        ? Promise.reject(new TypeError('Failed to fetch'))
+        : Promise.resolve(new Response(body));
+    };
+    expect(await checkPackage(ZUSTAND, fn, CHECK_TIMEOUT_MS, undefined, undefined, MAP)).toBe(null);
+    expect(calls.sort()).toEqual(
+      [ZUSTAND, REACT, `${PREFIX}middleware`, `${CDN}/zustand@5.0.15/x.mjs`].sort(),
+    );
+    // Without the map, bare imports are not followed (they used to be the map's own entries).
+    calls.length = 0;
+    await checkPackage(ZUSTAND, fn);
+    expect(calls).toEqual([ZUSTAND, `${CDN}/zustand@5.0.15/x.mjs`]);
+    // A failure behind a bare import is reported for the URL the build imports.
+    down.add(`${PREFIX}middleware`);
+    expect(await checkPackage(ZUSTAND, fn, CHECK_TIMEOUT_MS, undefined, undefined, MAP)).toEqual({
+      url: ZUSTAND,
+      kind: 'unreachable',
+    });
+    down.clear();
+    calls.length = 0;
+    const warmed = new Set<string>();
+    expect(await warmPackages([ZUSTAND], fn, warmed, undefined, MAP)).toBe(4);
+    expect(warmed.has(`${PREFIX}middleware`)).toBe(true);
   });
 });
 
@@ -151,6 +242,11 @@ describe('warmPackages', () => {
     expect(await warmPackages([REACT, CLIENT], up.fn, warmed)).toBe(1);
     expect(up.calls.map((c) => c.url)).toEqual([CLIENT]);
     expect(await warmPackages([REACT, CLIENT], up.fn, warmed)).toBe(0);
+  });
+  it('does not fetch prefix entries (T-040)', async () => {
+    const up = fakeFetch(new Set(), 'up');
+    expect(await warmPackages([ZUSTAND, PREFIX], up.fn, new Set())).toBe(1);
+    expect(up.calls.map((c) => c.url)).toEqual([ZUSTAND]);
   });
 });
 

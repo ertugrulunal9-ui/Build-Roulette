@@ -13,9 +13,9 @@ import type { BuildResult, BundleInput, Diagnostic } from '../types';
 import { errorDetail } from '@br/protocol';
 import { PackageFetchError, cdnPlugin, vfsPlugin, type FetchText } from './plugins';
 import {
-  MAX_CDN_DEPS,
+  MAX_CDN_EXTERNALS,
   buildImportMap,
-  cdnDepsPins,
+  cdnExternals,
   isPinnedVersion,
   normalizePath,
 } from './resolve';
@@ -60,10 +60,10 @@ export function validateManifest(input: BundleInput): Diagnostic[] {
       });
     }
   }
-  if (cdnDepsPins(deps) === null) {
+  if (cdnExternals(deps) === null) {
     out.push({
       severity: 'warning',
-      text: `More than ${String(MAX_CDN_DEPS)} packages besides React: their peer dependencies are not pinned to your manifest's versions, so a package may get its own copy of a peer (for example two copies of three).`,
+      text: `More than ${String(MAX_CDN_EXTERNALS)} packages besides React (or very long names): a package that imports another package of your manifest may get its own copy of it (for example two copies of three).`,
     });
   }
   const react = deps['react'];

@@ -669,6 +669,23 @@ with `compat_cdn=https://esm.sh` runs every case through esm.sh and checks every
 module behind it (no redirect, `max-age` ≥ 30 days, CORS, content type, same-origin imports).
 The run fails if the React import map breaks that contract or fewer than 90% of the cases pass.
 
+**CI run 60 and T-040.** The first CI run against esm.sh gave 52/57 and one React-contract
+problem, all from one esm.sh behaviour (confirmed in its source): a package's own dependencies
+are imported by **range** (`/scheduler@^0.28.0?target=es2022`, cached 10 minutes) or, with
+`deps=`, at build arguments of their own. Either way they are a second instance of a package the
+app also imports (two chart.js under react-chartjs-2, two three under fiber), and React DOM's
+`scheduler` was outside the template's immutable set. T-040 changed the URLs (docs/03 "One
+instance per package and a fully pinned template"):
+- every package URL externalizes every other package of the manifest;
+- the import map maps each one to its single pinned URL, with a prefix entry in esm.sh's
+  in-path query form for subpaths;
+- React DOM's `scheduler` is pinned in the template's map.
+
+Dependencies the manifest does not list stay ranges on esm.sh: their outage window is esm.sh's
+10-minute cache (`?standalone` was rejected: it gives every manifest package its own copy of a
+shared dependency). The contract reports them as notes. p5 is a known esm.sh incompatibility
+(esm.sh builds a dependency from its `browser` export, a global script without exports).
+
 ### 4.2 Settings
 
 The same base URL in every component, nothing else:
@@ -692,9 +709,18 @@ load", and the browser console names the CSP. Costs: none (esm.sh is free).
   "Package server unreachable: …" for packages a browser never loaded; screenshots in REVEAL)
   applies unchanged, and the runbook has the esm.sh case
   ([package-cdn-outage](runbooks/package-cdn-outage.md)).
-- **Cache lifetime:** T-032 relies on exact-version URLs being cached for long. Assumed for
-  esm.sh (`public, max-age=31536000, immutable` on entry URLs and internal paths); the CI
-  contract check shows it per URL.
+- **Cache lifetime:** T-032 relies on exact-version URLs being cached for long. esm.sh serves
+  exact entry URLs and internal paths `public, max-age=31536000, immutable` (CI run 60), and
+  since T-040 the template and every manifest package load only from such URLs. A package's
+  own dependencies that the manifest does not list are range URLs, cached 10 minutes (Node
+  polyfills a day): during an esm.sh outage longer than that, a non-template package whose
+  dependencies were not re-fetched fails like any uncached package ("Package server
+  unreachable: …"). A player can pin such a dependency by listing it in the manifest.
+- **First load of a new combination:** esm.sh builds each package once per version and build
+  arguments, and the arguments list the other packages of the manifest (as `deps=` did
+  before). The first player with a new combination waits for esm.sh's builds (a large package
+  such as pixi.js has about 130 modules); the shell says "Still waiting for the package
+  server" after 8 s. The template's React set has fixed URLs and is always built.
 - **No denylist of ours:** `@br/pkg-cdn`'s denylist of compromised versions does not apply;
   esm.sh's own policy does. Builds stay sandboxed (docs/03 §3.9).
 - **Build target per browser:** esm.sh picks the syntax level from the User-Agent (documented),
@@ -712,11 +738,11 @@ shell. Players' caches refill from the new origin (different URLs); nothing else
 ### 4.5 Verification
 
 ```sh
-pnpm --filter @br/runtime test         # resolve.test: the esm.sh import map and module URLs
-pnpm --filter @br/sandbox-shell test   # headers.test: the esm.sh CSP; packages.test: entry modules followed
-pnpm --filter @br/pkg-cdn test         # compat-options / compat-urls / compat-contract tests
-pnpm --filter @br/runtime test:e2e     # render + CDN outage again against an esm.sh-shaped mock CDN
-pnpm --filter @br/pkg-cdn compat       # our CDN: 56/57, contract ok
+pnpm --filter @br/runtime test         # resolve.test: the esm.sh import map and module URLs (T-040: externals, scheduler, prefixes)
+pnpm --filter @br/sandbox-shell test   # headers.test: the esm.sh CSP; packages.test: entry modules and bare imports followed
+pnpm --filter @br/pkg-cdn test         # compat-options / compat-urls / compat-contract tests; in-path query, peer URLs
+pnpm --filter @br/runtime test:e2e     # render, CDN outage and one-instance (T-040) again against an esm.sh-shaped mock CDN
+pnpm --filter @br/pkg-cdn compat       # our CDN: 57/58 (0 unexpected, 1 known), contract ok
 # GitHub Actions → CI → Run workflow: compat=true, compat_cdn=https://esm.sh (chaos and
 # loadtest off) → artifact compat-results/RESULTS-esm.sh.md
 ```

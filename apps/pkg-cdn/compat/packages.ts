@@ -29,6 +29,18 @@ export interface CompatCase {
   app: string;
   expected: string;
   timeoutMs?: number;
+  /**
+   * A failure we know and accept (T-040): on every CDN (`any`) or on esm.sh only. The case
+   * still runs and counts; the report lists it apart from unexpected failures.
+   */
+  knownFailure?: { on: 'any' | 'esm.sh'; reason: string };
+}
+
+/** The known failure of a case on a CDN, or null (`esm.sh`: the public esm.sh host). */
+export function knownFailureOn(c: CompatCase, cdnUrl: string): string | null {
+  const k = c.knownFailure;
+  if (!k) return null;
+  return k.on === 'any' || new URL(cdnUrl).hostname === 'esm.sh' ? k.reason : null;
 }
 
 const c = (x: CompatCase): CompatCase => x;
@@ -494,6 +506,11 @@ export function App() {
     category: '3d-canvas-games',
     checks: 'named imports { Engine, Bodies } from the UMD build',
     expected: 'ok:fell',
+    knownFailure: {
+      on: 'any',
+      reason:
+        'matter-js ships a UMD bundle: its names are only known at run time, so there are no named exports (the default import works)',
+    },
     app: `import { Engine, Bodies, Composite } from 'matter-js';
 const engine = Engine.create();
 const ball = Bodies.circle(50, 0, 10);
@@ -510,6 +527,16 @@ export function App() {
     category: '3d-canvas-games',
     checks: 'instance mode sketch: createCanvas + draw',
     expected: 'ok:120x80',
+    // esm.sh resolves p5's dependency @davepagurek/bezier-path@0.0.7 with its `browser` export
+    // condition, a minified global script (`var BezierPath=…`) with no exports, ahead of
+    // `import` (build/index.js, the ES module), which comes first in the package's `exports`.
+    // @br/pkg-cdn follows the `exports` order (esbuild), so the case passes there. Not fixable
+    // from our side without overriding esm.sh's resolution for one package (T-040).
+    knownFailure: {
+      on: 'esm.sh',
+      reason:
+        "esm.sh builds @davepagurek/bezier-path from its `browser` export (a global script without exports), so p5's `createFromCommands` import fails",
+    },
     app: `import { useEffect, useRef, useState } from 'react';
 import p5 from 'p5';
 export function App() {
@@ -611,6 +638,27 @@ export function App() {
   }),
 
   // ---------------------------------------------------------------- audio
+  c({
+    id: 'react-konva (scoped name in a prefix)',
+    name: 'react-konva',
+    version: '19.3.0',
+    category: '3d-canvas-games',
+    // T-040: react-konva imports `konva/lib/Core.js`, which the import map resolves through its
+    // `konva/` prefix, `…/konva@10.7.0&external=@popperjs%252Fcore,react,react-dom,react-konva/`.
+    // A scoped name in that in-path list is sent as %252F (docs/03, "One instance per
+    // package"); this case proves the CDN reads it. @popperjs/core is only there for its name.
+    deps: { konva: '10.7.0', '@popperjs/core': '2.11.8' },
+    checks:
+      'react-konva reaches konva/lib/Core.js through an import-map prefix that lists a scoped package',
+    expected: 'ok:canvas',
+    app: `import { useEffect, useState } from 'react';
+import { Layer, Rect, Stage } from 'react-konva';
+export function App() {
+  const [s, setS] = useState('');
+  useEffect(() => { setS(document.querySelector('.konvajs-content canvas') ? 'canvas' : 'none'); }, []);
+  return <div><Stage width={100} height={100}><Layer><Rect x={10} y={10} width={20} height={20} fill="red" /></Layer></Stage><div data-testid="marker">ok:{s}</div></div>;
+}`,
+  }),
   c({
     id: 'tone',
     name: 'tone',

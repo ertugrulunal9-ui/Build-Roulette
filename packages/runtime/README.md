@@ -327,21 +327,30 @@ The app therefore treats the sandbox as hostile:
   `isAbortError(e)`). Nothing hangs when `boot()` races `destroy()`, for example under React
   StrictMode's double effects. After `terminate()`, the `BundlerClient` can be used again
   (a new worker); an `EsmBrowserRuntime` cannot.
-- **A bundler start never hangs (T-039)**: the worker fetches `esbuild.wasm` itself (compiling
-  while it downloads, like esbuild-wasm's `wasmURL` path) and posts `init-progress` when it
-  runs, when the response starts, at most every 250 ms while bytes arrive, and when the
-  download is complete. A start with no progress for `initStallMs` (default
-  `DEFAULT_INIT_STALL_MS`, 15 s) is terminated and retried once with a fresh worker; the timer
-  starts over with every message, so a slow but moving download is never cut off. If the retry
-  stalls too, `boot()` rejects with a `BundlerInitTimeoutError` (`isInitTimeout(e)`, with the
-  `stage` it stalled in: `worker`, `download` or `compile`). `BootTimings.attempts` says
-  whether the retry was needed, and the `onInitAttempt` option reports every worker start
-  (ready, stalled, error) for telemetry. Why 15 s and not a fixed bound: the wasm is 13.6 MB
-  (3–4 MB compressed), so a whole-start bound would have to allow minutes on a slow phone link,
-  and one shorter than the real download would fail every retry too; 15 s without a single
-  byte is a stall at any link speed. The cost: the module compiles from our own `Response`
-  (a counting stream), which has no URL, so Chrome's wasm code cache for fetched responses
-  does not apply on later visits; measured cold starts are about 20 ms slower (table below).
+- **A bundler start never hangs (T-039, T-041)**: the worker fetches `esbuild.wasm` itself
+  (compiling while it downloads, like esbuild-wasm's `wasmURL` path) and posts
+  `init-progress` when it runs, when the response starts, at most every 250 ms while bytes
+  arrive, and when the download is complete. Until that last byte, a start with no progress
+  for `initStallMs` (default `DEFAULT_INIT_STALL_MS`, 15 s) is terminated; the limit starts
+  over with every message, so a slow but moving download is never cut off. After it (stage
+  `compile`), the start must be ready within `initCompileMs` (default
+  `DEFAULT_INIT_COMPILE_MS`, 60 s): this stage sends no progress (esbuild's `initialize`
+  blocks the worker's thread), so T-039's 15 s timer could kill a compile that a starved CPU
+  made slow (T-041). Both limits count **page-awake time** (`AwakeClock`, T-031's idea): a
+  250 ms tick adds at most 1 s (`INIT_MAX_TICK_CREDIT_MS`), so time the renderer got no CPU
+  at all is not a stall. A stopped start is retried once with a fresh worker; if the retry
+  stalls too, `boot()` rejects with a `BundlerInitTimeoutError` (`isInitTimeout(e)`, with
+  the `stage` it stalled in: `worker`, `download` or `compile`, and the limit it went over
+  as `stallMs`). `BootTimings.attempts` says whether the retry was needed, and the
+  `onInitAttempt` option reports every worker start (ready, stalled, error; `elapsedMs` and
+  its page-awake part `awakeMs`) for telemetry. Why 15 s and not a fixed bound: the wasm is
+  13.6 MB (3–4 MB compressed), so a whole-start bound would have to allow minutes on a slow
+  phone link, and one shorter than the real download would fail every retry too; 15 s
+  without a single byte is a stall at any link speed. Why 60 s after it: measured compile
+  stages reach 12.8 s for 8 starts squeezed onto 1 CPU (docs/03, "Bundler start"). The
+  cost: the module compiles from our own `Response` (a counting stream), which has no URL,
+  so Chrome's wasm code cache for fetched responses does not apply on later visits; measured
+  cold starts are about 20 ms slower (table below).
 - **A failed bundler start is retried**: if the worker script fails to load, `createWorker`
   throws, esbuild-wasm fails to initialize or both starts stalled, `boot()` rejects, the
   failed worker is terminated, and the failure is not cached. The next `build()` (explicit
@@ -395,6 +404,9 @@ last two full e2e runs.
 | Worker cold start (`new Worker` → esbuild-wasm ready), 5 fresh contexts | p50 **192–235 ms**, max 241 ms | < 3 s cold (incl. download) |
 | …with the worker's own wasm fetch for progress (T-039), 3 runs × 5 contexts each, old vs new worker | median of run medians ~205 → ~227 ms (+~20 ms on localhost) | |
 | A stalled `esbuild.wasm` request (web e2e `playground.spec`): retry → first build | ~16.7 s test (15 s stall + the retry); both stalled → failed state ~30 s | no hang |
+| 8 starts at once next to 4 busy loops (e2e `bundler-start`): first message / download / compile stage without the hold | p50 0.30–0.45 s / 0.43–0.44 s / 0.23–0.29 s, max 0.54 / 0.77 / 0.71 s | |
+| …each initialize held 17 s (longer than the 15 s stall limit) | **0 false stalls** (pre-T-041: all 8 stopped twice, start failed); a wasm request that never answers stopped after 15.25–15.75 s, ready on the retry | no false stall; real stall ~15 s |
+| 8 starts, every renderer stopped 17 s in the compile stage, compile limit 15 s (e2e `bundler-start`) | **0 false stalls** (pre-T-041: all 8 retried); 16.1–16.3 s of the stop not counted | no false stall |
 | …of which wasm compile/instantiate inside the worker | ~160–190 ms | |
 | First build (cold, fetches package CSS) | 420–520 ms | |
 | First preview after boot (build → `ready`, cold CDN + React eval) | p50 **492–624 ms**, max 691 ms | < 1 s preloaded |

@@ -11,6 +11,8 @@
  * simulated package CDN outage (T-032 e2e, `MockCdn.setOutage`). Test support only.
  * `CDN_LAYOUT=esm.sh` makes the mock CDN answer like the public esm.sh (an entry module that
  * re-exports an internal build path, T-035; `MockCdnLayout`).
+ * `GET /__test/hold?ms=N` answers after N ms (at most 60 s): a synchronous XHR to it blocks
+ * the calling worker's thread for that long without using CPU (T-041 e2e). Test support only.
  */
 import { readFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
@@ -152,6 +154,14 @@ export async function startDevServers(opts: DevServerOptions = {}): Promise<DevS
         res.writeHead(200, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' });
         res.end(`cdn outage: ${outage ?? 'off'}\n`);
       });
+      return;
+    }
+    if (url.pathname === '/__test/hold' && req.method === 'GET') {
+      const ms = Math.min(60_000, Math.max(0, Number(url.searchParams.get('ms')) || 0));
+      setTimeout(() => {
+        res.writeHead(200, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' });
+        res.end(`held ${String(ms)} ms\n`);
+      }, ms);
       return;
     }
     const route = routes[url.pathname];

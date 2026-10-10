@@ -839,35 +839,109 @@ it is a second copy.
 
 Before T-039 a bundler start had no timeout: an `esbuild.wasm` (13.6 MB) or worker-script
 download that stalled without an error left "Starting bundler…" on screen for good (seen once
-in CI, a page stuck at the battle start). The lifecycle now is:
+in CI, a page stuck at the battle start). T-041 gave the stage after the download its own
+limit and made both limits count page-awake time. The lifecycle now is:
 
 1. **Start:** `BundlerClient.init()` creates the worker. The worker fetches `esbuild.wasm`
    itself and compiles it while it downloads (as esbuild-wasm's own `wasmURL` path does), so
    it can report progress: `init-progress` when it runs and sends the request, when the
    response starts, at most every 250 ms while bytes arrive, and when the download is
-   complete.
-2. **Stall:** no progress for **15 s** (`initStallMs`) stops that worker. The timer starts over
-   on each message, so a slow link is never cut off while bytes keep coming. 15 s with not one
-   byte is a stall, not a slow network; compiling after the last byte takes ~0.2 s here. A fixed
-   bound on the whole start would have to be minutes long for a slow phone link (3–4 MB on the
-   wire), and a bound shorter than the real download would make every retry fail too.
-3. **One automatic retry** with a fresh worker (and a fresh request). The player only sees
+   complete (stage `compile` from then on).
+2. **Stall, until the last byte:** no progress for **15 s** (`initStallMs`) stops that worker.
+   The limit starts over on each message, so a slow link is never cut off while bytes keep
+   coming. 15 s with not one byte is a stall, not a slow network. A fixed bound on the whole
+   start would have to be minutes long for a slow phone link (3–4 MB on the wire), and a bound
+   shorter than the real download would make every retry fail too.
+3. **Compile limit, after the last byte (T-041):** the start must be ready within **60 s**
+   (`initCompileMs`). This stage sends no progress, and nothing in it waits for the network:
+   it can only be slow (a starved CPU), or never finish (a wedged worker). See below for why
+   it has its own limit and why 60 s.
+4. **Page-awake time (T-041):** both limits count only time the app page ran, like T-031's
+   watchdog. While a start runs, a tick every 250 ms advances its clock by the time since the
+   previous tick, but by at most 1 s (`INIT_MAX_TICK_CREDIT_MS`): a later tick shows that the
+   renderer itself got no CPU, and then its worker did not run either. A busy page that runs
+   its timers a few hundred ms late still counts in full, so on an awake page a real stall is
+   still stopped after 15 s. A hidden tab runs timers once a second, which also counts in
+   full; only after 5 minutes hidden (once a minute) do the limits practically wait for the
+   tab to be shown again.
+5. **One automatic retry** with a fresh worker (and a fresh request). The player only sees
    "Starting bundler…" for longer.
-4. **Failed:** if the retry stalls too, `boot()` rejects with a `BundlerInitTimeoutError` and
+6. **Failed:** if the retry stalls too, `boot()` rejects with a `BundlerInitTimeoutError` and
    builds resolve with a `bundler-init-failed` diagnostic. The BUILD screen and the playground
-   show "Couldn't start the bundler: the download stalled (no progress for 15 s, 2 attempts)",
-   a note that the code is saved, and **Retry** (`SandboxController.retryBundler()`: a fresh
-   start, then a build of the current files). An edit retries as well. The workspace is never
-   touched: edits keep going to IndexedDB, and the autosave (it uploads the last good build
-   with the source) picks up with the first build after the bundler starts.
+   show "Couldn't start the bundler: the download stalled (no progress for 15 s, 2 attempts)"
+   (or, for the compile limit, "esbuild-wasm stopped while starting (not ready 60 s after the
+   download, 2 attempts)"), a note that the code is saved, and **Retry**
+   (`SandboxController.retryBundler()`: a fresh start, then a build of the current files). An
+   edit retries as well. The workspace is never touched: edits keep going to IndexedDB, and
+   the autosave (it uploads the last good build with the source) picks up with the first
+   build after the bundler starts.
 
 Errors (a 404, a refused connection, a worker script that fails to load) still fail at once
 without the automatic retry: they are reported, and Retry or the next edit starts over.
 `terminate()` (a `destroy()`) settles a start at any point, including during the retry, and no
 timer fires after it. Telemetry: each start that stalls or fails, and the automatic retry after
 a stall, is a `bundler_start` event (`outcome`, `stage`: `worker` / `download` / `compile`,
-`attempt`, `elapsed_ms`, `loaded_bytes`, the battle UUID; no code, no names).
+`attempt`, `elapsed_ms`, `awake_ms` (the page-awake part, T-041), `loaded_bytes`, the battle
+UUID; no code, no names).
 
-Limit: the stall timer measures wall-clock time on the app's main thread. A tab whose renderer
-is frozen for more than 15 s during the start (the whole CPU starved) can see a false stall.
-That costs one retry from the HTTP cache, not a failure.
+#### Why the compile stage has its own limit (T-041)
+
+CI run 63 (chaos shard 3, 8 players on a 4-vCPU runner next to the Supabase stack and the
+services) had a page at "Starting bundler…" for the test's full 30 s at the battle start, the
+symptom of CI run 52 again. Under T-039 the 15 s timer started over on every progress message,
+but after the last byte there are none:
+
+- `WebAssembly.compileStreaming` resolves 10–200 ms after the last byte (V8 compiled most of
+  the module on background threads while it downloaded).
+- Then `esbuild.initialize` instantiates the module and runs Go's runtime start. That blocks
+  the worker's own thread for practically all of it (measured with a 20 ms interval in the
+  worker: the thread's last gap before ready equals the whole initialize, 0.15–0.4 s for 8
+  starts on an idle machine and 1.0–2.8 s for 8 starts on 1 CPU). So a worker heartbeat could not be sent during the part
+  that takes the time; a heartbeat would only prove that the thread is free, not that the
+  start moves, and a worker that never finishes would send them forever. Hence a limit, not
+  heartbeats.
+- A renderer that gets no CPU at all for a while (T-031 saw 5 s in CI) stops the worker and
+  the page alike. When it runs again, a wall-clock timer that came due meanwhile fires first:
+  the worker still has to finish its initialize before it can answer.
+
+Measured in this container (4 vCPUs), from the page's own clock (`[metrics]` lines of the
+runtime e2e `bundler-start.spec.ts` and the chaos e2e, and exploration runs):
+
+| 8 concurrent starts | first message | download | compile stage (last byte → ready) |
+|---|---|---|---|
+| runtime playground, idle machine | 0.2–0.25 s | 0.5 s | 0.15–0.37 s |
+| runtime playground, 8 busy loops | 0.2–0.7 s | 0.4–1.1 s | 0.1–0.9 s |
+| runtime playground, 1 CPU, 4–12 busy loops | 1.0–4.7 s | 2.4–6.0 s | 1.0–2.9 s |
+| web app `/playground` (wrangler), 1 CPU, 4 busy loops | 3.0–3.8 s | 1.3–6.9 s | 0.6–2.6 s |
+| chaos 8-player battle, 4 vCPUs, 8 busy loops (from SPIN: ready ≤ 10.7 s, first build ≤ 12.1 s) | | | |
+| chaos 8-player battle, browsers and services on 2 CPUs, 4 busy loops (ready ≤ 15.9 s, first build ≤ 21.3 s) | | | |
+| chaos 8-player battle, browsers and services on 1 CPU, 3–6 busy loops | ~10 s | 7–28 s | **4.6–12.8 s** |
+
+No run with busy loops alone pushed a compile stage past 15 s; the closest was 12.8 s, in the
+real battle squeezed onto 1 CPU, where a renderer stop of a few seconds on top would have
+tripped the old timer. Two runtime e2e tests make both cases deterministic, and both fail on
+the pre-T-041 client:
+
+- 8 starts next to one busy loop per core, with esbuild's initialize held 17 s in each worker
+  (a synchronous request to the dev server's `/__test/hold` blocks the worker's thread like
+  the real initialize, without using CPU): the old client stopped all 8 after 15 s, again on
+  the retry, and failed every start ("esbuild-wasm stopped while starting (no progress for
+  15 s, 2 attempts)"), the CI symptom. Now no held start is stopped, and one page whose
+  first wasm request never answers (in the same test, under the same load) is still stopped
+  after 15.25–15.75 s and ready on the retry.
+- 8 starts held 6 s in their compile stage while every renderer is stopped (SIGSTOP) for 17 s,
+  with the compile limit lowered to 15 s: the old client's timer fired on resume for all 8
+  (retried, ready ~7 s later); now none, and each report shows about 16.2 s of the 17 s stop
+  as not counted.
+
+**60 s** is almost 5 times the worst compile stage measured (12.8 s), so a slow compile is not
+cut off, and a wedged worker still ends in the failed state with Retry within about 2
+minutes. **The e2e budget stays at 30 s** (`waitForBuild` in `apps/web/e2e/rooms.ts`): on 4
+vCPUs with 8 busy loops the slowest of 8 pages had its first build 12.1 s after SPIN, well
+inside SPIN's 6 s plus 30 s. Only with the browsers and the app server squeezed onto 1 CPU did
+a start legitimately take longer (first build up to 68 s after SPIN, with the download slowed
+by the e2e app server gzipping the 13.6 MB wasm per request), which is not a 4-vCPU runner.
+When the first build does not come, `waitForBuild` now says how far that page's start got
+(worker created, request, last byte, ready, stopped) on the page's clock since SPIN, and
+every room e2e page logs those steps to its console (players.md), so the next CI failure
+names its stage.

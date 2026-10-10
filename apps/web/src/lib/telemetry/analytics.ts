@@ -103,7 +103,10 @@ export interface PreviewCrashProps {
 export interface BundlerStartProps {
   /** The battle being built; null outside a battle (the playground). */
   battle_id: string | null;
-  /** `stalled`: no progress for 15 s (retried once); `error`: a load or init error. */
+  /**
+   * `stalled`: no progress for 15 s during the download, or not ready 60 s after it (T-041);
+   * retried once. `error`: a load or init error.
+   */
   outcome: 'ready' | 'stalled' | 'error';
   /** How far it got: the worker script never ran, esbuild.wasm was downloading, or compiling. */
   stage: 'worker' | 'download' | 'compile';
@@ -111,6 +114,11 @@ export interface BundlerStartProps {
   attempt: number;
   /** From this worker's start to the outcome. */
   elapsed_ms: number;
+  /**
+   * The page-awake part of `elapsed_ms`, which the limits count (T-041): the rest is time the
+   * page itself did not run (a starved or stopped renderer).
+   */
+  awake_ms: number;
   /** Bytes of esbuild.wasm received. */
   loaded_bytes: number;
 }

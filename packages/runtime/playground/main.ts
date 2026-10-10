@@ -6,6 +6,8 @@ import type { RunMode, StorageResetMessage } from '@br/protocol';
 import { EsmBrowserRuntime } from '../src/runtime';
 import type { PreviewHandle, PreviewStats } from '../src/preview/preview-handle';
 import type { BuildResult, Diagnostic, FileMap, Manifest } from '../src/types';
+import type { InitAttemptReport } from '../src/worker/client';
+import type { WorkerResponse } from '../src/worker/protocol';
 import { SAMPLE_FILES, SAMPLE_MANIFEST } from './sample-project';
 
 declare const __PLAYGROUND_CONFIG__: {
@@ -27,6 +29,17 @@ export interface BootReport {
   wasmInitMs: number;
   firstBuildMs: number;
   firstPreviewMs: number;
+}
+
+/** One bundler worker event, as this page saw it (`PlaygroundApi.bundlerLog`). */
+export interface BundlerLogEntry {
+  /** `performance.now()` of this page when it happened. */
+  t: number;
+  /** 1 for the first worker, 2 for the next (a retry, or a later start). */
+  worker: number;
+  type: 'created' | 'terminated' | 'init-progress' | 'init-done' | 'init-error';
+  stage?: 'download' | 'compile';
+  loaded?: number;
 }
 
 export interface BuildAndLoadReport {
@@ -55,6 +68,10 @@ export interface PlaygroundApi {
   previewState(): string;
   previewStats(): PreviewStats;
   events: PlaygroundEvent[];
+  /** Every bundler worker start that ended (`onInitAttempt`, T-039 telemetry). */
+  initAttempts: InitAttemptReport[];
+  /** The bundler workers' start messages and lifetimes (T-041 e2e metrics). */
+  bundlerLog: BundlerLogEntry[];
 }
 
 const $ = (id: string): HTMLElement => {
@@ -63,10 +80,54 @@ const $ = (id: string): HTMLElement => {
   return el;
 };
 
+/** `?initStallMs=…&initCompileMs=…`: the bundler start's limits (e2e only, T-041). */
+function limitsFromQuery(): { initStallMs?: number; initCompileMs?: number } {
+  const query = new URLSearchParams(location.search);
+  const limits: { initStallMs?: number; initCompileMs?: number } = {};
+  for (const name of ['initStallMs', 'initCompileMs'] as const) {
+    const v = Number(query.get(name) ?? NaN);
+    if (Number.isFinite(v) && v > 0) limits[name] = v;
+  }
+  return limits;
+}
+
+const initAttempts: InitAttemptReport[] = [];
+const bundlerLog: BundlerLogEntry[] = [];
+let workersCreated = 0;
+
 const runtime = new EsmBrowserRuntime({
-  workerUrl: config.workerUrl,
   wasmUrl: config.wasmUrl,
   cdnBaseUrl: config.cdnBaseUrl,
+  ...limitsFromQuery(),
+  onInitAttempt: (r) => {
+    initAttempts.push(r);
+  },
+  // The worker's start messages, with the time this page received them (e2e metrics).
+  createWorker: () => {
+    const worker = new Worker(config.workerUrl, { type: 'module' });
+    const n = ++workersCreated;
+    bundlerLog.push({ t: performance.now(), worker: n, type: 'created' });
+    const terminate = worker.terminate.bind(worker);
+    worker.terminate = () => {
+      bundlerLog.push({ t: performance.now(), worker: n, type: 'terminated' });
+      terminate();
+    };
+    worker.addEventListener('message', (e: MessageEvent<WorkerResponse>) => {
+      const m = e.data;
+      if (m.type === 'init-progress') {
+        bundlerLog.push({
+          t: performance.now(),
+          worker: n,
+          type: m.type,
+          stage: m.stage,
+          loaded: m.loaded,
+        });
+      } else if (m.type === 'init-done' || m.type === 'init-error') {
+        bundlerLog.push({ t: performance.now(), worker: n, type: m.type });
+      }
+    });
+    return worker;
+  },
 });
 const events: PlaygroundEvent[] = [];
 const readyAt = new Map<number, number>();
@@ -282,6 +343,8 @@ const api: PlaygroundApi = {
   previewState: () => preview.state,
   previewStats: () => preview.stats,
   events,
+  initAttempts,
+  bundlerLog,
 };
 (window as unknown as { __playground: PlaygroundApi }).__playground = api;
 api.boot.then(

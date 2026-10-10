@@ -1,7 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EsmBrowserRuntime } from '../src/runtime';
 import type { BuildResult } from '../src/types';
-import { FakeWorker, flush, settledWithin, trackUnhandledRejections } from './fake-worker';
+import {
+  FakeWorker,
+  flush,
+  settledWithin,
+  trackUnhandledRejections,
+  useStartTimers,
+} from './fake-worker';
 
 const FILES = { 'src/main.ts': 'console.log(1)' };
 const MANIFEST = { entry: 'src/main.ts', dependencies: {} };
@@ -126,7 +132,7 @@ describe('EsmBrowserRuntime start timeout (T-039)', () => {
   });
 
   it('a start that stalls twice: boot() rejects and a waiting build reports it as a diagnostic', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    useStartTimers();
     const { rt, spawned } = runtimeWith(new FakeWorker('manual'), new FakeWorker('manual'));
     const results: BuildResult[] = [];
     rt.onBuild((r) => results.push(r));
@@ -149,7 +155,7 @@ describe('EsmBrowserRuntime start timeout (T-039)', () => {
   });
 
   it('a start that stalls once boots on the automatic retry', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    useStartTimers();
     const { rt, spawned } = runtimeWith(new FakeWorker('manual'), new FakeWorker('ok'));
     const boot = rt.boot({ files: FILES, manifest: MANIFEST });
     await vi.advanceTimersByTimeAsync(15_000);

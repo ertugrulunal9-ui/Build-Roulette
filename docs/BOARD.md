@@ -883,3 +883,4 @@ Start M5.
   - **runtime e2e 3× on the new code and 3× on the old (interleaved): all green** (37/37 + 8/8, and 35/35 + 8/8). The worker's flaky T-031 long-task watchdog test did not reproduce;
   - playground 24/24, solo 3/3, multiplayer 5/5;
   - **chaos shard 3 three times 4/4** (8-player start: esbuild ready p50 4.8–5.1 s, max 6.3–7.3 s), shards 1 3/3 and 2 2/2.
+- **Push CI after the merge** (run 68 at 3148476): every job green, chaos shards 1–3 included (loadtest and compat are manual-only).

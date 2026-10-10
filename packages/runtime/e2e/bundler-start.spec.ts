@@ -24,7 +24,14 @@
  */
 import { spawn, type ChildProcess } from 'node:child_process';
 import { cpus } from 'node:os';
-import { expect, test, type Browser, type Page, type Worker } from '@playwright/test';
+import {
+  expect,
+  test,
+  type Browser,
+  type BrowserContext,
+  type Page,
+  type Worker,
+} from '@playwright/test';
 import type { BootReport, BundlerLogEntry } from '../playground/main';
 import type { InitAttemptReport } from '../src/worker/client';
 import { fmt, freezeRenderers, percentile } from './helpers';
@@ -63,6 +70,12 @@ interface Start {
   log: BundlerLogEntry[];
 }
 
+/** The contexts a test opened: closed after it, so later specs see only their own pages. */
+const opened: BrowserContext[] = [];
+test.afterEach(async () => {
+  await Promise.all(opened.splice(0).map((c) => c.close()));
+});
+
 /** Opens `STARTS` playground pages at once, each in its own context (its own HTTP cache). */
 async function startAll(
   browser: Browser,
@@ -71,7 +84,9 @@ async function startAll(
 ): Promise<Page[]> {
   const pages: Page[] = [];
   for (let i = 0; i < STARTS; i++) {
-    const page = await (await browser.newContext()).newPage();
+    const context = await browser.newContext();
+    opened.push(context);
+    const page = await context.newPage();
     await setup(page, i);
     pages.push(page);
   }

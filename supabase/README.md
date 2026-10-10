@@ -40,8 +40,10 @@ supabase/
 │   ├── 20261008140000_heartbeat_battle_version.sql    heartbeat also returns battle_id and battle_version (T-029)
 │   ├── 20261008150000_ops_health.sql                  admin_ops_health: the signals of /admin Health and the
 │   │                                                    runbooks; two indexes for its windows (T-030)
-│   └── 20261009120000_jobs_function.sql               the jobs Edge Function's SQL (T-034): the daily Browser
-│                                                        Rendering budget, pg_net, pg_cron br-jobs-run → Vault
+│   ├── 20261009120000_jobs_function.sql               the jobs Edge Function's SQL (T-034): the daily Browser
+│   │                                                    Rendering budget, pg_net, pg_cron br-jobs-run → Vault
+│   └── 20261010120000_free_plan.sql                   Supabase Free (T-036): keep_alive (anon), plan usage in
+│                                                        admin_ops_health, ops_settings, the event-log retention
 ├── functions/
 │   └── jobs/                    the `jobs` Edge Function (T-034): index.ts (Deno entry) + core.js (GENERATED from
 │                                apps/capture-worker/src/edge by `pnpm --filter @br/capture-worker build:function`)
@@ -81,9 +83,13 @@ supabase/
 │   │                            live, after the battle, with a host migration), members only, same errors (T-029)
 │   ├── 25_ops_health.test.sql   admin_ops_health: admins only (anon, service_role, players refused), counts on
 │   │                            fixtures as before/after differences (overdue vs stuck, jobs, cron, TTL) (T-030)
-│   └── 26_jobs_function.test.sql  the jobs function's SQL (T-034): budget reserve/settle (limit, refusals, 429s,
-│                                stale reservations, the UTC day), run_jobs_function (due jobs, Vault, the pg_net
-│                                request), grants
+│   ├── 26_jobs_function.test.sql  the jobs function's SQL (T-034): budget reserve/settle (limit, refusals, 429s,
+│   │                            stale reservations, the UTC day), run_jobs_function (due jobs, Vault, the pg_net
+│   │                            request), grants
+│   └── 27_free_plan.test.sql    keep_alive (anon only, one write a minute, read-only answer), the usage section
+│                                (buckets, database, MAU, keep-alive, 80 % warnings), prune_event_logs (old logs of
+│                                finished battles and finished jobs go; every result, ballot, award, screenshot
+│                                and the public pages stay identical) (T-036)
 └── scripts/
     ├── e2e-solo.mjs             the solo loop through the real HTTP APIs (Auth, PostgREST, Storage, pg_cron)
     ├── e2e-multiplayer.mjs      a 3-player battle + late spectator through supabase-js, with Realtime reception
@@ -172,11 +178,13 @@ CI (`.github/workflows/ci.yml`, job `db`) runs the same steps on a fresh stack w
 - RLS is enabled on every `public` table. Table policies are SELECT-only and granted `to authenticated`.
 - `anon` and `authenticated` have no INSERT/UPDATE/DELETE/TRUNCATE privilege on any table.
   All writes go through `SECURITY DEFINER` RPCs.
-- `anon` (a request with no session) can read nothing and execute exactly two functions:
+- `anon` (a request with no session) can read nothing and execute exactly three functions:
   `get_public_battle`, which returns the permanent results of a battle in RESULTS or
-  DESTROYED (the shareable `/battles/[id]` page renders with the anon key), and
+  DESTROYED (the shareable `/battles/[id]` page renders with the anon key),
   `get_player_history` (T-021), a player's permanent results across those battles (the
-  `/u/[id]` page). Anonymous sign-ins still get the `authenticated` role.
+  `/u/[id]` page), and `keep_alive` (T-036), the daily keep-alive's call (it updates one row
+  of `private.keep_alive`, at most once a minute, and returns nothing else). Anonymous
+  sign-ins still get the `authenticated` role.
 - Default privileges: tables, sequences and functions created by later migrations are *not*
   auto-exposed to `anon`/`authenticated` (functions not to `PUBLIC` either). Grant
   explicitly.
@@ -245,7 +253,7 @@ processed by the Edge Function `supabase/functions/jobs`, which pg_cron starts e
 - **pg_net** is created in `extensions` (as on Supabase; it adds schema `net`). Requests and
   answers are in `net.http_request_queue` / `net._http_response` (pg_net keeps answers 6 h).
 
-Production setup (secrets, deploy, Vault): `apps/web/DEPLOY.md` "Screenshots and jobs". Turning
+Production setup (secrets, deploy, Vault): `DEPLOY.md` at the repository root, step 4. Turning
 it off (to run the self-hosted worker instead): `select cron.unschedule('br-jobs-run');`, back
 with `select cron.schedule('br-jobs-run', '* * * * *', 'select private.run_jobs_function()');`.
 
@@ -516,6 +524,36 @@ updated_at desc)` and `battles_not_destroyed_idx (created_at) where destroyed_at
 added for its windows (the second also serves `sweep_ttl`'s scan); the ephemeral bucket only
 holds running battles; `cron.job_run_details` keeps two days.
 
+**`usage` (T-036, Supabase Free).** Since `20261010120000_free_plan.sql` the T-030 signals
+above are `private.ops_health_signals(grace_s)` (unchanged) and `admin_ops_health` adds
+`usage` from `private.ops_usage()`:
+
+| Key | What |
+|---|---|
+| `usage.storage` | per bucket: objects and bytes (sum of `storage.objects.metadata.size`, what Supabase bills); the total against `storage_limit_bytes`, `used_pct`, `warning` (≥ `usage_warn_pct`) |
+| `usage.database` | `sum(pg_database_size)` over the cluster (Supabase's "database size"), this database alone, against `database_limit_bytes`; the ten largest relations (partitions folded into their table) |
+| `usage.auth` | users who signed in this calendar month (a lower bound of MAU) against `mau_limit` |
+| `usage.keep_alive` | the last ping of `keep_alive()`, its age, `stale` after `keep_alive_max_age_s` (36 h) |
+| `usage.retention` | the event-log settings and the oldest battle and room event kept |
+
+Limits and thresholds are one row, `private.ops_settings` (Free's by default: 10⁹ bytes of
+storage, 5·10⁸ of database, 50,000 MAU, warnings at 80 %; edit with SQL, e.g. after an upgrade:
+docs/runbooks/free-plan-quotas.md). Summing the screenshots scans `storage.objects`: `ops_usage()` took
+~160 ms with 100,000 objects locally, so a few tens of ms at the ~16,000 screenshots that 1 GB
+holds. Egress, Realtime messages and function invocations are not readable from SQL.
+
+### Retention of the event logs (T-036)
+
+`private.prune_event_logs()` (pg_cron `br-event-logs-prune`, daily) deletes, in batches of
+5,000 (at most 200 batches a table per run): `battle_events` older than
+`event_log_retention_days` (30) of battles that are over (DESTROYED or ABANDONED),
+`room_events` older than the same, and **finished capture and destroy jobs** older than
+`job_retention_days` (7). Takedown jobs, results, ballots, awards and screenshots are never
+touched; `27_free_plan.test.sql` checks that a pruned battle's public page, the player history
+and every permanent row are identical before and after. It returns the counts:
+`select private.prune_event_logs();` → `{"battle_events": …, "room_events": …, "jobs": …}`.
+The admin's battle log of a battle older than the retention is empty.
+
 ### Takedown
 
 - **At once** (`admin_take_down_build`): `builds.taken_down_at` is stamped, `builds.name`
@@ -705,7 +743,8 @@ compatible RULE cards and every compatible BUILD + RULE pair at least 15 STYLE c
 when the extension is available and schedules `br-sweep-deadlines` (every 5 s),
 `br-sweep-ttl` (every 10 min) and `br-cron-history-cleanup` (daily, keeps 2 days of
 `cron.job_run_details`); `20261008120100_rate_limits.sql` adds `br-rate-events-prune` (hourly,
-T-024) and `20261009120000_jobs_function.sql` adds `br-jobs-run` (every minute, T-034: the jobs
-function, above). Without `pg_cron` the block is skipped with a NOTICE. Hosted
+T-024), `20261009120000_jobs_function.sql` adds `br-jobs-run` (every minute, T-034: the jobs
+function, above) and `20261010120000_free_plan.sql` adds `br-event-logs-prune` (daily at 04:41
+UTC, T-036, below). Without `pg_cron` the block is skipped with a NOTICE. Hosted
 Supabase ships pg_cron; this has only been verified on the local stack so far, so check the
 schedule (`select * from cron.job`) after the first `supabase db push`.

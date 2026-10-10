@@ -6,9 +6,21 @@ Postgres: a client that loses Realtime keeps playing (it polls every few seconds
 heartbeat compares the battle version every ~10 s), so a Realtime problem degrades the
 experience but does not stop battles.
 
-The quota that bites first is **Presence messages per second** (docs/07 §7.5.1): with the
-Pro plan's spend cap ON the tenant gets 50/s (assumed), about 15 concurrent 8-player rooms
-in BUILD. Above it, Realtime closes channels ("Too many presence messages per second").
+**On the Free plan** (the deploy since 2026-10-09, docs/08 §6.5) Realtime's quotas are hard
+limits (confirmed: Supabase's Realtime limits page):
+
+| Free quota | Our use | Holds |
+|---|---|---|
+| **20 Presence messages per second** | 1.7–2.1/s per 6-player room in BUILD (2.9–3.6/s with 8 players) | **~10 concurrent 6-player rooms in BUILD** (5–6 of 8): the first limit at a peak. 10 × 6 measured clean on the Free quotas |
+| 200 concurrent connections | one per player | 33 six-player battles at once |
+| 100 messages per second, 100 joins per second | | not reached at 10 rooms |
+| **2 M messages a month** (secondary) | 1,490 per battle | **~1,340 battles a month** |
+
+Above a per-second quota Realtime closes channels ("Too many presence messages per second");
+over the monthly quota Supabase restricts the project after a grace period (assumed; the email
+says what applies). On **Pro** the Presence quota is 50/s with the spend cap ON (about 15
+busy 8-player rooms, docs/07 §7.5.1) and 1,000/s with it off, and messages are 5 M a month
+plus $2.50 per million.
 
 ## Symptoms
 
@@ -22,8 +34,8 @@ in BUILD. Above it, Realtime closes channels ("Too many presence messages per se
 
 ## Confirm
 
-How many rooms and players are in a running battle right now (compare with ~15 busy
-8-player rooms for the capped quota):
+How many rooms and players are in a running battle right now (compare with ~10 busy
+6-player rooms on Free, ~15 busy 8-player rooms on Pro with the spend cap):
 
 ```sql
 select b.phase,
@@ -60,16 +72,22 @@ limit 60;
 
 ## Mitigate
 
-1. **The spend-cap decision** (docs/07 §7.6, recommendation 1): with the cap ON, Realtime's
-   quotas are hard limits. Before about 15 concurrent 8-player rooms in BUILD, turn the spend
-   cap **off** (Supabase dashboard → Organization → Billing → Spend cap) or move to the Team
-   plan; set a billing alert either way. This is the user's decision (cost); take it before a
-   marketing push, not during one if avoidable.
-2. **Realtime's database pool**: if joins time out at the start of battles
+1. **On Free: upgrade to Pro** when busy rooms crowd the Presence quota regularly (more than
+   ~8 rooms in BUILD at once) or the month's messages pass ~1.6 M (80 %; Supabase dashboard →
+   Organization → Usage → Realtime messages). There is no spend cap to turn off on Free and
+   nothing to buy per message: the upgrade is the lever (docs/07 §7.8, "What to upgrade
+   first"). It is the user's decision (cost); take it before an event or a marketing push,
+   not during one if avoidable. A short peak does not need it: the clients back off and keep
+   playing (point 4).
+2. **On Pro: the spend-cap decision** (docs/07 §7.6, recommendation 1): with the cap ON,
+   Realtime's quotas are hard limits. Before about 15 concurrent 8-player rooms in BUILD, turn
+   the spend cap **off** (Supabase dashboard → Organization → Billing → Spend cap) or move to
+   the Team plan; set a billing alert either way.
+3. **Realtime's database pool**: if joins time out at the start of battles
    (`channel_errors` in `sync_health`, `IncreaseConnectionPool` in the Realtime log), raise
    the Realtime authorization pool (dashboard → Realtime settings, database connection pool;
    ~10, docs/07 §7.5.4).
-3. **Nothing to change in the clients**: they already send at most one activity update per
+4. **Nothing to change in the clients**: they already send at most one activity update per
    15 s during BUILD and back off 5, 10, 20, 30 s (+ jitter) after a server-closed channel,
    so a rate limit does not turn into a reconnect storm.
 
@@ -82,5 +100,7 @@ limit 60;
 ## Follow-ups
 
 - Re-measure with the load test on staging (`pnpm --filter @br/loadtest loadtest --profile
-  full`, docs/07 §7.7) when the plan or the quotas change; the 50/s figure is an assumption.
+  full --realtime-limits free`, docs/07 §7.7; `BR_JOBS=worker` for its capture services) when
+  the plan or the quotas change; Pro's 50/s figure is an assumption, Free's 20/s is
+  Supabase's documented limit.
 - If Presence remains the limit, the next cuts cost sidebar freshness (docs/07 §7.6 item 2).

@@ -37,6 +37,10 @@ After T-029 (measured 2026-10-08, §7.2.2):
   $8.34** at 10,000 a month, marginal **$17.46 → $11.91**; still $50.59 all-in up to 1,000 a
   month (fixed plans). The 5 M Realtime messages now last ~3,350 battles a month (was
   ~1,370).
+- **Free plan (T-036, §7.8):** about 1,000 battles a month fit Supabase Free's egress
+  (~1,210), Realtime messages (~1,340) and Browser Rendering's free captures (~1,000), but
+  the permanent screenshots fill the 1 GB of storage after ~2,750 battles; Supabase Pro is
+  the first upgrade.
 - **Found on the way:** Realtime reconnects a tenant's database feed on a channel join or a
   presence message. The constant presence traffic before T-029 used to heal the local
   stack's 10-minute "rebalancing" within seconds; now a feed drop lasts until the next join,
@@ -567,9 +571,10 @@ the peak hour of about 37,600 battles/month at peak factor 4):
    (3× fewer Storage reads, each an RLS check), and consider serving revealed bundles
    through signed URLs cached at the edge (they are immutable once shipped). Egress and the
    top database statement shrink together.
-7. **Screenshots:** keep WebP ≤ 100 KB (quality 82, as now) and serve the RESULTS grid
-   through Supabase image transforms at thumbnail size: 34 screenshot views per battle are
-   the second largest egress item after reveal files.
+7. **Screenshots:** keep WebP ≤ 100 KB (quality 70 since T-036: mean 61 KiB on 18 sample
+   apps, docs/08 §6.3) and serve the RESULTS grid through Supabase image transforms at
+   thumbnail size (Pro only): 34 screenshot views per battle are the largest egress item
+   with the measured sizes, ahead of the reveal files.
 8. **Capture:** run Browser Rendering captures with a short per-capture session and keep
    the builds' ready signal (58 % used it in the test, half the render time).
 9. **Package CDN container:** use `sleepAfter` so it does not run 730 h/month at low volume
@@ -597,3 +602,52 @@ Reports go to `tools/loadtest/loadtest-results/<run>/` (`report.md`, `report.jso
 `receipts.json.gz` with the raw receipts and event times, `capture-services.log`). The run
 fails (exit 1) when a battle does not reach DESTROYED. CI: the manual `loadtest` input of
 the CI workflow runs the smoke profile on a fresh stack and uploads the report.
+
+## 7.8 Free plan (T-036)
+
+The user deploys on free plans only (docs/08). Supabase Free has no spend cap and no
+overage: its quotas are hard, a project idle for 7 days is paused, a database over 500 MB
+turns read-only, and a project over another quota is restricted (HTTP 402) after a grace
+period. §7.0–§7.6 assume Pro; this section turns the Free quotas into battles. Per-battle
+figures are §7.4.4's (6 players, 10-minute build, after T-029), with the screenshot sizes
+measured in T-036 (docs/08 §6.3): WebP quality 70, mean 60.9 KiB, so egress is 4.1 MB per
+battle instead of 5.4 MB with the 100 KB assumption. "Peak factor 4" as in §7.4.2. Limits
+marked as in docs/08 §6 (confirmed: Supabase's or Cloudflare's docs; secondary: summaries of
+the pricing page).
+
+| Resource | Free limit | Per battle | Capacity | Bites |
+|---|---|---|---|---|
+| **File storage** | 1 GB (secondary) | 347 KiB of permanent screenshots (q70; 439 KiB at q82) | **~2,750 battles in total** (2,180 at q82); about 2.8 months at 1,000 a month | **first, over time** (cumulative: results are permanent) |
+| **Egress** | 5 GB/month uncached (secondary) | 4.1 MB (5.4 MB with 100 KB screenshots) | **~1,210 battles/month** (926) | **first per month** |
+| Browser Rendering (Cloudflare) | 10 browser-minutes/day (confirmed) | 5.7 captures × ~3 s (assumed) | ~1,000 battles/month rendered | soft: client thumbnails after that |
+| Realtime messages | 2 M/month (secondary) | 1,490 | ~1,340 battles/month | third per month |
+| Realtime Presence | 20 messages/s (confirmed) | 1.7–2.1/s per 6-player room in BUILD | ~10 rooms in BUILD at once (5–6 with 8 players); ≈ 11,000 battles/month | **first at a peak** (measured clean at 10 rooms × 6, docs/08 §6.5) |
+| Database | 500 MB, then read-only (confirmed) | ~42 KB kept (55 KB before the T-036 sweep) | ~10,000 battles in total (~7,700 without the sweep); ~10 months at 1,000 a month | over time, after storage |
+| Realtime connections | 200 (confirmed) | 6 | 33 battles at once ≈ 18,900 battles/month | no |
+| MAU | 50,000 (secondary) | 2 new players (3 battles per player a month) | ~25,000 battles/month | no |
+| Edge Function invocations | 500,000/month (secondary) | 2–4 runs of `jobs` | ≤ 43,200/month by construction | never |
+| Pages Functions (Cloudflare) | 100,000 requests/day (confirmed) | one per results-page view | ~3 M views/month | no (fails open) |
+| Project pause | 7 days without user activity (confirmed) | — | the daily keep-alive workflow (docs/08 §6.2) | only if the keep-alive stops |
+
+**In short:** about **1,000 battles a month** for **under three months** of accumulated
+screenshots, or fewer battles for longer (300 a month: about nine months). The first signals
+are `/admin` → Health's storage meter (warns at 80 %, about 2,250 battles) and the egress line
+of Supabase's Usage page.
+
+**What to upgrade first, and when:**
+
+1. **Supabase Pro** ($25/month, §7.4.1): 100 GB storage, 250 GB egress, 8 GB database,
+   5 M Realtime messages, 500 connections, 100,000 MAU, never paused. It lifts every limit
+   that bites first. **Upgrade when** the storage meter reaches 80 % (~800 MB), egress passes
+   ~4 GB in a month (80 %), Realtime messages pass ~1.6 M in a month, or rooms regularly
+   crowd the Presence limit (more than ~8 busy rooms at once; "Reconnecting…" during BUILD,
+   [realtime-quota](runbooks/realtime-quota.md)). With Pro, the spend-cap discussion of
+   §7.0/§7.6 applies.
+2. **Cloudflare Workers Paid** ($5/month: 10 browser-hours a month, then $0.09/hour) only if
+   too many screenshots are client thumbnails: Health's "Screenshots, last 24 h" below ~80 %
+   rendered on busy days. Thumbnails are smaller, so this upgrade makes storage fill faster.
+3. Before paying, the code levers (each a task, docs/08 §6.3): screenshots at 960×600
+   (−34 % storage and screenshot egress, softer on high-density screens), or the
+   `screenshots` bucket on Cloudflare R2 (10 GB free, no egress fees: about 28,000 battles of
+   screenshots and half the egress gone). Deleting old screenshots is not an option: results
+   are permanent.

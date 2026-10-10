@@ -149,9 +149,9 @@ gh workflow run keep-alive.yml && gh run list --workflow keep-alive.yml --limit 
 counts. Bots: turn on Turnstile (CAPTCHA in Supabase Auth plus `NEXT_PUBLIC_TURNSTILE_SITE_KEY`,
 DEPLOY.md). Real players: upgrade (Pro: 100,000).
 
-**Egress near 5 GB a month** (Usage page): about half of it is screenshot views and a third
-the REVEAL downloads (docs/08 §6.4). The screenshot levers above help here too; otherwise
-upgrade (Pro: 250 GB).
+**Egress near 5 GB a month** (Usage page): about half of it is screenshot views and two
+fifths the REVEAL downloads (docs/08 §6.5). The screenshot levers above help here too;
+otherwise upgrade (Pro: 250 GB).
 
 **Realtime:** [realtime-quota.md](realtime-quota.md).
 

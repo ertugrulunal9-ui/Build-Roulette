@@ -278,11 +278,13 @@ Every function is `security definer` with `set search_path = ''`. Each one valid
 | internal `try_advance(battle_id)` | ship/vote RPCs | Early transitions |
 | internal `finalize_results(battle_id)` | `advance_battle` | Tally, awards, ranks |
 | cron `sweep_deadlines()` | pg_cron, every few seconds | `advance_battle` for overdue rows |
-| cron `sweep_jobs()` | pg_cron, every 30 s | Re-dispatches stuck or failed jobs via `pg_net` (max 5 attempts, exponential backoff) |
+| cron `br-jobs-run` → `private.run_jobs_function()` | pg_cron, every minute | Since T-034: when a job is due (queued, or its lease expired, attempts left), one `pg_net` POST starts the `jobs` Edge Function (URL and cron secret from Vault). Retries are `claim_job`'s: max 5 attempts, 10/20/40/80 s backoff, a 2-minute lease. No `sweep_jobs()` was needed |
 | cron `sweep_ttl()` | pg_cron, every 10 min | Enqueues destroy for battles older than 24 h with `destroyed_at is null`, and abandons battles with no presence |
-| service `claim_job(kind) / complete_job(id, result)` | Edge Functions | `FOR UPDATE SKIP LOCKED` |
-| service `complete_capture(build_id, status, path)` | capture-worker | |
-| service `complete_destroy(battle_id)` | destroy-worker | Sets `builds.source_destroyed_at` and `battles.destroyed_at` |
+| service `claim_job(kind)`, `fail_job(id, error)` | the `jobs` Edge Function (T-034), or the self-hosted worker | `FOR UPDATE SKIP LOCKED` |
+| service `complete_capture(build_id, status, path)` | the same | |
+| service `complete_destroy(battle_id)`, `complete_takedown(build_id)` | the same | Sets `builds.source_destroyed_at` and `battles.destroyed_at` / deletes a taken-down screenshot |
+| cron `private.prune_event_logs()` | pg_cron `br-event-logs-prune`, daily (T-036) | Deletes old event-log rows (§5.6); never results |
+| anon `keep_alive()` | the daily keep-alive workflow (T-036) | Records a ping (one row); keeps the Free project from being paused |
 
 Presence for the abandonment check: the server can't read Realtime presence directly, so
 clients call a cheap `heartbeat(battle_id)` RPC every 60 s, which updates
@@ -309,7 +311,8 @@ with check (
 Size limits: the bucket `file_size_limit` is 5 MB and allowed MIME types are
 `application/json`, `text/javascript`, `text/css` and `image/webp`.
 
-**Deleting files:** the destroy-worker lists `{battle_id}/` and deletes through the
+**Deleting files:** the destroy job (the `jobs` Edge Function since T-034, or the self-hosted
+worker) lists `{battle_id}/` and deletes through the
 Storage API. Never `DELETE FROM storage.objects` directly, because that leaves the
 underlying objects behind.
 
@@ -319,10 +322,10 @@ underlying objects behind.
 |---|---|
 | Challenge, battle, roster names, build name, completion time, stats, rank, awards | Forever |
 | Screenshot WebP | Forever (unless taken down) |
-| Votes (individual ballots) | 30 days, then optionally pruned (tallies remain on `builds.total_votes` and `awards`) |
+| Votes (individual ballots) | Kept (they could be pruned: the tallies are on `builds.total_votes`, `builds.vote_counts` and `awards`; not done) |
 | Source, bundles, autosaves, client thumbnails | Until DESTROY. Hard max 24 h. |
-| Rooms and members | 7 days after close |
-| Battle events, jobs | 30 / 7 days |
+| Rooms and members, room events | 7 days after close; room events also after 30 days (T-036) |
+| Battle events, jobs | 30 days for the events of finished battles, 7 days for finished capture and destroy jobs (T-036: `prune_event_logs`, daily; settings in `private.ops_settings`). Takedown jobs are kept |
 | Anonymous profiles with no battles | 30 days |
 
 ## 5.7 Implementation notes (T-011, M2 solo loop)
@@ -363,7 +366,9 @@ migrations in `supabase/migrations/` are the source of truth.
   - Deleting `storage.objects` rows from SQL is blocked by a trigger; workers must use the
     Storage API.
 - **Jobs:** `claim_job` takes a 2-minute lease. Failures get up to 5 attempts with
-  10/20/40/80 s backoff. There is no pg_net push yet; workers poll.
+  10/20/40/80 s backoff. Workers polled until T-034; since then pg_cron (`br-jobs-run`, every
+  minute) sends one pg_net request to the `jobs` Edge Function when a job is due (the function
+  URL and its cron secret are in Vault; docs/08 §5). The self-hosted worker still polls.
 - **Sweeps (pg_cron):**
   - `sweep_deadlines` every 5 s, one subtransaction per battle with `skip locked`;
   - `sweep_ttl` every 10 min: past 24 h, a battle in RESULTS goes to DESTROYED, other
@@ -371,8 +376,9 @@ migrations in `supabase/migrations/` are the source of truth.
 - **Tests:** the canonical DB tests run on the real local Supabase stack
   (`supabase test db`: 462 pgTAP tests, plus `supabase/scripts/e2e-solo.mjs`: 44 API checks).
   The plain-Postgres harness and shim were retired in T-011.
-- **Not yet:** retention pruning (jobs after 7 days, events after 30), and a concurrency
-  test for `SKIP LOCKED`.
+- **Not yet:** a concurrency test for `SKIP LOCKED`. Retention pruning came with T-036
+  (`prune_event_logs`: battle events of finished battles and room events after 30 days,
+  finished capture and destroy jobs after 7; docs/08 §6.4).
 - **T-014 additions:**
   - `autosave/bundle.css` is an allowed autosave file and is used when capturing
     auto-shipped builds. It's optional, so auto-ship still needs only the autosave

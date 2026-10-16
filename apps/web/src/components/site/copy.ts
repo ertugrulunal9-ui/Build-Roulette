@@ -12,7 +12,7 @@ export const IMPORT_COPY = {
   dropOverlay: 'Drop to import your site',
   reading: 'Reading files…',
   restoring: 'Bringing back your last import…',
-  stepsTitle: 'How it works',
+  stepsTitle: 'In three steps',
   steps: [
     'Build it with your own AI tool on your computer.',
     'Run its build (`npm run build`) — plain HTML needs none.',

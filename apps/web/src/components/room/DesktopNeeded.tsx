@@ -16,8 +16,10 @@
  *   votes: `is_voter` does not depend on the build).
  * - **Escape hatch:** "Import on this device anyway" (a tablet that has the built site, e.g.
  *   as a .zip in its files, can).
+ * - **Next time:** a link to the guide (`/how-it-works`, a new tab: the battle keeps running).
  */
 import type { BattleSnapshot } from '../../lib/solo/types';
+import { GUIDE_PATH, NEW_TAB, PHONE_COPY } from '../onboarding/copy';
 
 export function DesktopNeeded({
   snapshot,
@@ -50,6 +52,19 @@ export function DesktopNeeded({
       )}
       <p className="text-sm">
         You still <strong>watch the reveal and vote</strong> from this phone, like everyone else.
+      </p>
+      <p className="text-sm" data-testid="phone-guide">
+        {PHONE_COPY.guideText}{' '}
+        <a
+          href={GUIDE_PATH}
+          target="_blank"
+          rel="noopener"
+          className="font-semibold underline underline-offset-2"
+        >
+          {PHONE_COPY.guideLink}
+          <span aria-hidden="true"> ↗</span>
+          <span className="sr-only"> {NEW_TAB}</span>
+        </a>
       </p>
       {!shipped && (
         <p className="text-xs opacity-80">

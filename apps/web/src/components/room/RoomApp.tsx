@@ -27,6 +27,7 @@ import { randomDisplayName } from '../../lib/solo/names';
 import { useTicker } from '../../lib/solo/use-ticker';
 import { ensureSignedIn, getSupabase } from '../../lib/supabase/browser';
 import { useTouchPrimary } from '../../lib/device';
+import { HowItWorksButton } from '../onboarding/Welcome';
 import { BuildStage } from '../solo/BuildStage';
 import { DesktopNeeded } from './DesktopNeeded';
 import { SpinReels } from '../solo/SpinReels';
@@ -328,6 +329,7 @@ function RoomHeader({ state, code, leave }: { state: RoomState; code: string; le
       </div>
       <div className="flex flex-wrap items-center gap-2">
         <Reconnecting state={state} />
+        <HowItWorksButton />
         <CopyInvite code={code} />
         {leave}
       </div>

@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useState } from 'react';
 import { describeError, type GameError } from '../../lib/solo/errors';
 import { randomDisplayName } from '../../lib/solo/names';
+import { HowItWorksButton, Welcome } from '../onboarding/Welcome';
 
 const NAME_KEY = 'br:display-name';
 
@@ -23,7 +24,10 @@ interface NameEntryProps {
   onSpin: (name: string) => void;
 }
 
-/** One input with a random fun default name, and the Spin button. */
+/**
+ * One input with a random fun default name, and the Spin button. Before a battle, so the
+ * welcome screen (T-049) may show here on the first visit, and "How it works" reopens it.
+ */
 export function NameEntry({ busy, error, onSpin }: NameEntryProps) {
   const [name, setName] = useState(initialName);
   const trimmed = name.trim();
@@ -38,6 +42,9 @@ export function NameEntry({ busy, error, onSpin }: NameEntryProps) {
         <p className="text-zinc-600 dark:text-zinc-400">
           Spin a random BUILD, RULE and STYLE, then race the clock. Ship before time runs out.
         </p>
+        <div>
+          <HowItWorksButton />
+        </div>
       </header>
 
       <form
@@ -101,6 +108,7 @@ export function NameEntry({ busy, error, onSpin }: NameEntryProps) {
       <p className="text-xs text-zinc-500">
         No account needed. Your build is deleted when the battle ends; the results stay.
       </p>
+      <Welcome />
     </main>
   );
 }

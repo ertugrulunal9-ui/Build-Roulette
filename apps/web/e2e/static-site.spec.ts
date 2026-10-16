@@ -19,7 +19,17 @@ test('every page is a file: the shells keep their URL, unknown paths get the 404
   page,
   request,
 }) => {
-  for (const path of ['/', '/play', '/try', '/r', '/battles', '/u', '/admin', '/admin/sign-in']) {
+  for (const path of [
+    '/',
+    '/play',
+    '/try',
+    '/how-it-works',
+    '/r',
+    '/battles',
+    '/u',
+    '/admin',
+    '/admin/sign-in',
+  ]) {
     const res = await request.get(path, { maxRedirects: 0 });
     expect(res.status(), path).toBe(200);
     expect(res.headers()['content-type'], path).toMatch(/^text\/html/);
@@ -123,6 +133,7 @@ test('no Content-Security-Policy violation on any page (/try runs an imported si
   for (const path of [
     '/',
     '/play',
+    '/how-it-works',
     `/battles/${MALFORMED}`,
     `/u/${MALFORMED}`,
     '/admin',

@@ -1,5 +1,6 @@
 import { defineConfig } from '@playwright/test';
 import { APP_SERVER_ENV, appServerCommand } from './e2e/app-server';
+import { welcomeSeen } from './e2e/welcome';
 
 /**
  * E2E for the solo game (`e2e/solo*.spec.ts`) against the REAL local Supabase stack, with
@@ -29,6 +30,8 @@ export default defineConfig({
   reporter: [['list']],
   use: {
     baseURL: APP_ORIGIN,
+    // The welcome screen is already seen (e2e/welcome.ts).
+    storageState: welcomeSeen(APP_ORIGIN),
     browserName: 'chromium',
     channel: 'chromium',
     headless: true,

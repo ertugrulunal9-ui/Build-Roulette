@@ -4,6 +4,10 @@
  * The lobby: who is here (Presence + last_seen_at), ready-up, the host's controls
  * (max players, kick with confirmation, Start when at least 2 players are ready), the invite
  * link, and the last battle's podium once a battle has ended (rematch = start again).
+ *
+ * Onboarding (T-049): the welcome screen may show here (never once the battle runs: the lobby
+ * unmounts), a "New here?" card until it was seen to the end, and a reminder to have the AI
+ * tool ready.
  */
 import {
   DEFAULT_VOTING_SECONDS,
@@ -32,6 +36,9 @@ import type {
 import { formatCompletion } from '../../lib/solo/format';
 import type { BattleSnapshot } from '../../lib/solo/types';
 import { useTicker } from '../../lib/solo/use-ticker';
+import { openWelcome } from '../../lib/onboarding/welcome';
+import { GUIDE_PATH, LOBBY_COPY, NEW_TAB, PHONE_COPY, TRY_PATH } from '../onboarding/copy';
+import { Welcome, useWelcomeStatus } from '../onboarding/Welcome';
 import { Avatar, ConfirmDialog, OnlineDot, ago } from './pieces';
 
 interface LobbyProps {
@@ -58,6 +65,7 @@ export function Lobby({ controller, state, room, lastBattle }: LobbyProps) {
   const hadBattle = lastBattle !== null && isTerminalPhase(lastBattle.battle.phase);
   const canStart = me.is_host && ready >= ROOM_LIMITS.min_players && !state.pending.start;
   const touch = useTouchPrimary();
+  const welcome = useWelcomeStatus();
   const serverNow = controller.serverNow();
 
   const onlineOf = (m: RoomMember) => m.user_id in presence;
@@ -171,6 +179,39 @@ export function Lobby({ controller, state, room, lastBattle }: LobbyProps) {
       </section>
 
       <aside className="flex flex-col gap-4">
+        {welcome !== 'done' && (
+          <section
+            className="flex flex-col gap-2 rounded-2xl border border-sky-200 bg-sky-50 p-5 text-sky-950 shadow-sm dark:border-sky-900 dark:bg-sky-950/50 dark:text-sky-50"
+            data-testid="new-here"
+            aria-labelledby="new-here-title"
+          >
+            <h2 id="new-here-title" className="text-lg font-black tracking-tight">
+              <span aria-hidden="true">👋 </span>
+              {LOBBY_COPY.newHereTitle}
+            </h2>
+            <p className="text-sm">{LOBBY_COPY.newHereText}</p>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                data-testid="new-here-show"
+                aria-haspopup="dialog"
+                onClick={openWelcome}
+                className="min-h-10 rounded-lg bg-sky-700 px-4 py-2 text-sm font-bold text-white hover:bg-sky-800 dark:bg-sky-300 dark:text-sky-950 dark:hover:bg-sky-200"
+              >
+                {LOBBY_COPY.newHereShow}
+              </button>
+              <a
+                href={TRY_PATH}
+                target="_blank"
+                rel="noopener"
+                className="inline-flex min-h-10 items-center rounded-lg border border-sky-300 px-4 py-2 text-sm font-semibold hover:bg-sky-100 dark:border-sky-800 dark:hover:bg-sky-900"
+              >
+                {LOBBY_COPY.newHerePractice} <span aria-hidden="true">&nbsp;↗</span>
+                <span className="sr-only"> {NEW_TAB}</span>
+              </a>
+            </div>
+          </section>
+        )}
         <section className={panel}>
           {me.role === 'player' ? (
             <button
@@ -192,6 +233,15 @@ export function Lobby({ controller, state, room, lastBattle }: LobbyProps) {
           ) : (
             <p className="text-sm text-zinc-600 dark:text-zinc-400" data-testid="spectator-note">
               You are <strong>spectating</strong>. When a player slot frees up, you get it.
+            </p>
+          )}
+          {me.role === 'player' && !touch && (
+            <p
+              className="mt-3 text-sm text-zinc-600 dark:text-zinc-400"
+              data-testid="build-reminder"
+            >
+              <span aria-hidden="true">💻 </span>
+              {LOBBY_COPY.reminder}
             </p>
           )}
 
@@ -270,7 +320,16 @@ export function Lobby({ controller, state, room, lastBattle }: LobbyProps) {
             >
               📱 On a phone you watch the battle, then play the reveal and the vote. Building needs
               a computer (you build with your own AI tools and import the result): if you play from
-              here, your build ends as DNF.
+              here, your build ends as DNF.{' '}
+              <a
+                href={GUIDE_PATH}
+                target="_blank"
+                rel="noopener"
+                className="font-semibold underline underline-offset-2"
+              >
+                {PHONE_COPY.guideLink}
+                <span className="sr-only"> {NEW_TAB}</span>
+              </a>
             </p>
           )}
           <a
@@ -303,6 +362,9 @@ export function Lobby({ controller, state, room, lastBattle }: LobbyProps) {
           </ol>
         </section>
       </aside>
+
+      {/* A new tab for its links: leaving this page would leave the room. */}
+      <Welcome newTab />
 
       <ConfirmDialog
         open={kickTarget !== null}

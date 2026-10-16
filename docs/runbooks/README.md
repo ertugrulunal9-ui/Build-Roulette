@@ -6,8 +6,7 @@ What to do when something in production goes wrong. Each runbook has the same pa
 | Runbook | When |
 |---|---|
 | [stuck-battle.md](stuck-battle.md) | A battle sits past its deadline and does not move on |
-| [capture-backlog.md](capture-backlog.md) | Screenshots or deletes pile up; Browser Rendering is down or its daily budget spent; the jobs function is not called |
-| [package-cdn-outage.md](package-cdn-outage.md) | Previews cannot load npm packages |
+| [capture-backlog.md](capture-backlog.md) | Screenshots or deletes pile up; Browser Rendering is down or its daily budget spent; the jobs function is not called; screenshots come back blank (the site worker) |
 | [realtime-quota.md](realtime-quota.md) | "Reconnecting…", channels closed by Realtime; Free's quotas, Pro's spend-cap decision |
 | [free-plan-quotas.md](free-plan-quotas.md) | Supabase Free: the project paused (HTTP 540), storage or database near the limit (read-only), egress or MAU over quota (HTTP 402), the keep-alive workflow failed |
 | [supabase-outage.md](supabase-outage.md) | Supabase (database, Auth, Realtime, Storage) is down or degraded |
@@ -27,7 +26,7 @@ What to do when something in production goes wrong. Each runbook has the same pa
   workers, `apps/web/DEPLOY.md` "Observability"): browser errors (`runtime: browser`, with
   `route`; the web app is a static site since T-037, so it has no server errors), the
   capture worker's error lines (`service: capture-worker`, grouped by log message:
-  `claim.failed`, `capture.error`, …) and the package CDN's 500/502 (`service: pkg-cdn`).
+  `claim.failed`, `capture.error`, …).
   Tags `battle_id` / `room_id` / `phase` locate a battle.
 - **PostHog** (when `NEXT_PUBLIC_POSTHOG_KEY` is set): the funnel (`room_created` →
   `room_joined` → `battle_started` → `build_shipped` → `vote_cast` → `battle_completed` →
@@ -43,11 +42,10 @@ What to do when something in production goes wrong. Each runbook has the same pa
 - **Logs:** Supabase dashboard → Logs (Postgres: `sweep_deadlines: battle … not advanced`
   warnings; Realtime; Auth), Edge Functions → `jobs` → Logs (the screenshot and delete jobs on
   the free plan, T-034: one JSON object per event, `run.*`, `capture.*`, `budget.*`), the
-  self-hosted capture worker's and the package CDN's stdout (one JSON object per line).
-  pg_cron's calls of the jobs function are in `net._http_response`
-  ([capture-backlog.md](capture-backlog.md)). The web app is static files on Cloudflare
-  Pages: it has no logs of its own (Workers & Pages → `build-roulette-web` → Deployments
-  shows what is live).
+  self-hosted capture worker's stdout (one JSON object per line). pg_cron's calls of the
+  jobs function are in `net._http_response` ([capture-backlog.md](capture-backlog.md)). The
+  web app is static files and a small Worker on Cloudflare (T-043): it keeps no logs of its
+  own (Workers & Pages → `build-roulette-web` → Deployments shows what is live).
 
 ## Running the SQL
 
@@ -69,8 +67,9 @@ renamed player) shows on the public pages at their next load: they read the data
 browser, with no cache (T-037).
 
 Shell blocks read their targets from the environment: `APP_ORIGIN` (the app, e.g.
-`https://buildroulette.example`), `PKG_CDN_URL`, `SUPABASE_URL`, `SUPABASE_ANON_KEY`,
-`BATTLE_ID`.
+`https://buildroulette.example`), `SHELL_URL` (the sandbox shell with its version path, e.g.
+`https://build-roulette-sandbox.<subdomain B>.workers.dev/v2/`), `SUPABASE_URL`,
+`SUPABASE_ANON_KEY`, `BATTLE_ID`.
 
 ## Keeping them true
 
@@ -79,13 +78,13 @@ these files, fills the placeholders with fixtures, and runs it against the local
 `sql` blocks inside a read-only transaction (a write would fail the check), `sql write`
 blocks in a transaction that is rolled back. It syntax-checks every shell block (`bash -n`).
 With `--sh` it also runs the `sh check` blocks against local stand-ins (`APP_ORIGIN`, default
-`http://localhost:3100`; `PKG_CDN_URL`, default `http://127.0.0.1:4400`; the local
+`http://localhost:3100`; `SHELL_URL`, default `http://127.0.0.1:4321/v2/`; the local
 Supabase; `BATTLE_ID`). `sh` blocks reach external status pages and `sh prod`
 blocks need the production account: those are only syntax-checked. Run it after changing a
 runbook or a migration the runbooks touch:
 
 ```text
 node supabase/scripts/check-runbooks.mjs
-APP_ORIGIN=http://localhost:3000 PKG_CDN_URL=http://127.0.0.1:4400 BATTLE_ID=<a settled battle> \
-  node supabase/scripts/check-runbooks.mjs --sh      # with `pnpm --filter @br/web preview` and the package CDN running
+APP_ORIGIN=http://localhost:3000 BATTLE_ID=<a settled battle> \
+  node supabase/scripts/check-runbooks.mjs --sh      # with `pnpm --filter @br/web preview` and the sandbox shell (solo-services) running
 ```

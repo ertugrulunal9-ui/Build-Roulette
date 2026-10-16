@@ -2,9 +2,10 @@
 
 Supabase is the game's server: Postgres (all state and every rule), Auth (anonymous
 sessions), Realtime, Storage (build files, screenshots) and pg_cron (deadlines). When it is
-down, nothing can change state. What keeps working (docs/02 R10): editing and the live
-preview are local to each browser, and the app's pages themselves (static files on Cloudflare
-Pages, T-037), which load but cannot show any data.
+down, nothing can change state. What keeps working (docs/02 R10): building (players build
+on their own computers), importing and the live preview are local to each browser, and the
+app's pages themselves (static files on Cloudflare, T-037), which load but cannot show any
+data. An import made during the outage is uploaded once Storage answers again.
 
 ## Symptoms
 
@@ -51,7 +52,7 @@ After it recovers:
 
 1. **Catch up on deadlines at once** instead of waiting for the next tick (battles whose
    deadline passed during the outage move on; drafts are auto-shipped from their last
-   autosave):
+   uploaded import, `autosave/site.bin`):
 
    ```sql write
    -- Advances every overdue battle now; returns how many moved.

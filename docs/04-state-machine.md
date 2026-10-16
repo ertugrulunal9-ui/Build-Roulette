@@ -58,7 +58,7 @@ keeps whatever results exist, marked incomplete.
 | — | `spinning` | `start_battle(room_id, opts)` by host | Room `open`. ≥2 roster players ready (≥1 in solo mode). Caller is host. | Pick cards (weighted random, avoiding the room's recent cards). Insert `challenges`. Freeze roster into `battle_players`. Create a `draft` build per roster player. `phase_ends_at = now()+6s`. Room → `in_battle`. |
 | `spinning` | `building` | Deadline | — | `building_started_at = now()`, `building_ends_at = now() + time_limit`, `phase_ends_at = building_ends_at` |
 | `building` | `shipping` | Deadline **or** every non-left roster player has a non-draft build | — | `phase_ends_at = now()+15s`. If entered early (everyone shipped), the grace is 0 s and the battle goes straight to `reveal`. |
-| `shipping` | `reveal` | Deadline **or** every build is final | — | Remaining `draft` builds: if an autosaved bundle exists, mark `auto_shipped` with `shipped_at = building_ends_at`, otherwise `dnf`. Compute `reveal_order` (random shuffle of shipped builds). `reveal_index = 0`. `phase_ends_at = now() + reveal_slot`. Enqueue a capture job per shipped build. |
+| `shipping` | `reveal` | Deadline **or** every build is final | — | Remaining `draft` builds: if an autosaved import (`autosave/site.bin`, M6) exists, mark `auto_shipped` with `shipped_at = building_ends_at`, otherwise `dnf`. Compute `reveal_order` (random shuffle of shipped builds). `reveal_index = 0`. `phase_ends_at = now() + reveal_slot`. Enqueue a capture job per shipped build. |
 | `reveal` | `reveal` (next slot) | Slot deadline **or** host `reveal_next` | `reveal_index < len-1` | `reveal_index++`, new slot deadline |
 | `reveal` | `voting` | Last slot deadline **or** host `skip_to_vote` | — | `phase_ends_at = now()+60s` (configurable) |
 | `voting` | `results` | Deadline **or** every eligible voter has voted in every category | — | Tally votes, write `awards`, set `builds.final_rank` and `total_votes`, compute auto-awards (Fastest Ship, Clutch Ship = shipped in the last 10 s). `finished_at = now()`. `phase_ends_at = now()+60s` (last look). |
@@ -72,7 +72,7 @@ keeps whatever results exist, marked incomplete.
 | Phase | Duration |
 |---|---|
 | spinning | 6 s |
-| building | 3 / 5 / 10 / 15 / 20 / 30 min (comes from the TIME LIMIT card or a room setting) |
+| building | 10 / 15 / 20 / 30 / 45 min (M6, docs/09 §9.7; 3–30 min before). The TIME LIMIT card or a room setting; a random battle draws 10, 15 or 20 |
 | shipping | 15 s grace |
 | reveal | 30–60 s per build (scaled by player count: `clamp(300s / n, 30s, 60s)`) |
 | voting | 60 s |
@@ -89,7 +89,7 @@ player can rejoin. A kicked member is blocked from rejoining the room.
 stateDiagram-v2
   [*] --> building: battle enters building
   building --> shipped: ship_build
-  building --> auto_shipped: deadline + autosave exists
+  building --> auto_shipped: deadline + an import was autosaved
   building --> dnf: deadline + nothing to ship
   shipped --> voted: cast all votes
   auto_shipped --> voted
@@ -106,7 +106,16 @@ Presence** and never blocks the state machine, except for the abandonment check.
 - `source_status`: `live → destroyed`
 
 **Ship is final.** There is no unship, which keeps completion time meaningful and adds
-tension. The UI asks "Ship it? You can't edit after." with the build name input.
+tension. The UI asks "Ship it? You can't import again after." with the build name input
+("…can't edit after" before M6).
+
+### BUILD = import (M6)
+Players build on their own computers with their own tools ([09](09-import-mode.md)). In
+the game, the BUILD stage is a drop zone: each import of the built site (the `dist/` folder or
+a `.zip`) replaces the last one, is uploaded as `autosave/site.bin` at once, and shows in the
+preview. **Ship it** is enabled once a site is imported and ships the last import
+(`site.bin`). At the deadline the last uploaded import is auto-shipped; a player who never
+imported ends `dnf`. The state machine itself did not change.
 
 ## 4.5 Time and deadlines
 
@@ -159,9 +168,10 @@ tension. The UI asks "Ship it? You can't edit after." with the build name input.
 | `capture` | `{build_id, capture_status}` |
 | `destroyed` | `{version}`, which tells clients to wipe local copies |
 
-**Presence state** per client: `{user_id, display_name, device: 'desktop'|'mobile', activity: {lines, last_build: 'ok'|'error', typing: bool}}`.
-It is throttled to at most one update every 2 s. This powers the "everyone's
-progress" sidebar during BUILDING without any database writes.
+**Presence state** per client: `{user_id, display_name, device: 'desktop'|'mobile', activity: {imported: bool, imports: number}}`
+(M6; editor activity `{lines, last_build, typing}` before). Activity goes out only during
+BUILDING, on the first import and each new one, at most once per 15 s (T-029). This powers
+the "everyone's progress" sidebar ("imported", "shipped") without any database writes.
 
 **Client sync loop**
 ```ts
@@ -184,9 +194,9 @@ document.addEventListener('visibilitychange', () => document.visibilityState ===
 
 | Scenario | Behavior |
 |---|---|
-| Player refreshes during BUILDING | Workspace reloads from IndexedDB, snapshot refetched, countdown resumes. No loss. |
-| Player's laptop dies during BUILDING | They can rejoin on another device. The workspace is restored from the remote autosave (≤30 s old). If they don't return, auto-ship uses the last autosaved bundle at the deadline. |
-| Player offline at T-0 | The client can't auto-ship. At `shipping → reveal`, the server auto-ships the last autosaved bundle (`auto_shipped`), otherwise `dnf`. |
+| Player refreshes during BUILDING | The last import reloads from IndexedDB, snapshot refetched, countdown resumes. No loss (the project itself is on the player's computer). |
+| Player's laptop dies during BUILDING | They can rejoin on another device. The last import is restored from the remote autosave (`autosave/site.bin`, uploaded at each import). If they don't return, auto-ship uses it at the deadline. |
+| Player offline at T-0 | The client can't auto-ship. At `shipping → reveal`, the server auto-ships the last uploaded import (`auto_shipped`), otherwise `dnf`. |
 | Ship upload in flight at T-0 | The 15 s SHIPPING grace accepts it. `completion_ms` is capped at the time limit. |
 | Host leaves mid-battle | Deadlines drive everything, so nothing blocks. Host powers (skip, kick, reveal_next) move to the longest-present roster player after 30 s of host absence. |
 | Everyone leaves | The sweeper marks the battle `abandoned` after 5 min with no presence. Destroy still runs. |
@@ -274,17 +284,17 @@ section.
     listens to the window's `offline`/`online` events.
   - **Version gaps:** each new gap refetches immediately; a gap that stays open retries
     with backoff (1 → 30 s), keeping the newest 200 events.
-  - **Local workspaces:** only battles the server reports as over, or untouched for 24 h,
-    have their IndexedDB workspace deleted.
+  - **Local copies:** only battles the server reports as over, or untouched for 24 h,
+    have their IndexedDB copy deleted (the workspace before M6, the last import since).
   - Verified by `e2e/chaos.spec.ts`: 6 players, ±5 min clock skew, a 15 s network drop,
     refreshes, the host vanishing, all clients closed at T-0, abandonment, a full room,
-    and a minute of steady typing. Every run ends with a DB terminal-state check. It runs
-    nightly in CI.
+    and a minute of steady typing (steady imports since M6). Every run ends with a DB
+    terminal-state check. It runs nightly in CI.
 - **Scaling fixes (T-029, from the load test in docs/07):**
-  - **Presence:** activity (`lines`, `last_build`, `typing`, which now means "edited in
-    the last 15 s" and reads "✎ active" in the sidebar) goes out only during BUILDING,
-    only when it matters (active on/off, a build failing for 10 s or fixed, ±20 lines;
-    `activityMatters` in `@br/game`) and at most once per 15 s, the latest winning. The
+  - **Presence:** activity goes out only during BUILDING, only when it matters
+    (`activityMatters` in `@br/game`) and at most once per 15 s, the latest winning. Before
+    M6 it was `lines`, `last_build` and `typing` ("edited in the last 15 s"); since M6 it is
+    `{imported, imports}` and matters on the first import and each new one. The
     claim after every (re)subscribe stays (the lobby's online dots and the sidebar live on
     it); nothing else in the lobby is Presence. Realtime's tenant presence quota counts
     every track, every join's sync and every `presence_diff` delivered to each member.
@@ -332,9 +342,9 @@ section.
 - **Ranking:** overall votes → total votes → earlier `shipped_at`. Each category's top
   build gets an award (ties share; no award with zero votes), and the auto-awards stay.
 - **Reveal storage:** from REVEAL to RESULTS, members and spectators can read the final
-  builds' `bundle.js`, `bundle.css` and `manifest.json` (not `source.json`). The new
-  `manifest.json` holds only the pinned deps. `get_reveal_builds` returns the paths per
-  build.
+  builds' site pack: `site.bin`, or `autosave/site.bin` for an auto-shipped build (M6;
+  `bundle.js`, `bundle.css` and `manifest.json` before, never `source.json`).
+  `get_reveal_builds` returns `files: {site, thumb}` per build.
 - **Test-only switch:** `private.app_settings('reveal_vote_default', false)` can turn the
   phases off for a whole stack. It was used in CI only until T-020; it is now unused, and
   production has no such row.
@@ -350,8 +360,9 @@ section.
   - **Phones** (`hover: none` and `pointer: coarse`): REVEAL shows the screenshot first with
     "Tap to run live" (the R2 mitigation), and the host controls sit in a bar fixed to the
     bottom. VOTE uses a single column.
-  - **A phone player** can watch and vote but doesn't build: the editor never mounts, so
-    their build ends DNF, unless they choose "Build on this device anyway".
+  - **A phone player** can watch and vote but doesn't build ("Building needs a computer"),
+    so their build ends DNF, unless they choose "Import on this device anyway" (M6; "Build on
+    this device anyway" with the editor before).
   - **Unsent votes:** picks that fail on the network are retried every 2 s and with every
     fresh snapshot. Picks that never land are shown as "Not counted" in RESULTS, so a vote
     is never lost silently.

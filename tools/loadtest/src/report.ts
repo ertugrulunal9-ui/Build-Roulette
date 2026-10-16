@@ -529,7 +529,7 @@ export function renderMarkdown(r: Report): string {
   );
   L.push('## Phases (compressed)', '');
   L.push(
-    `BUILDING ${String(c.buildS)} s (drawn: ${JSON.stringify(r.battles.drawnBuildS)}), SPINNING ${String(c.spinningS)} s, SHIPPING ${String(c.shippingS)} s, REVEAL slot ${String(c.revealSlotS)} s, VOTING ${String(c.votingS)} s, RESULTS ${String(c.resultsS)} s, capture deadline ${String(c.captureDeadlineS)} s. Heartbeat ${String(c.heartbeatMs)} ms, autosave ${String(c.autosaveMs)} ms (not compressed).`,
+    `BUILDING ${String(c.buildS)} s (drawn: ${JSON.stringify(r.battles.drawnBuildS)}), SPINNING ${String(c.spinningS)} s, SHIPPING ${String(c.shippingS)} s, REVEAL slot ${String(c.revealSlotS)} s, VOTING ${String(c.votingS)} s, RESULTS ${String(c.resultsS)} s, capture deadline ${String(c.captureDeadlineS)} s. Heartbeat ${String(c.heartbeatMs)} ms (not compressed).`,
     '',
   );
   L.push('## Battles', '');

@@ -4,41 +4,50 @@
 
 These decide most of the trade-offs below.
 
-1. **Builds are temporary, results are permanent.** Source code and bundles go only into
-   ephemeral storage that has a hard TTL. Permanent storage only holds metadata and images.
+1. **Builds are temporary, results are permanent.** Imported sites (one site pack each) go
+   only into ephemeral storage that has a hard TTL. Permanent storage only holds metadata and
+   images.
 2. **Postgres is the truth, Realtime is a doorbell.** All game state lives in Postgres rows
    and changes only through transactional RPCs. Realtime messages only tell clients that
    something changed. A client that misses messages can always rebuild its view from one fetch.
 3. **Untrusted code never runs on an origin we care about.** User builds run only on a
    separate registrable domain, in sandboxed iframes, and never on the app origin.
-4. **The player's device does the heavy work.** Bundling and live preview run in the
-   browser, so the CPU cost grows with players' devices instead of our servers. The only
+4. **The player's device does the heavy work.** Players build on their own computers with
+   their own AI tools (M6, [09-import-mode](09-import-mode.md)), and the live preview runs in
+   their browser, so the CPU cost grows with players' devices instead of our servers. The only
    server-side execution of user code is the screenshot capture, which runs on an isolated
    managed browser.
 5. **No servers we run ourselves in v1.** Supabase and Cloudflare, nothing else. No
    game server process, no WebSocket fleet, no Kubernetes. Timers are enforced from data,
    not by in-memory loops.
 6. **Zero-setup onboarding.** Open a link, type a name, play. Auth is anonymous by default
-   and can be upgraded to a real account later.
+   and can be upgraded to a real account later. Building needs the player's own tools; the
+   game itself needs nothing installed.
 
 ## 1.2 System diagram
 
 ```mermaid
 flowchart LR
+  subgraph Local["Player's computer"]
+    TOOL["Own AI tool + build<br/>(Cursor, Claude Code, Lovable, …)"]
+    DIST[("dist/ folder<br/>or .zip")]
+    TOOL --> DIST
+  end
+
   subgraph Player["Player's browser"]
     UI["Next.js app UI<br/>(app origin)"]
-    ED["CodeMirror 6 editor"]
-    BW["Bundler Web Worker<br/>esbuild-wasm"]
-    IDB[("IndexedDB<br/>workspace")]
-    IF["Preview iframe<br/>(sandbox origin, cross-site)"]
-    UI --- ED
-    ED --> BW
-    BW --> IDB
+    IMP["BUILD stage import<br/>@br/site: site pack"]
+    IDB[("IndexedDB<br/>last import")]
+    IF["Preview iframe<br/>(sandbox origin, cross-site)<br/>site served by /v2/sw.js"]
+    UI --- IMP
+    IMP --> IDB
     UI <-->|"postMessage<br/>(MessageChannel)"| IF
   end
 
+  DIST -->|"drop / pick"| IMP
+
   subgraph CFApp["Cloudflare Worker + static assets (app, account A)"]
-    NX["Static export of the Next.js app<br/>HTML, JS chunks, esbuild.wasm<br/>(no server code)"]
+    NX["Static export of the Next.js app<br/>HTML, JS chunks<br/>(no server code)"]
   end
 
   subgraph Supabase
@@ -46,23 +55,20 @@ flowchart LR
     PG[("Postgres<br/>state + RPC + RLS")]
     RT["Realtime<br/>Broadcast + Presence"]
     ST[("Storage<br/>ephemeral-builds (private, TTL)<br/>screenshots (public)")]
-    EF["Edge Functions<br/>capture / destroy workers"]
+    EF["Edge Function jobs<br/>capture / destroy / takedown"]
     CRON["pg_cron<br/>deadline + TTL sweeps"]
   end
 
   subgraph Cloudflare
-    SB["Sandbox origin (account B)<br/>build-roulette-sandbox.&lt;subdomain B&gt;.workers.dev<br/>static runtime shell"]
-    CDN["Package CDN<br/>esm.sh-compatible, allowlisted"]
+    SB["Sandbox origin (account B)<br/>build-roulette-sandbox.&lt;subdomain B&gt;.workers.dev<br/>static shell /v2/ + site worker /v2/sw.js"]
     BR["Browser Rendering<br/>headless Chromium"]
   end
 
   UI -->|"RPC (supabase-js)"| PG
   UI <-->|"WebSocket"| RT
-  UI -->|"upload bundle/source"| ST
+  UI -->|"upload site.bin, thumb.webp"| ST
   UI --> NX
-  BW -->|"fetch package metadata/CSS"| CDN
-  IF -->|"load shell"| SB
-  IF -->|"import ESM packages"| CDN
+  IF -->|"load shell + site worker"| SB
   PG -->|"broadcast on change"| RT
   CRON --> PG
   PG -->|"pg_net: job enqueued"| EF
@@ -92,8 +98,8 @@ static site ([08-free-tier](08-free-tier.md) §2).
 | Route | Rendering | Purpose |
 |---|---|---|
 | `/` | static file + client | Landing page, "Create room", "Join with code" |
-| `/play`, `/playground` | static file + client-heavy | Solo game; editor and preview without a game |
-| `/r/[code]` | one static shell for every room (a `_redirects` rewrite `/r/:code → /r`; the code is read in the browser) | Room: lobby, spin, build workspace, reveal, vote, results |
+| `/play`, `/try` | static file + client-heavy | Solo game; `/try` imports a built site and runs it without a game (the practice step; `/playground`, the old editor page, redirects to it) |
+| `/r/[code]` | one static shell for every room (a `_redirects` rewrite `/r/:code → /r`; the code is read in the browser) | Room: lobby, spin, BUILD (import), reveal, vote, results |
 | `/battles/[id]` | one static shell (rewrite `/battles/:id → /battles`); `get_public_battle` in the browser on every load | Permanent results page (shareable). Reads only persisted data. The Worker (T-038; a Pages Function until T-043) serves the shell with each battle's own `og:*` tags and a real 404 for an unknown battle |
 | `/u/[id]` | one static shell (rewrite `/u/:id → /u`); `get_player_history` in the browser | Player history (builds, awards), paginated in the query string |
 | `/admin` | static file + client; the moderator's own Supabase session | Moderation, event logs, Health (`is_admin()` in every admin RPC) |
@@ -120,19 +126,22 @@ capture worker. Per-battle link previews will be the one piece of code at the ed
     (`realtime.send` / `realtime.broadcast_changes`) when a battle, player or build row
     changes. The payload is `{type, version}` plus small fields. Clients refetch if they
     detect a gap.
-  - **Presence**, on the same channel, carries online status and ephemeral "activity
-    pulses" (typing, last build OK/failed, line count). None of this is persisted.
+  - **Presence**, on the room channel, carries online status and the BUILD activity
+    `{imported, imports}` (a site is imported, how many imports so far; docs/09 §9.5). None
+    of this is persisted.
   - Broadcast is preferred over Postgres Changes because it scales better (no per-subscriber
     RLS evaluation per change) and lets us decide the payload shape ourselves.
 - **Storage:**
   - `ephemeral-builds` is a private bucket. Path: `{battle_id}/{user_id}/{file}`. It holds
-    `source.json`, `bundle.js`, `bundle.css`, `autosave/*` and `thumb.webp`. Every object is
-    deleted by DESTROY, and a hard TTL sweep removes anything older than 24 h.
+    exactly three names: `autosave/site.bin` (every import during BUILD, what the deadline
+    auto-ships), `site.bin` (SHIP) and `thumb.webp` (the client thumbnail). A site pack is at
+    most 5 MB. Every object is deleted by DESTROY, and a hard TTL sweep removes anything older
+    than 24 h.
   - `screenshots` is a public bucket with unguessable paths `{battle_id}/{build_id}.webp`.
     It is written only by the service role. This is the only permanent binary data.
-- **Edge Functions:** `capture-worker` and `destroy-worker` take jobs from a Postgres
-  `jobs` table. They are triggered via `pg_net` when a job is enqueued, and retried by
-  pg_cron.
+- **Edge Functions:** the `jobs` function (T-034) takes capture, destroy and takedown jobs
+  from the Postgres `jobs` table. pg_cron calls it through `pg_net` every minute while a job
+  is due; failed jobs are retried with backoff.
 - **pg_cron:**
   - `sweep_deadlines()` every few seconds advances any battle whose `phase_ends_at` has
     passed (this is the backstop, because clients normally nudge first).
@@ -153,28 +162,24 @@ capture worker. Per-battle link previews will be the one piece of code at the ed
   - **Stage 2 (growth):** our own usercontent domain with wildcard DNS and TLS, one
     subdomain per build (`{build_id}.<usercontent-domain>`), and a Public Suffix List entry
     so every build is its own site (security finding F1).
-- **Package CDN:** `@br/pkg-cdn` (`apps/pkg-cdn`, built in T-006) is our own service with
-  esm.sh-compatible URLs, backed directly by the npm registry. It:
-  - verifies tarball integrity (sha512) and extracts tarballs safely;
-  - bundles each package to ESM with esbuild and never runs package code;
-  - enforces a denylist and size and time limits;
-  - writes immutable outputs to a disk cache.
-
-  It is a Node service (native esbuild + filesystem), so it can't run as a Cloudflare
-  Worker. It runs in **Cloudflare Containers** (decided with option A) **behind the
-  Cloudflare cache**. Exact-version URLs are immutable, so the edge
-  serves almost every request and the origin only bundles cold packages. This replaces the
-  earlier "proxy esm.sh, then self-host esm.sh" plan.
-- **Browser Rendering:** headless Chromium that is called from a Worker. It loads the
-  sandbox shell in capture mode for a frozen bundle and returns a PNG. User code therefore
-  runs on Cloudflare's isolated browser fleet and not on anything we run. Browserless is an
-  equivalent fallback vendor.
+- **Site worker:** the shell (`/v2/`) registers a Service Worker, `/v2/sw.js`, with scope
+  `/`. It serves each imported site as a static host would (root-relative URLs, lazy chunks,
+  `fetch('/data.json')`, an SPA fallback to `index.html`), so a built site runs unchanged
+  ([09-import-mode](09-import-mode.md) §9.3, [03-sandbox](03-sandbox.md) §3.9).
+- **No package CDN (M6).** A built site carries its own packages. `@br/pkg-cdn` and the
+  esm.sh settings were removed with the editor and the bundler; a site may still load scripts
+  from public CDNs itself (the site CSP allows `https:`).
+- **Browser Rendering:** headless Chromium, called over its REST API by the `jobs` Edge
+  Function. It opens the shell's capture page for a shipped site pack, the page loads the site
+  through the same site worker, and the function stores the screenshot. User code therefore
+  runs on Cloudflare's isolated browser fleet and not on anything we run. The self-hosted
+  capture worker (Playwright Chromium) is the equivalent fallback.
 
 ### Observability
-- Sentry for the app, the bundler worker and Edge Functions. Errors from the runtime shell
-  are **user code errors**, so they are counted and shown to the player but not sent to Sentry.
+- Sentry for the app and the self-hosted capture worker. Errors from the runtime shell are
+  **user code errors**, so they are counted and shown to the player but not sent to Sentry.
 - PostHog for the product funnel (link opened → joined → shipped → voted → rematch) and
-  sandbox metrics (cold start, rebuild latency, package failures).
+  sandbox health (preview crashes, stalls, restarts).
 - `battle_events` is an append-only log of every transition, so stuck battles can be
   debugged and timelines replayed.
 
@@ -190,16 +195,15 @@ results or votes.
 | **Game state** | Renders state, predicts countdowns from server timestamps, sends intents via RPC | **Authoritative.** Phase transitions, guards, deadlines, versioning, event log | — |
 | **Timers** | Shows countdown using `phase_ends_at` and the measured clock offset. Nudges `advance_battle` when the deadline passes. | Enforces deadlines in RPC guards (`now()` checks) and via the pg_cron sweep | — |
 | **Challenge spin** | Plays the spin animation, which lands on the server's result | Picks the cards (weighted random, server-side), writes the `challenges` row | — |
-| **Editing** | CodeMirror, file tree, templates, paste-import | — | — |
-| **Workspace persistence** | IndexedDB (primary copy, survives refresh) | Autosave copy in `ephemeral-builds` every ~30 s (survives device loss) | — |
-| **Bundling** | esbuild-wasm in a Web Worker: TS/JSX → ESM, CSS bundling, rewriting npm imports to CDN URLs | — | — |
-| **npm packages** | Resolves versions, pins them in the workspace manifest | Package CDN serves ESM and enforces the allowlist | Imports packages from the CDN via the import map |
-| **Executing user code** | **Never** | Only in Browser Rendering for screenshots (isolated, vendor-managed) | **Always.** Runs the bundle, captures console and errors, sends heartbeats |
-| **Ship** | Builds the final bundle, uploads the artifacts, calls `ship_build` | Storage RLS allows uploads only before the deadline. `ship_build` checks phase, deadline and that the objects exist, then stamps `shipped_at` with `now()` | — |
-| **Reveal** | Fetches other players' bundles (RLS: battle members only, reveal phase or later) and hands them to the iframe | Controls the spotlight (`reveal_index`) and the reveal order | Runs other players' builds in a fresh origin with storage wiped first |
+| **Building** | Not in the game: the player's own computer and AI tools, then their project's build (`npm run build`) | — | — |
+| **Import** | Reads the dropped `dist/` folder or `.zip`, finds the site root, refuses unbuilt source with a hint, packs it (`@br/site`, ≤ 5 MB, ≤ 300 files) | — | — |
+| **Import persistence** | IndexedDB (the last import, survives refresh) | `autosave/site.bin` on every import (survives device loss; the deadline auto-ships it) | — |
+| **Executing user code** | **Never** | Only in Browser Rendering for screenshots (isolated, vendor-managed) | **Always.** The site worker serves the site; the shell captures console and errors and sends heartbeats |
+| **Ship** | Uploads `site.bin` (the last import) and `thumb.webp`, calls `ship_build` | Storage RLS allows uploads only before the deadline. `ship_build` checks phase, deadline and that `site.bin` exists, then stamps `shipped_at` with `now()` | — |
+| **Reveal** | Fetches other players' site packs (RLS: battle members only, reveal phase or later) and hands them to the iframe | Controls the spotlight (`reveal_index`) and the reveal order | Runs other players' sites in a fresh frame with origin storage wiped first |
 | **Voting** | Ballot UI | `cast_vote` checks eligibility (no self-votes, one per category). Tallies and awards are computed server-side. | — |
-| **Screenshots** | Takes a best-effort client thumbnail at ship time (fallback only) | Capture job → headless render of the frozen bundle → `screenshots` bucket | Capture mode signals "ready" so the render waits for it |
-| **Destroy** | Clears its IndexedDB workspace and tells iframes to wipe their storage | Deletes the `ephemeral-builds/{battle_id}/` prefix and stamps `source_destroyed_at`. The TTL sweep is the safety net. | Wipes `localStorage`/IndexedDB on a `reset` message and on every fresh load |
+| **Screenshots** | Takes a best-effort client thumbnail at ship time (fallback only) | Capture job → headless render of the shipped site pack → `screenshots` bucket | The capture page loads the site through the site worker; the site may signal "ready" |
+| **Destroy** | Clears its IndexedDB import and tells iframes to wipe their storage | Deletes the `ephemeral-builds/{battle_id}/` prefix and stamps `source_destroyed_at`. The TTL sweep is the safety net. | Wipes origin storage (the site worker and Cache Storage included) on a `reset` message and on every fresh load |
 | **Moderation** | Report button, host kick | Report queue, takedown (deletes the screenshot), rate limits | — |
 
 ## 1.5 Key flows
@@ -213,8 +217,19 @@ results or votes.
 5. The page fetches the room snapshot and renders the lobby. Time from link to lobby
    should be under 3 s.
 
-While the player is in the lobby, the app preloads the editor chunk, esbuild-wasm and the
-React template packages in the background. That way BUILD starts instantly.
+There is nothing to preload for BUILD: the player builds outside the game, and the BUILD
+stage is a drop zone plus the preview.
+
+### Import (BUILD)
+
+1. SPIN deals the cards; the countdown starts (10–45 minutes).
+2. The player builds with their own tool and runs their project's build.
+3. They drop the `dist/` folder (or a `.zip`) on the BUILD stage. The app normalizes the
+   paths, finds the site root, refuses unbuilt source with a hint (docs/09 §9.2) and packs
+   the site into one `site.bin`.
+4. The preview runs it at once: the shell hands the files to the site worker and opens a
+   fresh frame on `/?__br_site=<id>`. The pack goes up as `autosave/site.bin`, the room sees
+   `{imported, imports}` in Presence. Importing again replaces it.
 
 ### Ship → capture → destroy
 
@@ -222,19 +237,16 @@ React template packages in the background. That way BUILD starts instantly.
 sequenceDiagram
   autonumber
   participant C as Client (app)
-  participant W as Bundler worker
   participant S as Storage (ephemeral)
   participant DB as Postgres
   participant RT as Realtime
-  participant EF as capture-worker
+  participant EF as jobs function
   participant BR as Browser Rendering
   participant SB as Sandbox shell
 
-  C->>W: bundle(mode=production)
-  W-->>C: bundle.js, bundle.css, manifest
-  C->>SB: capture thumbnail (best effort)
+  C->>SB: capture thumbnail of the preview (best effort)
   SB-->>C: thumb.webp
-  C->>S: upload source.json, bundle.js, bundle.css, thumb.webp
+  C->>S: upload site.bin (the last import), thumb.webp
   Note over S: Storage RLS: player in battle,<br/>phase building/shipping, before deadline + grace
   C->>DB: ship_build(battle_id, name)
   DB->>DB: guards, shipped_at = now(), completion_ms, version++
@@ -242,43 +254,43 @@ sequenceDiagram
   Note over DB: …all shipped or deadline → SHIPPING → REVEAL
   DB->>DB: enqueue capture jobs (one per shipped build)
   DB->>EF: pg_net trigger
-  EF->>S: signed URL for bundle (short TTL)
-  EF->>BR: open {build}.usercontent/?mode=capture&src=…
-  BR->>SB: load shell, run bundle, wait for ready signal or 4 s
+  EF->>S: signed URL for site.bin (short TTL)
+  EF->>BR: open the shell's /v2/capture?src=…&exp=&sig=
+  BR->>SB: register /v2/sw.js, load the site, wait for ready or 6 s
   BR-->>EF: PNG 1280×800
   EF->>S: write screenshots/{battle}/{build}.webp
   EF->>DB: complete_capture(build_id)
   Note over DB: RESULTS → (last-look window) → DESTROYED
   DB->>DB: enqueue destroy job (waits until captures are terminal)
-  DB->>EF: destroy-worker
+  DB->>EF: destroy job
   EF->>S: delete ephemeral-builds/{battle_id}/**
   EF->>DB: mark builds.source_destroyed_at
   DB-->>RT: broadcast battle.destroyed
-  RT-->>C: clients wipe IndexedDB + iframe storage
+  RT-->>C: clients wipe their import + iframe storage
 ```
 
 ## 1.6 Major decisions
 
 | Decision | Choice | Rejected alternatives and why |
 |---|---|---|
-| Sandbox runtime | Custom: esbuild-wasm worker + ESM CDN + cross-site iframe, behind a `SandboxRuntime` interface | **WebContainers**: needs a commercial license for for-profit production use, needs COOP/COEP cross-origin isolation (which complicates the whole app), boots slower, uses more memory, and has limited Safari/mobile support. v1 is frontend-only, so we don't need Node in the browser. We keep it as a future "full-stack mode" runtime. **Sandpack**: a good shortcut for a prototype, but its preview and bundler live on a third-party origin. We want control over the shell (heartbeat, capture mode, storage wipe), package policy and costs. See [03-sandbox](03-sandbox.md). |
-| Editor | CodeMirror 6 | **Monaco**: better TypeScript IntelliSense, but a much heavier download, weak on mobile and harder to theme. Vibe coders paste more than they type. CM6 plus an optional TS language-service worker is enough. |
+| Where players build | On their own computer with their own AI tools; the game imports the built static site (M6, user decision 2026-10-16, [09-import-mode](09-import-mode.md)) | **The in-browser editor + bundler + package CDN** (M1–M5: CodeMirror 6, esbuild-wasm, `@br/pkg-cdn` / esm.sh): vibe coders build with their own agents, and the way each player drives their tool is the game. The editor, the bundler and the CDN were removed in M6. **Importing from a GitHub repository or a published URL**: later, not in M6 (§9.7). |
+| Sandbox runtime | A cross-site iframe whose shell serves the imported site from a Service Worker (shell v2) | **A blob URL or a `document.write` document**: cannot serve a multi-file site with root-relative URLs, lazy chunks and a client-side router. **WebContainers**: a commercial license, COOP/COEP for the whole app, and a static site needs no Node. **Sandpack**: its preview lives on a third-party origin; we want control over the shell (heartbeat, capture mode, storage wipe). See [03-sandbox](03-sandbox.md) and [09-import-mode](09-import-mode.md) §9.3. |
 | Game authority | Postgres RPCs with a version CAS | **A Node game server**: an always-on process we would have to scale and keep available. **Next.js API routes**: no transactional gain, and adds an extra hop. |
 | Realtime | Broadcast from DB triggers + Presence | **Postgres Changes**: RLS is evaluated per subscriber per change and doesn't scale as well. **Self-hosted WebSockets**: we'd have to operate them. |
 | Timers | Server timestamps + lazy client nudges + pg_cron backstop | **Server `setTimeout`**: we have no persistent server, and it gets lost on deploy. |
-| Canonical screenshot | Server-side headless render of the frozen bundle | **Client-only capture**: lower fidelity (DOM-to-canvas misses WebGL, fonts and filters) and can be forged. Clients could upload a fake screenshot as their permanent result. We keep the client thumbnail as a fallback. |
+| Canonical screenshot | Server-side headless render of the shipped site pack | **Client-only capture**: lower fidelity (DOM-to-canvas misses WebGL, fonts and filters) and can be forged. Clients could upload a fake screenshot as their permanent result. We keep the client thumbnail as a fallback. |
 | App hosting | A static export as the static assets of a Cloudflare Worker on `workers.dev` (T-043; on Cloudflare Pages T-037–T-042, until `*.pages.dev` turned out to be blocked in Turkey; user decisions 2026-10-04 and 2026-10-09: Cloudflare, free plans only) | **Next.js on Cloudflare Workers via OpenNext** (T-012, the plan until T-033): every server render is over Workers Free's 10 ms of CPU ([08-free-tier](08-free-tier.md) §1), and Workers Paid is not free. **Vercel**: one more vendor and account, and the user prefers not to use it. **Fly.io (Node)**: not free. |
 | Auth | Supabase anonymous, linkable later | **Required sign-up**: kills the "open link, play" moment. |
 
 ## 1.7 Cost model (rough estimates; validate in M5)
 
-Assume a battle has 6 players and a 10-minute build.
+Assume a battle has 6 players and a 15-minute build (M6: the limits are 10–45 minutes).
 
 | Item | Per battle | Notes |
 |---|---|---|
-| Bundling and preview | $0 | Runs on players' devices |
-| Ephemeral storage | ~6 × (≤1 MB source + ≤3 MB bundle), for at most hours | Deleted at DESTROY. Roughly zero storage-month cost. |
-| Egress for reveal | ~6 viewers × 6 bundles × ~0.5 MB ≈ 18 MB | The largest variable cost. Packages are cached by the CDN. |
+| Building and preview | $0 | Runs on players' own computers and browsers |
+| Ephemeral storage | ~6 × (one site pack ≤ 5 MB + a thumbnail), for at most hours | Deleted at DESTROY. Roughly zero storage-month cost. |
+| Egress for reveal | ~6 viewers × 6 site packs | The largest variable cost. A pack carries the site's own packages (no shared CDN), so it is larger than the old bundles; to be re-measured with real imports ([07](07-capacity-and-cost.md)). |
 | Screenshot renders | 6 × ~5 s of headless browser time | Cents per battle at most |
 | Permanent screenshots | 6 × ~150 KB WebP | ~1 MB per battle, forever. Use Supabase image transforms for thumbnails. |
 | Realtime | ~6 connections × ~15 min plus a few hundred messages | Activity pulses are throttled to ≤1 per 2 s per player |
@@ -288,23 +300,25 @@ Fixed baseline: Supabase (free tier to start, Pro at launch), Cloudflare (Free s
 things that drive costs up are Realtime concurrent connections and messages (plan limits),
 reveal egress, and Browser Rendering minutes. We watch all three from day one.
 
-## 1.8 Proposed repository layout
+## 1.8 Repository layout
 
 ```
 apps/
   web/                 Next.js app, exported as static files (a Cloudflare Worker's static assets)
-  sandbox-shell/       Static runtime shell deployed to the usercontent domain (versioned paths)
-  capture-worker/      Cloudflare Worker wrapping Browser Rendering (called by the Edge Function)
+  sandbox-shell/       Static shell (/v2/), its site worker (/v2/sw.js) and the capture gate Worker
+  capture-worker/      The capture/destroy job code: the jobs Edge Function's core and a self-hosted worker
 packages/
-  runtime/             SandboxRuntime interface + esbuild-wasm implementation (worker code)
+  runtime/             PreviewHandle: the cross-site preview iframe, bridge and watchdog
   protocol/            Typed postMessage protocol shared by web ↔ shell (zod schemas, versioned)
+  site/                The site pack (pack/unpack) and the import of a built site (folder or .zip)
   game/                Shared types and pure helpers: phase metadata, countdown math, vote rules
-  templates/           Starter workspaces (React+CSS, React+Tailwind, Canvas game, SVG art)
+  telemetry/           Error and analytics reporting with scrubbing
+  config/              Shared lint and TypeScript settings
 supabase/
   migrations/          SQL DDL, RLS, RPCs, triggers, cron
-  functions/           Edge Functions: capture-worker, destroy-worker
+  functions/jobs/      The jobs Edge Function (screenshots, destroys, takedowns)
   tests/               pgTAP tests for RPC guards and transitions
-e2e/                   Playwright multi-context battle tests
+tools/loadtest/        The load generator (scripted players)
 docs/                  These design docs
 ```
 

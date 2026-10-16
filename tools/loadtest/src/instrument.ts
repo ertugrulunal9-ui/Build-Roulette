@@ -9,7 +9,7 @@ import type { Metrics } from './metrics';
 export interface RequestClass {
   /** Metrics key, e.g. "rpc:heartbeat", "storage:upload", "auth:token". */
   key: string;
-  /** For storage objects: the file class ("autosave/bundle.js", "thumb.webp", "screenshot"). */
+  /** For storage objects: the file class ("autosave/site.bin", "thumb.webp", "screenshot"). */
   file: string | null;
   battleId: string | null;
 }

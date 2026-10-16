@@ -70,17 +70,16 @@ geo data.
    Worker's address is `https://<name>.<subdomain>.workers.dev`, `name` from
    `apps/web/wrangler.jsonc` (`build-roulette-web`). No project to create: the first
    `wrangler deploy` creates the Worker.
-4. **The sandbox shell must allow the app's origin and the package CDN.** It bakes the
-   origins that may frame it into its CSP and its `postMessage` checks at build time, and the
-   one package CDN its CSP lets builds load modules from:
+4. **The sandbox shell must allow the app's origin.** It bakes the origins that may frame it
+   into its CSP and its `postMessage` checks at build time:
    ```sh
    BR_APP_ORIGINS=https://build-roulette-web.<subdomain>.workers.dev \
-   BR_PKG_CDN_URL=https://esm.sh \
      pnpm --filter @br/sandbox-shell build
    ```
-   (`BR_APP_ORIGINS`: add the custom domain, if any, comma-separated. `BR_PKG_CDN_URL`
-   defaults to `https://esm.sh`; it must be the app's `NEXT_PUBLIC_PKG_CDN_URL` below.
-   `apps/sandbox-shell/scripts/build.ts`.)
+   (`BR_APP_ORIGINS`: add the custom domain, if any, comma-separated;
+   `apps/sandbox-shell/scripts/build.ts`.) The shell serves each imported site from its
+   service worker `/v2/sw.js` (docs/09 §9.3), with `Service-Worker-Allowed: /` from its
+   `_headers`; there is nothing else to set for it.
 
 ## Deploying
 
@@ -97,13 +96,13 @@ pnpm --filter @br/web workers:deploy
   `wrangler.jsonc` says, as a new version, live at once on the Worker's workers.dev address
   and custom domains). `--name <other>` deploys under another name. Per-version preview
   addresses are off (`preview_urls: false`): the sandbox shell would not allow them anyway.
-- **No package CDN since M6** (docs/09): players import built sites, so the app neither
-  bundles code nor fetches packages, and its CSP has no CDN in `connect-src` and no
-  `'wasm-unsafe-eval'`. `NEXT_PUBLIC_PKG_CDN_URL` is ignored. (The deploy scripts and the
-  shell/jobs steps below still mention a package CDN until T-048 removes it.)
+- **No package CDN since M6** (docs/09): players build with their own tools and import the
+  built site, so the app neither bundles code nor fetches packages, and its CSP has no CDN in
+  `connect-src` and no `'wasm-unsafe-eval'`. `NEXT_PUBLIC_PKG_CDN_URL` is ignored; delete it
+  from old build scripts.
 - **Every setting is baked in at build time.** `NEXT_PUBLIC_*` values are inlined into the
   bundles, and the build's `_headers` allows exactly those hosts in its CSP (Supabase, the
-  sandbox shell, the package CDN, Sentry, PostHog, Turnstile). The link-preview Worker gets
+  sandbox shell, Sentry, PostHog, Turnstile). The link-preview Worker gets
   the same values the same way: it calls `get_public_battle` at `NEXT_PUBLIC_SUPABASE_URL`
   with `NEXT_PUBLIC_SUPABASE_ANON_KEY` (the public anon key; a publishable key works too),
   and uses `NEXT_PUBLIC_SITE_URL` for `og:url` and the canonical link (without it, the
@@ -121,6 +120,17 @@ pnpm --filter @br/web workers:deploy
   Rollback (instant; or `wrangler rollback`), or deploy an older build again.
 - Cloudflare building on every push (Workers Builds) is not set up: the Deploy workflow
   (root `DEPLOY.md`) builds on GitHub and uploads.
+
+### Deploying M6 (import mode)
+
+Deploy the database migration, the `jobs` function, the sandbox shell (v2, with its service
+worker) and this app **together** (root `DEPLOY.md` §8, "Deploying M6"): the new app speaks
+only protocol v2 and stores `site.bin`. Battles running during the deploy may end DNF (their
+autosaves use the old file names). Cloudflare Browser Rendering must run service workers for
+the v2 capture page; if screenshots come back blank or failed after the deploy, the client
+thumbnails still fill in: check `/admin` → Health → "Screenshots, last 24 h" and the `jobs`
+function's logs (`capture.render_unusable`, `capture.fallback`), and see
+`docs/runbooks/capture-backlog.md` step 7.
 
 ## The link-preview Worker (T-038)
 
@@ -186,7 +196,6 @@ sandbox shell and the app:
    JOBS_CRON_SECRET=$JOBS_CRON_SECRET
    CAPTURE_SHELL_URL=https://build-roulette-sandbox.<subdomain B>.workers.dev/v2/capture
    CAPTURE_HMAC_SECRET=$CAPTURE_HMAC_SECRET
-   PKG_CDN_URL=https://esm.sh
    BROWSER_RENDERING_ACCOUNT_ID=<account id>
    BROWSER_RENDERING_API_TOKEN=<API token>
    ENV
@@ -196,7 +205,8 @@ sandbox shell and the app:
    - `CAPTURE_SHELL_URL`: the shell's capture page, i.e. `NEXT_PUBLIC_SANDBOX_SHELL_URL` with
      `capture` instead of the trailing path. With per-build origins it would be
      `https://{build}.<usercontent>/v2/capture`.
-   - `PKG_CDN_URL`: the same as the app's `NEXT_PUBLIC_PKG_CDN_URL`.
+   - `PKG_CDN_URL` is not read any more (M6: a site pack needs no import map); a value left
+     from before can be removed (`npx -y supabase@2.119.0 secrets unset PKG_CDN_URL`).
    - Supabase sets `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` itself.
    - Optional, with their defaults: `BROWSER_BUDGET_MS_PER_DAY` (570000),
      `BROWSER_RENDERING_MIN_INTERVAL_MS` (10000, the free plan's one request per 10 s),
@@ -262,10 +272,10 @@ The two can also run side by side; `claim_job` hands each job to one of them.
   The trade-off against T-024's httpOnly cookies is written up in `apps/web/README.md`
   ("Moderation"). Protect `/admin/sign-in` with Supabase Auth's own rate limits and CAPTCHA
   (Turnstile covers password sign-ins too when it is on).
-- **Headers** (`out/_headers`): `Content-Security-Policy` with `script-src 'self'
-  'wasm-unsafe-eval'` plus the SHA-256 of each exported page's inline scripts (no
-  `'unsafe-inline'`), `connect-src` / `img-src` / `frame-src` limited to the configured hosts,
-  `frame-ancestors 'none'`, `object-src 'none'`, `base-uri 'self'`, `form-action 'self'`; also
+- **Headers** (`out/_headers`): `Content-Security-Policy` with `script-src 'self'` plus the
+  SHA-256 of each exported page's inline scripts (no `'unsafe-inline'`, and no
+  `'wasm-unsafe-eval'` since M6), `connect-src` / `img-src` / `frame-src` limited to the
+  configured hosts, `frame-ancestors 'none'`, `object-src 'none'`, `base-uri 'self'`, `form-action 'self'`; also
   `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy:
   strict-origin-when-cross-origin`, a `Permissions-Policy` that refuses camera, microphone,
   geolocation and the like, `Cross-Origin-Opener-Policy: same-origin` and HSTS. `_headers`
@@ -292,8 +302,8 @@ T-037 every web event is the browser's: there is no server to report from.
 ### Accounts
 
 1. **Sentry** (<https://sentry.io>, the free Developer plan is enough; pick the EU data
-   region if you prefer). Create one project, platform *JavaScript*: browser errors, the
-   capture worker and the package CDN all report to it, told apart by the `service` and
+   region if you prefer). Create one project, platform *JavaScript*: browser errors and the
+   capture worker both report to it, told apart by the `service` and
    `runtime` tags. Copy its DSN (Project → Settings → Client Keys). Then, in Project →
    Settings:
    - Security & Privacy: turn on **Prevent Storing of IP Addresses**; keep the default data
@@ -314,7 +324,7 @@ T-037 every web event is the browser's: there is no server to report from.
 | `NEXT_PUBLIC_POSTHOG_KEY` | product analytics |
 | `NEXT_PUBLIC_POSTHOG_HOST` | default `https://eu.i.posthog.com`; `https://us.i.posthog.com` for a US project |
 | `BR_RELEASE` | optional; default the git commit (`build-roulette-web@<sha>` in Sentry) |
-| `SENTRY_DSN`, `SENTRY_ENVIRONMENT`, `SENTRY_RELEASE` | **not the web app's**: the capture worker's and the package CDN's runtime settings (`apps/capture-worker/.env.example`, `apps/pkg-cdn/README.md`) |
+| `SENTRY_DSN`, `SENTRY_ENVIRONMENT`, `SENTRY_RELEASE` | **not the web app's**: the self-hosted capture worker's runtime settings (`apps/capture-worker/.env.example`) |
 
 ```sh
 NEXT_PUBLIC_SENTRY_DSN=https://<key>@<org>.ingest.de.sentry.io/<project> \

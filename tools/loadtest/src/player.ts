@@ -12,6 +12,7 @@
  *   RPCs treats them differently (only `is_admin` looks at `is_anonymous`).
  * - `anonymous`: `signInAnonymously`, exactly like the web app. Fine for the smoke profile.
  */
+import { activityMatters, type ActivityLike } from '@br/game';
 import { createClient, type RealtimeChannel, type SupabaseClient } from '@supabase/supabase-js';
 import type { Metrics } from './metrics';
 import type { Rng } from './rng';
@@ -201,12 +202,12 @@ export class SimPlayer {
   }
 }
 
-/** BUILD activity as the web client tracks it (`typing` = edited in the last 15 s). */
-export interface Activity {
-  lines: number;
-  last_build: 'ok' | 'error';
-  typing: boolean;
-}
+/**
+ * BUILD activity as the web client tracks it in import mode (docs/09 §9.5): whether a site is
+ * imported, and how many imports so far. `activityMatters` is the web client's own (@br/game).
+ */
+export type Activity = ActivityLike;
+export { activityMatters };
 
 /**
  * The web client's presence and rejoin rules (apps/web/src/lib/room/sync.ts, T-029). The
@@ -217,9 +218,6 @@ export const CLIENT_RULES = {
   presenceThrottleMs: 2_000,
   /** Activity updates at most this often, only during BUILDING, only when they matter. */
   presenceActivityMs: 15_000,
-  presenceLinesStep: 20,
-  /** A failing build is reported once it has failed this long (or was already reported). */
-  buildErrorMs: 10_000,
   /** Realtime closes a channel above 5 presence messages per 30 s; clients stay at 4. */
   presenceMaxPerWindow: 4,
   presenceWindowMs: 30_000,
@@ -230,16 +228,6 @@ export const CLIENT_RULES = {
   /** One backoff level down per this long subscribed (a SUBSCRIBED alone resets nothing). */
   rejoinDecayMs: 60_000,
 } as const;
-
-/** `activityMatters` of @br/game: active on/off, the build failing or fixed, ±20 lines. */
-export function activityMatters(sent: Activity | null, next: Activity): boolean {
-  if (sent === null) return true;
-  return (
-    sent.typing !== next.typing ||
-    sent.last_build !== next.last_build ||
-    Math.abs(next.lines - sent.lines) >= CLIENT_RULES.presenceLinesStep
-  );
-}
 
 /** The rejoin delay for backoff level `n` and a random number in [0, 1). */
 export function rejoinDelayMs(n: number, random: number): number {
@@ -265,9 +253,8 @@ export class Topic {
   private trackTimes: number[] = [];
   private lastTrackAt = Number.NEGATIVE_INFINITY;
   private identity: object | null = null;
-  private activity: Activity = { lines: 0, last_build: 'ok', typing: false };
+  private activity: Activity = { imported: false, imports: 0 };
   private sentActivity: Activity | null = null;
-  private buildErrorSince: number | null = null;
   private lastTracked: string | null = null;
   private claimOwed = true;
   private pendingTimer: NodeJS.Timeout | null = null;
@@ -381,18 +368,8 @@ export class Topic {
   /** The BUILD activity (the web client's setActivity). */
   setActivity(activity: Activity): void {
     if (!this.presence || this.closed) return;
-    if (activity.last_build !== 'error') this.buildErrorSince = null;
-    else this.buildErrorSince ??= now();
     this.activity = activity;
     this.flush();
-  }
-
-  /** The web client's reportedActivity: a failing build only once it failed for 10 s. */
-  private reported(t: number): Activity {
-    const a = this.activity;
-    if (a.last_build !== 'error' || this.sentActivity?.last_build === 'error') return a;
-    const since = this.buildErrorSince ?? t;
-    return t - since >= CLIENT_RULES.buildErrorMs ? a : { ...a, last_build: 'ok' };
   }
 
   /** The battle's phase changed: activity held back outside BUILDING may go out now. */
@@ -404,7 +381,7 @@ export class Topic {
   private flush(): void {
     if (!this.identity || this.closed || !this.channel || this.status !== 'SUBSCRIBED') return;
     const t = now();
-    const activity = this.reported(t);
+    const activity = this.activity;
     const payload = { ...this.identity, activity };
     const json = JSON.stringify(payload);
     const claim = this.claimOwed;
@@ -415,19 +392,7 @@ export class Topic {
     const wasPending = this.pendingTimer !== null;
     if (this.pendingTimer) clearTimeout(this.pendingTimer);
     this.pendingTimer = null;
-    if (!wanted) {
-      const since = this.buildErrorSince;
-      if (building && since !== null && activity.last_build === 'ok') {
-        this.pendingTimer = setTimeout(
-          () => {
-            this.pendingTimer = null;
-            this.flush();
-          },
-          since + CLIENT_RULES.buildErrorMs - t,
-        );
-      }
-      return;
-    }
+    if (!wanted) return;
     const r = CLIENT_RULES;
     this.trackTimes = this.trackTimes.filter((x) => x > t - r.presenceWindowMs);
     let wait = this.lastTrackAt + (claim ? r.presenceThrottleMs : r.presenceActivityMs) - t;

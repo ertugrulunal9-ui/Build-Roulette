@@ -10,7 +10,7 @@ battles per month and says what to upgrade first.
 |---|---|---|
 | 7 days without user activity | the project is **paused**: every request answers **540**, the app shows "could not load" everywhere | the daily keep-alive workflow fails ("Supabase project is PAUSED"); `/admin` → Health is unreachable too |
 | 500 MB database size | **read-only**: `cannot execute INSERT in a read-only transaction`; no battle can start | Health → Plan usage → Database (warns at 80 %); the keep-alive fails ("READ-ONLY") |
-| 1 GB file storage | after a grace period, restrictions (402); uploads fail: no autosave, ship, screenshot | Health → Plan usage → File storage (warns at 80 %) |
+| 1 GB file storage | after a grace period, restrictions (402); uploads fail: no import upload (autosave), ship, screenshot | Health → Plan usage → File storage (warns at 80 %) |
 | 5 GB egress a month (plus 5 GB cached) | after a grace period, restrictions (402) | Supabase dashboard → Organization → Usage only |
 | 2 M Realtime messages a month, 200 connections, 20 Presence messages/s | Realtime refuses or closes channels | [realtime-quota.md](realtime-quota.md) |
 | 50,000 MAU (anonymous sign-ins count) | after a grace period, restrictions | Health → Plan usage → Monthly active users (a lower bound) |

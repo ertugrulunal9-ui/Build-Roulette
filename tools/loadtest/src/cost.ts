@@ -132,7 +132,10 @@ export const PRICES = {
 /** ASSUMED behaviour of a real battle and of the audience (2026-10-07). */
 export const ASSUMPTIONS = {
   players: { value: 6, note: 'players per battle (docs/01 §1.7)' },
-  buildMin: { value: 10, note: 'build minutes (docs/01 §1.7); the server draws 5, 10 or 15' },
+  buildMin: {
+    value: 15,
+    note: 'build minutes (docs/09 §9.7); a random battle draws 10, 15 or 20, hosts pick 10–45',
+  },
   lobbyMin: { value: 2, note: 'minutes in the lobby before a battle' },
   votingMin: { value: 1, note: 'VOTING (default 60 s; often ends early)' },
   resultsMin: { value: 1, note: 'RESULTS (60 s, plus the capture wait)' },

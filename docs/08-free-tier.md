@@ -5,7 +5,8 @@ This document collects what that takes. §1 is the web app on Workers Free (T-03
 not fit); §2 is what replaced it, the web app as a static site (T-037; on Cloudflare Pages,
 since T-043 the static assets of a Worker on `workers.dev`, §2.7); §3 is the one piece of edge
 code left, the per-battle link previews (T-038: a Pages Function that fits; a Worker since
-T-043); §4 is the package CDN, the public esm.sh instead of our own (T-035); §5 is the
+T-043); §4 was the package CDN, the public esm.sh instead of our own (T-035; removed in M6:
+players import built sites, docs/09); §5 is the
 screenshots and the delete jobs without an always-on server (T-034: a Supabase Edge
 Function and Browser Rendering's REST API); §6 is Supabase Free itself (T-036: the 7-day pause
 and the keep-alive, storage, database, and what each quota allows per month). The step-by-step
@@ -400,10 +401,10 @@ risk low:
 - **The app origin serves no user-generated HTML or script.** Builds run on the sandbox site
   (another site with its own CSP, T-009); results show text through React (escaped) and
   screenshots as `<img>`; names pass the name filter.
-- **The CSP blocks injected scripts** (`script-src 'self' 'wasm-unsafe-eval'` plus the hashes
-  of the exported pages' own inline scripts, no `'unsafe-inline'`: the static-site e2e
-  injects one and checks it does not run) and limits where data can go (`connect-src`: the
-  app, Supabase, the package CDN, Sentry, PostHog, Turnstile).
+- **The CSP blocks injected scripts** (`script-src 'self'` plus the hashes of the exported
+  pages' own inline scripts, no `'unsafe-inline'`; `'wasm-unsafe-eval'` until M6: the
+  static-site e2e injects one and checks it does not run) and limits where data can go
+  (`connect-src`: the app, Supabase, Sentry, PostHog, Turnstile; the package CDN until M6).
 - `frame-ancestors 'none'` / `X-Frame-Options: DENY` (no clickjacking of the admin page),
   `base-uri 'self'`, `form-action 'self'`, `object-src 'none'`.
 - The exposure lasts one tab's lifetime; a leaked access token lives for its own lifetime
@@ -423,11 +424,11 @@ for the 10 HTML files, one policy for every path (a rewritten shell and the 404 
 same one). The header line is ~950 characters against the 2,000 per line that Pages and
 Workers static assets both allow (one shared parser, §2.7); the build fails if it ever grows
 past that. The hosts come from the build's own `NEXT_PUBLIC_*` values, so the
-policy always matches the bundles. `'wasm-unsafe-eval'` is for the playground's esbuild
-(WebAssembly); there is no `'unsafe-eval'`.
+policy always matches the bundles. There is no `'unsafe-eval'`, and since M6 no
+`'wasm-unsafe-eval'` either (it was for the playground's esbuild).
 
 Every e2e suite runs under it (`wrangler dev` applies `_headers`; `wrangler pages dev`
-before T-043), and the playground,
+before T-043), and the `/try` (the playground before M6),
 solo, moderation, rooms and chaos suites fail on any CSP violation of the app's pages
 (`e2e/csp.ts`).
 
@@ -449,7 +450,7 @@ Worker's isolate at all (the asset router is a separate worker), as in productio
 
 `pnpm --filter @br/web build` checks the export (the pages present, no secret key, the host's
 limits) and prints its size. Every e2e suite serves `out/` and the Worker with `wrangler dev`
-(`e2e/app-server.ts`; `wrangler pages dev` before T-043): the playground (with
+(`e2e/app-server.ts`; `wrangler pages dev` before T-043): `/try` (the playground before M6; with
 `e2e/static-site.spec.ts`: rewrites, the 404 page, the headers, the CSP enforced and never violated, `/admin` without a session), solo,
 moderation (a takedown visible on the next load; the admin session's storage, its separation
 from the player session and from another tab, sign-out revoking the refresh token), rooms,
@@ -466,10 +467,10 @@ production deploy (Deploy run 2, 2026-10) had been on Pages and passed every che
 |---|---|---|
 | Cloudflare account | A, the existing one (also Browser Rendering, Turnstile) | B, a second free account |
 | Worker | `build-roulette-web` | `build-roulette-sandbox` |
-| Address | `https://build-roulette-web.<subdomain A>.workers.dev` | `https://build-roulette-sandbox.<subdomain B>.workers.dev/v1/` |
+| Address | `https://build-roulette-web.<subdomain A>.workers.dev` | `https://build-roulette-sandbox.<subdomain B>.workers.dev/v2/` (`/v1/` before M6) |
 | Config | `apps/web/wrangler.jsonc` | `apps/sandbox-shell/wrangler.jsonc` |
 | Static assets | `apps/web/out/` with `_headers`, `_redirects`, `404.html` | `apps/sandbox-shell/dist/` with `_headers`, `404.html` |
-| Worker code, run only for (`run_worker_first`) | `dist/worker.js`: the link previews, `/battles/*` | `dist/worker.js`: the capture gate, `/v1/capture` (Worker secret `CAPTURE_HMAC_SECRET`) |
+| Worker code, run only for (`run_worker_first`) | `dist/worker.js`: the link previews, `/battles/*` | `dist/worker.js`: the capture gate, `/v2/capture` (`/v1/capture` before M6; Worker secret `CAPTURE_HMAC_SECRET`) |
 
 **Why two accounts.** A Worker's address is `<worker>.<account subdomain>.workers.dev`, one
 subdomain per account. The Public Suffix List lists `workers.dev` but not `*.workers.dev`
@@ -487,14 +488,14 @@ and the workers-shared router and asset workers it runs locally through miniflar
 
 | Claim | Status | How |
 |---|---|---|
-| A request served from the assets does not invoke the Worker unless it matches `run_worker_first` | **confirmed** | the router's source: a `run_worker_first` match goes to the Worker; any other path goes to the assets when they can answer it, and with `run_worker_first` set the 404 page counts as an answer. Measured with an instrumented Worker under `wrangler dev`: `/v1/`, `/v1/shell.js` and an unknown path did not invoke it, `/v1/capture` did. **Without a `404.html` an unknown path does invoke the Worker** (measured), which is why the shell got one |
+| A request served from the assets does not invoke the Worker unless it matches `run_worker_first` | **confirmed** | the router's source: a `run_worker_first` match goes to the Worker; any other path goes to the assets when they can answer it, and with `run_worker_first` set the 404 page counts as an answer. Measured with an instrumented Worker under `wrangler dev`: `/v1/`, `/v1/shell.js` and an unknown path did not invoke it, `/v1/capture` did (shell v1; since M6 the paths are `/v2/…`, the same rule). **Without a `404.html` an unknown path does invoke the Worker** (measured), which is why the shell got one |
 | … and is free and unlimited | assumed (Cloudflare's docs and pricing) | not in the source; consistent with it: when an account's Free requests are used up, the router still serves the assets (below) |
 | Worker invocations count toward 100,000 a day, with 10 ms CPU each | confirmed in T-033 (§1.3, Cloudflare's limits page) | not checkable offline; the router's "rate limited" answer for an account over its Free requests is in the source |
 | 20,000 files per version | assumed (Cloudflare's docs) | wrangler checks no file count before a Workers upload (it does for Pages: 20,000); the export has 94 files, the shell 5 |
-| 25 MiB per file | **confirmed** | wrangler refuses a larger asset (`MAX_ASSET_SIZE = 25 * 1024 * 1024`); `esbuild.wasm` is 13.3 MiB |
+| 25 MiB per file | **confirmed** | wrangler refuses a larger asset (`MAX_ASSET_SIZE = 25 * 1024 * 1024`); `esbuild.wasm` (13.3 MiB) was the largest until M6 removed it |
 | `_headers` and `_redirects` | **confirmed** | wrangler reads both from the assets directory (and never uploads them as assets); the same workers-shared parser as Pages, with the same limits (100 header rules, 2,000 characters a line, 2,000 static and 100 dynamic redirects); the e2e (§2.6) |
 | `_redirects` 200 rewrites (`/u/:id /u 200`) | **confirmed** | the asset worker serves the destination as a proxied path for status 200; the e2e: `/u/x`, `/r/K7QXM` answer 200 with the shell, the URL kept |
-| `_headers` applies to what the Worker gets through `env.ASSETS.fetch` | **confirmed** | the asset worker adds the matching `_headers` rules to every answer, also those for the binding; measured: a Worker passing an `env.ASSETS.fetch` answer through keeps the `_headers` CSP. It does not apply to a response the Worker builds itself (`/v1/capture`'s gate, a preview's 200/404), so those set their headers in code, as before (§3.2) |
+| `_headers` applies to what the Worker gets through `env.ASSETS.fetch` | **confirmed** | the asset worker adds the matching `_headers` rules to every answer, also those for the binding; measured: a Worker passing an `env.ASSETS.fetch` answer through keeps the `_headers` CSP. It does not apply to a response the Worker builds itself (`/v2/capture`'s gate, `/v1/` before M6; a preview's 200/404), so those set their headers in code, as before (§3.2) |
 | `run_worker_first` as a list of patterns, `not_found_handling: "404-page"`, `workers_dev`, `preview_urls` | **confirmed** | wrangler's config schema |
 | `wrangler deploy --secrets-file` | **confirmed** | wrangler 4.147.0: "secrets to upload with the version (JSON or .env format)… omitted secrets will not be deleted"; with `secrets.required` in the config, a deploy without the secret fails on a new Worker and keeps the current value on an existing one |
 | Account → Workers Scripts → Edit covers the workers.dev subdomain and route endpoints | confirmed indirectly | wrangler's matching OAuth scope `workers_scripts:write`: "See and change Cloudflare Workers scripts, durable objects, subdomains, triggers, and tail data" |
@@ -510,7 +511,7 @@ and the workers-shared router and asset workers it runs locally through miniflar
   `scripts/deploy-check.mjs` names that page. At ~1,000 battles a month neither is near.
 - **The sandbox's unknown paths** get its new `404.html` (404, with the `/*` headers) instead
   of an empty 404, so they invoke no Worker.
-- **Redirects of the HTML handling** (`/battles/` → `/battles`, `/v1` → `/v1/`) are 307 (Pages:
+- **Redirects of the HTML handling** (`/battles/` → `/battles`, `/v2` → `/v2/`) are 307 (Pages:
   308). Nothing links to those forms.
 - **Addresses:** `<worker>.<subdomain>.workers.dev`; no per-version preview addresses
   (`preview_urls: false`), no per-deployment `<hash>.<project>.pages.dev` aliases.
@@ -743,100 +744,21 @@ pnpm --filter @br/web test:e2e:multi       # og:image = the winner's screenshot
 pnpm --filter @br/web measure:cpu          # §3.3 (~15 min; --only/--warm/--cold to narrow it)
 ```
 
-## 4. Package CDN (T-035)
+## 4. Package CDN (T-035): removed in M6
 
-**Question:** can production use the public **esm.sh** as its package CDN, since our own
-`@br/pkg-cdn` would need Cloudflare Containers (paid only), and what does that change?
+From T-035 to M5, production loaded every build's npm packages from the public **esm.sh**,
+because our own `@br/pkg-cdn` would have needed Cloudflare Containers (paid only). The same
+base URL was set in the web app (`NEXT_PUBLIC_PKG_CDN_URL`), the sandbox shell
+(`BR_PKG_CDN_URL`) and the screenshot jobs (`PKG_CDN_URL`); the compatibility suite ran
+against esm.sh in CI (52/57, then 56/58 after T-040's one-instance URLs).
 
-### 4.1 Verdict
-
-**Yes, by configuration.** The runtime already emits esm.sh's URL shape (exact versions,
-`?external=react,react-dom`, `?deps=`, raw package CSS); the same URLs work on both CDNs
-(docs/03 "The package CDN" has the comparison). One thing was different and is fixed: esm.sh
-answers an entry URL such as `/react@19.3.0` with a re-export of an internal build path
-(`/react@19.3.0/es2022/react.mjs`), so the T-032 warm-up and package checks now follow those
-imports. **To confirm in CI** (this container cannot reach esm.sh): the compatibility suite
-with `compat_cdn=https://esm.sh` runs every case through esm.sh and checks every URL and every
-module behind it (no redirect, `max-age` ≥ 30 days, CORS, content type, same-origin imports).
-The run fails if the React import map breaks that contract or fewer than 90% of the cases pass.
-
-**CI run 60 and T-040.** The first CI run against esm.sh gave 52/57 and one React-contract
-problem, all from one esm.sh behaviour (confirmed in its source): a package's own dependencies
-are imported by **range** (`/scheduler@^0.28.0?target=es2022`, cached 10 minutes) or, with
-`deps=`, at build arguments of their own. Either way they are a second instance of a package the
-app also imports (two chart.js under react-chartjs-2, two three under fiber), and React DOM's
-`scheduler` was outside the template's immutable set. T-040 changed the URLs (docs/03 "One
-instance per package and a fully pinned template"):
-- every package URL externalizes every other package of the manifest;
-- the import map maps each one to its single pinned URL, with a prefix entry in esm.sh's
-  in-path query form for subpaths;
-- React DOM's `scheduler` is pinned in the template's map.
-
-Dependencies the manifest does not list stay ranges on esm.sh: their outage window is esm.sh's
-10-minute cache (`?standalone` was rejected: it gives every manifest package its own copy of a
-shared dependency). The contract reports them as notes. p5 is a known esm.sh incompatibility
-(esm.sh builds a dependency from its `browser` export, a global script without exports).
-
-### 4.2 Settings
-
-The same base URL in every component, nothing else:
-
-| Component | Setting (build or start time) | Free plan value |
-|---|---|---|
-| Web app (`pnpm --filter @br/web build`) | `NEXT_PUBLIC_PKG_CDN_URL` | `https://esm.sh` |
-| Sandbox shell (`pnpm --filter @br/sandbox-shell build`) | `BR_PKG_CDN_URL` | `https://esm.sh` (the default) |
-| Capture worker / screenshot jobs | `PKG_CDN_URL` | `https://esm.sh` |
-
-The app's `_headers` CSP gets `connect-src https://esm.sh` (the bundler fetches package CSS);
-the shell's and the capture page's CSP get `script-src https://esm.sh`. A shell built for
-another CDN blocks every module: the preview shows "The build or one of its packages failed to
-load", and the browser console names the CSP. Costs: none (esm.sh is free).
-
-### 4.3 What it means
-
-- **A third party, no SLA** (R10): esm.sh is community-run and free, with no rate limits
-  documented that we know of (assumed: fair use covers us). An esm.sh outage is a package-CDN
-  outage: the T-032 behaviour (the browser's HTTP cache, warmed in the lobby and during SPIN;
-  "Package server unreachable: …" for packages a browser never loaded; screenshots in REVEAL)
-  applies unchanged, and the runbook has the esm.sh case
-  ([package-cdn-outage](runbooks/package-cdn-outage.md)).
-- **Cache lifetime:** T-032 relies on exact-version URLs being cached for long. esm.sh serves
-  exact entry URLs and internal paths `public, max-age=31536000, immutable` (CI run 60), and
-  since T-040 the template and every manifest package load only from such URLs. A package's
-  own dependencies that the manifest does not list are range URLs, cached 10 minutes (Node
-  polyfills a day): during an esm.sh outage longer than that, a non-template package whose
-  dependencies were not re-fetched fails like any uncached package ("Package server
-  unreachable: …"). A player can pin such a dependency by listing it in the manifest.
-- **First load of a new combination:** esm.sh builds each package once per version and build
-  arguments, and the arguments list the other packages of the manifest (as `deps=` did
-  before). The first player with a new combination waits for esm.sh's builds (a large package
-  such as pixi.js has about 130 modules); the shell says "Still waiting for the package
-  server" after 8 s. The template's React set has fixed URLs and is always built.
-- **No denylist of ours:** `@br/pkg-cdn`'s denylist of compromised versions does not apply;
-  esm.sh's own policy does. Builds stay sandboxed (docs/03 §3.9).
-- **Build target per browser:** esm.sh picks the syntax level from the User-Agent (documented),
-  so the capture renderer and players may get different (equivalent) code for one URL.
-- **Not affected:** the bundler (esbuild-wasm) and the shell are our own static files; only
-  packages come from esm.sh.
-
-### 4.4 Switching back to our CDN
-
-Deploy `@br/pkg-cdn` (`apps/pkg-cdn/README.md`, and its "Origin outages" edge checklist), run
-the compatibility suite against it (`pnpm --filter @br/pkg-cdn compat --cdn <url>`, or the CI
-input `compat_cdn`), then set the three settings above to its URL and rebuild the app and the
-shell. Players' caches refill from the new origin (different URLs); nothing else changes.
-
-### 4.5 Verification
-
-```sh
-pnpm --filter @br/runtime test         # resolve.test: the esm.sh import map and module URLs (T-040: externals, scheduler, prefixes)
-pnpm --filter @br/sandbox-shell test   # headers.test: the esm.sh CSP; packages.test: entry modules and bare imports followed
-pnpm --filter @br/pkg-cdn test         # compat-options / compat-urls / compat-contract tests; in-path query, peer URLs
-pnpm --filter @br/runtime test:e2e     # render, CDN outage and one-instance (T-040) again against an esm.sh-shaped mock CDN
-pnpm --filter @br/pkg-cdn compat       # our CDN: 57/58 (0 unexpected, 1 known), contract ok
-# GitHub Actions → CI → Run workflow: compat=true, compat_cdn=https://esm.sh (chaos and
-# loadtest off) → artifact compat-results/RESULTS-esm.sh.md
-```
+**Import mode (M6, [09](09-import-mode.md)) removed it.** Players build with their own tools,
+and a built site carries its own packages, so there is no bundler, no import map and no
+package CDN of ours: nothing to deploy, configure or watch, and no third party on the
+preview's critical path (docs/02 R10). A built site may still load scripts from public CDNs
+itself (the site CSP allows `https:`); while such a CDN is down, only that site breaks, and
+its capture falls back to the client thumbnail. The three settings are ignored; the deploy
+deletes the leftover function secret and warns about the variable (`DEPLOY.md`).
 
 ## 5. Screenshots and jobs (T-034)
 
@@ -874,15 +796,15 @@ pg_cron 'br-jobs-run' (every minute)
                  claim_job round robin (capture, destroy, takedown) for ≤ 50 s
                  capture:  browser_budget_reserve ─► Browser Rendering POST /snapshot
                            (the signed capture URL; Cloudflare's browser opens the shell's
-                           capture page, which loads the bundle from Storage and React from
-                           esm.sh) ─► WebP ─► screenshots/{battle}/{build}.webp
+                           capture page, which loads the site pack from Storage and serves
+                           it through the site worker) ─► WebP ─► screenshots/{battle}/{build}.webp
                            ─► complete_capture ─► browser_budget_settle
                  destroy / takedown: Storage list + delete ─► complete_destroy / complete_takedown
 ```
 
 - **Secrets.** The function's: `JOBS_CRON_SECRET`, `CAPTURE_HMAC_SECRET` (the shell's capture
   gate secret), `BROWSER_RENDERING_ACCOUNT_ID`, `BROWSER_RENDERING_API_TOKEN`, plus
-  `CAPTURE_SHELL_URL` and `PKG_CDN_URL` (`supabase secrets set`; `SUPABASE_URL` and
+  `CAPTURE_SHELL_URL` (`supabase secrets set`; `PKG_CDN_URL` until M6; `SUPABASE_URL` and
   `SUPABASE_SERVICE_ROLE_KEY` come from Supabase). The database's: the function URL and the
   same cron secret, in **Vault** (`br_jobs_function_url`, `br_jobs_cron_secret`). Steps:
   `apps/web/DEPLOY.md` "Screenshots and jobs".
@@ -943,9 +865,9 @@ image.
 
 **Differences from the Playwright renderer (accepted):**
 
-- **No "network idle + 2 s" rule:** the REST API can't express "first of". The starter
-  templates call `buildRoulette.ready()` after the first paint; a build that never calls it
-  waits the full 6 s cap.
+- **No "network idle + 2 s" rule:** the REST API can't express "first of". A site that
+  calls `buildRoulette.ready()` after its first paint is shot at once (the editor's starter
+  templates did, before M6); a site that never calls it waits the full 6 s cap.
 - **No navigation guard:** the capture page's CSP sandbox still blocks popups, modals and
   downloads. A build that navigates its own page gets a shot of what it navigated to, which it
   could have painted itself.
@@ -990,7 +912,9 @@ answer, and a refused token (logged as an error). Other free limits (3 concurren
   **6.5–6.6 s** for one that never paints (the 6 s cap; the solo CDN-outage e2e and
   `test:function`).
 - **Assumed** for Cloudflare: about **3 s** with the ready signal (browser start + page + React
-  from esm.sh + shot) and about **8–9 s** without it (the 6 s cap). Check `used_ms / renders`
+  from esm.sh + shot; M5) and about **8–9 s** without it (the 6 s cap). Since M6 the page also
+  registers the site worker and the site loads its own code from the pack; to be re-measured.
+  Browser Rendering must run Service Workers for it at all (docs/02 R11). Check `used_ms / renders`
   in `private.browser_budget` after the first days (runbook below).
 
 | Seconds per capture | Captures a day (570 s) | Solo battles a day | 4-player battles | 8-player battles |
@@ -1076,7 +1000,8 @@ Supabase Free runs the game, with one daily keep-alive and one watch item:
   this task moved to from 82 (2,180 battles at 82; §6.3). At 1,000 battles a month that is
   under three months. Nothing is deleted on a timer; `/admin` → Health warns at 80 %.
 - **Per month, egress comes first** (about 1,060–1,210 battles with the measured screenshot
-  sizes, 926 with docs/07's 100 KB assumption), about level with Browser Rendering's free
+  sizes, 926 with docs/07's 100 KB assumption; measured with M5's small bundles: M6's site
+  packs make REVEAL's downloads larger, so this is to be re-measured, §6.5), about level with Browser Rendering's free
   screenshots (~1,000 battles; past it the client thumbnail, nothing breaks) and before
   Realtime's 2 M messages (~1,340 battles). The database lasts about 10,000 battles (§6.4).
 - **Concurrency:** Realtime's 20 Presence messages per second hold about 10 concurrent
@@ -1153,8 +1078,11 @@ with the same key a player's browser uses.
 **What is stored.** Per final build, one permanent screenshot in the public `screenshots`
 bucket: the Browser Rendering capture (1280×800 WebP), or the client thumbnail (640×400 WebP)
 when the daily browser budget is spent or the render was blank. The build files in
-`ephemeral-builds` (source, bundles, thumbnail, autosaves: 581 KiB uploaded per 6-player
-battle, docs/07 §7.3) are deleted at DESTROY, minutes after RESULTS, 24 h at the latest.
+`ephemeral-builds` are deleted at DESTROY, minutes after RESULTS, 24 h at the latest. Since
+M6 they are, per player, one site pack per import (`autosave/site.bin`, overwritten), the
+shipped `site.bin` and `thumb.webp`: at most 2 × 5 MB plus the thumbnail while a battle runs
+(M5's editor files were 581 KiB per 6-player battle, docs/07 §7.3; M6's are to be
+re-measured). They count against the 1 GB only for minutes.
 
 **Measured screenshot sizes** (`pnpm --filter @br/capture-worker measure:screenshots`, data in
 [data/t036-screenshot-sizes.csv](data/t036-screenshot-sizes.csv)). The e2e's own test builds
@@ -1272,11 +1200,15 @@ docs/07's measured per-battle numbers (§7.4.4, 6 players, 10-minute build, afte
 **1,490 Realtime messages** and **5.4 MB of egress**, with screenshots assumed at 100 KB and
 viewed 34 times per battle (§7.3), i.e. ~3.4 MB of the 5.4 MB. With the measured sizes the
 screenshot views cost 2.1 MB at q70 (60.9 KiB) and 2.7 MB at q82: **4.1 MB** per battle now
-(4.7 MB at q82).
+(4.7 MB at q82). **M6:** REVEAL downloads one site pack per build (each viewer, each final
+build, ≤ 5 MB) instead of M5's small bundles (1.6 MB of reveal files per 6-player battle,
+docs/07 §7.3), and a pack carries its own packages, so the reveal part of egress grows and
+the battles a month fall. To be re-measured with the M6 load generator before relying on the
+egress row.
 
 | Free quota | Status | Per battle | Battles a month | Note |
 |---|---|---|---|---|
-| Egress 5 GB (uncached) | secondary | 4.1 MB (q70; 5.4 MB with docs/07's 100 KB) | **~1,210** (926) | each extra view of a results page adds ~0.35 MB; Storage CDN hits may count as the separate 5 GB of cached egress (assumed, not counted) |
+| Egress 5 GB (uncached) | secondary | 4.1 MB (q70; 5.4 MB with docs/07's 100 KB); M5 bundles, to be re-measured for site packs | **~1,210** (926), before M6 | each extra view of a results page adds ~0.35 MB; Storage CDN hits may count as the separate 5 GB of cached egress (assumed, not counted) |
 | Browser Rendering 10 min/day (Cloudflare) | confirmed (§5.4) | 5.7 captures × ~3 s (assumed) | ~1,000 rendered | then client thumbnails: soft |
 | Realtime messages 2 M | secondary | 1,490 | **~1,340** | |
 | Realtime Presence 20 messages/s | confirmed | 1.7–2.1/s per 6-player room in BUILD | ~10 rooms in BUILD at once ≈ 11,000 a month at a peak factor of 4 | measured: 10 rooms × 6 players on the Free quotas, 0 channels closed (below) |

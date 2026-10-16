@@ -112,36 +112,13 @@ stops the worker with CDP (`ServiceWorker.stopAllWorkers`) and loads a lazy chun
 
 **Uploads** are accepted only from window clients that are not mapped to a site. That is
 best effort: site code shares the origin and could post from a frame of its own. Nothing
-relies on it (see below).
+relies on it (the threat model below).
 
 ### Site worker: threat model
 
-Stage 1: every build runs on the one sandbox origin, same-origin with the shell, its child
-frame and the site worker. Build code can post to the worker, read and write its Cache
-Storage, and unregister it. What it must not be able to do is make the worker serve
-attacker content to a **later load of a different build**:
-
-- **Site ids are fresh and random per load** (128 bits). A later load never uses an id a
-  build could have known or chosen in advance; content a build stores under an id of its own
-  is never navigated to by the shell. An unknown id is a 404, never a fallback.
-- **REVEAL wipes the origin before each other player's build**: `resetStorage()` replaces the
-  preview iframe (a new shell realm, nothing of the previous build survives in it), and
-  `reset-storage` deletes Cache Storage (the worker's cache included), unregisters every
-  service worker and fetches `/v2/reset` (`Clear-Site-Data: "cache", "cookies", "storage"`).
-  The next load registers the worker again and stores its site anew. The capture page wipes
-  first as well.
-- **Service worker scripts come only from the network.** A service worker's script (and its
-  imports, `updateViaCache: 'none'`) is never fetched through a service worker, and the host
-  serves no script but the shell's own: a site that registers `/assets/evil-sw.js` (a file of
-  its pack) gets a 404, and the shell's other scripts throw in a worker global (e2e). A site
-  may unregister the site worker; that only breaks its own preview until the next load.
-- **What a build can still do** (all limited to the same browser partition at the same time,
-  which stage 1 already allows in other ways): damage its own site (rewrite its cached
-  files, delete the cache, unregister the worker), and, while it keeps running, affect a site
-  running *at the same time* in another tab or preview of the same partition: read that
-  site's id from the cache and rewrite its files, or upload a site (from an unmapped frame)
-  that becomes the "latest" one for the other preview's reloads and in-site navigations.
-  Per-build origins (stage 2, finding F1) remove all of it.
+In [docs/03-sandbox.md](../../docs/03-sandbox.md) §3.9, "The site worker" (moved there in
+T-048): what build code on the shared stage-1 origin can and cannot do to the worker, its
+cache and later builds.
 
 ### Limitations
 

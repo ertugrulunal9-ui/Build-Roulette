@@ -6,18 +6,9 @@ on:
   # Nightly: everything once a day, even without a push.
   schedule:
     - cron: '17 3 * * *'
-  # Manual runs also offer the network-bound package compatibility suite (job `compat`)
-  # and can leave out the rooms chaos e2e (job `chaos`).
+  # Manual runs can leave out the rooms chaos e2e (job `chaos`) and run the load test.
   workflow_dispatch:
     inputs:
-      compat:
-        description: Run the R1 package compatibility suite against the npm registry
-        type: boolean
-        default: true
-      compat_cdn:
-        description: Package CDN for the compatibility suite, as a base URL (e.g. https://esm.sh). Empty = our own CDN (@br/pkg-cdn, started by the suite)
-        type: string
-        default: ''
       chaos:
         description: Run the rooms chaos e2e (network drops, skewed clocks, refreshes; 3 shards of ~5 min)
         type: boolean
@@ -32,7 +23,7 @@ permissions:
 
 # A new push cancels the older run of the same branch. The nightly and the manual runs have
 # their own groups: a push used to cancel them halfway (run 29, its chaos job never finished;
-# run 57, the esm.sh compat run started by hand, cancelled by a push a minute later).
+# run 57, a manual run, cancelled by a push a minute later).
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}${{ github.event_name == 'schedule' && '-nightly' || github.event_name == 'workflow_dispatch' && '-manual' || '' }}
   cancel-in-progress: true
@@ -186,7 +177,7 @@ jobs:
           -x studio,imgproxy,vector,logflare,supavisor,mailpit,realtime,postgres-meta
 
       # Renderer tests (real shell capture page, no Supabase) and the full capture/destroy
-      # loop against the stack: solo battles through the HTTP APIs, real React bundles,
+      # loop against the stack: solo battles through the HTTP APIs, real built sites (site packs),
       # WebP screenshots, fallback, final-attempt failure, destroy. Needs psql (runner image).
       - name: Run the capture worker integration tests
         id: capture-integration
@@ -379,7 +370,7 @@ jobs:
         run: npx -y "$SUPABASE_CLI" stop --no-backup
 
   e2e:
-    name: E2E (runtime + web playground, Playwright Chromium)
+    name: E2E (runtime + web /try, Playwright Chromium)
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -405,9 +396,8 @@ jobs:
       - name: Install Playwright Chromium
         run: pnpm --filter @br/runtime exec playwright install --with-deps chromium
 
-      # Every runtime suite against the mock CDN, then the render and CDN-outage suites again
-      # with the mock CDN answering like esm.sh (an entry module that re-exports an internal
-      # build path; T-035, playwright.esm-sh.config.ts).
+      # Every runtime suite: imported sites served by the shell's site worker (/v2/sw.js),
+      # isolation, policy, storage wipes, the watchdog, capture and thumbnails.
       - name: Run runtime e2e tests
         id: runtime-e2e
         run: pnpm --filter @br/runtime test:e2e
@@ -417,7 +407,7 @@ jobs:
       # checks (rewrites and the /playground → /try redirect, 404, headers, CSP, `/battles/*`
       # to the Worker) against `wrangler dev` with the local sandbox shell. Also runs when the
       # runtime suite failed, so one CI run reports both.
-      - name: Run web playground e2e tests
+      - name: Run web /try e2e tests
         if: ${{ !cancelled() && steps.runtime-e2e.outcome != 'skipped' }}
         run: pnpm --filter @br/web test:e2e
 
@@ -431,53 +421,6 @@ jobs:
             apps/web/test-results/
           if-no-files-found: ignore
           retention-days: 7
-
-  compat:
-    name: Package compatibility suite (R1, ${{ inputs.compat_cdn || 'our CDN and the npm registry' }})
-    # Hits the npm registry (or the CDN given in `compat_cdn`) for ~50 packages, so it only
-    # runs when started by hand.
-    if: github.event_name == 'workflow_dispatch' && inputs.compat
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    env:
-      # Read by compat/run.ts (T-035): empty starts @br/pkg-cdn; a base URL such as
-      # https://esm.sh runs every case and the CDN contract checks against that CDN, and the
-      # report is RESULTS-<host>.md. Passed as an environment variable, never pasted into the
-      # script, and validated by the suite.
-      COMPAT_CDN: ${{ inputs.compat_cdn }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Set up pnpm
-        uses: pnpm/action-setup@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version-file: .nvmrc
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Install Playwright Chromium
-        run: pnpm --filter @br/pkg-cdn exec playwright install --with-deps chromium
-
-      - name: Run the compatibility suite
-        run: pnpm --filter @br/pkg-cdn compat
-
-      - name: Upload results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: compat-results
-          path: |
-            apps/pkg-cdn/compat/RESULTS*.md
-            apps/pkg-cdn/node_modules/.cache/pkg-cdn-compat/results.json
-          if-no-files-found: ignore
-          include-hidden-files: true
-          retention-days: 30
 
   # T-025: the load generator (tools/loadtest) on a fresh stack, smoke profile only (manual
   # runs with the `loadtest` input). Scripted supabase-js clients (no browsers) play full

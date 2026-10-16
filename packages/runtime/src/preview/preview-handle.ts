@@ -105,7 +105,7 @@ export function applyPreviewAttributes(iframe: HTMLIFrameElement, mode: RunMode)
 }
 
 export interface PreviewOptions {
-  /** Shell URL, e.g. `https://{build_id}.buildroulette-usercontent.net/v1/`. */
+  /** Shell URL, e.g. `https://{build_id}.buildroulette-usercontent.net/v2/`. */
   shellUrl: string;
   /** Expected origin of the shell. Defaults to the origin of `shellUrl`. */
   shellOrigin?: string;

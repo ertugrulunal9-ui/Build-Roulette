@@ -32,7 +32,7 @@ function stackEnv(key: 'DB_URL' | 'API_URL' | 'SERVICE_ROLE_KEY' | 'ANON_KEY'): 
 
 /**
  * An object of the `ephemeral-builds` bucket as text (service role), or null if missing.
- * E.g. `{battle}/{user}/autosave/source.json`.
+ * E.g. `{battle}/{user}/autosave/site.bin`.
  */
 export async function ephemeralText(path: string): Promise<string | null> {
   const key = stackEnv('SERVICE_ROLE_KEY');

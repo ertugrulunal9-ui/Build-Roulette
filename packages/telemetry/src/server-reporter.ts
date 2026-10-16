@@ -64,7 +64,7 @@ export const disabledReporter: ErrorReporter = {
 export interface ServerReporterOptions {
   /** The Sentry DSN; empty or missing turns reporting off. */
   dsn: string | null | undefined;
-  /** Tag `service` on every event (web, capture-worker, pkg-cdn). */
+  /** Tag `service` on every event (web, capture-worker). */
   service: string;
   release?: string | undefined;
   environment?: string | undefined;

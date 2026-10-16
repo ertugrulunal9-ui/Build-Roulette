@@ -44,7 +44,7 @@ export default defineConfig({
   webServer: [
     {
       command: 'tsx scripts/solo-services.ts --realtime',
-      url: 'http://127.0.0.1:4321/v1/',
+      url: 'http://127.0.0.1:4321/v2/',
       env: { BR_APP_ORIGINS: APP_ORIGIN, BR_SERVICES_LOG: SERVICES_LOG },
       gracefulShutdown: { signal: 'SIGTERM', timeout: 40_000 },
       reuseExistingServer: process.env['E2E_REUSE_SERVERS'] === '1',

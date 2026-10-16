@@ -8,13 +8,17 @@
  * moments, or shows the landed cards at once.
  */
 import { BUILD_TIME_LIMITS_MINUTES } from '@br/game';
+import { useT } from '../../lib/i18n/context';
 import { formatTimeLimit } from '../../lib/solo/format';
 import type { Challenge } from '../../lib/solo/types';
 import { useTicker } from '../../lib/solo/use-ticker';
-import { CARD_LABEL, cardClass, type CardKind } from '../results/ResultPieces';
+import { cardClass, type CardKind } from '../results/ResultPieces';
 
-/** Decoys that scroll past while a reel spins (not the real deck). */
-const DECOYS: Record<CardKind | 'time', readonly string[]> = {
+/**
+ * Decoys that scroll past while a reel spins (not the real deck). English in every language,
+ * like the deck the reels land on (server content, T-050).
+ */
+const DECOYS: Record<CardKind, readonly string[]> = {
   build: [
     'A pixel art editor',
     'A tiny synth',
@@ -45,7 +49,6 @@ const DECOYS: Record<CardKind | 'time', readonly string[]> = {
     'Terminal green',
     'Swiss poster',
   ],
-  time: BUILD_TIME_LIMITS_MINUTES.map((m) => `${String(m)} min`),
 };
 
 /**
@@ -70,7 +73,11 @@ function Reel({
   value: string;
   landed: boolean;
 }) {
-  const decoys = DECOYS[kind];
+  const t = useT();
+  const decoys =
+    kind === 'time'
+      ? BUILD_TIME_LIMITS_MINUTES.map((m) => formatTimeLimit(m * 60, t))
+      : DECOYS[kind];
   const tone =
     kind === 'time'
       ? 'border-emerald-400 bg-emerald-50 text-emerald-950 dark:bg-emerald-950/60 dark:text-emerald-50'
@@ -123,6 +130,7 @@ export function SpinReels({
   playerName,
   heading,
 }: SpinReelsProps) {
+  const t = useT();
   useTicker(80);
   const now = serverNow();
   const span = Math.max(1, endsAt - startedAt);
@@ -136,29 +144,23 @@ export function SpinReels({
     >
       <header className="text-center">
         <p className="text-sm font-semibold tracking-widest text-zinc-400 uppercase">
-          {heading ?? `${playerName}, your challenge is…`}
+          {heading ?? t.spin.heading(playerName)}
         </p>
-        <h1 className="mt-2 text-5xl font-black tracking-tight sm:text-6xl">SPIN</h1>
+        <h1 className="mt-2 text-5xl font-black tracking-tight sm:text-6xl">{t.spin.title}</h1>
       </header>
       <div className="grid w-full max-w-5xl grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {(['build', 'rule', 'style'] as const).map((k) => (
-          <Reel
-            key={k}
-            kind={k}
-            label={CARD_LABEL[k]}
-            value={challenge[k].text}
-            landed={landed(k)}
-          />
+          <Reel key={k} kind={k} label={t.cards[k]} value={challenge[k].text} landed={landed(k)} />
         ))}
         <Reel
           kind="time"
-          label="TIME LIMIT"
-          value={formatTimeLimit(challenge.time_limit_seconds)}
+          label={t.cards.timeLimit}
+          value={formatTimeLimit(challenge.time_limit_seconds, t)}
           landed={allLanded}
         />
       </div>
       <p className="h-6 text-lg font-bold text-zinc-300" aria-live="polite">
-        {allLanded ? 'Get ready to build…' : ''}
+        {allLanded ? t.spin.getReady : ''}
       </p>
     </div>
   );

@@ -6,11 +6,13 @@
  * selected and a message says to copy it by hand.
  */
 import { useEffect, useRef, useState } from 'react';
-import { GUIDE_COPY } from './copy';
+import { useT } from '../../lib/i18n/context';
 
 type CopyState = 'idle' | 'copied' | 'failed';
 
-export function CopyPrompt({ text = GUIDE_COPY.prompt }: { text?: string }) {
+export function CopyPrompt({ text: given }: { text?: string }) {
+  const t = useT();
+  const text = given ?? t.guide.prompt;
   const [state, setState] = useState<CopyState>('idle');
   const textRef = useRef<HTMLParagraphElement>(null);
 
@@ -65,14 +67,14 @@ export function CopyPrompt({ text = GUIDE_COPY.prompt }: { text?: string }) {
           }}
           className="min-h-11 shrink-0 rounded-lg bg-zinc-900 px-4 py-2 text-sm font-bold text-white hover:bg-zinc-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-white"
         >
-          {state === 'copied' ? GUIDE_COPY.copied : GUIDE_COPY.copy}
+          {state === 'copied' ? t.guide.copied : t.guide.copy}
         </button>
       </div>
       <p role="status" className="min-h-5 text-sm" data-testid="copy-status">
         {state === 'failed' && (
-          <span className="text-amber-800 dark:text-amber-300">{GUIDE_COPY.copyFailed}</span>
+          <span className="text-amber-800 dark:text-amber-300">{t.guide.copyFailed}</span>
         )}
-        {state === 'copied' && <span className="sr-only">{GUIDE_COPY.copied}</span>}
+        {state === 'copied' && <span className="sr-only">{t.guide.copied}</span>}
       </p>
     </div>
   );

@@ -7,6 +7,7 @@
  */
 import { isTerminalPhase } from '@br/game';
 import { useCallback, useMemo } from 'react';
+import { useT } from '../../lib/i18n/context';
 import { indexedDbSites } from '../../lib/site/local-sites';
 import { SupabaseSoloApi } from '../../lib/solo/api';
 import type { SoloControllerDeps } from '../../lib/solo/controller';
@@ -32,6 +33,7 @@ function setBattleParam(battleId: string | null): void {
 }
 
 export default function SoloGame() {
+  const t = useT();
   const initialBattle = useMemo(() => readBattleParam(), []);
   const createDeps = useCallback(
     (): SoloControllerDeps => ({
@@ -49,7 +51,7 @@ export default function SoloGame() {
   useTicker(1000, state.stage === 'battle' && phase !== undefined && !isTerminalPhase(phase));
 
   if (!controller) {
-    return <Centered>Loading…</Centered>;
+    return <Centered>{t.common.loading}</Centered>;
   }
 
   if (state.stage === 'name' || state.stage === 'starting') {
@@ -76,14 +78,14 @@ export default function SoloGame() {
     );
   }
   if (state.stage === 'loading' || !snapshot || !phase) {
-    return <Centered>Loading the battle…</Centered>;
+    return <Centered>{t.common.loadingBattle}</Centered>;
   }
 
   const remaining = controller.remainingMs();
 
   if (phase === 'spinning' || phase === 'building' || phase === 'shipping') {
     if (!snapshot.me.is_player) {
-      return <Centered>This battle is still running. Its results will be public soon.</Centered>;
+      return <Centered>{t.solo.stillRunning}</Centered>;
     }
     const me = snapshot.players.find((p) => p.user_id === snapshot.me.user_id);
     return (
@@ -98,12 +100,12 @@ export default function SoloGame() {
               startedAt={Date.parse(snapshot.battle.phase_started_at)}
               endsAt={Date.parse(snapshot.battle.phase_ends_at)}
               serverNow={() => controller.serverNow()}
-              playerName={me?.display_name ?? 'Player'}
+              playerName={me?.display_name ?? t.solo.player}
             />
           )}
         {state.error && (
           <ErrorBanner
-            text={describeError(state.error)}
+            text={describeError(state.error, t)}
             onDismiss={() => {
               controller.dismissError();
             }}
@@ -125,6 +127,7 @@ function Centered({ children }: { children: React.ReactNode }) {
 }
 
 function ErrorBanner({ text, onDismiss }: { text: string; onDismiss: () => void }) {
+  const t = useT();
   return (
     <div
       role="alert"
@@ -132,7 +135,7 @@ function ErrorBanner({ text, onDismiss }: { text: string; onDismiss: () => void 
     >
       <span>{text}</span>
       <button type="button" onClick={onDismiss} className="font-semibold underline">
-        Dismiss
+        {t.common.dismiss}
       </button>
     </div>
   );

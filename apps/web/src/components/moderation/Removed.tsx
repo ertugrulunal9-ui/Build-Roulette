@@ -1,13 +1,14 @@
+'use client';
+
 /**
  * How a build taken down by a moderator looks (T-024): no name, no screenshot, this label
- * instead. Server and client components both use it (no 'use client').
+ * instead, in the page's language (T-050: the catalogs' `moderation.removed`).
  */
-
-/** The label of a build whose name and screenshot a moderator removed (T-024). */
-export const REMOVED_TEXT = 'Removed by moderators';
+import { useT } from '../../lib/i18n/context';
 
 /** The image slot of a removed build. */
 export function RemovedCard({ compact = false }: { compact?: boolean }) {
+  const t = useT();
   return (
     <div
       data-testid="removed-build"
@@ -17,7 +18,7 @@ export function RemovedCard({ compact = false }: { compact?: boolean }) {
         className={`${compact ? 'text-[11px]' : 'text-sm'} font-semibold text-zinc-600 dark:text-zinc-300`}
       >
         <span aria-hidden="true">🚫 </span>
-        {REMOVED_TEXT}
+        {t.moderation.removed}
       </p>
     </div>
   );

@@ -410,9 +410,11 @@ font), it loads itself, as on any static host.
 
 ## Onboarding (T-049)
 
-New players are told how the game works where they arrive (docs/09 §9.6). Every word is in
-`src/components/onboarding/copy.ts` (for T-050), with the numbers from `@br/game` and
-`@br/site`.
+New players are told how the game works where they arrive (docs/09 §9.6). Its words are in
+the catalogs since T-050 ("Languages" below: `steps`, `stepArt`, `welcome`, `home`,
+`lobbyHints`, `phone`, `importHelp`, `guide`), with the numbers from `@br/game` and
+`@br/site`; `src/components/onboarding/copy.ts` keeps the paths, the steps' order and emojis
+and the pictures' sample data.
 
 - **Welcome screen** (`components/onboarding/Welcome.tsx`): a full-screen modal `<dialog>`
   with the four steps (spin, build it your way, build & drop, ship / reveal / vote), each with
@@ -434,6 +436,93 @@ New players are told how the game works where they arrive (docs/09 §9.6). Every
 - **The e2e** starts every browser context with the welcome already seen (`e2e/welcome.ts`,
   `use.storageState` in each Playwright config); `e2e/onboarding.spec.ts` clears it.
 
+## Languages (T-050)
+
+The UI is **English by default**; a player can switch it to **Turkish** (docs/09 §9.7). It never
+follows the browser's language: English stays until the player picks Turkish, and the choice
+is remembered per browser.
+
+- **Catalogs** (`src/lib/i18n/messages/`): `en.ts` is the source of truth, a typed object
+  (`Messages = typeof en`); `tr.ts` is typed `Messages`, so TypeScript refuses a missing key,
+  an extra key or a function with other arguments. Plurals and interpolation are functions
+  (`files: (n) => …`). Backticks mark code; `Rich` (`src/components/i18n/Rich.tsx`) renders
+  `**bold**` and `{slot}`s filled with React nodes (a name, a time), so each language puts
+  them where its grammar wants. Codes from other packages are translated here, one entry per
+  code and typed against their lists: `errors` (every `ErrorCode`, `describeError(e, t)`),
+  `voteErrors`, `importErrors` (every `@br/site` `ImportErrorCode`; the English comes from
+  `describeImportError`), `phases` (`PHASE_LABELS`), `voteCategories`, `reportReasons`.
+- **Mechanism** (`src/lib/i18n/`): `locale.ts` (`Locale = 'en' | 'tr'`, the `br:locale`
+  localStorage key, every access in try/catch), `store.ts` (the choice in memory, so blocked
+  storage still switches for the page view; other tabs follow through `storage` events),
+  `context.tsx` (`I18nProvider` in the root layout, `useT()` for the catalog, `useI18n()` for
+  the locale and `setLocale`; without a provider, e.g. a unit test, everything is English),
+  `format.ts` (`Intl`: sizes `1,2 MB`, dates in UTC, relative times `3 dk. önce`). Pure
+  helpers take the catalog as an optional last argument and default to English
+  (`describeError(e, t)`, `formatTimeLimit(s, t)`, `statsPhrases(stats, t, locale)`,
+  `settingsSummary(settings, t)`); room toasts are data (`ToastMessage`) worded when shown
+  (`toastText`), so a switch rewords them too.
+- **The switch** (`src/components/i18n/LanguagePicker.tsx`): "EN / TR", a labelled group of
+  two toggle buttons (`aria-pressed`, each language named in itself, `lang` set). Every
+  player-facing page has one in its header or footer: home (top right), the welcome dialog,
+  `/play` (name entry, BUILD header, results), rooms (lobby header, join / error / end
+  screens, BUILD, spectator, REVEAL, VOTE and RESULTS headers), `/try`, `/how-it-works`,
+  `/battles/*`, `/u/*`, the 404 page and the load-error screens. A switch re-renders in place:
+  no navigation, no remount, so a running battle goes on (the preview iframe is only
+  renamed, `PreviewController.setFrameTitle`; e2e `solo-language.spec.ts` checks the import,
+  the site's own state and the countdown across a switch during BUILD).
+- **Static export and the first paint:** pages are prerendered in English. An inline script
+  in the root layout's `<head>` (`LOCALE_SCRIPT`) sets `<html lang="tr" data-locale="tr">`
+  before the first paint when Turkish is stored, and `globals.css` keeps the page hidden until
+  the provider has rendered Turkish (`data-locale-ready`; at most 1.5 s, then it shows anyway),
+  so English never flashes. React hydrates in English (`useSyncExternalStore`'s server
+  snapshot) and re-renders with the stored language: no hydration mismatch (the e2e fails on
+  any console error). The script is a constant string, so the CSP lists its SHA-256 like Next's
+  own inline scripts (`scripts/pages-config.ts`, no `'unsafe-inline'`).
+- **Tab titles** follow the language everywhere: the shells (`/r`, `/battles`, `/u`) render
+  their `<title>` (`DocumentTitle`), and `/play`, `/try`, `/how-it-works` and the 404 page now
+  do too (`PageTitle`; their metadata sets `title: null`, so the exported HTML has the English
+  one). The home page's "Build Roulette" is the same in both. Static `description`s and the
+  link previews' `og:*` stay English.
+- **What stays English, and why:** server content (the challenge cards and their hints,
+  player and build names, a vote category the server adds beyond the four known ones, the
+  server's rate-limit sentence, whose wait time Turkish reads and rewords); the spinning
+  reels' decoys and the welcome's example cards (they show the deck, which is English); the
+  sandbox's console and Problems (the site's own output, the shell's `module-load` messages);
+  `/admin` (always English and without a switch, also when Turkish is stored, `<html lang="en">`
+  there); link previews and the Worker (`battleMeta`, `og:*`); telemetry event names; the
+  random fun names (they become player names); the `m:ss` countdown and `m:ss.s` completion
+  times (the same in both).
+- **Glossary** (game terms in Turkish, used everywhere):
+
+  | English | Türkçe |
+  |---|---|
+  | battle | kapışma ("Solo kapışma", "Kapışma geçmişin") |
+  | build (a player's entry) | proje ("En İyi Proje", "Projen") |
+  | build (the step, `npm run build`); the built site | build, "build al"; "build’i alınmış site" |
+  | SPIN / Spin | ÇARK (phase), "ÇARK DÖNÜYOR"; "Çevir" (the button) |
+  | BUILD (phase) | İNŞA ("İnşa" on the countdown) |
+  | ship / shipped / auto-shipped | teslim et / teslim edildi / otomatik teslim |
+  | reveal / vote / results / destroy | gösterim / oylama, oy ver / sonuçlar / imha |
+  | the cards BUILD · RULE · STYLE · TIME LIMIT | PROJE · KURAL · STİL · SÜRE |
+  | room · host · spectator · lobby | oda · oda sahibi · izleyici · lobi |
+  | Ready up · rematch · kick | Hazırım · rövanş · at |
+  | import · drop · preview | içe aktar · bırak · önizleme |
+  | autosave · last look · screenshot | otomatik kayıt · son bakış · ekran görüntüsü |
+  | Speedrun · Clutch ship · Fastest ship | Speedrun · Son saniye teslimi · En hızlı teslim |
+  | DNF / Did not finish | Bitiremedi |
+  | Problems · Console · sandbox | Sorunlar · Konsol · sandbox |
+  | report · moderators | bildir · moderatörler |
+  | vibe coder · prompt · AI tool | vibe coder · prompt · yapay zekâ aracı |
+
+- **Adding a string:** add it to `en.ts` (the section of its screen); `tr.ts` then fails to
+  compile until it has the Turkish; in the component, `const t = useT()` and `t.section.key`
+  (a function for numbers or names, `Rich` for markup or React parts). Never type words into
+  JSX: `pnpm --filter @br/web test` fails on JSX text with letters and on literal
+  `aria-label` / `title` / `placeholder` / `alt` (and the like) values in `src/components` and
+  `src/app` outside `/admin` (`src/lib/i18n/hardcoded-strings.ts`; `ALLOWED` there for the few
+  words that never change, such as the game's name). `catalogs.test.ts` fails on an empty
+  Turkish text or one identical to the English (`SAME_IN_BOTH` lists the shared terms).
+
 ## Code map
 
 | Piece | File |
@@ -453,7 +542,8 @@ New players are told how the game works where they arrive (docs/09 §9.6). Every
 | Results page (shell, loader, page) + its title and social image | `src/app/battles/page.tsx`, `src/components/results/BattleView.tsx`, `BattleResults.tsx`, `src/lib/solo/public-battle.ts`, `battle-meta.ts`, `og-image.ts`, `public/og-card.png` (`scripts/og-card.ts`) |
 | Static hosting: shells and rewrites, `_headers` and the CSP, the export checks, page loads | `src/lib/hosting/*`, `scripts/pages-config.ts`, `wrangler.jsonc` (the Worker with static assets) |
 | Player history page | `src/app/u/page.tsx`, `src/components/results/PlayerHistoryView.tsx`, `PlayerHistory.tsx`, `src/lib/history/*`, `src/components/results/MyHistoryLink.tsx` |
-| Onboarding: the welcome screen, the steps, the guide, "How do I import?", their words | `src/components/onboarding/*`, `src/lib/onboarding/welcome.ts`, `src/app/how-it-works/page.tsx` |
+| Onboarding: the welcome screen, the steps, the guide, "How do I import?" | `src/components/onboarding/*`, `src/lib/onboarding/welcome.ts`, `src/app/how-it-works/page.tsx` |
+| Languages: the catalogs, the provider, the switch, the formatting, the checks | `src/lib/i18n/*`, `src/components/i18n/*` |
 | Phones and tablets (touch-primary check) | `src/lib/device.ts`, `src/components/room/DesktopNeeded.tsx` |
 | Moderation: report dialog, "Removed by moderators" | `src/components/moderation/*`, `src/lib/moderation/report.ts` |
 | Admin page, sign-in, the moderator's session (its own client, sessionStorage) | `src/app/admin/*`, `src/components/admin/*`, `src/lib/admin/*` |
@@ -465,7 +555,7 @@ New players are told how the game works where they arrive (docs/09 §9.6). Every
 
 ```sh
 pnpm --filter @br/web test             # unit (Vitest): solo + room controllers, sync engine, reducer, …
-pnpm --filter @br/web test:e2e         # /try, the onboarding and the static site (Playwright), no Supabase needed
+pnpm --filter @br/web test:e2e         # /try, the onboarding, the languages and the static site (Playwright), no Supabase needed
 pnpm --filter @br/web test:e2e:solo    # /play against the REAL local Supabase stack
 pnpm --filter @br/web test:e2e:moderation  # report → /admin takedown → removed on the next load (REAL stack)
 pnpm --filter @br/web test:e2e:multi   # rooms: 3+ browser contexts (and phones), REAL stack WITH Realtime
@@ -475,6 +565,15 @@ CHAOS_SHARD=2 pnpm --filter @br/web test:e2e:chaos   # one of its 3 shards (~5 m
 pnpm --filter @br/web test:e2e:telemetry      # error reporting + analytics against a fake ingest, on and off (REAL stack)
 ```
 
+- **Languages** (T-050): `e2e/language.spec.ts` (in `test:e2e`, on a Chromium set to
+  `tr-TR`): English by default, "TR" on the home page turns the hero, the welcome and the
+  guide Turkish (`<html lang="tr">`, the tab titles), a reload keeps it with no console
+  error or CSP violation, "EN" switches back; the welcome a first visit opens has the switch;
+  a `/try` import error in Turkish; the home page at 390 px; the 404 page.
+  `e2e/solo-language.spec.ts` (`test:e2e:solo`): Turkish during BUILD keeps the imported site
+  (the same iframe, the site's own state) and the countdown running, then ship and the results
+  in Turkish. `e2e/multiplayer-language.spec.ts` (`test:e2e:multi`): a Turkish host and an
+  English guest in one room. `LANGUAGE_SCREENSHOT_DIR=/dir` saves Turkish screenshots.
 - `test:e2e:telemetry` (`playwright.telemetry.config.ts`) builds twice. First with the
   Sentry DSN and the PostHog host pointing at a local fake ingest (`@br/telemetry/testing`,
   port 4399, started by the spec, and allowed by that build's CSP): a browser error, the

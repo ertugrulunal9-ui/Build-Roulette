@@ -15,9 +15,9 @@ import type { ImportedSite } from '@br/site';
 import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { previewConfig } from '../../lib/preview/config';
 import { PreviewController } from '../../lib/preview/preview-controller';
+import { useT } from '../../lib/i18n/context';
 import { useSiteImport, type ImportVia } from '../../lib/site/use-site-import';
 import { PreviewHealth } from '../../lib/telemetry/sandbox-health';
-import { IMPORT_COPY } from './copy';
 import { DropZone } from './DropZone';
 import { ImportBar } from './ImportBar';
 import { PreviewPane } from './PreviewPane';
@@ -56,6 +56,9 @@ export function SiteWorkbench({
   onPreview,
   help,
 }: SiteWorkbenchProps) {
+  const t = useT();
+  const frameTitle = t.importUi.frameTitle;
+  const frameTitleRef = useRef(frameTitle);
   const hostRef = useRef<HTMLDivElement>(null);
   const [preview, setPreview] = useState<PreviewController | null>(null);
   const onPreviewRef = useRef(onPreview);
@@ -69,6 +72,7 @@ export function SiteWorkbench({
     if (!host) return;
     const c = new PreviewController(host, previewConfig, {
       health: new PreviewHealth({ mode: 'live', battleId }),
+      frameTitle: frameTitleRef.current,
     });
     // The controller is an external system with its own lifecycle, created per mount.
     setPreview(c);
@@ -86,6 +90,12 @@ export function SiteWorkbench({
   useEffect(() => {
     if (preview && site && preview.current() !== site.pack) preview.load(site.pack);
   }, [preview, site]);
+
+  // A language switch renames the iframe for screen readers; the preview keeps running.
+  useEffect(() => {
+    frameTitleRef.current = frameTitle;
+    preview?.setFrameTitle(frameTitle);
+  }, [preview, frameTitle]);
 
   const snapshot = useSyncExternalStore(
     preview?.subscribe ?? noopSubscribe,
@@ -143,7 +153,7 @@ export function SiteWorkbench({
           className="pointer-events-auto fixed inset-0 z-50 grid place-items-center bg-sky-500/20 p-6 backdrop-blur-[1px] dark:bg-sky-400/20"
         >
           <p className="pointer-events-none rounded-3xl border-4 border-dashed border-sky-500 bg-white/95 px-8 py-6 text-2xl font-black text-sky-900 shadow-2xl dark:border-sky-400 dark:bg-zinc-900/95 dark:text-sky-100">
-            📦 {IMPORT_COPY.dropOverlay}
+            📦 {t.importUi.dropOverlay}
           </p>
         </div>
       )}

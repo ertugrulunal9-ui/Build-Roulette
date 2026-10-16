@@ -1,6 +1,16 @@
 'use client';
 
 import dynamic from 'next/dynamic';
+import { useT } from '../../lib/i18n/context';
+import { PageTitle } from '../i18n/PageTitle';
+
+function Loading() {
+  return (
+    <main className="grid h-dvh place-items-center text-sm text-zinc-500">
+      {useT().common.loading}
+    </main>
+  );
+}
 
 /**
  * `/try` (the import, the runtime) only works in the browser, so it is a client-only chunk
@@ -8,11 +18,14 @@ import dynamic from 'next/dynamic';
  */
 const Try = dynamic(() => import('./Try'), {
   ssr: false,
-  loading: () => (
-    <main className="grid h-dvh place-items-center text-sm text-zinc-500">Loading…</main>
-  ),
+  loading: Loading,
 });
 
 export function TryLoader() {
-  return <Try />;
+  return (
+    <>
+      <PageTitle page="try" />
+      <Try />
+    </>
+  );
 }

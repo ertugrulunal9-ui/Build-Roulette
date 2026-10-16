@@ -115,3 +115,23 @@
     animation: br-destroy 2.2s steps(1, end) forwards;
   }
 }
+
+/* ─── Language (T-050) ─────────────────────────────────────────────────────── */
+
+/*
+ * The pages are prerendered in English. When the player picked Turkish, the early script in
+ * the root layout sets `data-locale="tr"` on <html> before the first paint (lib/i18n/locale.ts),
+ * and the page stays hidden until React shows it in Turkish (`data-locale-ready`, set by the
+ * I18nProvider), so English never flashes. If the script never gets there, the page shows
+ * anyway after 1.5 s.
+ */
+@keyframes br-locale-reveal {
+  to {
+    visibility: visible;
+  }
+}
+
+html[data-locale='tr']:not([data-locale-ready]) body {
+  visibility: hidden;
+  animation: br-locale-reveal 0s 1.5s forwards;
+}

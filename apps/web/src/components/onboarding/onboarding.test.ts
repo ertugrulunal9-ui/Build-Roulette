@@ -14,7 +14,13 @@ import { initialRoomState, type RoomController } from '../../lib/room/controller
 import { roomSnapshot } from '../../lib/room/test-support';
 import { Lobby } from '../room/Lobby';
 import { DropZone } from '../site/DropZone';
-import { GUIDE_COPY, GUIDE_PATH, IMPORT_HELP_COPY, STEPS, TRY_PATH } from './copy';
+import { en } from '../../lib/i18n/messages/en';
+import { GUIDE_PATH, STEP_IDS, TOOL_IDS, TRY_PATH } from './copy';
+
+const GUIDE_COPY = en.guide;
+const IMPORT_HELP_COPY = en.importHelp;
+const STEPS = STEP_IDS.map((id) => en.steps[id]);
+const TOOL_GUIDES = TOOL_IDS.map((id) => ({ id, ...en.guide.tools[id] }));
 import { CopyPrompt } from './CopyPrompt';
 import { ImportHelp } from './ImportHelp';
 import { ToolTabs } from './ToolTabs';
@@ -315,7 +321,7 @@ describe('the guide', () => {
   });
 
   it('tool tabs: one panel at a time; click and arrow keys switch', () => {
-    render(createElement(ToolTabs, { guides: GUIDE_COPY.tools, label: GUIDE_COPY.toolsLabel }));
+    render(createElement(ToolTabs, { guides: TOOL_GUIDES, label: GUIDE_COPY.toolsLabel }));
     const tabs = screen.getAllByRole('tab');
     expect(tabs.map((t) => t.textContent)).toEqual([
       'Editor agents',

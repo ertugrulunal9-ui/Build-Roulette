@@ -1,15 +1,17 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { useT } from '../../lib/i18n/context';
+import type { Messages } from '../../lib/i18n/messages/en';
 import type { ShipState } from '../../lib/solo/controller';
 import { describeError } from '../../lib/solo/errors';
 
-const PROGRESS: Partial<Record<ShipState['status'], string>> = {
-  thumbnail: 'Taking a snapshot…',
-  uploading: 'Uploading your site…',
-  shipping: 'Shipping…',
-  done: 'Shipped!',
-};
+function progressText(status: ShipState['status'], m: Messages): string | null {
+  if (status === 'thumbnail' || status === 'uploading' || status === 'shipping') {
+    return m.ship[status];
+  }
+  return status === 'done' ? m.ship.done : null;
+}
 
 interface ShipDialogProps {
   open: boolean;
@@ -21,6 +23,7 @@ interface ShipDialogProps {
 
 /** "Ship it? You can't import again after." with the build name (docs/04 §4.4). */
 export function ShipDialog({ open, defaultName, ship, onShip, onClose }: ShipDialogProps) {
+  const t = useT();
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [name, setName] = useState(defaultName);
   const busy = ship.status !== 'idle' && ship.status !== 'error';
@@ -50,13 +53,10 @@ export function ShipDialog({ open, defaultName, ship, onShip, onClose }: ShipDia
           if (!busy && trimmed.length > 0) onShip(trimmed);
         }}
       >
-        <h2 className="text-2xl font-black tracking-tight">Ship it?</h2>
-        <p className="text-sm text-zinc-600 dark:text-zinc-400">
-          You can&apos;t import again after. The site you imported last is frozen, screenshotted and
-          judged as it is now.
-        </p>
+        <h2 className="text-2xl font-black tracking-tight">{t.ship.title}</h2>
+        <p className="text-sm text-zinc-600 dark:text-zinc-400">{t.ship.text}</p>
         <label className="flex flex-col gap-1 text-sm font-semibold">
-          Build name
+          {t.ship.buildName}
           <input
             data-testid="build-name"
             value={name}
@@ -72,7 +72,7 @@ export function ShipDialog({ open, defaultName, ship, onShip, onClose }: ShipDia
 
         {busy && (
           <p role="status" className="text-sm font-semibold text-sky-700 dark:text-sky-300">
-            {PROGRESS[ship.status]}
+            {progressText(ship.status, t)}
           </p>
         )}
         {ship.status === 'error' && ship.error && (
@@ -81,7 +81,7 @@ export function ShipDialog({ open, defaultName, ship, onShip, onClose }: ShipDia
             className="text-sm text-red-700 dark:text-red-300"
             data-testid="ship-error"
           >
-            {describeError(ship.error)}
+            {describeError(ship.error, t)}
           </p>
         )}
 
@@ -92,7 +92,7 @@ export function ShipDialog({ open, defaultName, ship, onShip, onClose }: ShipDia
             onClick={onClose}
             className="rounded-lg border border-zinc-300 px-4 py-2 text-sm font-semibold disabled:opacity-50 dark:border-zinc-700"
           >
-            Keep building
+            {t.ship.keepBuilding}
           </button>
           <button
             type="submit"
@@ -100,7 +100,7 @@ export function ShipDialog({ open, defaultName, ship, onShip, onClose }: ShipDia
             disabled={busy || trimmed.length === 0}
             className="rounded-lg bg-emerald-600 px-5 py-2 text-sm font-black tracking-wide text-white disabled:opacity-50"
           >
-            {ship.status === 'error' ? 'Try again' : 'Ship it 🚀'}
+            {ship.status === 'error' ? t.ship.tryAgain : t.ship.ship}
           </button>
         </div>
       </form>

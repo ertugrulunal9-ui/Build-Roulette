@@ -20,13 +20,8 @@ export function siteFromPack(pack: Uint8Array<ArrayBuffer>): ImportedSite | null
   }
 }
 
-/** `1.2 MB`, `340 KB`, `512 B` (decimal-ish, rounded for a person, not a disk). */
-export function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes < 0) return '';
-  if (bytes < 1024) return `${String(Math.round(bytes))} B`;
-  if (bytes < 1024 * 1024) return `${String(Math.max(1, Math.round(bytes / 1024)))} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
+/** `1.2 MB`, `340 KB`, `512 B`, in the page's language (`1,2 MB` in Turkish). */
+export { formatBytes } from '../i18n/format';
 
 /** `dist` for `dist/`, `my-app/dist` for `my-app/dist/`, null for the dropped folder itself. */
 export function rootLabel(root: string): string | null {

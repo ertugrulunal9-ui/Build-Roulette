@@ -8,7 +8,16 @@
  */
 import { useRef, useState, type KeyboardEvent } from 'react';
 import { CodeText } from '../site/CodeText';
-import type { ToolGuide } from './copy';
+import type { ToolId } from './copy';
+
+/** One kind of tool: its tab, the tools, the steps and an optional note. */
+export interface ToolGuide {
+  id: ToolId;
+  tab: string;
+  tools: string;
+  steps: readonly string[];
+  note?: string | undefined;
+}
 
 export function ToolTabs({ guides, label }: { guides: readonly ToolGuide[]; label: string }) {
   const [selected, setSelected] = useState(0);
@@ -93,7 +102,7 @@ export function ToolTabs({ guides, label }: { guides: readonly ToolGuide[]; labe
           <p className="text-sm font-semibold text-zinc-500">{g.tools}</p>
           <ol className="mt-3 flex flex-col gap-2">
             {g.steps.map((s, n) => (
-              <li key={s} className="flex gap-3">
+              <li key={n} className="flex gap-3">
                 <span className="grid size-6 shrink-0 place-items-center rounded-full bg-zinc-900 text-xs font-black text-white dark:bg-zinc-100 dark:text-zinc-900">
                   {n + 1}
                 </span>

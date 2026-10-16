@@ -1,9 +1,18 @@
+'use client';
+
 /**
  * Presentational pieces shared by the RESULTS phase of /play and the permanent
- * /battles/[id] page. No hooks, so they render on the server too.
+ * /battles/[id] page, in the page's language (T-050).
  */
 import { VOTE_CATEGORIES } from '@br/game';
-import { awardInfo, categoryEmoji, formatTimeLimit, isVoteAward } from '../../lib/solo/format';
+import { useT } from '../../lib/i18n/context';
+import {
+  awardInfo,
+  categoryEmoji,
+  categoryLabel,
+  formatTimeLimit,
+  isVoteAward,
+} from '../../lib/solo/format';
 import type { Award, Challenge, VoteCounts } from '../../lib/solo/types';
 
 const CARD_STYLE = {
@@ -14,12 +23,6 @@ const CARD_STYLE = {
 } as const;
 
 export type CardKind = keyof typeof CARD_STYLE;
-
-export const CARD_LABEL: Record<CardKind, string> = {
-  build: 'BUILD',
-  rule: 'RULE',
-  style: 'STYLE',
-};
 
 export function cardClass(kind: CardKind): string {
   return CARD_STYLE[kind];
@@ -36,6 +39,7 @@ export function ChallengeCards({
   /** One card per row (a narrow column such as the REVEAL sidebar). */
   stacked?: boolean;
 }) {
+  const t = useT();
   const kinds: CardKind[] = ['build', 'rule', 'style'];
   return (
     <ul
@@ -48,7 +52,7 @@ export function ChallengeCards({
           className={`rounded-lg border-l-4 px-3 ${compact ? 'py-1.5' : 'py-2.5'} ${CARD_STYLE[k]}`}
           data-card={k}
         >
-          <p className="text-[10px] font-black tracking-widest opacity-70">{CARD_LABEL[k]}</p>
+          <p className="text-[10px] font-black tracking-widest opacity-70">{t.cards[k]}</p>
           <p className={`font-semibold ${compact ? 'text-sm' : 'text-base'}`}>
             {challenge[k].text}
           </p>
@@ -57,7 +61,9 @@ export function ChallengeCards({
           )}
         </li>
       ))}
-      <li className="sr-only">Time limit: {formatTimeLimit(challenge.time_limit_seconds)}</li>
+      <li className="sr-only">
+        {t.cards.timeLimitSr(formatTimeLimit(challenge.time_limit_seconds, t))}
+      </li>
     </ul>
   );
 }
@@ -67,15 +73,16 @@ export function ChallengeCards({
  * auto-awards (speedrun, clutch ship, fastest ship).
  */
 export function AwardBadges({ awards }: { awards: readonly Award[] }) {
+  const t = useT();
   if (awards.length === 0) return null;
   const sorted = [...awards].sort(
     (a, b) =>
       Number(isVoteAward(b.award)) - Number(isVoteAward(a.award)) || awardOrder(a) - awardOrder(b),
   );
   return (
-    <ul className="flex flex-wrap gap-2" aria-label="Awards">
+    <ul className="flex flex-wrap gap-2" aria-label={t.awards.label}>
       {sorted.map((a) => {
-        const info = awardInfo(a.award);
+        const info = awardInfo(a.award, t);
         const vote = isVoteAward(a.award);
         return (
           <li
@@ -92,10 +99,7 @@ export function AwardBadges({ awards }: { awards: readonly Award[] }) {
           >
             <span aria-hidden="true">{info.emoji}</span> {info.title}
             {vote && a.votes !== null && (
-              <span className="font-normal opacity-80">
-                {' '}
-                · {a.votes} {a.votes === 1 ? 'vote' : 'votes'}
-              </span>
+              <span className="font-normal opacity-80"> · {t.awards.votes(a.votes)}</span>
             )}
           </li>
         );
@@ -122,17 +126,18 @@ export function VoteTally({
   total: number;
   compact?: boolean;
 }) {
+  const t = useT();
   if (!votes) return null;
   const known = VOTE_CATEGORIES.filter((c) => c.slug in votes);
   const extra = Object.keys(votes).filter((k) => !VOTE_CATEGORIES.some((c) => c.slug === k));
   const rows = [
-    ...known.map((c) => ({ slug: c.slug, label: c.label })),
+    ...known.map((c) => ({ slug: c.slug, label: categoryLabel(c.slug, t) })),
     ...extra.map((k) => ({ slug: k, label: k })),
   ];
   return (
     <ul
       className="flex flex-wrap items-center gap-1.5 text-xs"
-      aria-label="Votes per category"
+      aria-label={t.awards.perCategory}
       data-testid="vote-tally"
       data-total={total}
     >
@@ -154,9 +159,7 @@ export function VoteTally({
           {votes[r.slug] ?? 0}
         </li>
       ))}
-      <li className="ml-1 font-bold text-zinc-600 dark:text-zinc-300">
-        {total} {total === 1 ? 'vote' : 'votes'}
-      </li>
+      <li className="ml-1 font-bold text-zinc-600 dark:text-zinc-300">{t.awards.votes(total)}</li>
     </ul>
   );
 }

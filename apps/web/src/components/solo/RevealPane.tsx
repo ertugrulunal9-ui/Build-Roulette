@@ -12,6 +12,7 @@
  */
 import { PreviewHandle, type CrashReason, type PreviewBuild } from '@br/runtime';
 import { useEffect, useRef, useState } from 'react';
+import { useT } from '../../lib/i18n/context';
 import { previewConfig } from '../../lib/preview/config';
 import { isSiteLoadFailure } from '../../lib/preview/site-errors';
 import type { DestroyStage } from '../../lib/solo/controller';
@@ -28,7 +29,10 @@ interface RevealPaneProps {
 }
 
 export function RevealPane({ battleId, build, status, destroy, caption }: RevealPaneProps) {
+  const t = useT();
+  const words = t.revealPane;
   const hostRef = useRef<HTMLDivElement>(null);
+  const frameTitleRef = useRef(words.frameTitle);
   /** Why the watchdog stopped the preview (it froze, or it never started), if it did. */
   const [crashed, setCrashed] = useState<CrashReason | null>(null);
   /** The sandbox could not serve the site in this browser. */
@@ -38,11 +42,18 @@ export function RevealPane({ battleId, build, status, destroy, caption }: Reveal
     battleIdRef.current = battleId;
   }, [battleId]);
 
+  // A language switch renames the frame; the build keeps running (T-050).
+  useEffect(() => {
+    frameTitleRef.current = words.frameTitle;
+    const iframe = hostRef.current?.querySelector('iframe');
+    if (iframe) iframe.title = words.frameTitle;
+  }, [words.frameTitle]);
+
   useEffect(() => {
     const host = hostRef.current;
     if (!build || !host) return;
     const iframe = host.ownerDocument.createElement('iframe');
-    iframe.title = 'Your shipped build (last look)';
+    iframe.title = frameTitleRef.current;
     iframe.dataset['testid'] = 'reveal-frame';
     iframe.style.cssText =
       'position:absolute;inset:0;width:100%;height:100%;border:0;background:#fff';
@@ -103,12 +114,12 @@ export function RevealPane({ battleId, build, status, destroy, caption }: Reveal
         />
         {status === 'loading' && (
           <p className="absolute inset-0 grid place-items-center text-sm text-zinc-500">
-            Loading your build…
+            {words.loading}
           </p>
         )}
         {status === 'unavailable' && (
           <p className="absolute inset-0 grid place-items-center p-6 text-center text-sm text-zinc-500">
-            Nothing to show: no build was shipped.
+            {words.unavailable}
           </p>
         )}
         {noLoad && !crashed && destroy === 'none' && (
@@ -116,7 +127,7 @@ export function RevealPane({ battleId, build, status, destroy, caption }: Reveal
             className="absolute inset-x-0 bottom-0 bg-zinc-100/95 p-4 text-center text-sm dark:bg-zinc-900/95"
             data-testid="reveal-no-load"
           >
-            Your site couldn’t load in this browser. Its screenshot and results are safe.
+            {words.noLoad}
           </p>
         )}
         {crashed && destroy === 'none' && (
@@ -125,9 +136,7 @@ export function RevealPane({ battleId, build, status, destroy, caption }: Reveal
             data-testid="reveal-crashed"
             data-reason={crashed}
           >
-            {crashed === 'handshake-timeout'
-              ? 'Your build couldn’t start here: the preview sandbox never answered.'
-              : 'Your build froze (it stopped responding), so it was stopped.'}
+            {crashed === 'handshake-timeout' ? words.noStart : words.froze}
           </p>
         )}
         {destroy === 'animating' && (
@@ -136,7 +145,7 @@ export function RevealPane({ battleId, build, status, destroy, caption }: Reveal
             data-testid="destroy-moment"
           >
             <p className="br-stamp rounded-lg border-8 border-red-600 bg-black/70 px-6 py-3 text-3xl font-black tracking-widest text-red-500 sm:text-5xl">
-              DESTROYING
+              {words.destroying}
             </p>
           </div>
         )}
@@ -149,12 +158,9 @@ export function RevealPane({ battleId, build, status, destroy, caption }: Reveal
                 ~31 px below its box, onto the line under it. */}
             <div className="flex flex-col items-center gap-10">
               <p className="br-stamp rounded-lg border-8 border-red-600 px-6 py-3 text-3xl font-black tracking-widest text-red-500 sm:text-4xl">
-                BUILD DESTROYED
+                {words.destroyedStamp}
               </p>
-              <p className="max-w-sm text-sm text-zinc-400">
-                The imported site is gone: from this browser now, and from the server in a moment.
-                The results stay forever.
-              </p>
+              <p className="max-w-sm text-sm text-zinc-400">{words.destroyedText}</p>
             </div>
           </div>
         )}

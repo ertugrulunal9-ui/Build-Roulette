@@ -5,9 +5,11 @@
  * none), then the lobby, the battle (the solo stages, driven by the room's sync engine) and
  * back to the lobby for the rematch. Every join error and end state has its own screen.
  */
-import { ROOM_LIMITS, isTerminalPhase, type JoinRoomError } from '@br/game';
+import { isTerminalPhase, type JoinRoomError } from '@br/game';
 import Link from 'next/link';
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
+import { useT } from '../../lib/i18n/context';
+import type { Messages } from '../../lib/i18n/messages/en';
 import { indexedDbSites } from '../../lib/site/local-sites';
 import { SupabaseRealtime, SupabaseRoomApi } from '../../lib/room/api';
 import {
@@ -27,6 +29,7 @@ import { randomDisplayName } from '../../lib/solo/names';
 import { useTicker } from '../../lib/solo/use-ticker';
 import { ensureSignedIn, getSupabase } from '../../lib/supabase/browser';
 import { useTouchPrimary } from '../../lib/device';
+import { LanguagePicker } from '../i18n/LanguagePicker';
 import { HowItWorksButton } from '../onboarding/Welcome';
 import { BuildStage } from '../solo/BuildStage';
 import { DesktopNeeded } from './DesktopNeeded';
@@ -47,6 +50,7 @@ const outlineButton =
   'rounded-lg border border-zinc-300 px-5 py-3 font-semibold hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800';
 
 export default function RoomApp({ code }: { code: string }) {
+  const t = useT();
   const createDeps = useCallback((): RoomControllerDeps => {
     const supabase = getSupabase();
     return {
@@ -81,10 +85,10 @@ export default function RoomApp({ code }: { code: string }) {
 
   const shownCode = state.code ?? code.toUpperCase();
   if (!controller || state.stage === 'starting') {
-    return <Centered>Opening room {shownCode}…</Centered>;
+    return <Centered>{t.room.opening(shownCode)}</Centered>;
   }
   if (state.stage === 'joining') {
-    return <Centered>Joining room {shownCode}…</Centered>;
+    return <Centered>{t.room.joining(shownCode)}</Centered>;
   }
   if (state.stage === 'name') {
     return (
@@ -127,7 +131,7 @@ export default function RoomApp({ code }: { code: string }) {
       />
       {state.actionError && (
         <ErrorBanner
-          text={describeError(state.actionError)}
+          text={describeError(state.actionError, t)}
           onDismiss={() => {
             controller.dismissActionError();
           }}
@@ -139,7 +143,7 @@ export default function RoomApp({ code }: { code: string }) {
   if (view === 'loading' || !room) {
     return (
       <>
-        <Centered>Connecting to room {shownCode}…</Centered>
+        <Centered>{t.room.connecting(shownCode)}</Centered>
         {overlays}
       </>
     );
@@ -213,6 +217,7 @@ function BattleView({
   code: string;
   leave: ReactNode;
 }) {
+  const t = useT();
   const snapshot = battleState.snapshot;
   const phase = snapshot?.battle.phase;
   const show = state.show;
@@ -227,7 +232,7 @@ function BattleView({
     },
     [controller],
   );
-  if (!snapshot || !phase) return <Centered>Loading the battle…</Centered>;
+  if (!snapshot || !phase) return <Centered>{t.common.loadingBattle}</Centered>;
   const remaining = battle.remainingMs();
 
   if (phase === 'spinning' || phase === 'building' || phase === 'shipping') {
@@ -239,7 +244,7 @@ function BattleView({
           endsAt={Date.parse(snapshot.battle.phase_ends_at)}
           serverNow={() => battle.serverNow()}
           playerName=""
-          heading={`Room ${code} · everyone's challenge is…`}
+          heading={t.room.spinHeading(code)}
         />
       ) : null;
     const phonePlayer = snapshot.me.is_player && touch && !buildHere;
@@ -273,20 +278,21 @@ function BattleView({
           controller={battle}
           state={battleState}
           remaining={remaining}
-          subtitle={`Room ${code}`}
+          subtitle={t.common.roomCode(code)}
           headerActions={leave}
           sidebar={
             <ProgressSidebar battle={snapshot} presence={state.sync.presence} layout="sidebar" />
           }
           onActivity={onActivity}
-          shippedNote={`Waiting for the others (${String(
+          shippedNote={t.room.waitingOthers(
             snapshot.builds.filter((b) => b.status === 'shipped').length,
-          )}/${String(snapshot.players.length)} shipped)…`}
+            snapshot.players.length,
+          )}
         />
         {spin}
         {battleState.error && (
           <ErrorBanner
-            text={describeError(battleState.error)}
+            text={describeError(battleState.error, t)}
             onDismiss={() => {
               battle.dismissError();
             }}
@@ -316,19 +322,23 @@ function BattleView({
 // ─── Chrome ───────────────────────────────────────────────────────────────────────────
 
 function RoomHeader({ state, code, leave }: { state: RoomState; code: string; leave: ReactNode }) {
+  const t = useT();
   return (
     <header className="flex flex-wrap items-end justify-between gap-4">
       <div className="flex flex-col gap-1">
         <Link href="/" className="text-sm font-semibold text-zinc-500 hover:underline">
           Build Roulette
         </Link>
-        <p className="text-xs font-bold tracking-widest text-zinc-500 uppercase">Room</p>
+        <p className="text-xs font-bold tracking-widest text-zinc-500 uppercase">
+          {t.room.eyebrow}
+        </p>
         <h1 className="font-mono text-5xl font-black tracking-widest" data-testid="room-code">
           {code}
         </h1>
       </div>
       <div className="flex flex-wrap items-center gap-2">
         <Reconnecting state={state} />
+        <LanguagePicker />
         <HowItWorksButton />
         <CopyInvite code={code} />
         {leave}
@@ -339,6 +349,7 @@ function RoomHeader({ state, code, leave }: { state: RoomState; code: string; le
 
 /** Shown while the room's Realtime channel is down (the engine polls meanwhile). */
 function Reconnecting({ state }: { state: RoomState }) {
+  const t = useT();
   if (state.sync.connection !== 'degraded') return null;
   return (
     <span
@@ -346,12 +357,13 @@ function Reconnecting({ state }: { state: RoomState }) {
       className="rounded-full bg-amber-100 px-3 py-1 text-xs font-bold text-amber-900 dark:bg-amber-950 dark:text-amber-200"
       data-testid="reconnecting"
     >
-      Reconnecting…
+      {t.room.reconnecting}
     </span>
   );
 }
 
 function CopyInvite({ code }: { code: string }) {
+  const t = useT();
   const [copied, setCopied] = useState(false);
   useEffect(() => {
     if (!copied) return;
@@ -377,13 +389,13 @@ function CopyInvite({ code }: { code: string }) {
               setCopied(true);
             },
             () => {
-              window.prompt('Copy the invite link:', link);
+              window.prompt(t.room.copyPrompt, link);
             },
           );
         }}
         className="rounded-lg bg-emerald-600 px-3 py-1.5 text-sm font-bold text-white hover:bg-emerald-700"
       >
-        {copied ? 'Copied!' : 'Copy invite link'}
+        {copied ? t.room.copied : t.room.copyInvite}
       </button>
     </div>
   );
@@ -401,6 +413,7 @@ function LeaveButton({
   /** The builds are final (REVEAL, VOTING, RESULTS). */
   afterShipping: boolean;
 }) {
+  const t = useT();
   const [asking, setAsking] = useState(false);
   return (
     <>
@@ -414,18 +427,14 @@ function LeaveButton({
         }}
         className={smallButton}
       >
-        Leave room
+        {t.room.leave}
       </button>
       <ConfirmDialog
         open={asking}
         testId="leave-confirm"
-        title="Leave the room?"
-        body={
-          afterShipping
-            ? 'The battle goes on without you: your build stays in the reveal and the results. You cannot vote unless you come back before the vote ends.'
-            : 'The battle goes on without you. If you do not come back, your last autosave ships for you at the deadline.'
-        }
-        confirm="Leave"
+        title={t.room.leaveTitle}
+        body={afterShipping ? t.room.leaveAfterShipping : t.room.leaveDuring}
+        confirm={t.room.leaveConfirm}
         busy={state.pending.leave}
         onCancel={() => {
           setAsking(false);
@@ -454,6 +463,7 @@ function NameForm({
   error: GameError | null;
   onJoin: (name: string) => void;
 }) {
+  const t = useT();
   const [name, setName] = useState(initial);
   const trimmed = name.trim();
   return (
@@ -463,7 +473,7 @@ function NameForm({
           Build Roulette
         </Link>
         <p className="text-xs font-bold tracking-widest text-zinc-500 uppercase">
-          You are invited to room
+          {t.room.invited}
         </p>
         <h1 className="font-mono text-5xl font-black tracking-widest">{code}</h1>
       </header>
@@ -475,7 +485,7 @@ function NameForm({
         }}
       >
         <label htmlFor="display-name" className="text-left text-sm font-semibold">
-          Your name
+          {t.common.yourName}
         </label>
         <div className="flex gap-2">
           <input
@@ -493,8 +503,8 @@ function NameForm({
           />
           <button
             type="button"
-            title="Another random name"
-            aria-label="Another random name"
+            title={t.common.anotherName}
+            aria-label={t.common.anotherName}
             onClick={() => {
               setName(randomDisplayName());
             }}
@@ -509,51 +519,51 @@ function NameForm({
           disabled={busy || trimmed.length === 0}
           className="rounded-lg bg-zinc-900 px-5 py-4 text-lg font-black tracking-wide text-white disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900"
         >
-          {busy ? 'Joining…' : 'Join the room'}
+          {busy ? t.room.joiningButton : t.room.join}
         </button>
         {error && (
           <p role="alert" className="text-sm text-red-700 dark:text-red-300">
-            {describeError(error)}
+            {describeError(error, t)}
           </p>
         )}
       </form>
-      <p className="text-xs text-zinc-500">
-        No account needed. Builds are deleted after each battle.
-      </p>
+      <p className="text-xs text-zinc-500">{t.room.nameFooter}</p>
+      <LanguagePicker />
     </Centered>
   );
 }
 
+type ShownJoinError = Exclude<JoinRoomError, 'invalid_display_name' | 'name_not_allowed'>;
+
 /**
  * A screen for every `join_room` error (`invalid_display_name` and `name_not_allowed` go
- * back to the name prompt). Typed against @br/game's list, so a new code cannot be forgotten.
+ * back to the name prompt). Typed against @br/game's list, so a new code cannot be forgotten;
+ * the words are the catalogs' (`room.joinErrors`).
  */
 const JOIN_ERRORS: Record<
-  Exclude<JoinRoomError, 'invalid_display_name' | 'name_not_allowed'>,
-  { title: string; text: (code: string, error: GameError | null) => string }
+  ShownJoinError,
+  (m: Messages, code: string, error: GameError | null) => { title: string; text: string }
 > = {
-  room_not_found: {
-    title: 'Room not found',
-    text: (code) => `No room has the code ${code}. Check the code, or create your own room.`,
-  },
-  room_closed: {
-    title: 'This room is closed',
-    text: () => 'Rooms close when everyone has left, or after two hours without a battle.',
-  },
-  kicked: {
-    title: 'You cannot join this room',
-    text: () => 'The host removed you from this room, so you cannot come back to it.',
-  },
-  rate_limited: {
-    title: 'Too many wrong room codes',
-    text: (_code, error) =>
-      `${error ? describeError(error) : describeError('rate_limited')} Ask your host for the invite link.`,
-  },
-  room_full: {
-    title: 'This room is full',
-    text: () =>
-      `Every player and spectator slot is taken (${String(ROOM_LIMITS.max_players)} players and ${String(ROOM_LIMITS.max_spectators)} spectators).`,
-  },
+  room_not_found: (m, code) => ({
+    title: m.room.joinErrors.room_not_found.title,
+    text: m.room.joinErrors.room_not_found.text(code),
+  }),
+  room_closed: (m) => ({
+    title: m.room.joinErrors.room_closed.title,
+    text: m.room.joinErrors.room_closed.text(),
+  }),
+  kicked: (m) => ({
+    title: m.room.joinErrors.kicked.title,
+    text: m.room.joinErrors.kicked.text(),
+  }),
+  rate_limited: (m, _code, error) => ({
+    title: m.room.joinErrors.rate_limited.title,
+    text: m.room.joinErrors.rate_limited.text(describeError(error ?? 'rate_limited', m)),
+  }),
+  room_full: (m) => ({
+    title: m.room.joinErrors.room_full.title,
+    text: m.room.joinErrors.room_full.text(),
+  }),
 };
 
 function JoinError({
@@ -565,9 +575,10 @@ function JoinError({
   error: GameError | null;
   onRetry: () => void;
 }) {
+  const t = useT();
   const known =
     error && Object.prototype.hasOwnProperty.call(JOIN_ERRORS, error.code)
-      ? JOIN_ERRORS[error.code as keyof typeof JOIN_ERRORS]
+      ? JOIN_ERRORS[error.code as ShownJoinError](t, code, error)
       : undefined;
   return (
     <Centered testId="join-error">
@@ -575,46 +586,31 @@ function JoinError({
         {error?.code === 'kicked' ? '🚫' : error?.code === 'room_full' ? '🈵' : '🔍'}
       </p>
       <h1 className="text-3xl font-black tracking-tight" data-code={error?.code ?? 'unknown'}>
-        {known?.title ?? 'Could not join the room'}
+        {known?.title ?? t.room.couldNotJoin}
       </h1>
       <p className="text-zinc-600 dark:text-zinc-400">
-        {known ? known.text(code, error) : describeError(error ?? 'unknown')}
+        {known ? known.text : describeError(error ?? 'unknown', t)}
       </p>
       <div className="flex flex-wrap justify-center gap-3">
         {!known && (
           <button type="button" onClick={onRetry} className={bigButton} data-testid="retry-join">
-            Try again
+            {t.common.tryAgain}
           </button>
         )}
         <Link href="/" className={known ? bigButton : outlineButton}>
-          Create or join another room
+          {t.room.another}
         </Link>
       </div>
+      <LanguagePicker />
     </Centered>
   );
 }
 
-const ENDED: Record<EndReason, { icon: string; title: (code: string) => string; text: string }> = {
-  kicked: {
-    icon: '🚫',
-    title: (code) => `You were removed from room ${code}`,
-    text: 'The host kicked you, so you cannot rejoin this room. You can always start your own.',
-  },
-  left: {
-    icon: '👋',
-    title: (code) => `You left room ${code}`,
-    text: 'Changed your mind? You can rejoin while the room is open.',
-  },
-  closed: {
-    icon: '🔒',
-    title: (code) => `Room ${code} is closed`,
-    text: 'Everyone left, or nobody played for two hours.',
-  },
-  gone: {
-    icon: '🔍',
-    title: (code) => `Room ${code} is gone`,
-    text: 'This room no longer exists.',
-  },
+const ENDED_ICON: Record<EndReason, string> = {
+  kicked: '🚫',
+  left: '👋',
+  closed: '🔒',
+  gone: '🔍',
 };
 
 function Ended({
@@ -628,11 +624,12 @@ function Ended({
   busy: boolean;
   onRejoin: () => void;
 }) {
-  const info = ENDED[reason];
+  const t = useT();
+  const info = t.room.ended[reason];
   return (
     <Centered testId={reason === 'kicked' ? 'kicked' : 'room-ended'}>
       <p className="text-6xl" aria-hidden="true">
-        {info.icon}
+        {ENDED_ICON[reason]}
       </p>
       <h1 className="text-3xl font-black tracking-tight" data-reason={reason}>
         {info.title(code)}
@@ -647,13 +644,14 @@ function Ended({
             className={bigButton}
             data-testid="rejoin"
           >
-            Rejoin the room
+            {t.room.rejoin}
           </button>
         )}
         <Link href="/" className={reason === 'left' ? outlineButton : bigButton}>
-          Home
+          {t.common.home}
         </Link>
       </div>
+      <LanguagePicker />
     </Centered>
   );
 }

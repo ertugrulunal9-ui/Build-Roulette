@@ -1,3 +1,5 @@
+'use client';
+
 import Link from 'next/link';
 import {
   historyHref,
@@ -5,6 +7,9 @@ import {
   type HistoryCursor,
   type PlayerHistory as PlayerHistoryData,
 } from '../../lib/history/player-history';
+import { useI18n, useT } from '../../lib/i18n/context';
+import { formatDateTime } from '../../lib/i18n/format';
+import type { Messages } from '../../lib/i18n/messages/en';
 import {
   awardsOf,
   formatCompletion,
@@ -13,7 +18,8 @@ import {
   rankMedal,
 } from '../../lib/solo/format';
 import { screenshotUrl } from '../../lib/supabase/config';
-import { REMOVED_TEXT, RemovedCard } from '../moderation/Removed';
+import { LanguagePicker } from '../i18n/LanguagePicker';
+import { RemovedCard } from '../moderation/Removed';
 import { AwardBadges, VoteTally } from './ResultPieces';
 
 /**
@@ -40,38 +46,37 @@ export function PlayerHistory({
   cursor: HistoryCursor | null;
   data: PlayerHistoryData & { player: { display_name: string } };
 }) {
+  const h = useT().history;
   return (
     <main className="mx-auto flex min-h-dvh max-w-4xl flex-col gap-8 px-4 py-10">
       <header className="flex flex-col gap-2">
-        <Link href="/" className="text-sm font-semibold text-zinc-500 hover:underline">
-          Build Roulette
-        </Link>
-        <p className="text-sm font-semibold tracking-widest text-zinc-500 uppercase">
-          Player history
-        </p>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <Link href="/" className="text-sm font-semibold text-zinc-500 hover:underline">
+            Build Roulette
+          </Link>
+          <LanguagePicker />
+        </div>
+        <p className="text-sm font-semibold tracking-widest text-zinc-500 uppercase">{h.eyebrow}</p>
         <h1 className="text-4xl font-black tracking-tight break-words" data-testid="player-name">
           {data.player.display_name}
         </h1>
-        <p className="text-sm text-zinc-500">
-          Finished battles, newest first. Builds are destroyed after each battle; their results and
-          screenshots stay.
-        </p>
+        <p className="text-sm text-zinc-500">{h.intro}</p>
       </header>
 
-      <ol className="flex flex-col gap-5" aria-label="Battles" data-testid="history">
+      <ol className="flex flex-col gap-5" aria-label={h.battles} data-testid="history">
         {data.battles.map((b) => (
           <HistoryItem key={b.battle_id} battle={b} />
         ))}
       </ol>
 
-      <nav className="flex flex-wrap items-center justify-between gap-3" aria-label="Pages">
+      <nav className="flex flex-wrap items-center justify-between gap-3" aria-label={h.pages}>
         {cursor ? (
           <a
             href={historyHref(id, null)}
             className="text-sm font-semibold underline"
             data-testid="history-newest"
           >
-            ← Newest battles
+            {h.newest}
           </a>
         ) : (
           <span />
@@ -82,21 +87,18 @@ export function PlayerHistory({
             className="rounded-lg border border-zinc-300 px-4 py-2 text-sm font-semibold hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
             data-testid="history-older"
           >
-            Older battles →
+            {h.older}
           </a>
         )}
       </nav>
 
       <footer className="border-t border-zinc-200 pt-6 text-center text-sm text-zinc-500 dark:border-zinc-800">
-        <p>
-          This history belongs to an anonymous player on one browser. Clearing that browser’s data
-          loses the way back here (bookmark this page to keep it).
-        </p>
+        <p>{h.footer}</p>
         <Link
           href="/"
           className="mt-4 inline-block rounded-lg bg-emerald-600 px-5 py-3 font-semibold text-white hover:bg-emerald-700"
         >
-          Play a battle
+          {h.play}
         </Link>
       </footer>
     </main>
@@ -105,6 +107,7 @@ export function PlayerHistory({
 
 /** /u/{id} for an unknown id, or a player without a finished battle (the same answer). */
 export function PlayerNotFound() {
+  const h = useT().history;
   return (
     <main
       className="mx-auto flex min-h-dvh max-w-xl flex-col items-center justify-center gap-5 px-6 py-16 text-center"
@@ -113,36 +116,37 @@ export function PlayerNotFound() {
       <p className="text-6xl" aria-hidden="true">
         🔍
       </p>
-      <h1 className="text-3xl font-black tracking-tight">No battles to show</h1>
-      <p className="text-zinc-600 dark:text-zinc-400">
-        This player has no finished battle yet, or the link is wrong. Battles show up here once
-        their results are in.
-      </p>
+      <h1 className="text-3xl font-black tracking-tight">{h.notFoundHeading}</h1>
+      <p className="text-zinc-600 dark:text-zinc-400">{h.notFoundText}</p>
       <Link
         href="/"
         className="rounded-lg bg-emerald-600 px-5 py-3 font-semibold text-white hover:bg-emerald-700"
       >
-        Play a battle
+        {h.play}
       </Link>
+      <LanguagePicker />
     </main>
   );
 }
 
-function rankText(b: HistoryBattle): string {
+function rankText(b: HistoryBattle, m: Messages): string {
   const { status, final_rank } = b.build;
-  if (final_rank !== null) return `#${String(final_rank)} of ${String(b.players_count)}`;
-  if (status === 'dnf') return 'Did not finish';
-  return 'Unranked';
+  if (final_rank !== null) return m.history.rank(final_rank, b.players_count);
+  if (status === 'dnf') return m.common.didNotFinish;
+  return m.history.unranked;
 }
 
 function HistoryItem({ battle: b }: { battle: HistoryBattle }) {
+  const { locale, t } = useI18n();
+  const h = t.history;
   const shipped = b.build.status === 'shipped' || b.build.status === 'auto_shipped';
   const voted = b.build.votes !== null;
   const winner = isWinner(b.build) && b.players_count > 1;
   const removed = b.build.taken_down === true;
   const name = removed
-    ? REMOVED_TEXT
-    : (b.build.name ?? (b.build.status === 'dnf' ? 'Did not finish' : `${b.display_name}'s build`));
+    ? t.moderation.removed
+    : (b.build.name ??
+      (b.build.status === 'dnf' ? t.common.didNotFinish : t.common.buildOf(b.display_name)));
   return (
     <li
       className={`grid grid-cols-1 overflow-hidden rounded-2xl border bg-white shadow-sm sm:grid-cols-[14rem_minmax(0,1fr)] dark:bg-zinc-900 ${
@@ -164,26 +168,24 @@ function HistoryItem({ battle: b }: { battle: HistoryBattle }) {
           // eslint-disable-next-line @next/next/no-img-element -- a public Supabase Storage URL
           <img
             src={screenshotUrl(b.build.screenshot_path)}
-            alt={`Screenshot of ${name}`}
+            alt={t.common.screenshotOf(name)}
             className="absolute inset-0 h-full w-full object-cover object-top"
             data-testid="history-screenshot"
           />
         ) : (
           <p className="absolute inset-0 grid place-items-center p-4 text-center text-xs text-zinc-500">
-            {shipped ? 'No screenshot' : 'Nothing was shipped'}
+            {shipped ? h.noScreenshot : h.nothingShipped}
           </p>
         )}
       </div>
       <div className="flex min-w-0 flex-col gap-2 p-4">
         <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
           <p className="text-xs font-semibold tracking-widest text-zinc-500 uppercase">
-            {b.mode === 'solo' ? 'Solo' : 'Room battle'} ·{' '}
-            <time dateTime={b.finished_at}>
-              {new Date(b.finished_at).toUTCString().replace(' GMT', ' UTC')}
-            </time>
+            {b.mode === 'solo' ? h.solo : h.roomBattle} ·{' '}
+            <time dateTime={b.finished_at}>{formatDateTime(b.finished_at, locale)}</time>
           </p>
           <p className="font-mono text-sm font-bold" data-testid="history-rank">
-            <span aria-hidden="true">{rankMedal(b.build)}</span> {rankText(b)}
+            <span aria-hidden="true">{rankMedal(b.build)}</span> {rankText(b, t)}
           </p>
         </div>
         <h2
@@ -193,8 +195,8 @@ function HistoryItem({ battle: b }: { battle: HistoryBattle }) {
           {b.challenge.build.text}
         </h2>
         <p className="text-xs text-zinc-500">
-          RULE: {b.challenge.rule.text} · STYLE: {b.challenge.style.text} ·{' '}
-          {formatTimeLimit(b.challenge.time_limit_seconds)}
+          {t.cards.rule}: {b.challenge.rule.text} · {t.cards.style}: {b.challenge.style.text} ·{' '}
+          {formatTimeLimit(b.challenge.time_limit_seconds, t)}
         </p>
         <p className="text-sm">
           <strong data-testid="history-build-name">{name}</strong>
@@ -205,7 +207,7 @@ function HistoryItem({ battle: b }: { battle: HistoryBattle }) {
             </>
           )}
           {b.build.status === 'auto_shipped' && (
-            <span className="text-zinc-500"> · auto-shipped</span>
+            <span className="text-zinc-500"> · {h.autoShipped}</span>
           )}
         </p>
         <AwardBadges
@@ -222,7 +224,7 @@ function HistoryItem({ battle: b }: { battle: HistoryBattle }) {
           className="mt-1 self-start text-sm font-semibold underline"
           data-testid="history-battle-link"
         >
-          Full results →
+          {t.common.fullResults}
         </a>
       </div>
     </li>

@@ -14,6 +14,7 @@ import {
   type RevealVoteController,
   type RevealVoteState,
 } from '../../lib/room/reveal-vote';
+import { I18nProvider } from '../../lib/i18n/context';
 import { BATTLE_1, BOB, CLEO, ME, battleSnapshot, revealBuilds } from '../../lib/room/test-support';
 import { INITIAL_SOLO_STATE, type SoloController, type SoloState } from '../../lib/solo/controller';
 import { GameError } from '../../lib/solo/errors';
@@ -671,5 +672,78 @@ describe('RoomResults with votes', () => {
       [`/u/${BOB}`, `/u/${CLEO}`, `/u/${ME}`].sort(),
     );
     expect(links[0]?.getAttribute('target')).toBe('_blank');
+  });
+});
+
+describe('in Turkish (T-050)', () => {
+  /** English UI words that must not show on a Turkish screen (the cards and names may). */
+  const ENGLISH =
+    /\b(Build \d of|Skip this build|Spectating|Vote for the best|Pick one|Your pick|Ranked by|Winner|Last look|voted|by Bob|by Cleo)\b/;
+
+  const turkish = (el: ReturnType<typeof createElement>) =>
+    createElement(I18nProvider, { locale: 'tr' }, el);
+
+  it('REVEAL, VOTE and RESULTS speak Turkish, with the same data', () => {
+    const show = fakeShow() as unknown as RevealVoteController;
+    render(
+      turkish(
+        createElement(RevealStage, {
+          battle: battleController,
+          battleState: soloState(battleSnapshot({ phase: 'reveal', revealIndex: 1 })),
+          show,
+          showState: showState({ sites: { 'build-bob': { status: 'loading', build: null } } }),
+          code: 'K7QXM',
+          headerActions: null,
+        }),
+      ),
+    );
+    expect(screen.getByTestId('reveal-position').textContent).toBe('Proje 2 / 3');
+    expect(screen.getByTestId('reveal-builder').textContent).toContain('Yapan: Bob');
+    expect(screen.getByTestId('skip-build').textContent).toBe('⏭ Bu projeyi atla');
+    expect(screen.getByRole('group', { name: 'Dil' })).toBeTruthy();
+    expect(screen.getByTestId('reveal-stage').textContent).not.toMatch(ENGLISH);
+    cleanup();
+
+    render(
+      turkish(
+        createElement(VoteStage, {
+          battle: battleController,
+          battleState: soloState(
+            battleSnapshot({
+              phase: 'voting',
+              voteProgress: { voted_count: 1, eligible_count: 3 },
+            }),
+          ),
+          show,
+          showState: showState({ ballot: ballot({}) }),
+          code: 'K7QXM',
+          headerActions: null,
+        }),
+      ),
+    );
+    expect(screen.getByTestId('vote-progress').textContent).toContain('1/3 oy verdi');
+    expect(screen.getByText('En iyi projelere oy ver')).toBeTruthy();
+    const overall = screen.getAllByTestId('vote-category')[0];
+    expect(overall?.textContent).toContain('En İyi Proje');
+    expect(overall?.textContent).toContain('Birini seç');
+    expect(screen.getByTestId('vote-stage').textContent).not.toMatch(ENGLISH);
+    cleanup();
+
+    const snap = votedResultsSnapshot();
+    render(
+      turkish(
+        createElement(RoomResults, {
+          state: soloState(snap),
+          remaining: 30_000,
+          lostVotes: { overall: 'build-bob' },
+        }),
+      ),
+    );
+    expect(screen.getByTestId('ranking-rule').textContent).toContain('Oylara göre sıralandı');
+    expect(screen.getByTestId('winner-banner').textContent).toBe('🏆 Kazanan');
+    expect(screen.getByTestId('lost-votes').textContent).toContain(
+      'Sayılmadı: En İyi Proje (“build-bob app”) için seçimin',
+    );
+    expect(screen.getByTestId('results').textContent).not.toMatch(ENGLISH);
   });
 });

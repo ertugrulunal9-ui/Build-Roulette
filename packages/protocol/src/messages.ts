@@ -17,13 +17,16 @@
  * must never gate capture (decided server-side by the capture worker) or destroy.
  */
 import * as z from 'zod/mini';
+import { SITE_LIMITS } from '@br/site';
 import { LIMITS } from './limits';
 
-/** Bumped on any breaking change. The shell is served from `/v{PROTOCOL_VERSION}/`. */
-export const PROTOCOL_VERSION = 1;
+/**
+ * Bumped on any breaking change. The shell is served from `/v{PROTOCOL_VERSION}/`.
+ * v2 (M6, docs/09 §9.3): `load` carries a site pack instead of a JS bundle.
+ */
+export const PROTOCOL_VERSION = 2;
 
 const NONCE_RE = /^[A-Za-z0-9_-]{16,128}$/;
-const URL_RE = /^https?:\/\/[^\s]+$/;
 
 const requestId = z.optional(z.int().check(z.nonnegative()));
 const boundedString = (max: number) => z.string().check(z.maxLength(max));
@@ -62,57 +65,27 @@ export const ConnectedSchema = z.object({
 // app -> shell (port)
 // ---------------------------------------------------------------------------
 
-const importMapEntries = z
-  .record(
-    boundedString(LIMITS.importMapValueMaxChars),
-    z.string().check(z.maxLength(LIMITS.importMapValueMaxChars), z.regex(URL_RE)),
-  )
-  .check(
-    z.refine(
-      (r) => Object.keys(r).length <= LIMITS.importMapMaxEntries,
-      'too many import map entries',
-    ),
-  );
-
-export const ImportMapSchema = z.object({
-  imports: importMapEntries,
-  scopes: z.optional(
-    z
-      .record(
-        z.string().check(z.maxLength(LIMITS.importMapValueMaxChars), z.regex(URL_RE)),
-        importMapEntries,
-      )
-      .check(
-        z.refine(
-          (r) => Object.keys(r).length <= LIMITS.importMapMaxEntries,
-          'too many import map scopes',
-        ),
-      ),
-  ),
-});
-
 export const RunModeSchema = z.enum(['live', 'reveal', 'capture']);
+
+/**
+ * A site pack (`@br/site`, docs/09 §9.2) of at most `SITE_LIMITS.maxPackBytes`. It arrives
+ * through the MessagePort (structured clone), so it is an `ArrayBuffer` of the receiving
+ * realm; anything else (a view, a SharedArrayBuffer, a buffer from another realm) is
+ * rejected. Only the size is checked here: the shell runs `unpackSite` on it, which checks
+ * the rest and reports a `module-load` error when the pack is not well formed.
+ */
+export const SitePackSchema = z.custom<ArrayBuffer>(
+  (v) => v instanceof ArrayBuffer && v.byteLength <= SITE_LIMITS.maxPackBytes,
+  `site must be an ArrayBuffer of at most ${String(SITE_LIMITS.maxPackBytes)} bytes`,
+);
 
 export const LoadSchema = z.object({
   type: z.literal('load'),
   /** Correlates the `ready` reply with this load. */
   loadId: z.int().check(z.nonnegative()),
-  js: boundedString(LIMITS.bundleJsMaxChars),
-  css: boundedString(LIMITS.bundleCssMaxChars),
-  importMap: ImportMapSchema,
   mode: RunModeSchema,
-  /**
-   * Optional (T-032): the package CDN URLs the bundle imports directly (CDN module URLs, and
-   * the import map URLs of the entry points it imports). The shell never loads anything
-   * because of this list; it only checks these URLs (then the rest of the import map) to name
-   * the package that could not load when the module graph fails or stalls ("Package server
-   * unreachable: zustand@5.0.15"). Older shells ignore it.
-   */
-  packages: z.optional(
-    z
-      .array(z.string().check(z.maxLength(LIMITS.importMapValueMaxChars), z.regex(URL_RE)))
-      .check(z.maxLength(LIMITS.loadPackagesMax)),
-  ),
+  /** The site pack to run (`packSite` output). The app keeps its own copy. */
+  site: SitePackSchema,
 });
 
 export const ResetStorageSchema = z.object({
@@ -151,14 +124,15 @@ export const AppToShellSchema = z.discriminatedUnion('type', [
 // ---------------------------------------------------------------------------
 
 /**
- * Hint only: the module of load `loadId` finished evaluating. Untrusted (a build can send it
+ * Hint only: the site of load `loadId` finished loading (the first `load` event of its frame;
+ * a later navigation inside the site sends no second one). Untrusted (a build can send it
  * early, late or never), so it may update UI state but must never gate capture: capture
  * readiness is decided by the capture worker with a fixed wait and a cap. The app accepts
  * it only for the latest load it sent, once, within a per-second budget.
  */
 export const ReadySchema = z.object({
   type: z.literal('ready'),
-  /** The `loadId` of the load that finished evaluating. */
+  /** The `loadId` of the load that finished loading. */
   loadId: z.int().check(z.nonnegative()),
 });
 
@@ -240,7 +214,6 @@ export const ShellToAppSchema = z.discriminatedUnion('type', [
 export type Hello = z.infer<typeof HelloSchema>;
 export type Connect = z.infer<typeof ConnectSchema>;
 export type Connected = z.infer<typeof ConnectedSchema>;
-export type ImportMap = z.infer<typeof ImportMapSchema>;
 export type RunMode = z.infer<typeof RunModeSchema>;
 export type LoadMessage = z.infer<typeof LoadSchema>;
 export type ResetStorageMessage = z.infer<typeof ResetStorageSchema>;

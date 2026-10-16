@@ -1,6 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from '@playwright/test';
 import { APP_SERVER_ENV, appServerCommand } from './e2e/app-server';
+import { welcomeSeen } from './e2e/welcome';
 
 /**
  * E2E for rooms (`e2e/multiplayer*.spec.ts`): several browser contexts (each one an
@@ -34,6 +35,8 @@ export default defineConfig({
   reporter: [['list'], ['html', { open: 'never', outputFolder: 'playwright-report/multi' }]],
   use: {
     baseURL: APP_ORIGIN,
+    // The welcome screen is already seen (e2e/welcome.ts).
+    storageState: welcomeSeen(APP_ORIGIN),
     browserName: 'chromium',
     channel: 'chromium',
     headless: true,

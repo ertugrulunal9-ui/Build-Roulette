@@ -467,10 +467,10 @@ production deploy (Deploy run 2, 2026-10) had been on Pages and passed every che
 |---|---|---|
 | Cloudflare account | A, the existing one (also Browser Rendering, Turnstile) | B, a second free account |
 | Worker | `build-roulette-web` | `build-roulette-sandbox` |
-| Address | `https://build-roulette-web.<subdomain A>.workers.dev` | `https://build-roulette-sandbox.<subdomain B>.workers.dev/v1/` |
+| Address | `https://build-roulette-web.<subdomain A>.workers.dev` | `https://build-roulette-sandbox.<subdomain B>.workers.dev/v2/` (`/v1/` before M6) |
 | Config | `apps/web/wrangler.jsonc` | `apps/sandbox-shell/wrangler.jsonc` |
 | Static assets | `apps/web/out/` with `_headers`, `_redirects`, `404.html` | `apps/sandbox-shell/dist/` with `_headers`, `404.html` |
-| Worker code, run only for (`run_worker_first`) | `dist/worker.js`: the link previews, `/battles/*` | `dist/worker.js`: the capture gate, `/v1/capture` (Worker secret `CAPTURE_HMAC_SECRET`) |
+| Worker code, run only for (`run_worker_first`) | `dist/worker.js`: the link previews, `/battles/*` | `dist/worker.js`: the capture gate, `/v2/capture` (`/v1/capture` before M6; Worker secret `CAPTURE_HMAC_SECRET`) |
 
 **Why two accounts.** A Worker's address is `<worker>.<account subdomain>.workers.dev`, one
 subdomain per account. The Public Suffix List lists `workers.dev` but not `*.workers.dev`
@@ -495,7 +495,7 @@ and the workers-shared router and asset workers it runs locally through miniflar
 | 25 MiB per file | **confirmed** | wrangler refuses a larger asset (`MAX_ASSET_SIZE = 25 * 1024 * 1024`); `esbuild.wasm` (13.3 MiB) was the largest until M6 removed it |
 | `_headers` and `_redirects` | **confirmed** | wrangler reads both from the assets directory (and never uploads them as assets); the same workers-shared parser as Pages, with the same limits (100 header rules, 2,000 characters a line, 2,000 static and 100 dynamic redirects); the e2e (§2.6) |
 | `_redirects` 200 rewrites (`/u/:id /u 200`) | **confirmed** | the asset worker serves the destination as a proxied path for status 200; the e2e: `/u/x`, `/r/K7QXM` answer 200 with the shell, the URL kept |
-| `_headers` applies to what the Worker gets through `env.ASSETS.fetch` | **confirmed** | the asset worker adds the matching `_headers` rules to every answer, also those for the binding; measured: a Worker passing an `env.ASSETS.fetch` answer through keeps the `_headers` CSP. It does not apply to a response the Worker builds itself (`/v1/capture`'s gate, a preview's 200/404), so those set their headers in code, as before (§3.2) |
+| `_headers` applies to what the Worker gets through `env.ASSETS.fetch` | **confirmed** | the asset worker adds the matching `_headers` rules to every answer, also those for the binding; measured: a Worker passing an `env.ASSETS.fetch` answer through keeps the `_headers` CSP. It does not apply to a response the Worker builds itself (`/v2/capture`'s gate, `/v1/` before M6; a preview's 200/404), so those set their headers in code, as before (§3.2) |
 | `run_worker_first` as a list of patterns, `not_found_handling: "404-page"`, `workers_dev`, `preview_urls` | **confirmed** | wrangler's config schema |
 | `wrangler deploy --secrets-file` | **confirmed** | wrangler 4.147.0: "secrets to upload with the version (JSON or .env format)… omitted secrets will not be deleted"; with `secrets.required` in the config, a deploy without the secret fails on a new Worker and keeps the current value on an existing one |
 | Account → Workers Scripts → Edit covers the workers.dev subdomain and route endpoints | confirmed indirectly | wrangler's matching OAuth scope `workers_scripts:write`: "See and change Cloudflare Workers scripts, durable objects, subdomains, triggers, and tail data" |
@@ -511,7 +511,7 @@ and the workers-shared router and asset workers it runs locally through miniflar
   `scripts/deploy-check.mjs` names that page. At ~1,000 battles a month neither is near.
 - **The sandbox's unknown paths** get its new `404.html` (404, with the `/*` headers) instead
   of an empty 404, so they invoke no Worker.
-- **Redirects of the HTML handling** (`/battles/` → `/battles`, `/v1` → `/v1/`) are 307 (Pages:
+- **Redirects of the HTML handling** (`/battles/` → `/battles`, `/v2` → `/v2/`) are 307 (Pages:
   308). Nothing links to those forms.
 - **Addresses:** `<worker>.<subdomain>.workers.dev`; no per-version preview addresses
   (`preview_urls: false`), no per-deployment `<hash>.<project>.pages.dev` aliases.

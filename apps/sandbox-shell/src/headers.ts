@@ -1,6 +1,7 @@
 /**
  * Response headers for the sandbox shell (docs/03 §3.5), as a single source of truth for
- * both the static host (`dist/_headers`, Cloudflare Pages format) and the local dev server.
+ * both the static host (`dist/_headers`, the format Cloudflare's static assets read: Workers
+ * since T-043, Pages before) and the local dev server.
  */
 
 /**
@@ -219,18 +220,18 @@ export function captureHeaders(opts: ShellHeaderOptions): Record<string, string>
 }
 
 export interface HeaderRule {
-  /** Cloudflare Pages / Netlify path pattern, e.g. `/*` or `/v1/shell.js`. */
+  /** Cloudflare static assets / Netlify path pattern, e.g. `/*` or `/v1/shell.js`. */
   pattern: string;
   headers: Readonly<Record<string, string>>;
 }
 
 /**
- * The static host's header rules. Cloudflare Pages applies every rule whose pattern matches
- * and joins repeated header names with a comma, so only rules that cannot overlap set
+ * The static host's header rules. Cloudflare's static assets apply every rule whose pattern
+ * matches and join repeated header names with a comma, so only rules that cannot overlap set
  * `Cache-Control`: `/*` carries the security headers (every path, 404s included), each shell
  * file gets its own caching rule, and `/v{N}/reset` gets `Clear-Site-Data` + `no-store`.
- * `/v{N}/capture` is not a static file: the capture gate (`_worker.js`, see
- * `pages-worker.ts`) answers it with `captureHeaders`.
+ * `/v{N}/capture` is not a static file: the capture gate (the Worker, see `worker.ts`)
+ * answers it with `captureHeaders`.
  */
 export function staticHeaderRules(opts: ShellHeaderOptions, basePath: string): HeaderRule[] {
   const immutable = {
@@ -246,7 +247,7 @@ export function staticHeaderRules(opts: ShellHeaderOptions, basePath: string): H
   ];
 }
 
-/** Renders a Cloudflare Pages / Netlify style `_headers` file. */
+/** Renders a Cloudflare (Workers static assets, Pages) / Netlify style `_headers` file. */
 export function renderHeadersFile(rules: readonly HeaderRule[]): string {
   const blocks = rules.map(({ pattern, headers }) =>
     [pattern, ...Object.entries(headers).map(([k, v]) => `  ${k}: ${v}`)].join('\n'),

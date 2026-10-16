@@ -10,8 +10,8 @@ import { APP_SERVER_ENV, appServerCommand } from './e2e/app-server';
  * the tests move deadlines with psql as the superuser and commit their data.
  *
  * Same servers as the solo e2e (scripts/solo-services.ts, here with `--realtime`, which
- * fails fast when Realtime is not running) and the static export served by `wrangler pages
- * dev` (e2e/app-server.ts). `E2E_REUSE_SERVERS=1` reuses servers that are already running.
+ * fails fast when Realtime is not running) and the static export served by `wrangler dev`
+ * (e2e/app-server.ts). `E2E_REUSE_SERVERS=1` reuses servers that are already running.
  */
 const APP_PORT = Number(process.env['APP_PORT'] ?? 3100);
 const APP_ORIGIN = `http://localhost:${String(APP_PORT)}`;

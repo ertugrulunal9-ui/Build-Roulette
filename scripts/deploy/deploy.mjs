@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-// One-command deploy of the free setup (T-042; DEPLOY.md, "Deploy with GitHub Actions"):
-// what DEPLOY.md §2.2, §3.2–§3.8, §4 and §6.1 do by hand, idempotently. Run by
-// .github/workflows/deploy.yml on GitHub's runners; runs the same way locally:
+// One-command deploy of the free setup (T-042; T-043: Workers on workers.dev, two Cloudflare
+// accounts; DEPLOY.md, "Deploy with GitHub Actions"): what DEPLOY.md §2.2, §3.2–§3.8, §4 and
+// §6.1 do by hand, idempotently. Run by .github/workflows/deploy.yml on GitHub's runners; runs
+// the same way locally:
 //
 //   node --env-file=.env.deploy scripts/deploy/deploy.mjs --target <all|check|supabase|shell|web> \
 //     [--admin-email <email of a user created in Supabase → Authentication → Users>]
@@ -10,13 +11,17 @@
 // email also from DEPLOY_TARGET and ADMIN_EMAIL). A second run with nothing changed creates
 // nothing and keeps every generated secret: they live in Supabase Vault.
 //
-//   all       preflight, Pages projects, schema, Vault, Auth, the jobs function, shell, web,
-//             CAPTCHA, moderator, deploy-check
+//   all       preflight, workers.dev subdomains, schema, Vault, Auth, the jobs function, shell,
+//             web, CAPTCHA, moderator, deploy-check
 //   check     preflight only: settings, tokens, the project's status, the database password
-//   supabase  preflight, Pages projects (for the URLs), schema, Vault, Auth, the jobs function,
-//             moderator
-//   shell     preflight, Pages projects, the sandbox shell (its secret from Vault)
-//   web       preflight, Pages projects, the web app, CAPTCHA
+//   supabase  preflight, workers.dev subdomains (for the URLs), schema, Vault, Auth, the jobs
+//             function, moderator
+//   shell     preflight, workers.dev subdomains, the sandbox shell (its secret from Vault)
+//   web       preflight, workers.dev subdomains, the web app, CAPTCHA
+//
+// Two Cloudflare accounts: A (CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_API_TOKEN) gets the web app
+// and keeps Browser Rendering; B (CLOUDFLARE_SANDBOX_ACCOUNT_ID + CLOUDFLARE_SANDBOX_API_TOKEN)
+// gets the sandbox shell, so that the shell is another site (settings.mjs, SECOND_ACCOUNT_WHY).
 //
 // On GitHub Actions (GITHUB_ACTIONS=true) every secret is masked (::add-mask::) before
 // anything can print it, and the run writes a job summary ($GITHUB_STEP_SUMMARY) and the
@@ -24,14 +29,23 @@
 // Tests: node --test scripts/deploy/*.test.mjs (part of `pnpm test:scripts`).
 
 import { createHash, randomBytes as cryptoRandomBytes } from 'node:crypto';
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { ApiError, authSettings, cloudflareApi, supabaseApi } from './apis.mjs';
 import { createOutput } from './output.mjs';
 import { createRunner } from './run.mjs';
-import { DEFAULTS, NEEDS, TARGETS, childEnv, readSettings, secretValues } from './settings.mjs';
+import {
+  DEFAULTS,
+  NEEDS,
+  SECOND_ACCOUNT_WHY,
+  TARGETS,
+  childEnv,
+  readSettings,
+  secretValues,
+} from './settings.mjs';
 import {
   VAULT,
   addAdminSql,
@@ -52,8 +66,16 @@ export const SUPABASE_CLI = 'supabase@2.119.0';
 /** The shell's version path: `/v${PROTOCOL_VERSION}/` (packages/protocol/src/messages.ts). */
 export const SHELL_PATH = '/v1/';
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-/** deploy-check: the first try at once, then after 10, 20 and 30 s (Pages propagation). */
+/** deploy-check: the first try at once, then after 10, 20 and 30 s (a new version spreading). */
 export const SMOKE_DELAYS_MS = [10_000, 20_000, 30_000];
+/**
+ * Then 1 and 2 minutes more when an address is new in this run (a workers.dev subdomain just
+ * registered, or a Worker's first deploy): its DNS name "may take a few minutes" (wrangler's
+ * own message after it registers a subdomain).
+ */
+export const NEW_ADDRESS_DELAYS_MS = [60_000, 120_000];
+/** Default subdomain taken: how many random suffixes (`buildroulette-1a2b`) are tried. */
+export const SUBDOMAIN_SUFFIX_TRIES = 3;
 
 const USAGE = `usage: node scripts/deploy/deploy.mjs --target <${TARGETS.join('|')}> [--admin-email <email>]
   Settings come from the environment (DEPLOY.md, "Deploy with GitHub Actions"); locally:
@@ -61,7 +83,7 @@ const USAGE = `usage: node scripts/deploy/deploy.mjs --target <${TARGETS.join('|
 
 const TITLES = {
   preflight: 'Preflight',
-  pages: 'Cloudflare Pages projects',
+  workers: 'Cloudflare accounts: workers.dev subdomains',
   schema: 'Supabase schema (db push)',
   vault: 'Generated secrets (Supabase Vault)',
   auth: 'Auth settings',
@@ -76,7 +98,7 @@ const TITLES = {
 export const PLANS = {
   all: [
     'preflight',
-    'pages',
+    'workers',
     'schema',
     'vault',
     'auth',
@@ -88,9 +110,9 @@ export const PLANS = {
     'smoke',
   ],
   check: ['preflight'],
-  supabase: ['preflight', 'pages', 'schema', 'vault', 'auth', 'functions', 'admin'],
-  shell: ['preflight', 'pages', 'shell'],
-  web: ['preflight', 'pages', 'web', 'captcha'],
+  supabase: ['preflight', 'workers', 'schema', 'vault', 'auth', 'functions', 'admin'],
+  shell: ['preflight', 'workers', 'shell'],
+  web: ['preflight', 'workers', 'web', 'captcha'],
 };
 
 /** A failure with a message for the user (and optionally a list of problems). */
@@ -207,7 +229,6 @@ export function explainCliFailure(stderr, stage, ref) {
 }
 
 const sha256 = (s) => createHash('sha256').update(s).digest('hex');
-const PAGES_HOST = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.pages\.dev$/;
 /** A Vault value we can deploy: no whitespace, at least 32 characters (both readers' minimum). */
 const SECRET_VALUE = /^\S{32,}$/;
 const tail = (text, lines = 12) =>
@@ -216,6 +237,64 @@ const tail = (text, lines = 12) =>
     .map((l) => l.trimEnd())
     .filter(Boolean)
     .slice(-lines);
+
+// ─── The two Cloudflare accounts ────────────────────────────────────────────
+
+/** Account A (the web app) and account B (the sandbox shell), with what each step needs. */
+function cloudflareAccounts(ctx) {
+  const { s } = ctx;
+  return [
+    {
+      label: 'web',
+      letter: 'A',
+      what: 'the app',
+      api: ctx.cf,
+      accountId: s.accountId,
+      idName: 'CLOUDFLARE_ACCOUNT_ID',
+      tokenName: 'CLOUDFLARE_API_TOKEN',
+      subdomainSetting: 'CF_WORKERS_SUBDOMAIN',
+      wanted: s.webSubdomain,
+      fallback: DEFAULTS.CF_WORKERS_SUBDOMAIN,
+    },
+    {
+      label: 'shell',
+      letter: 'B',
+      what: 'the sandbox shell',
+      api: ctx.cfSandbox,
+      accountId: s.sandboxAccountId,
+      idName: 'CLOUDFLARE_SANDBOX_ACCOUNT_ID',
+      tokenName: 'CLOUDFLARE_SANDBOX_API_TOKEN',
+      subdomainSetting: 'CF_SANDBOX_WORKERS_SUBDOMAIN',
+      wanted: s.shellSubdomain,
+      fallback: DEFAULTS.CF_SANDBOX_WORKERS_SUBDOMAIN,
+    },
+  ];
+}
+const account = (ctx, label) => cloudflareAccounts(ctx).find((a) => a.label === label);
+
+const sameSiteMessage = (sub) =>
+  `Both accounts have the workers.dev subdomain ${sub}: the app and the sandbox shell would be ONE site. ${SECOND_ACCOUNT_WHY}`;
+
+/**
+ * The addresses, from the two accounts' workers.dev subdomains: the app's (APP_URL when set to a
+ * custom domain), the sandbox shell's (with its version path), and the origins that may frame
+ * the shell (the app's address and, with a custom domain, its workers.dev one too).
+ */
+export function deriveUrls(s, subdomains) {
+  const workersApp = `https://${s.webWorker}.${subdomains.web}.workers.dev`;
+  if (s.appUrl && new URL(s.appUrl).hostname.endsWith('.workers.dev') && s.appUrl !== workersApp) {
+    throw new DeployError(
+      `APP_URL (${s.appUrl}) is a workers.dev address, but not the web Worker's (${workersApp}). Delete the APP_URL variable (the default is the Worker's own address) or set it to your custom domain.`,
+    );
+  }
+  const app = s.appUrl ?? workersApp;
+  return {
+    app,
+    workersApp,
+    shell: `https://${s.shellWorker}.${subdomains.shell}.workers.dev${SHELL_PATH}`,
+    appOrigins: app === workersApp ? [app] : [app, workersApp],
+  };
+}
 
 // ─── Steps ──────────────────────────────────────────────────────────────────
 
@@ -262,38 +341,63 @@ async function preflight(ctx) {
   };
   const reason = (e) => (e instanceof Error ? e.message : String(e));
 
-  // ── Cloudflare: the deploy token, and Pages on the account (reading both projects) ──
-  try {
-    const v = await ctx.cf.verifyToken();
-    if (v.status === 'active') item('CLOUDFLARE_API_TOKEN', `active (${v.kind} token)`);
-    else problems.push(`CLOUDFLARE_API_TOKEN is ${v.status}, not active: create a new token`);
-  } catch (e) {
-    problems.push(
-      `CLOUDFLARE_API_TOKEN was refused by Cloudflare (${reason(e)}): check the secret`,
-    );
-  }
-  for (const [label, name, variable] of [
-    ['web', s.webProject, 'CF_PAGES_WEB_PROJECT'],
-    ['shell', s.shellProject, 'CF_PAGES_SHELL_PROJECT'],
-  ]) {
+  // ── Cloudflare: both deploy tokens, Workers on both accounts (their workers.dev subdomains) ──
+  for (const a of cloudflareAccounts(ctx)) {
+    const where = `account ${a.letter} (${a.what}, ${a.idName})`;
     try {
-      const p = await ctx.cf.getProject(name);
-      ctx.projects[label] = p;
-      if (p?.source) {
-        problems.push(
-          `The Pages project ${name} is connected to Git (${String(p.source.type ?? 'source')}); this workflow uploads builds directly. Set ${variable} to another name, or delete that project.`,
-        );
+      const v = await a.api.verifyToken();
+      if (v.status === 'active') item(a.tokenName, `active (${v.kind} token)`);
+      else {
+        problems.push(`${a.tokenName} is ${v.status}, not active: create a new token in ${where}`);
+        continue;
+      }
+    } catch (e) {
+      problems.push(`${a.tokenName} was refused by Cloudflare (${reason(e)}): check the secret`);
+      continue;
+    }
+    const name = `workers.dev subdomain of account ${a.letter} (${a.what})`;
+    try {
+      const sub = await a.api.getWorkersSubdomain();
+      ctx.subdomains[a.label] = sub;
+      if (sub) {
+        item(name, `${sub}.workers.dev`);
+        if (a.wanted && a.wanted !== sub) {
+          ctx.warn(
+            `${a.subdomainSetting} is ${a.wanted}, but account ${a.letter} already has the workers.dev subdomain ${sub}: ${sub} is kept (renaming it changes every workers.dev address of the account; to rename it, use the Cloudflare dashboard, then run this workflow again).`,
+          );
+        }
       } else {
         item(
-          `Pages project ${name}`,
-          p ? `exists (https://${String(p.subdomain)})` : 'missing: it will be created',
+          name,
+          `none yet: the run registers ${a.wanted ?? `${a.fallback} (with a short suffix if it is taken)`}`,
         );
       }
     } catch (e) {
       problems.push(
-        `CLOUDFLARE_API_TOKEN cannot use Cloudflare Pages on account ${s.accountId} (${reason(e)}). The token needs Account → Cloudflare Pages → Edit, for the account of CLOUDFLARE_ACCOUNT_ID.`,
+        `${a.tokenName} cannot use Workers on ${where}, ${a.accountId} (${reason(e)}). The token needs Account → Workers Scripts → Edit, for the account of ${a.idName}.`,
       );
-      break;
+    }
+  }
+  if (
+    s.appUrl &&
+    new URL(s.appUrl).hostname.endsWith('.workers.dev') &&
+    ctx.subdomains.web === null
+  ) {
+    problems.push(
+      `APP_URL (${s.appUrl}) is a workers.dev address, but account A has no workers.dev subdomain yet, so it cannot be the web Worker's. Delete the APP_URL variable (the default is the Worker's own address) or set it to your custom domain.`,
+    );
+  }
+  if (ctx.subdomains.web && ctx.subdomains.shell) {
+    if (ctx.subdomains.web === ctx.subdomains.shell) {
+      problems.push(sameSiteMessage(ctx.subdomains.web));
+    } else {
+      try {
+        const urls = deriveUrls(s, ctx.subdomains);
+        report.urls = { app: urls.app, shell: urls.shell };
+        item('Addresses', `the app ${urls.app}, the sandbox shell ${urls.shell}`);
+      } catch (e) {
+        problems.push(reason(e));
+      }
     }
   }
 
@@ -446,44 +550,82 @@ const noUserMessage = (email) =>
 const noCaptureSecretMessage = () =>
   'CAPTURE_HMAC_SECRET is not in Supabase Vault yet (br_capture_hmac_secret): run the workflow with target supabase (or all) first.';
 
-async function pages(ctx) {
-  const { s, out } = ctx;
-  for (const [label, name] of [
-    ['web', s.webProject],
-    ['shell', s.shellProject],
-  ]) {
-    let p = ctx.projects[label];
-    if (p === undefined) p = await ctx.cf.getProject(name);
-    if (p === null) {
-      p = await ctx.cf.createProject(name, 'main');
-      ctx.step(`Pages project ${name}`, 'created', `https://${String(p?.subdomain)}`);
+/**
+ * Each account's workers.dev subdomain: read, or registered when the account has none (the
+ * Worker addresses are `<worker>.<subdomain>.workers.dev`). Then the addresses.
+ */
+async function workers(ctx) {
+  const { out } = ctx;
+  for (const a of cloudflareAccounts(ctx)) {
+    let sub = ctx.subdomains[a.label];
+    if (sub === undefined) sub = await a.api.getWorkersSubdomain();
+    const name = `workers.dev subdomain, account ${a.letter} (${a.what})`;
+    if (sub) {
+      ctx.step(name, 'unchanged', `${sub}.workers.dev`);
     } else {
-      ctx.step(`Pages project ${name}`, 'unchanged', `https://${String(p.subdomain)}`);
+      sub = await registerSubdomain(ctx, a);
+      ctx.newAddresses = true;
+      ctx.step(name, 'created', `${sub}.workers.dev`);
     }
-    if (typeof p?.subdomain !== 'string' || !PAGES_HOST.test(p.subdomain)) {
-      throw new DeployError(
-        `The Pages project ${name} has no *.pages.dev address (subdomain ${JSON.stringify(p?.subdomain ?? null)})`,
-      );
-    }
-    ctx.projects[label] = p;
+    ctx.subdomains[a.label] = sub;
   }
-  const pagesApp = `https://${ctx.projects.web.subdomain}`;
-  if (s.appUrl && s.appUrl.endsWith('.pages.dev') && s.appUrl !== pagesApp) {
-    throw new DeployError(
-      `APP_URL (${s.appUrl}) is a pages.dev address, but not the web project's (${pagesApp}). Delete the APP_URL variable (the default is the project's own address) or set it to your custom domain.`,
-    );
+  if (ctx.subdomains.web === ctx.subdomains.shell) {
+    throw new DeployError(sameSiteMessage(ctx.subdomains.web));
   }
-  const app = s.appUrl ?? pagesApp;
-  ctx.urls = {
-    app,
-    pagesApp,
-    shell: `https://${ctx.projects.shell.subdomain}${SHELL_PATH}`,
-    // The shell may be framed by the app's address and, with a custom domain, its pages.dev one.
-    appOrigins: app === pagesApp ? [app] : [app, pagesApp],
-  };
+  ctx.urls = deriveUrls(ctx.s, ctx.subdomains);
   ctx.report.urls = { app: ctx.urls.app, shell: ctx.urls.shell };
   out.setOutput('app_url', ctx.urls.app);
   out.setOutput('shell_url', ctx.urls.shell);
+}
+
+/**
+ * Registers account `a`'s workers.dev subdomain: the name its setting gives, as is; else the
+ * default, then the default with a short random suffix while the name is taken (subdomains are
+ * global across Cloudflare). Returns the registered name.
+ */
+async function registerSubdomain(ctx, a) {
+  const tries = a.wanted
+    ? [a.wanted]
+    : [
+        a.fallback,
+        ...Array.from(
+          { length: SUBDOMAIN_SUFFIX_TRIES },
+          () => `${a.fallback}-${ctx.random(2).toString('hex')}`,
+        ),
+      ];
+  for (const name of tries) {
+    try {
+      return await a.api.createWorkersSubdomain(name);
+    } catch (e) {
+      if (!(e instanceof ApiError && e.codes.includes(10031))) throw e;
+      if (a.wanted) {
+        throw new DeployError(
+          `The workers.dev subdomain ${name} (${a.subdomainSetting}) is taken: workers.dev subdomains are global across Cloudflare. Set ${a.subdomainSetting} to another name, or delete the variable to let the run pick one.`,
+        );
+      }
+      ctx.out.log(`  the workers.dev subdomain ${name} is taken; trying another`);
+    }
+  }
+  throw new DeployError(
+    `No workers.dev subdomain could be registered for account ${a.letter}: ${tries.join(', ')} are taken. Set ${a.subdomainSetting} to a name of your choice.`,
+  );
+}
+
+/** After a deploy: the Worker's workers.dev route is on, without per-version preview URLs. */
+async function ensureRoute(ctx, a, name) {
+  const r = await a.api.getScriptSubdomain(name);
+  const step = `workers.dev route of ${name}`;
+  if (r === null) {
+    throw new DeployError(
+      `The Worker ${name} is not on account ${a.letter} after the deploy: see wrangler's output above.`,
+    );
+  }
+  if (r.enabled && !r.previews_enabled) {
+    ctx.step(step, 'unchanged', 'on (no preview URLs)');
+    return;
+  }
+  await a.api.setScriptSubdomain(name, { enabled: true, previews_enabled: false });
+  ctx.step(step, 'updated', 'turned on (no preview URLs)');
 }
 
 async function schema(ctx) {
@@ -640,21 +782,6 @@ async function shell(ctx) {
     await readVault(ctx);
     if (!ctx.secrets.capture) throw new DeployError(noCaptureSecretMessage());
   }
-  const p = ctx.projects.shell;
-  const production = p.deployment_configs?.production ?? {};
-  const had = Boolean(production.env_vars?.CAPTURE_HMAC_SECRET);
-  // Before the deploy: a Pages secret applies to the next deployment.
-  await ctx.cf.setSecret(
-    p.name ?? s.shellProject,
-    'CAPTURE_HMAC_SECRET',
-    ctx.secrets.capture,
-    production.wrangler_config_hash,
-  );
-  ctx.step(
-    'Pages secret CAPTURE_HMAC_SECRET',
-    had ? 'updated' : 'created',
-    had ? 'set again from Vault (the same value unless Vault changed)' : 'from Vault',
-  );
   await ctx.must(
     ctx.pnpm(['--filter', '@br/sandbox-shell', 'build'], {
       BR_APP_ORIGINS: ctx.urls.appOrigins.join(','),
@@ -662,29 +789,43 @@ async function shell(ctx) {
     }),
     'the sandbox shell build',
   );
-  const branch = p.production_branch || 'main';
-  await ctx.must(
-    ctx.pnpm(
-      [
-        '--filter',
-        '@br/web',
-        'exec',
-        'wrangler',
-        'pages',
-        'deploy',
-        'dist',
-        '--cwd',
-        '../sandbox-shell',
-        '--project-name',
-        s.shellProject,
-        '--branch',
-        branch,
-      ],
-      ctx.cloudflareEnv(),
-    ),
-    'wrangler pages deploy (sandbox shell)',
+  const a = account(ctx, 'shell');
+  const first = (await a.api.getScriptSubdomain(s.shellWorker)) === null;
+  // The capture secret goes up with the version (`wrangler deploy --secrets-file`, wrangler
+  // 4.147.0): in place from the version's first request, also on the very first deploy (a
+  // Worker secret cannot be put before the Worker exists). The file exists only for the
+  // command, in a private temporary directory; its value is never on a command line.
+  const dir = mkdtempSync(path.join(ctx.tmpDir, 'br-shell-secrets-'));
+  try {
+    const file = path.join(dir, 'secrets.json');
+    writeFileSync(file, JSON.stringify({ CAPTURE_HMAC_SECRET: ctx.secrets.capture }), {
+      mode: 0o600,
+    });
+    await ctx.must(
+      ctx.pnpm(
+        [
+          '--filter',
+          '@br/sandbox-shell',
+          'workers:deploy',
+          '--name',
+          s.shellWorker,
+          '--secrets-file',
+          file,
+        ],
+        ctx.cloudflareEnv('shell'),
+      ),
+      'wrangler deploy (sandbox shell, account B)',
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  if (first) ctx.newAddresses = true;
+  ctx.step(
+    `Sandbox shell, Worker ${s.shellWorker}`,
+    'deployed',
+    `${ctx.urls.shell} (account B; CAPTURE_HMAC_SECRET from Vault, set with the version)`,
   );
-  ctx.step('Sandbox shell', 'deployed', ctx.urls.shell);
+  await ensureRoute(ctx, a, s.shellWorker);
 }
 
 async function web(ctx) {
@@ -702,26 +843,32 @@ async function web(ctx) {
   if (s.posthogKey) build.NEXT_PUBLIC_POSTHOG_KEY = s.posthogKey;
   if (s.posthogHost) build.NEXT_PUBLIC_POSTHOG_HOST = s.posthogHost;
   await ctx.must(ctx.pnpm(['--filter', '@br/web', 'build'], build), 'the web app build');
-  const args = [
-    '--filter',
-    '@br/web',
-    'pages:deploy',
-    '--branch',
-    ctx.projects.web.production_branch || 'main',
-  ];
-  // apps/web/wrangler.jsonc names the default project; another name must be passed.
-  if (s.webProject !== DEFAULTS.CF_PAGES_WEB_PROJECT) args.push('--project-name', s.webProject);
-  await ctx.must(ctx.pnpm(args, ctx.cloudflareEnv()), 'wrangler pages deploy (web app)');
+  const a = account(ctx, 'web');
+  const first = (await a.api.getScriptSubdomain(s.webWorker)) === null;
+  await ctx.must(
+    ctx.pnpm(
+      ['--filter', '@br/web', 'workers:deploy', '--name', s.webWorker],
+      ctx.cloudflareEnv('web'),
+    ),
+    'wrangler deploy (web app, account A)',
+  );
+  if (first) ctx.newAddresses = true;
   const extras = [
     s.turnstileSiteKey && 'Turnstile',
     s.sentryDsn && 'Sentry',
     s.posthogKey && 'PostHog',
   ].filter(Boolean);
   ctx.step(
-    'Web app',
+    `Web app, Worker ${s.webWorker}`,
     'deployed',
-    `${ctx.urls.app}${extras.length ? ` (with ${extras.join(', ')})` : ''}`,
+    `${ctx.urls.app} (account A${extras.length ? `; with ${extras.join(', ')}` : ''})`,
   );
+  await ensureRoute(ctx, a, s.webWorker);
+  if (s.turnstileSiteKey) {
+    ctx.warn(
+      `Turnstile: the widget must list the app's hostname ${new URL(ctx.urls.app).hostname} (Cloudflare → Turnstile → the widget → Hostname management). If it lists only an older address (a pages.dev one), add it now: until then the challenge fails and nobody can sign in.`,
+    );
+  }
 }
 
 async function captcha(ctx) {
@@ -800,12 +947,15 @@ async function smoke(ctx) {
   });
   let results = null;
   let failures = [];
-  for (let attempt = 0; attempt <= SMOKE_DELAYS_MS.length; attempt++) {
+  const delays = ctx.newAddresses
+    ? [...SMOKE_DELAYS_MS, ...NEW_ADDRESS_DELAYS_MS]
+    : SMOKE_DELAYS_MS;
+  for (let attempt = 0; attempt <= delays.length; attempt++) {
     if (attempt > 0) {
       out.log(
-        `  deploy-check: ${String(failures.length)} failure(s); trying again in ${String(SMOKE_DELAYS_MS[attempt - 1] / 1000)} s (Pages takes a moment to serve a new deployment)`,
+        `  deploy-check: ${String(failures.length)} failure(s); trying again in ${String(delays[attempt - 1] / 1000)} s (${ctx.newAddresses ? 'a new workers.dev address can take a few minutes to answer' : 'a new version takes a moment to spread'})`,
       );
-      await ctx.sleep(SMOKE_DELAYS_MS[attempt - 1]);
+      await ctx.sleep(delays[attempt - 1]);
     }
     const r = await ctx.run(process.execPath, args, { env, cwd: ctx.repoRoot, capture: true });
     if (r.code === 2)
@@ -828,12 +978,9 @@ async function smoke(ctx) {
   }
   ctx.report.checks = Array.isArray(results) ? results : failures;
   if (failures.length) {
-    throw new DeployError(
-      `deploy-check still FAILs after ${String(SMOKE_DELAYS_MS.length + 1)} tries`,
-      {
-        problems: failures.map((f) => `${f.name}: ${f.detail}`),
-      },
-    );
+    throw new DeployError(`deploy-check still FAILs after ${String(delays.length + 1)} tries`, {
+      problems: failures.map((f) => `${f.name}: ${f.detail}`),
+    });
   }
   const warns = results.filter((x) => x.level === 'WARN').length;
   ctx.step(
@@ -845,7 +992,7 @@ async function smoke(ctx) {
 
 const STEPS = {
   preflight,
-  pages,
+  workers,
   schema,
   vault,
   auth,
@@ -888,6 +1035,14 @@ function nextSteps(ctx) {
     next.push(
       'Then DEPLOY.md §6.3–§6.6 (screenshots, link preview, admin) and §7 (rehearse the runbooks).',
     );
+    if (ctx.s.sentryDsn || ctx.s.posthogKey) {
+      next.push(
+        `Sentry / PostHog: if their projects only accept listed domains, add the app's address ${report.urls.app ?? ''} (apps/web/DEPLOY.md → "Observability").`,
+      );
+    }
+    next.push(
+      'The old Cloudflare Pages projects (pages.dev, before the move to Workers in T-043) are not used any more: once the new addresses work, delete them in the Cloudflare dashboard, Workers & Pages → the project (build-roulette-web, build-roulette-sandbox) → Settings → Delete. Their pages.dev address can also go from Supabase → Authentication → URL Configuration → Redirect URLs.',
+    );
   } else {
     next.push(
       'Run target **all** (or the other targets) when the rest should follow; deploy-check runs with **all**.',
@@ -901,6 +1056,10 @@ const cell = (s) =>
     .replace(/\|/g, '\\|')
     .replace(/\s*\n\s*/g, ' ');
 
+/** `A 0123… (the app): buildroulette.workers.dev` (account ids are settings, not secrets). */
+const accountText = (a) =>
+  `${a.letter} ${a.id} (${a.what}): ${a.subdomain ? `${a.subdomain}.workers.dev` : 'no workers.dev subdomain yet'}`;
+
 export function renderSummary(report) {
   const lines = [];
   const status = report.failed ? 'FAILED' : 'succeeded';
@@ -909,6 +1068,9 @@ export function renderSummary(report) {
   lines.push('| | |', '|---|---|');
   lines.push(`| App | ${cell(report.urls.app ?? '(not known yet)')} |`);
   lines.push(`| Sandbox shell | ${cell(report.urls.shell ?? '(not known yet)')} |`);
+  if (report.accounts.length) {
+    lines.push(`| Cloudflare accounts | ${cell(report.accounts.map(accountText).join('; '))} |`);
+  }
   lines.push(
     `| Supabase project | ${cell(project ? `\`${project.ref}\` (${project.name ?? '?'}, ${project.region ?? '?'})` : (report.ref ?? '(not known)'))} |`,
   );
@@ -962,6 +1124,7 @@ export function renderText(report) {
   lines.push('', `Deploy, target ${report.target}: ${report.failed ? 'FAILED' : 'succeeded'}`);
   lines.push(`  App:              ${report.urls.app ?? '(not known yet)'}`);
   lines.push(`  Sandbox shell:    ${report.urls.shell ?? '(not known yet)'}`);
+  for (const a of report.accounts) lines.push(`  Cloudflare:       ${accountText(a)}`);
   const p = report.project;
   lines.push(
     `  Supabase project: ${p ? `${p.ref} (${p.name ?? '?'}, ${p.region ?? '?'})` : (report.ref ?? '(not known)')}`,
@@ -1013,6 +1176,7 @@ export async function deploy({
   sleep = (ms) => delay(ms),
   random = cryptoRandomBytes,
   repoRoot = REPO_ROOT,
+  tmpDir = env.RUNNER_TEMP || tmpdir(),
 } = {}) {
   const out = createOutput({
     stdout,
@@ -1040,6 +1204,7 @@ export async function deploy({
   const report = {
     target: args.target,
     urls: {},
+    accounts: [],
     project: null,
     ref: undefined,
     preflight: [],
@@ -1067,7 +1232,11 @@ export async function deploy({
     random,
     sleep,
     adminEmail,
-    projects: {},
+    tmpDir,
+    /** Each account's workers.dev subdomain: undefined unknown, null none yet. */
+    subdomains: {},
+    /** A subdomain registered or a Worker deployed for the first time in this run. */
+    newAddresses: false,
     secrets: {},
     urls: {},
     http: { fetch: fetchImpl, sleep },
@@ -1102,10 +1271,12 @@ export async function deploy({
     pnpm(pnpmArgs, extraEnv) {
       return ctx.run('pnpm', pnpmArgs, { cwd: repoRoot, env: childEnv(env, extraEnv) });
     },
-    cloudflareEnv() {
+    /** wrangler's credentials for one account: A for `web`, B for `shell`, nothing else. */
+    cloudflareEnv(label) {
+      const b = label === 'shell';
       return {
-        CLOUDFLARE_API_TOKEN: s.cfToken,
-        CLOUDFLARE_ACCOUNT_ID: s.accountId,
+        CLOUDFLARE_API_TOKEN: b ? s.sandboxToken : s.cfToken,
+        CLOUDFLARE_ACCOUNT_ID: b ? s.sandboxAccountId : s.accountId,
         WRANGLER_SEND_METRICS: 'false',
       };
     },
@@ -1129,6 +1300,12 @@ export async function deploy({
     };
   } else {
     ctx.cf = cloudflareApi({ fetch: fetchImpl, sleep, token: s.cfToken, accountId: s.accountId });
+    ctx.cfSandbox = cloudflareApi({
+      fetch: fetchImpl,
+      sleep,
+      token: s.sandboxToken,
+      accountId: s.sandboxAccountId,
+    });
     if (s.brToken)
       ctx.cfBr = cloudflareApi({
         fetch: fetchImpl,
@@ -1174,6 +1351,14 @@ export async function deploy({
   }
   if (ctx.project && !report.project) {
     report.project = { ref: s.ref, name: ctx.project.name, region: ctx.project.region };
+  }
+  if (ctx.cf) {
+    report.accounts = cloudflareAccounts(ctx).map((a) => ({
+      letter: a.letter,
+      what: a.what,
+      id: a.accountId,
+      subdomain: ctx.subdomains[a.label] ?? null,
+    }));
   }
   report.next = nextSteps(ctx);
   if (report.failed) {

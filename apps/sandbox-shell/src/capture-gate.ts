@@ -4,8 +4,8 @@
  * `GET /v{N}/capture?src=…&css=…&map=…&exp=…&sig=…` is answered with the capture page only
  * when the HMAC over the exact parameters is valid and unexpired (`capture-sig.ts`).
  * Anything else gets an empty 403, so the page renders nothing. The gate runs server-side
- * (Cloudflare Pages `_worker.js` in production, `server.ts` locally) because it needs the
- * shared secret; the page and `capture.js` are public and hold no secret.
+ * (the shell's Cloudflare Worker in production, `worker.ts`; `server.ts` locally) because it
+ * needs the shared secret; the page and `capture.js` are public and hold no secret.
  *
  * Fetch API only (Request/Response, WebCrypto), so the same code runs in Workers and Node.
  */

@@ -1,16 +1,23 @@
-// The HTTP APIs the deploy uses (T-042), on an injected `fetch`. Tokens only ever go in the
-// Authorization (or apikey) header; error messages carry the API's own error text, never a
-// request or response body that could hold a secret.
+// The HTTP APIs the deploy uses (T-042, T-043), on an injected `fetch`. Tokens only ever go
+// in the Authorization (or apikey) header; error messages carry the API's own error text,
+// never a request or response body that could hold a secret.
 //
-// Cloudflare (https://api.cloudflare.com/client/v4), as wrangler 4.147 calls it:
+// Cloudflare (https://api.cloudflare.com/client/v4), as wrangler 4.147.0 calls it (its
+// deploy-helpers/src/triggers/subdomain.ts and the bundled `cloudflare` SDK 5.2.0). The
+// Workers endpoints are covered by the token permission Account → Workers Scripts → Edit
+// (wrangler's matching OAuth scope `workers_scripts:write`: "See and change Cloudflare Workers
+// scripts, durable objects, subdomains, triggers, and tail data"):
 //   GET   /user/tokens/verify                    → result.status ("active"); an account-owned
 //         token answers error 1000 there, then  GET /accounts/{id}/tokens/verify
-//   GET   /accounts/{id}/pages/projects/{name}    → result {name, subdomain, production_branch,
-//         source?, deployment_configs.production.{env_vars, wrangler_config_hash}};
-//         HTTP 404 with error 8000007 when it does not exist
-//   POST  /accounts/{id}/pages/projects           {name, production_branch} → result.subdomain
-//   PATCH /accounts/{id}/pages/projects/{name}    {deployment_configs: {production: {env_vars:
-//         {KEY: {type: "secret_text", value}}}}} (what `wrangler pages secret put` sends)
+//   GET   /accounts/{id}/workers/subdomain        → result.subdomain (the account's
+//         `<sub>` of `<sub>.workers.dev`); error 10007 when the account has none yet
+//   PUT   /accounts/{id}/workers/subdomain        {subdomain} → result.subdomain; error 10031
+//         when the name is taken (workers.dev subdomains are global)
+//   GET   /accounts/{id}/workers/scripts/{name}/subdomain → result {enabled,
+//         previews_enabled}: the Worker's workers.dev route; error 10007 / HTTP 404 when the
+//         Worker does not exist
+//   POST  /accounts/{id}/workers/scripts/{name}/subdomain {enabled, previews_enabled} (what
+//         `wrangler deploy` sends for `workers_dev` / `preview_urls`)
 // Supabase Management API (https://api.supabase.com), as the Supabase CLI 2.119.0 describes it:
 //   GET   /v1/projects/{ref}                      → {ref, name, region, status: ACTIVE_HEALTHY | INACTIVE (paused) | …}
 //   POST  /v1/projects/{ref}/database/query       {query} → 201, the rows as JSON
@@ -112,7 +119,8 @@ export function cloudflareApi({
       codes: r.codes,
       api: 'cloudflare',
     });
-  const projectPath = (name) => `/accounts/${accountId}/pages/projects/${encodeURIComponent(name)}`;
+  const scriptPath = (name) =>
+    `/accounts/${accountId}/workers/scripts/${encodeURIComponent(name)}/subdomain`;
 
   return {
     /**
@@ -130,30 +138,47 @@ export function cloudflareApi({
       if (!r.ok) throw fail('token refused', r);
       return { status: String(r.json.result?.status ?? 'unknown'), kind };
     },
-    /** The project, or null when it does not exist (404, error 8000007). */
-    async getProject(name) {
-      const r = await req(projectPath(name));
-      if (r.ok) return r.json.result;
-      if (r.status === 404 && r.codes.includes(8000007)) return null;
-      throw fail(`reading the Pages project ${name}`, r);
+    /** The account's workers.dev subdomain (`<sub>`, without `.workers.dev`), or null: none yet. */
+    async getWorkersSubdomain() {
+      const r = await req(`/accounts/${accountId}/workers/subdomain`);
+      if (r.ok) {
+        const sub = r.json.result?.subdomain;
+        if (typeof sub === 'string' && sub !== '') return sub;
+        return null;
+      }
+      if (r.codes.includes(10007)) return null;
+      throw fail(`reading the workers.dev subdomain of account ${accountId}`, r);
     },
-    async createProject(name, productionBranch) {
-      const r = await req(`/accounts/${accountId}/pages/projects`, {
+    /**
+     * Registers the account's workers.dev subdomain; returns the registered name. Throws an
+     * ApiError with code 10031 when the name is taken.
+     */
+    async createWorkersSubdomain(name) {
+      const r = await req(`/accounts/${accountId}/workers/subdomain`, {
+        method: 'PUT',
+        body: { subdomain: name },
+      });
+      if (!r.ok) throw fail(`registering the workers.dev subdomain ${name}`, r);
+      return String(r.json.result?.subdomain ?? name);
+    },
+    /** The Worker's workers.dev route {enabled, previews_enabled}, or null: no such Worker. */
+    async getScriptSubdomain(name) {
+      const r = await req(scriptPath(name));
+      if (r.ok) {
+        return {
+          enabled: r.json.result?.enabled === true,
+          previews_enabled: r.json.result?.previews_enabled === true,
+        };
+      }
+      if (r.status === 404 || r.codes.includes(10007)) return null;
+      throw fail(`reading the workers.dev route of the Worker ${name}`, r);
+    },
+    async setScriptSubdomain(name, { enabled, previews_enabled }) {
+      const r = await req(scriptPath(name), {
         method: 'POST',
-        body: { name, production_branch: productionBranch },
+        body: { enabled, previews_enabled },
       });
-      if (!r.ok) throw fail(`creating the Pages project ${name}`, r);
-      return r.json.result;
-    },
-    /** A production secret (`secret_text`) on a Pages project; applies to the next deployment. */
-    async setSecret(name, key, value, wranglerConfigHash) {
-      const production = { env_vars: { [key]: { type: 'secret_text', value } } };
-      if (wranglerConfigHash) production.wrangler_config_hash = wranglerConfigHash;
-      const r = await req(projectPath(name), {
-        method: 'PATCH',
-        body: { deployment_configs: { production } },
-      });
-      if (!r.ok) throw fail(`setting ${key} on the Pages project ${name}`, r);
+      if (!r.ok) throw fail(`turning on the workers.dev route of the Worker ${name}`, r);
     },
   };
 }

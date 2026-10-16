@@ -1,7 +1,7 @@
 /**
  * The static site's host files (T-037): the shells' rewrites, the shell parameter read from
  * the browser's URL, the Content-Security-Policy built from the build's settings and its
- * inline scripts, the `_headers` file and Pages' limits, and the secret-key scan of the
+ * inline scripts, the `_headers` file and the host's limits, and the secret-key scan of the
  * export.
  */
 import { createHash } from 'node:crypto';
@@ -138,7 +138,7 @@ describe('_headers', () => {
     const big = headerRules(contentSecurityPolicy({ ...LOCAL, scriptHashes: many }));
     expect(checkHeaders(big)).toEqual([
       expect.stringMatching(
-        /^\/\* Content-Security-Policy is \d+ characters \(Pages allows 2000\)$/,
+        /^\/\* Content-Security-Policy is \d+ characters \(Cloudflare allows 2000\)$/,
       ),
     ]);
   });

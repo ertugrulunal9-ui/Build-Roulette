@@ -25,8 +25,8 @@ import { APP_SERVER_ENV, appServerCommand } from './e2e/app-server';
  * the whole stack, and another shard's channel joins reconnect it.
  *
  * Same servers as the solo e2e (scripts/solo-services.ts, here with `--realtime`, which
- * fails fast when Realtime is not running) and the static export served by `wrangler pages
- * dev` (e2e/app-server.ts). `E2E_REUSE_SERVERS=1` reuses servers that are already running
+ * fails fast when Realtime is not running) and the static export served by `wrangler dev`
+ * (e2e/app-server.ts). `E2E_REUSE_SERVERS=1` reuses servers that are already running
  * (start them with BR_SERVICES_LOG set to keep their logs in the failure diagnostics).
  */
 const APP_PORT = Number(process.env['APP_PORT'] ?? 3100);

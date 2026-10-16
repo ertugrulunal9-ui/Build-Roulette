@@ -74,7 +74,7 @@ export const PRICES = {
   pagesStatic: {
     value: 0,
     unit: '$',
-    note: 'Pages static requests are free and unlimited (sandbox shell)',
+    note: 'static asset requests are free and unlimited (the sandbox shell: a Worker with static assets since T-043, Pages before)',
   },
   browserHoursIncluded: {
     value: 10,
@@ -125,7 +125,7 @@ export const PRICES = {
   domainUsercontent: {
     value: 10.44,
     unit: '$/year',
-    note: 'usercontent domain (stage 2 only; stage 1 uses *.pages.dev)',
+    note: 'usercontent domain (stage 2 only; stage 1 uses *.workers.dev on a second account)',
   },
 } satisfies Record<string, Price>;
 
@@ -364,7 +364,7 @@ export function monthly(
     `${String(a.containerActiveHours.value)} h`,
     memCost + cpuCost + diskCost,
   );
-  add('Pages (sandbox shell), R2 (ISR cache)', 'free tier', 0);
+  add('Static assets (sandbox shell), R2 (ISR cache)', 'free tier', 0);
   add('Domain (app)', '1 domain', p.domain.value / 12);
   const total = items.reduce((x, i) => x + i.cost, 0);
   return { items, total };

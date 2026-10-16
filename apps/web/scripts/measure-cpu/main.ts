@@ -1,12 +1,12 @@
 /**
  * CPU time per request on the local Cloudflare runtime (T-033, docs/08-free-tier.md §1),
- * against the 10 ms CPU limit of Workers Free. Since T-037 the app is a static site on
- * Cloudflare Pages; since T-038 one Pages Function runs for `/battles/*` (the link previews,
- * `out/_worker.js`, limited by `out/_routes.json`). This measures what `wrangler pages dev`
- * runs per request: the Function on its cases (a public battle with a screenshot, one whose
- * rank 1 was taken down, an unknown id, a malformed id, Supabase slow and Supabase down), and
- * a few static paths, which must not run it at all (production serves them without any
- * Worker). Each request is measured warm and in a fresh isolate (a restart of workerd), with
+ * against the 10 ms CPU limit of Workers Free. Since T-037 the app is a static site; since
+ * T-038 one piece of code runs for `/battles/*` (the link previews, "the Function": a Pages
+ * Function, since T-043 the Worker `dist/worker.js` with the export as its static assets,
+ * routed by `run_worker_first`). This measures what `wrangler dev` runs per request: the
+ * Function on its cases (a public battle with a screenshot, one whose rank 1 was taken down,
+ * an unknown id, a malformed id, Supabase slow and Supabase down), and a few static paths,
+ * which must not run it at all (production serves them without any Worker). Each request is measured warm and in a fresh isolate (a restart of workerd), with
  * the method check on a known Worker (calibrate.ts).
  *
  *   pnpm --filter @br/web build             # the static export in out/, with the Function
@@ -27,7 +27,13 @@ import { randomUUID } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
-import { MockSupabase, writePreviewVariant, type SupabaseOutage } from '../preview-variant';
+import {
+  MockSupabase,
+  variantConfig,
+  writePreviewVariant,
+  type SupabaseOutage,
+} from '../preview-variant';
+import { WORKER_FILE } from '../preview-worker';
 import { calibrate, calibrationTable } from './calibrate';
 import { Fixtures, type StackEnv } from './fixtures';
 import { fmt, stats } from './profile';
@@ -77,8 +83,8 @@ interface Scenario {
   preview: string;
 }
 
-if (!existsSync(`${webDir}out/index.html`) || !existsSync(`${webDir}out/_worker.js`)) {
-  throw new Error('No static export with the Function: run `pnpm --filter @br/web build` first.');
+if (!existsSync(`${webDir}out/index.html`) || !existsSync(`${webDir}${WORKER_FILE}`)) {
+  throw new Error('No static export with the Worker: run `pnpm --filter @br/web build` first.');
 }
 /** A content-hashed JS chunk of the home page (an asset under /_next/static/). */
 const chunk =
@@ -311,7 +317,7 @@ async function measureSite(): Promise<void> {
   if (list.length === 0) return;
   await measure(
     new WorkersRuntime({
-      kind: 'pages',
+      kind: 'site',
       port: 8797,
       inspectorPort: 9297,
       samplingUs: SAMPLING_US,
@@ -335,8 +341,8 @@ async function measureOutages(): Promise<void> {
       await mock.setMode(s.site.outage);
       await measure(
         new WorkersRuntime({
-          kind: 'pages',
-          dir,
+          kind: 'site',
+          config: variantConfig(dir),
           port: 8796,
           inspectorPort: 9296,
           samplingUs: SAMPLING_US,

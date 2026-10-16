@@ -1,15 +1,41 @@
 {
-  // Cloudflare Pages project of the web app (T-037; DEPLOY.md). The app is a static export:
-  // `pnpm --filter @br/web build` writes it to ./out with its `_headers` and `_redirects`, and
-  // Pages serves those files without running any Worker code.
+  // The web app as a Cloudflare Worker with static assets, on workers.dev (T-043; DEPLOY.md,
+  // docs/08-free-tier.md §2–§3). Before T-043 it was a Pages project, but `*.pages.dev` is
+  // blocked in Turkey, where the players are.
   //
-  // `wrangler pages dev` (the e2e suites, `pnpm preview`) and `wrangler pages deploy`
-  // (`pnpm pages:deploy`) read this file. Once a Pages project uses a Wrangler config file,
-  // the file is the source of truth for its settings (the dashboard shows them read-only).
-  // No `account_id` on purpose: `wrangler login` (or CLOUDFLARE_ACCOUNT_ID) supplies it at
-  // deploy time, and local runs need no account.
+  // `pnpm --filter @br/web build` writes the static export to ./out with its `_headers` and
+  // `_redirects`, and the link-preview Worker to ./dist/worker.js (scripts/pages-config.ts).
+  // `wrangler dev` (the e2e suites, `pnpm preview`) and `wrangler deploy`
+  // (`pnpm workers:deploy`, scripts/deploy) read this file.
+  //
+  // Requests: only `/battles/*` invokes the Worker (`run_worker_first`; the link previews, a
+  // real 404 for an unknown battle). Every other path is a static asset, free and not counted
+  // as a Worker request; an unknown path gets `out/404.html` with a 404 from the assets
+  // (`not_found_handling`), which invokes nothing either. The rewrites of `_redirects`
+  // (`/r/:code /r 200`, …) and the headers of `_headers` are applied by the assets, also to
+  // what the Worker fetches through `env.ASSETS`. scripts/preview-worker.ts holds the same
+  // routing for the outage variant; scripts/preview-worker.test.ts keeps them equal.
+  //
+  // No `account_id` on purpose: CLOUDFLARE_ACCOUNT_ID supplies it at deploy time, and local
+  // runs need no account.
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "build-roulette-web",
-  "pages_build_output_dir": "./out",
+  "main": "./dist/worker.js",
+  // The build bundles the Worker itself (esbuild, with this build's NEXT_PUBLIC_* values and
+  // the `/*` headers baked in): what is deployed is the file the build checked, and nothing
+  // else (`find_additional_modules` would otherwise default to true with `no_bundle`).
+  "no_bundle": true,
+  "find_additional_modules": false,
   "compatibility_date": "2026-10-01",
+  "assets": {
+    "directory": "./out",
+    "binding": "ASSETS",
+    "run_worker_first": ["/battles/*"],
+    "not_found_handling": "404-page",
+    "html_handling": "auto-trailing-slash",
+  },
+  // https://build-roulette-web.<account subdomain>.workers.dev; no per-version preview
+  // addresses.
+  "workers_dev": true,
+  "preview_urls": false,
 }

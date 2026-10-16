@@ -1,14 +1,15 @@
 import { expect, test } from '@playwright/test';
 import { screenshotPng } from '../scripts/measure-cpu/fixtures';
-import { MockSupabase, startPagesDev, writePreviewVariant } from '../scripts/preview-variant';
+import { MockSupabase, startWorkerDev, writePreviewVariant } from '../scripts/preview-variant';
 import { watchCsp } from './csp';
 import { STATIC_CARD } from './helpers';
 import { crawl, one, type CrawlerView } from './link-preview';
 import { anonymousUserId, assertUuid, publicScreenshotUrl, sql, uploadScreenshot } from './stack';
 
 /**
- * Per-battle link previews (T-038): the Pages Function on `/battles/*` (out/_worker.js) as
- * `wrangler pages dev` runs it, against the real local stack (playwright.moderation.config.ts).
+ * Per-battle link previews (T-038): the Worker on `/battles/*` (dist/worker.js; a Pages
+ * Function until T-043, "the Function" below) as `wrangler dev` runs it, against the real
+ * local stack (playwright.moderation.config.ts).
  *
  * - A crawler (a plain request, no script) gets the battle's own head: title, `og:*` with the
  *   rank-1 screenshot, `og:url` / canonical, `twitter:card`; user data in it is escaped.
@@ -224,7 +225,8 @@ test('only /battles/* runs the Function', async ({ request }) => {
     const res = await request.get(path, { maxRedirects: 0 });
     expect(res.headers()['x-br-preview'], path).toBeUndefined();
   }
-  // A deeper path under /battles reaches the Function, which leaves it to Pages (the 404 page).
+  // A deeper path under /battles reaches the Function, which leaves it to the static assets
+  // (the 404 page).
   const deep = await request.get(`/battles/${fx.battle}/extra`, { maxRedirects: 0 });
   expect(deep.status()).toBe(404);
   expect(deep.headers()['x-br-preview']).toBeUndefined();
@@ -237,7 +239,7 @@ test('Supabase slow or down: 200 with the shell’s default head (fail open)', a
   await mock.start();
   const dir = info.outputPath('site-outage');
   await writePreviewVariant(dir, mock.url);
-  const site = await startPagesDev(dir, 3197);
+  const site = await startWorkerDev(dir, 3197);
   try {
     const path = `${site.origin}/battles/${fx.battle}`;
     // Hangs: the Function gives up after 1.5 s and serves the plain shell.

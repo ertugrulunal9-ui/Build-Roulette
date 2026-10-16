@@ -1,15 +1,23 @@
 /**
- * Static build of the shell for a static host (Cloudflare Pages layout):
+ * Static build of the shell for Cloudflare Workers with static assets (T-043; `wrangler.jsonc`
+ * next to this package's package.json reads it):
  *   dist/v{N}/index.html, dist/v{N}/shell.js, dist/v{N}/capture.js, dist/v{N}/reset,
- *   dist/_headers, dist/_worker.js, dist/_routes.json
+ *   dist/404.html, dist/_headers                       the static assets
+ *   dist/worker.js                                     the Worker (the capture gate)
+ *   dist/.assetsignore                                 keeps worker.js out of the assets
  *
  * `_headers` puts the security headers on `/*` (every path, 404s included) and gives
  * `/v{N}/reset` its `Clear-Site-Data` + `no-store` headers (see src/headers.ts and the
- * README of @br/runtime, "Reset isolation").
+ * README of @br/runtime, "Reset isolation"). `404.html` is what an unknown path gets (with a
+ * 404 status and the `/*` headers): with it, an unknown path is answered by the assets and
+ * never invokes the Worker (`not_found_handling: "404-page"`).
  *
- * `_worker.js` + `_routes.json` (Pages advanced mode): the capture gate answers
- * `/v{N}/capture` only after checking the HMAC (src/capture-gate.ts). The secret is the
- * Pages secret `CAPTURE_HMAC_SECRET`; it is not part of the build.
+ * `worker.js`: the capture gate answers `/v{N}/capture` only after checking the HMAC
+ * (src/capture-gate.ts); the config's `run_worker_first` routes only that path to it. The
+ * secret is the Worker secret `CAPTURE_HMAC_SECRET`; it is not part of the build.
+ *
+ * The build owns `dist/`: it is emptied first, so nothing of an older layout (Cloudflare
+ * Pages' `_worker.js` and `_routes.json`, before T-043) is ever uploaded.
  *
  * Env:
  *   BR_APP_ORIGINS  comma-separated app origins (frame-ancestors + postMessage targets)
@@ -18,12 +26,18 @@
  *                   goes into `script-src`. Default: https://esm.sh (the free plan, T-035).
  *                   BR_CDN_ORIGIN (the older name, an origin) is still read.
  */
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gzipSync } from 'node:zlib';
-import { buildPagesWorker, buildShell, SHELL_BASE_PATH } from '../src/build-shell';
-import { CAPTURE_PATH } from '../src/capture-gate';
+import {
+  ASSETS_IGNORE,
+  NOT_FOUND_HTML,
+  SHELL_BASE_PATH,
+  WORKER_FILE,
+  buildShell,
+  buildWorker,
+} from '../src/build-shell';
 import {
   PUBLIC_ESM_SH_URL,
   RESET_ENDPOINT,
@@ -48,6 +62,7 @@ const cdnOrigin = cdnOriginOf(
 
 const built = await buildShell({ appOrigins, minify: true });
 const dist = path.join(ROOT, 'dist');
+rmSync(dist, { recursive: true, force: true });
 const outDir = path.join(dist, SHELL_BASE_PATH);
 mkdirSync(outDir, { recursive: true });
 writeFileSync(path.join(outDir, 'index.html'), built.html);
@@ -55,21 +70,18 @@ writeFileSync(path.join(outDir, 'shell.js'), built.js);
 writeFileSync(path.join(outDir, 'capture.js'), built.captureJs);
 // The body is irrelevant; the headers from `_headers` do the work.
 writeFileSync(path.join(outDir, RESET_ENDPOINT), 'ok\n');
+writeFileSync(path.join(dist, '404.html'), NOT_FOUND_HTML);
 writeFileSync(
   path.join(dist, '_headers'),
   renderHeadersFile(staticHeaderRules({ appOrigins, cdnOrigin }, SHELL_BASE_PATH)),
 );
-writeFileSync(
-  path.join(dist, '_worker.js'),
-  await buildPagesWorker(captureHeaders({ appOrigins, cdnOrigin })),
-);
-writeFileSync(
-  path.join(dist, '_routes.json'),
-  `${JSON.stringify({ version: 1, include: [CAPTURE_PATH], exclude: [] }, null, 2)}\n`,
-);
+const worker = await buildWorker(captureHeaders({ appOrigins, cdnOrigin }));
+writeFileSync(path.join(dist, WORKER_FILE), worker);
+writeFileSync(path.join(dist, '.assetsignore'), ASSETS_IGNORE);
 
 const size = (js: string) =>
   `${String(Buffer.byteLength(js))} B (${String(gzipSync(js, { level: 9 }).byteLength)} B gzip)`;
 console.log(`sandbox-shell: dist${SHELL_BASE_PATH}shell.js ${size(built.js)}`);
 console.log(`sandbox-shell: dist${SHELL_BASE_PATH}capture.js ${size(built.captureJs)}`);
+console.log(`sandbox-shell: dist/${WORKER_FILE} (the capture gate) ${size(worker)}`);
 console.log(`sandbox-shell: app origins ${appOrigins.join(', ')}; cdn ${cdnOrigin}`);

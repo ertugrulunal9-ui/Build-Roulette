@@ -1,26 +1,27 @@
 /**
- * What the link-preview Function (T-038, docs/08-free-tier.md §3; the worker entry is
+ * What the link-preview Worker (T-038, docs/08-free-tier.md §3; the worker entry is
  * preview-worker.ts) does with one request, with its I/O passed in so that Node can test it.
  *
  * Per request to `/battles/{id}` (any other path, or a method other than GET/HEAD, is handed
- * to Pages' static assets unchanged):
+ * to the static assets unchanged):
  *
  * 1. a malformed id: the shell with a 404 status and the "not found" head; Supabase is not
  *    asked;
  * 2. otherwise `get_public_battle` (the page's own call, with the anon key) and the shell
- *    (`/battles`, from Pages' assets) at the same time;
+ *    (`/battles`, from the static assets) at the same time;
  * 3. a public battle: the shell with its head replaced by the battle's (battle-preview.ts); an
  *    unknown or not-yet-public battle: the shell with a 404 status and the "not found" head.
  *    The page's script then loads the data itself and shows the results or its not-found
- *    view, as it does without the Function;
+ *    view, as it does without the Worker;
  * 4. **fail open:** Supabase slower than the timeout ({@link SUPABASE_TIMEOUT_MS}), an error,
  *    or an answer that is not the expected shape: the shell unchanged, with 200 (the generic
- *    tags and the static card), which is what Pages served before T-038. Anything that throws
- *    is caught by the worker entry, which serves the plain static path.
+ *    tags and the static card), which is what the site served before T-038. Anything that
+ *    throws is caught by the worker entry, which serves the plain static path.
  *
  * Every answer carries the security headers of `_headers`' `/*` rule (baked in at build
- * time), whether or not Pages applies `_headers` to a Function's response, and no `ETag` (the
- * body differs per battle and per moment). `x-br-preview` says which case it was.
+ * time): the assets apply `_headers` to the shell they hand over, but not to a response the
+ * Worker builds itself. No `ETag` (the body differs per battle and per moment). `x-br-preview`
+ * says which case it was.
  *
  * Nothing is cached: every request reads Supabase, so a takedown changes the preview on the
  * very next request (docs/08 §3 has why).
@@ -28,7 +29,7 @@
 import type { PublicBattle } from '../solo/types';
 import { battlePreview, previewHeadHtml, previewTarget, type PreviewHead } from './battle-preview';
 
-/** How long the Function waits for `get_public_battle` before it serves the plain shell. */
+/** How long the Worker waits for `get_public_battle` before it serves the plain shell. */
 export const SUPABASE_TIMEOUT_MS = 1_500;
 
 /** The shell every `/battles/{id}` is answered with (`out/battles.html`). */
@@ -38,7 +39,7 @@ export const SHELL_PATH = '/battles';
 export type PreviewOutcome = 'battle' | 'not-found' | 'malformed' | 'fail-open';
 
 export interface PreviewDeps {
-  /** Pages' static assets (`env.ASSETS.fetch`). */
+  /** The static assets (`env.ASSETS.fetch`). */
   assets(request: Request): Promise<Response>;
   /** `get_public_battle`: the battle, null when unknown or not public; throws on failure. */
   loadBattle(id: string, signal: AbortSignal): Promise<PublicBattle | null>;
@@ -49,7 +50,7 @@ export interface PreviewDeps {
   /** The site's public origin, or null to use the request's. */
   siteUrl: string | null;
   timeoutMs: number;
-  /** Where a fail-open is reported (the Function's log). */
+  /** Where a fail-open is reported (the Worker's log). */
   warn(message: string): void;
 }
 

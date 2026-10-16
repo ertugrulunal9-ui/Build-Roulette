@@ -1,7 +1,8 @@
 /**
- * Per-battle link previews (T-038, docs/08-free-tier.md §3): what the Pages Function on
- * `/battles/*` (preview-worker.ts) writes into the shell's `<head>` for a crawler, as pure
- * functions (unit-tested in Node; the Function only adds the I/O and `HTMLRewriter`).
+ * Per-battle link previews (T-038, docs/08-free-tier.md §3): what the link-preview Worker on
+ * `/battles/*` (preview-worker.ts; a Pages Function until T-043, "the Function" below) writes
+ * into the shell's `<head>` for a crawler, as pure functions (unit-tested in Node; the
+ * Function only adds the I/O and `HTMLRewriter`).
  *
  * `/battles/{id}` is one static shell for every battle (T-037). Crawlers do not run its
  * script, so without the Function every battle would share the shell's generic tags and the

@@ -18,7 +18,7 @@
  *
  *   pnpm --filter @br/web dev:solo          # all of the above, starting the stack if needed
  *   pnpm --filter @br/web dev:multi         # the same, and Realtime must be up (rooms)
- *   tsx scripts/solo-services.ts            # without Next (the e2e suites start `wrangler pages dev`)
+ *   tsx scripts/solo-services.ts            # without Next (the e2e suites start `wrangler dev`)
  *
  * Flags: --next (run `next dev`), --start-stack (run `supabase start` when the stack is not
  * up; needs Docker), --realtime (fail when the stack runs without Realtime, which rooms need:

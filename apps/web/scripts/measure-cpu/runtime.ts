@@ -1,8 +1,8 @@
 /**
  * The local Cloudflare runtime the CPU measurement (T-033; since T-038 for the link-preview
- * Function) drives, and how one request is measured on it: `wrangler pages dev` (the static
- * site and its Function) or `wrangler dev` (a plain Worker: the calibration Worker), both
- * workerd, the runtime Cloudflare runs.
+ * Function) drives, and how one request is measured on it: `wrangler dev` on the static site
+ * and its Worker (T-043; `wrangler pages dev` before) or on a plain Worker (the calibration
+ * Worker), both workerd, the runtime Cloudflare runs.
  *
  * Per request: the user isolate's CPU from a V8 CPU profile (DevTools `Profiler`, through
  * wrangler's inspector proxy) and the workerd main thread's CPU from
@@ -218,19 +218,19 @@ export interface WorkersOptions {
   samplingUs: number;
   logFile: string;
   /**
-   * `pages`: `wrangler pages dev` on the app (apps/web/wrangler.jsonc: `out/`, with T-038's
-   * link-preview Function `out/_worker.js` on `/battles/*`; every other path goes straight to
-   * the asset server), or on `dir`. `worker`: `wrangler dev` on `config`.
+   * What runs, always under `wrangler dev`: `site` the app (apps/web/wrangler.jsonc: the
+   * static export `out/` with T-038's link-preview Worker `dist/worker.js` on `/battles/*`;
+   * every other path goes straight to the asset server), or a variant of it with `config`
+   * (scripts/preview-variant.ts); `worker` a plain Worker with `config` (the calibration
+   * Worker).
    */
-  kind: 'pages' | 'worker';
-  /** The Worker's wrangler config (kind `worker`, e.g. the calibration Worker). */
+  kind: 'site' | 'worker';
+  /** The wrangler config (default: apps/web/wrangler.jsonc). */
   config?: string;
-  /** Kind `pages`: serve this directory instead of `out/` (scripts/preview-variant.ts). */
-  dir?: string;
 }
 
 /**
- * `wrangler pages dev` / `wrangler dev`. One start = one fresh isolate: workerd evaluates the
+ * `wrangler dev`. One start = one fresh isolate: workerd evaluates the
  * Worker's global scope at startup, before the first request (as Cloudflare does).
  */
 export class WorkersRuntime {
@@ -251,9 +251,7 @@ export class WorkersRuntime {
       process.execPath,
       [
         'node_modules/wrangler/bin/wrangler.js',
-        ...(this.opts.kind === 'pages'
-          ? ['pages', 'dev', ...(this.opts.dir ? [this.opts.dir] : [])]
-          : ['dev']),
+        'dev',
         '--port',
         String(this.opts.port),
         '--ip',

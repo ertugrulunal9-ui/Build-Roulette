@@ -7,7 +7,7 @@ import {
 } from '../src/capture-gate';
 import { signCaptureUrl } from '../src/capture-sig';
 import { captureHeaders } from '../src/headers';
-import pagesWorker from '../src/pages-worker';
+import shellWorker from '../src/worker';
 
 const SECRET = 'gate-secret-0123456789abcdef0123456789abcdef';
 const NOW_MS = 1_800_000_000_000;
@@ -96,7 +96,7 @@ describe('capture gate', () => {
   });
 });
 
-describe('Pages worker (_worker.js)', () => {
+describe('the Worker (dist/worker.js)', () => {
   // The define is replaced at build time; tests provide it as a global.
   (globalThis as Record<string, unknown>)['__BR_CAPTURE_HEADERS__'] = HEADERS;
 
@@ -105,13 +105,13 @@ describe('Pages worker (_worker.js)', () => {
     try {
       const assets = { fetch: vi.fn(() => Promise.resolve(new Response('static'))) };
       const env = { ASSETS: assets, CAPTURE_HMAC_SECRET: SECRET };
-      const page = await pagesWorker.fetch(new Request(await signed()), env);
+      const page = await shellWorker.fetch(new Request(await signed()), env);
       expect(page.status).toBe(200);
       expect(await page.text()).toBe(CAPTURE_HTML);
-      const refused = await pagesWorker.fetch(new Request(CAPTURE_URL), env);
+      const refused = await shellWorker.fetch(new Request(CAPTURE_URL), env);
       expect(refused.status).toBe(403);
       expect(assets.fetch).not.toHaveBeenCalled();
-      const other = await pagesWorker.fetch(
+      const other = await shellWorker.fetch(
         new Request('https://b1.usercontent.example/v1/shell.js'),
         env,
       );

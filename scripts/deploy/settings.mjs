@@ -7,13 +7,17 @@ export const TARGETS = ['all', 'check', 'supabase', 'shell', 'web'];
 
 export const DEFAULTS = {
   PKG_CDN_URL: 'https://esm.sh',
-  CF_PAGES_WEB_PROJECT: 'build-roulette-web',
-  CF_PAGES_SHELL_PROJECT: 'build-roulette-sandbox',
+  CF_WEB_WORKER: 'build-roulette-web',
+  CF_SANDBOX_WORKER: 'build-roulette-sandbox',
+  /** The workers.dev subdomains the run registers when an account has none (a suffix if taken). */
+  CF_WORKERS_SUBDOMAIN: 'buildroulette',
+  CF_SANDBOX_WORKERS_SUBDOMAIN: 'buildroulette-sandbox',
 };
 
 /** Secrets that come from the environment (GitHub secrets). Masked first, never printed. */
 export const SECRET_SETTINGS = [
   'CLOUDFLARE_API_TOKEN',
+  'CLOUDFLARE_SANDBOX_API_TOKEN',
   'BROWSER_RENDERING_API_TOKEN',
   'SUPABASE_ACCESS_TOKEN',
   'SUPABASE_DB_PASSWORD',
@@ -30,6 +34,7 @@ export const CHILD_ENV_DENYLIST = new Set([
   'SERVICE_ROLE_KEY',
   'SUPABASE_SECRET_KEY',
   'CLOUDFLARE_ACCOUNT_ID',
+  'CLOUDFLARE_SANDBOX_ACCOUNT_ID',
   'GITHUB_TOKEN',
   'GH_TOKEN',
 ]);
@@ -38,6 +43,9 @@ export const CHILD_ENV_DENYLIST = new Set([
 export const NEEDS = {
   CLOUDFLARE_ACCOUNT_ID: TARGETS,
   CLOUDFLARE_API_TOKEN: TARGETS,
+  // Every target needs both addresses: the app's (account A) and the sandbox's (account B).
+  CLOUDFLARE_SANDBOX_ACCOUNT_ID: TARGETS,
+  CLOUDFLARE_SANDBOX_API_TOKEN: TARGETS,
   SUPABASE_URL: TARGETS,
   SUPABASE_ACCESS_TOKEN: TARGETS,
   SUPABASE_DB_PASSWORD: ['all', 'check', 'supabase'],
@@ -47,9 +55,14 @@ export const NEEDS = {
 
 /** Where each required value comes from (DEPLOY.md, "Deploy with GitHub Actions"). */
 const WHERE = {
-  CLOUDFLARE_ACCOUNT_ID: 'variable: Cloudflare → Workers & Pages → Overview, "Account ID"',
+  CLOUDFLARE_ACCOUNT_ID:
+    'variable: the id of your Cloudflare account A, the web app\'s: Workers & Pages → Overview, "Account ID"',
   CLOUDFLARE_API_TOKEN:
-    'secret: a custom Cloudflare API token with Account → Cloudflare Pages → Edit',
+    'secret: a custom Cloudflare API token of account A with Account → Workers Scripts → Edit',
+  CLOUDFLARE_SANDBOX_ACCOUNT_ID:
+    'variable: the id of a SECOND Cloudflare account, B, for the sandbox shell: its Workers & Pages → Overview, "Account ID"',
+  CLOUDFLARE_SANDBOX_API_TOKEN:
+    'secret: a custom Cloudflare API token of account B with Account → Workers Scripts → Edit',
   SUPABASE_URL: 'variable: https://<project ref>.supabase.co',
   SUPABASE_ACCESS_TOKEN: 'secret: supabase.com → Account → Access Tokens',
   SUPABASE_DB_PASSWORD: "secret: the project's database password",
@@ -58,8 +71,18 @@ const WHERE = {
   SUPABASE_ANON_KEY: 'secret: Project Settings → API Keys, the publishable (or legacy anon) key',
 };
 
-const PAGES_NAME = /^[a-z0-9](?:[a-z0-9-]{0,56}[a-z0-9])?$/;
+/** A Worker name, also the first label of its workers.dev address. */
+const WORKER_NAME = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+/** A workers.dev subdomain, as wrangler 4.147.0 validates it before registering one. */
+export const SUBDOMAIN_NAME = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
 const TOKEN = /^[A-Za-z0-9_-]{20,}$/;
+
+/**
+ * Why the sandbox shell needs its own Cloudflare account (DEPLOY.md, "Deploy with GitHub
+ * Actions" → A): the reason given wherever account B is missing or is account A.
+ */
+export const SECOND_ACCOUNT_WHY =
+  "The sandbox shell runs players' code, so it must be another site than the app. A Worker's address is <name>.<account subdomain>.workers.dev, and the Public Suffix List lists workers.dev (not *.workers.dev), so two Workers of ONE account share the site <account subdomain>.workers.dev. The shell therefore goes to a second, free Cloudflare account, whose own subdomain is another site.";
 
 function decodeJwtPayload(key) {
   const parts = key.split('.');
@@ -148,6 +171,31 @@ export function readSettings(env, target) {
       'CLOUDFLARE_ACCOUNT_ID must be the 32-character account id (Workers & Pages → Overview)',
     );
   }
+  // Account B (the sandbox shell). Both missing: B is not set up yet, said once.
+  const bMissing =
+    get('CLOUDFLARE_SANDBOX_ACCOUNT_ID') === undefined &&
+    get('CLOUDFLARE_SANDBOX_API_TOKEN') === undefined;
+  if (bMissing && NEEDS.CLOUDFLARE_SANDBOX_ACCOUNT_ID.includes(target)) {
+    problems.push(
+      `The sandbox shell's Cloudflare account (B) is not set up yet: CLOUDFLARE_SANDBOX_ACCOUNT_ID (a variable) and CLOUDFLARE_SANDBOX_API_TOKEN (a secret) are missing. Create a second free Cloudflare account, a token there with Account → Workers Scripts → Edit, and add both (DEPLOY.md, "Deploy with GitHub Actions" → A–C). ${SECOND_ACCOUNT_WHY}`,
+    );
+  } else {
+    s.sandboxAccountId = required('CLOUDFLARE_SANDBOX_ACCOUNT_ID');
+  }
+  if (s.sandboxAccountId && !/^[0-9a-fA-F]{32}$/.test(s.sandboxAccountId)) {
+    problems.push(
+      'CLOUDFLARE_SANDBOX_ACCOUNT_ID must be the 32-character id of account B (its Workers & Pages → Overview)',
+    );
+  }
+  if (
+    s.accountId &&
+    s.sandboxAccountId &&
+    s.accountId.toLowerCase() === s.sandboxAccountId.toLowerCase()
+  ) {
+    problems.push(
+      `CLOUDFLARE_SANDBOX_ACCOUNT_ID is the same account as CLOUDFLARE_ACCOUNT_ID: the sandbox shell must be deployed to a SECOND Cloudflare account. ${SECOND_ACCOUNT_WHY}`,
+    );
+  }
 
   const url = required('SUPABASE_URL');
   if (url) {
@@ -166,15 +214,29 @@ export function readSettings(env, target) {
     problems.push(`SUPABASE_REF (${refFromEnv}) is not the project of SUPABASE_URL (${s.ref})`);
   }
 
-  for (const name of ['CLOUDFLARE_API_TOKEN', 'BROWSER_RENDERING_API_TOKEN']) {
-    const v = required(name);
+  for (const [name, key] of [
+    ['CLOUDFLARE_API_TOKEN', 'cfToken'],
+    ['CLOUDFLARE_SANDBOX_API_TOKEN', 'sandboxToken'],
+    ['BROWSER_RENDERING_API_TOKEN', 'brToken'],
+  ]) {
+    const v = name === 'CLOUDFLARE_SANDBOX_API_TOKEN' && bMissing ? undefined : required(name);
     if (v && !TOKEN.test(v))
       problems.push(`${name} does not look like a Cloudflare API token (letters, digits, - and _)`);
-    s[name === 'CLOUDFLARE_API_TOKEN' ? 'cfToken' : 'brToken'] = v;
+    s[key] = v;
   }
-  if (s.cfToken && s.brToken && s.cfToken === s.brToken) {
-    problems.push(
-      'BROWSER_RENDERING_API_TOKEN must be a separate token from CLOUDFLARE_API_TOKEN (it is stored in Supabase; with Pages permissions a leak there could redeploy the site)',
+  for (const [other, key] of [
+    ['CLOUDFLARE_API_TOKEN', 'cfToken'],
+    ['CLOUDFLARE_SANDBOX_API_TOKEN', 'sandboxToken'],
+  ]) {
+    if (s.brToken && s[key] && s[key] === s.brToken) {
+      problems.push(
+        `BROWSER_RENDERING_API_TOKEN must be a separate token from ${other} (it is stored in Supabase; with Workers permissions a leak there could redeploy a site)`,
+      );
+    }
+  }
+  if (s.cfToken && s.sandboxToken && s.cfToken === s.sandboxToken) {
+    warnings.push(
+      'CLOUDFLARE_SANDBOX_API_TOKEN is the same token as CLOUDFLARE_API_TOKEN: it works if the token reaches both accounts, but a leak of it then reaches both. One token per account (each created in its own account) is safer.',
     );
   }
 
@@ -193,21 +255,51 @@ export function readSettings(env, target) {
   // ── Optional ──
   const appUrl = get('APP_URL');
   if (appUrl) s.appUrl = httpsBase(appUrl, 'APP_URL', problems, { originOnly: true });
+  if (s.appUrl && new URL(s.appUrl).hostname.endsWith('.pages.dev')) {
+    problems.push(
+      "APP_URL is a pages.dev address: the app is no longer deployed to Cloudflare Pages (pages.dev is blocked in Turkey). Delete the APP_URL variable (the default is the web Worker's workers.dev address) or set it to a custom domain.",
+    );
+    s.appUrl = undefined;
+  }
   s.pkgCdnUrl = httpsBase(get('PKG_CDN_URL') ?? DEFAULTS.PKG_CDN_URL, 'PKG_CDN_URL', problems);
 
-  s.webProject = get('CF_PAGES_WEB_PROJECT') ?? DEFAULTS.CF_PAGES_WEB_PROJECT;
-  s.shellProject = get('CF_PAGES_SHELL_PROJECT') ?? DEFAULTS.CF_PAGES_SHELL_PROJECT;
+  s.webWorker = get('CF_WEB_WORKER') ?? DEFAULTS.CF_WEB_WORKER;
+  s.shellWorker = get('CF_SANDBOX_WORKER') ?? DEFAULTS.CF_SANDBOX_WORKER;
   for (const [name, v] of [
-    ['CF_PAGES_WEB_PROJECT', s.webProject],
-    ['CF_PAGES_SHELL_PROJECT', s.shellProject],
+    ['CF_WEB_WORKER', s.webWorker],
+    ['CF_SANDBOX_WORKER', s.shellWorker],
   ]) {
-    if (!PAGES_NAME.test(v))
-      problems.push(`${name} must be a Pages project name (lower-case letters, digits and -)`);
+    if (!WORKER_NAME.test(v))
+      problems.push(
+        `${name} must be a Worker name (lower-case letters, digits and -, at most 63 characters)`,
+      );
   }
-  if (s.webProject === s.shellProject) {
+  // The subdomain to register when an account has none (an explicit name is used as is).
+  s.webSubdomain = get('CF_WORKERS_SUBDOMAIN');
+  s.shellSubdomain = get('CF_SANDBOX_WORKERS_SUBDOMAIN');
+  for (const [name, v] of [
+    ['CF_WORKERS_SUBDOMAIN', s.webSubdomain],
+    ['CF_SANDBOX_WORKERS_SUBDOMAIN', s.shellSubdomain],
+  ]) {
+    if (v !== undefined && !SUBDOMAIN_NAME.test(v))
+      problems.push(
+        `${name} must be a workers.dev subdomain: lower-case letters, digits and -, at most 63 characters, without .workers.dev`,
+      );
+  }
+  if (s.webSubdomain && s.webSubdomain === s.shellSubdomain) {
     problems.push(
-      'CF_PAGES_WEB_PROJECT and CF_PAGES_SHELL_PROJECT must differ: the sandbox shell runs untrusted code on its own site',
+      'CF_WORKERS_SUBDOMAIN and CF_SANDBOX_WORKERS_SUBDOMAIN must differ: each account has its own subdomain, and the two must be different sites',
     );
+  }
+  for (const [old, now] of [
+    ['CF_PAGES_WEB_PROJECT', 'CF_WEB_WORKER'],
+    ['CF_PAGES_SHELL_PROJECT', 'CF_SANDBOX_WORKER'],
+  ]) {
+    if (get(old)) {
+      warnings.push(
+        `${old} is not used any more (the sites are Workers since T-043): the name is ${now} now (default ${DEFAULTS[now]}). Delete the ${old} variable.`,
+      );
+    }
   }
 
   s.turnstileSiteKey = get('TURNSTILE_SITE_KEY');
@@ -240,7 +332,7 @@ export function readSettings(env, target) {
   for (const name of ['JOBS_CRON_SECRET', 'CAPTURE_HMAC_SECRET', 'SHELL_URL']) {
     if (get(name)) {
       warnings.push(
-        `${name} from the environment is not used: ${name === 'SHELL_URL' ? 'the shell URL comes from its Pages project' : 'the value in Supabase Vault is the one deployed'}`,
+        `${name} from the environment is not used: ${name === 'SHELL_URL' ? "the shell URL comes from account B's workers.dev subdomain" : 'the value in Supabase Vault is the one deployed'}`,
       );
     }
   }
@@ -263,7 +355,14 @@ export function childEnv(base, extra = {}) {
   for (const [k, v] of Object.entries(base)) {
     if (v === undefined) continue;
     if (CHILD_ENV_DENYLIST.has(k) || k.startsWith('NEXT_PUBLIC_') || k.startsWith('BR_')) continue;
-    if (k.startsWith('SUPABASE_') || k.startsWith('CLOUDFLARE_') || k.startsWith('TURNSTILE_'))
+    // CF_*: wrangler still reads the old CF_API_TOKEN / CF_ACCOUNT_ID names; a step passes
+    // CLOUDFLARE_* for the account it deploys to, and nothing else may reach wrangler.
+    if (
+      k.startsWith('SUPABASE_') ||
+      k.startsWith('CLOUDFLARE_') ||
+      k.startsWith('CF_') ||
+      k.startsWith('TURNSTILE_')
+    )
       continue;
     env[k] = v;
   }

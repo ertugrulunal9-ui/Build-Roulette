@@ -1,0 +1,43 @@
+{
+  // The sandbox shell as a Cloudflare Worker with static assets (T-043; DEPLOY.md,
+  // docs/03-sandbox.md). It runs players' builds, so it must be another *site* than the app:
+  // it is deployed to a SECOND Cloudflare account (B), whose own workers.dev subdomain is a
+  // different registrable domain than the app's (`workers.dev` is on the Public Suffix List;
+  // two Workers of one account would share `<subdomain>.workers.dev`, one site).
+  //
+  // `pnpm --filter @br/sandbox-shell build` writes ./dist (scripts/build.ts): the static shell,
+  // `_headers`, `404.html`, and the Worker `dist/worker.js` (the capture gate; left out of the
+  // assets by `dist/.assetsignore`). `pnpm --filter @br/sandbox-shell workers:deploy` uploads
+  // it (scripts/deploy does, with account B's token and the secret CAPTURE_HMAC_SECRET).
+  //
+  // Requests: only `/v1/capture` invokes the Worker (`run_worker_first`, the gate checks the
+  // HMAC); every other path is a static asset, free and not counted as a Worker request. An
+  // unknown path gets `404.html` with a 404 from the assets, so it invokes nothing either.
+  // `/v1/` is the protocol version (packages/protocol PROTOCOL_VERSION; a unit test keeps the
+  // two in step: test/wrangler-config.test.ts).
+  //
+  // No `account_id` on purpose: CLOUDFLARE_ACCOUNT_ID supplies it at deploy time.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "build-roulette-sandbox",
+  "main": "./dist/worker.js",
+  // The build bundles the Worker itself (esbuild, with the capture headers baked in). Nothing
+  // else is attached to it: with `no_bundle` wrangler would otherwise add every .html next to
+  // it in dist/ as a module.
+  "no_bundle": true,
+  "find_additional_modules": false,
+  "compatibility_date": "2026-10-01",
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "run_worker_first": ["/v1/capture"],
+    "not_found_handling": "404-page",
+    "html_handling": "auto-trailing-slash",
+  },
+  // https://build-roulette-sandbox.<account B subdomain>.workers.dev; no per-version preview
+  // addresses (each would be one more origin serving the shell).
+  "workers_dev": true,
+  "preview_urls": false,
+  // Set with `wrangler deploy --secrets-file` (scripts/deploy): a deploy without it fails on a
+  // new Worker and keeps the current value on an existing one.
+  "secrets": { "required": ["CAPTURE_HMAC_SECRET"] },
+}

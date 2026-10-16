@@ -1,5 +1,6 @@
 /**
- * Cloudflare Pages' own files for the static export (T-037), as pure functions:
+ * The host's own files for the static export (T-037; Cloudflare Pages then, Workers static
+ * assets since T-043, which read the same two files), as pure functions:
  * `scripts/pages-config.ts` runs them after `next build` and writes `out/_headers` and
  * `out/_redirects`; the unit tests check them without a build.
  *
@@ -13,9 +14,9 @@
  * The Content-Security-Policy has no `'unsafe-inline'` for scripts: each exported page has
  * two inline scripts (Next's flight data), and their SHA-256 hashes are listed instead. One
  * policy covers every page (about ten hashes in all), so the 404 page and the shells that a
- * rewrite serves under any path get the same one. Pages limits one header line to 2,000
+ * rewrite serves under any path get the same one. Cloudflare limits one header line to 2,000
  * characters and a file to 100 rules: `checkHeaders` fails the build before that.
- * https://developers.cloudflare.com/pages/configuration/headers/
+ * https://developers.cloudflare.com/workers/static-assets/headers/
  */
 import { createHash } from 'node:crypto';
 
@@ -38,7 +39,13 @@ export interface CspSources {
 
 export const TURNSTILE_ORIGIN = 'https://challenges.cloudflare.com';
 
-/** Pages limits (https://developers.cloudflare.com/pages/platform/limits/). */
+/**
+ * The host's limits. `_headers` and `_redirects`: the parser Workers static assets share with
+ * Pages (workers-shared, in wrangler 4.147.0: 100 header rules, 2,000 characters a line, 2,000
+ * static and 100 dynamic redirects). Files: 25 MiB each (wrangler's own check before an
+ * upload) and 20,000 per version on Workers Free (Cloudflare's docs; wrangler does not check
+ * it). The name is from T-037 (Pages, the same numbers).
+ */
 export const PAGES_LIMITS = {
   headerRules: 100,
   headerLineChars: 2_000,
@@ -164,12 +171,12 @@ export function headersFile(rules: readonly HeaderRule[]): string {
     .join('\n\n')}\n`;
 }
 
-/** Problems with the `_headers` rules against Pages' limits (empty: fine). */
+/** Problems with the `_headers` rules against the host's limits (empty: fine). */
 export function checkHeaders(rules: readonly HeaderRule[]): string[] {
   const problems: string[] = [];
   if (rules.length > PAGES_LIMITS.headerRules) {
     problems.push(
-      `${String(rules.length)} header rules (Pages allows ${String(PAGES_LIMITS.headerRules)})`,
+      `${String(rules.length)} header rules (Cloudflare allows ${String(PAGES_LIMITS.headerRules)})`,
     );
   }
   for (const r of rules) {
@@ -177,7 +184,7 @@ export function checkHeaders(rules: readonly HeaderRule[]): string[] {
       const line = `${k}: ${v}`;
       if (line.length > PAGES_LIMITS.headerLineChars) {
         problems.push(
-          `${r.path} ${k} is ${String(line.length)} characters (Pages allows ${String(PAGES_LIMITS.headerLineChars)})`,
+          `${r.path} ${k} is ${String(line.length)} characters (Cloudflare allows ${String(PAGES_LIMITS.headerLineChars)})`,
         );
       }
     }

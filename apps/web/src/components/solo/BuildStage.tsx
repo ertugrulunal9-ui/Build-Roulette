@@ -33,7 +33,10 @@ interface BuildStageProps {
   state: SoloState;
   /** Time left in the phase (ticks in the parent). */
   remaining: number | null;
-  /** After "Build Roulette ·" in the header (default "Solo" in the page's language; a room shows its code). */
+  /**
+   * After "Build Roulette ·" in the header (default: "Solo" in the page's language; a room
+   * shows its code).
+   */
   subtitle?: ReactNode;
   /** Extra header buttons (a room's "Leave room"). */
   headerActions?: ReactNode;

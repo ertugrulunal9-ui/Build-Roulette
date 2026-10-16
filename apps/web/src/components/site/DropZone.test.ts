@@ -117,7 +117,7 @@ describe('ImportBar', () => {
     const p = props();
     render(createElement(ImportBar, p));
     const summary = screen.getByTestId('import-summary');
-    expect(summary.textContent).toBe('📦Importeddist· 2 files · 340 KB · 2 skipped');
+    expect(summary.textContent).toBe('📦 Imported dist · 2 files · 340 KB · 2 skipped');
     fireEvent.click(screen.getByTestId('import-again'));
     fireEvent.click(screen.getByTestId('import-again-zip'));
     expect(p.openZip).toHaveBeenCalledTimes(1);

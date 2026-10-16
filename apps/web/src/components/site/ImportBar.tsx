@@ -40,20 +40,20 @@ export function ImportBar({
     <div className="flex flex-col gap-2 border-b border-zinc-200 bg-white px-3 py-1.5 dark:border-zinc-800 dark:bg-zinc-900">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
         <p
-          className="flex min-w-0 flex-wrap items-center gap-x-1.5 text-zinc-700 dark:text-zinc-300"
+          className="min-w-0 text-zinc-700 dark:text-zinc-300"
           data-testid="import-summary"
           data-files={site.files}
           data-root={site.root}
         >
-          <span aria-hidden="true">📦</span>
-          <span className="font-semibold">{IMPORT_COPY.importedFrom}</span>
+          <span aria-hidden="true">📦 </span>
+          <span className="font-semibold">{IMPORT_COPY.importedFrom}</span>{' '}
           {root ? (
-            <code className="truncate rounded bg-zinc-100 px-1 font-mono dark:bg-zinc-800">
+            <code className="rounded bg-zinc-100 px-1 font-mono break-all dark:bg-zinc-800">
               {root}
             </code>
           ) : (
             <span>{IMPORT_COPY.droppedFolder}</span>
-          )}
+          )}{' '}
           <span className="text-zinc-500">
             · {filesText(site.files)} · {formatBytes(site.bytes)}
             {site.skipped > 0 && ` · ${skippedText(site.skipped)}`}

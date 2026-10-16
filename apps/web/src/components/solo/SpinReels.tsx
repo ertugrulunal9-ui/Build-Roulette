@@ -7,6 +7,7 @@
  * (`phase_started_at` → `phase_ends_at`), so a late or refreshed client lands at the same
  * moments, or shows the landed cards at once.
  */
+import { BUILD_TIME_LIMITS_MINUTES } from '@br/game';
 import { formatTimeLimit } from '../../lib/solo/format';
 import type { Challenge } from '../../lib/solo/types';
 import { useTicker } from '../../lib/solo/use-ticker';
@@ -44,7 +45,7 @@ const DECOYS: Record<CardKind | 'time', readonly string[]> = {
     'Terminal green',
     'Swiss poster',
   ],
-  time: ['3 min', '5 min', '10 min', '15 min', '20 min', '30 min'],
+  time: BUILD_TIME_LIMITS_MINUTES.map((m) => `${String(m)} min`),
 };
 
 /**

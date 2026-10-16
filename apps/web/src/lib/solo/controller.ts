@@ -30,7 +30,7 @@
  * - **Destroy:** when the phase becomes `destroyed`, a short animation, then the battle's
  *   IndexedDB site is deleted and the reveal preview is dropped.
  *
- * Plain TypeScript with injected API, clock and storage, like SandboxController, so it can
+ * Plain TypeScript with injected API, clock and storage, like PreviewController, so it can
  * be unit tested with fakes and fake timers. React reads it with useSyncExternalStore.
  *
  * **Multiplayer (T-017):** the same controller runs one battle of a room in *external* mode

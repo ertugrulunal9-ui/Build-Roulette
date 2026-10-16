@@ -9,6 +9,7 @@ import {
   DEFAULT_VOTING_SECONDS,
   REVEAL_SLOT_MAX_SECONDS,
   REVEAL_SLOT_MIN_SECONDS,
+  RANDOM_BUILD_TIME_LIMITS_MINUTES,
   ROOM_LIMITS,
   VOTING_MAX_SECONDS,
   VOTING_MIN_SECONDS,
@@ -287,8 +288,14 @@ export function Lobby({ controller, state, room, lastBattle }: LobbyProps) {
         <section className={`${panel} text-sm text-zinc-600 dark:text-zinc-400`}>
           <h2 className="mb-2 font-bold text-zinc-900 dark:text-zinc-100">How a battle works</h2>
           <ol className="list-inside list-decimal space-y-1">
-            <li>The reels pick a BUILD, a RULE, a STYLE and a time limit (5, 10 or 15 min).</li>
-            <li>Everyone builds the same challenge in the browser.</li>
+            <li>
+              The reels pick a BUILD, a RULE, a STYLE and a time limit (
+              {RANDOM_BUILD_TIME_LIMITS_MINUTES.join(', ').replace(/, (\d+)$/, ' or $1')} min).
+            </li>
+            <li>
+              Everyone builds the same challenge on their own computer, with their own AI tools, and
+              imports the built site.
+            </li>
             <li>Ship before the clock runs out. Fast ships earn awards.</li>
             <li>The reveal: everyone watches every build, one at a time.</li>
             <li>Everyone votes in four categories (never for their own build).</li>

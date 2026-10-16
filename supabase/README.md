@@ -42,8 +42,12 @@ supabase/
 │   │                                                    runbooks; two indexes for its windows (T-030)
 │   ├── 20261009120000_jobs_function.sql               the jobs Edge Function's SQL (T-034): the daily Browser
 │   │                                                    Rendering budget, pg_net, pg_cron br-jobs-run → Vault
-│   └── 20261010120000_free_plan.sql                   Supabase Free (T-036): keep_alive (anon), plan usage in
-│                                                        admin_ops_health, ops_settings, the event-log retention
+│   ├── 20261010120000_free_plan.sql                   Supabase Free (T-036): keep_alive (anon), plan usage in
+│   │                                                    admin_ops_health, ops_settings, the event-log retention
+│   └── 20261016120000_import_mode.sql                 import mode (T-046, M6): one site pack per import
+│                                                        (site.bin, thumb.webp, autosave/site.bin), ship and
+│                                                        auto-ship from it, REVEAL {site, thumb}, stats `imports`,
+│                                                        build limits 10–45 min (random 10/15/20)
 ├── functions/
 │   └── jobs/                    the `jobs` Edge Function (T-034): index.ts (Deno entry) + core.js (GENERATED from
 │                                apps/capture-worker/src/edge by `pnpm --filter @br/capture-worker build:function`)
@@ -51,14 +55,17 @@ supabase/
 │   ├── 00_schema.test.sql       tables/enums exist, RLS on every table, policies, table privileges
 │   ├── 01_constraints.test.sql  room codes, time limits, one build per player, vote PK, cascades
 │   ├── 02_rls.test.sql          who can see what, with fixture users; no client writes
-│   ├── 03_deck.test.sql         deck counts and tags, the draw (tag rules, recency, weights)
+│   ├── 03_deck.test.sql         deck counts and tags, the draw (tag rules, recency, weights), the time limits and
+│   │                            the random draw (10/15/20 min)
 │   ├── 04_functions.test.sql    SECURITY DEFINER + search_path, EXECUTE grants per role
-│   ├── 05_solo_lifecycle.test.sql  spin → build → ship → results → destroy, auto-ship, DNF, awards
-│   ├── 06_guards.test.sql       every RPC guard
+│   ├── 05_solo_lifecycle.test.sql  spin → build → ship → results → destroy, auto-ship from autosave/site.bin (the old
+│   │                            autosave files and an unshipped site.bin do not count), DNF, awards, `imports`, 45 min
+│   ├── 06_guards.test.sql       every RPC guard (site.bin required to ship; 3 and 5 min refused; `imports` checked)
 │   ├── 07_jobs.test.sql         claim / fail / backoff / lease, complete_capture, complete_destroy
-│   ├── 08_storage.test.sql      storage.objects policies as the API roles
+│   ├── 08_storage.test.sql      storage.objects policies as the API roles (the three site-pack names; the old
+│   │                            editor-era names refused)
 │   ├── 09_sweeps.test.sql       sweep_deadlines, sweep_ttl, pg_cron jobs
-│   ├── 10_public_battle.test.sql   get_public_battle (permanent data only, RESULTS/DESTROYED only), autosave/bundle.css
+│   ├── 10_public_battle.test.sql   get_public_battle (permanent data only, RESULTS/DESTROYED only), autosave/site.bin
 │   ├── 11_rooms.test.sql        lobby RPCs and every guard (create, join, ready, settings, kick, heartbeat, snapshot)
 │   ├── 12_multiplayer_lifecycle.test.sql  two battles in a room: ship/auto-ship/DNF, kick, leave, early end, ties
 │   ├── 13_presence.test.sql     host migration (lazy + sweep), abandonment, idle close, purge
@@ -233,6 +240,30 @@ PT429 `rate_limited` (T-024; PostgREST answers HTTP 429, `hint` = `{"retry_after
 | `browser_budget_reserve(p_reserve_ms int, p_limit_ms int)` | service role (the jobs function, T-034) | `{granted, day, used_ms, reserved_ms, limit_ms}`; `invalid_reserve_ms` / `invalid_limit_ms` (22023) |
 | `browser_budget_settle(p_day date, p_reserved_ms int, p_used_ms int, p_rate_limited boolean default false)` | service role (T-034) | void; `invalid_settlement` (22023) |
 
+## Import mode (M6, T-046)
+
+Players build with their own tools and import the built site (docs/09). One import is one
+site pack (`@br/site`), stored as one object (`20261016120000_import_mode.sql`):
+
+| Object in `ephemeral-builds` | Written |
+|---|---|
+| `{battle}/{uid}/autosave/site.bin` | every successful import during BUILD |
+| `{battle}/{uid}/site.bin` | at SHIP |
+| `{battle}/{uid}/thumb.webp` | at SHIP (client thumbnail, the capture fallback) |
+
+- **Writes:** exactly these three names (`can_write_build_object`, same draft + deadline
+  rule as before); the bucket allows `application/octet-stream` and `image/webp`, 5 MB.
+  Clients upload the pack with `contentType: 'application/octet-stream'`.
+- **Ship / auto-ship:** `ship_build` needs `site.bin` (`files_missing`); the end of SHIPPING
+  auto-ships a draft that has `autosave/site.bin`, otherwise DNF.
+- **REVEAL:** `files: {site, thumb}` (above, "Reveal and voting").
+- **Stats:** `files`, `bundle_bytes` (the pack size) and `imports` (how many imports); the
+  editor-era keys are still accepted.
+- **Time limits:** `start_solo_battle(name, p_time_limit_seconds)` takes 600, 900, 1200, 1800
+  or 2700 (10–45 minutes; `invalid_time_limit` otherwise); without one, and for every room
+  battle, the server draws 600, 900 or 1200.
+- **Capture:** one signed URL of the pack, the v2 capture page (`apps/capture-worker`).
+
 ## Jobs (T-034): the `jobs` Edge Function, pg_cron, pg_net, Vault
 
 On the free plan nothing runs all the time: the capture, destroy and takedown jobs are
@@ -293,8 +324,8 @@ snapshot is unchanged.
 - **Room:** a code of 5 characters from `A–H J–N P–Z 2–9`; at most 8 players
   (`settings.max_players`, 2–8) and 20 spectators. Settings: `max_players`, and for M4
   `reveal_slot_s` (30–60), `voting_s` (30–180) and `reveal_vote` (boolean, default true; see
-  below). The build time limit is never a setting: the server draws 5, 10 or 15 minutes per
-  battle.
+  below). The build time limit is never a setting: the server draws 10, 15 or 20 minutes per
+  battle (`private.draw_build_time_limit()`, T-046; 5, 10 or 15 before).
 - **Members:** active, left (can rejoin, still reads the lobby) or kicked (cannot rejoin, no
   access). Joining an open room makes you a player while a slot is free, otherwise a
   spectator; joining during a battle makes you a spectator (a roster player coming back
@@ -344,7 +375,7 @@ snapshot is unchanged.
 | `skip_to_vote(p_battle_id uuid, p_expected_version int)` | host, REVEAL | same | same |
 | `cast_vote(p_battle_id uuid, p_category text, p_build_id uuid)` | roster voter, VOTING | `{category, build_id, ballot_complete, battle: {version, phase, phase_ends_at}}` | `battle_not_found`, `not_on_roster`, `kicked`, `not_a_member`, `not_a_voter`, `wrong_phase`, `deadline_passed`, `invalid_category`, `build_not_found`, `self_vote`, `not_votable` |
 | `get_my_votes(p_battle_id uuid)` | anyone who can see the battle | `{votes: {category: build_id}, complete}` (own ballot only) | `battle_not_found` |
-| `get_reveal_builds(p_battle_id uuid)` | battle member (roster or spectator, not kicked) in REVEAL, VOTING or RESULTS | `[{build_id, position, name, builder_id, builder_name, status, files: {js, css, manifest, thumb}}]` | `battle_not_found`, `wrong_phase` |
+| `get_reveal_builds(p_battle_id uuid)` | battle member (roster or spectator, not kicked) in REVEAL, VOTING or RESULTS | `[{build_id, position, name, builder_id, builder_name, status, taken_down, files: {site, thumb}}]` (since T-046; `{js, css, manifest, thumb}` before) | `battle_not_found`, `wrong_phase` |
 
 A stale `p_expected_version` makes `reveal_next` / `skip_to_vote` a no-op (`changed: false`),
 like `advance_battle`, so a double click is harmless. SQLSTATEs: `not_a_voter` 42501,
@@ -403,16 +434,16 @@ like `advance_battle`, so a double click is harmless. SQLSTATEs: `not_a_voter` 4
   RESULTS).
 - **Storage (reveal reads):** from REVEAL until DESTROYED (phases `reveal`, `voting`,
   `results`) every battle member, spectators included, may read the final artifacts of the
-  builds in `reveal_order`: `bundle.js`, `bundle.css`, `manifest.json`, `thumb.webp` of a
-  shipped build; `autosave/bundle.js`, `autosave/bundle.css`, `autosave/manifest.json` of an
-  auto-shipped one (`public.can_read_revealed_object`). Never `source.json`, never drafts,
-  the autosave of a hand-shipped build, a DNF player's files, disqualified builds, or
-  anything before REVEAL, after DESTROY or in an ABANDONED battle; never strangers, kicked
-  users or `anon`. The import map comes from `manifest.json` (`{dependencies}`, untrusted:
-  validate like the capture page), which clients upload next to the bundle at ship and with
-  each autosave (both names are now writable); a build without one is revealed with an
-  empty import map. `get_reveal_builds` returns the object names, null for files that were
-  never uploaded.
+  builds in `reveal_order` (`private.reveal_file_names`, `public.can_read_revealed_object`).
+  Since T-046 (import mode) a build is one site pack: `site.bin` and `thumb.webp` of a
+  shipped build, `autosave/site.bin` of an auto-shipped one (no thumbnail). Never drafts, the
+  autosave of a hand-shipped build, an unshipped top-level `site.bin`, a DNF player's files,
+  disqualified builds, or anything before REVEAL, after DESTROY or in an ABANDONED battle;
+  never strangers, kicked users or `anon`. There is no `source.json` any more: what a player
+  imports is exactly what the others see. `get_reveal_builds` returns the object names as
+  `files: {site, thumb}`, null for files that were never uploaded. (Until T-046 the names
+  were `bundle.js`, `bundle.css`, `manifest.json`, `thumb.webp` and the autosave's
+  `bundle.js`, `bundle.css`, `manifest.json`, as `files: {js, css, manifest, thumb}`.)
 - **Host and presence:** deadlines drive REVEAL and VOTING, so a vanished host blocks
   nothing; after 30 s the host role moves as in M3 (lazily, including in `reveal_next` /
   `skip_to_vote`, and in the sweep) and the new host gets the controls. A battle in REVEAL
@@ -676,7 +707,7 @@ layers matter:
     snapshots and votes stay far below; since T-029 a connected player makes about 7
     clock-driven calls a minute: 6 heartbeats and 1 `server_now`);
   - Storage uploads (`/storage/v1/object/ephemeral-builds/*`): about 120 per minute
-    (autosaves every 30 s, ship);
+    (an autosave per import, ship);
   - `/admin*` on the app: a managed challenge (or Cloudflare Access) in front of the
     sign-in, which players never need.
 

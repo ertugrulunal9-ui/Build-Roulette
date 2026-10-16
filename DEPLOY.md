@@ -6,15 +6,16 @@ free plan (the user's decision of 2026-10-09, docs/08-free-tier.md):
 | Part | Where | Free limit that matters |
 |---|---|---|
 | Web app (`apps/web`): static files + one small Worker on `/battles/*` (link previews) | Cloudflare Workers with static assets, Worker `build-roulette-web` on your Cloudflare account (**A**): `https://build-roulette-web.<subdomain A>.workers.dev` | static files: free and unlimited; 100,000 Worker requests a day for `/battles/*` (after that, until 00:00 UTC, `/battles/*` shows Cloudflare's "rate limited" page) |
-| Sandbox shell (`apps/sandbox-shell`): runs players' builds, plus the capture gate | Cloudflare Workers with static assets, Worker `build-roulette-sandbox` on a **second** free Cloudflare account (**B**): `https://build-roulette-sandbox.<subdomain B>.workers.dev/v1/` | none in practice (only `/v1/capture` runs the Worker: a few requests per battle) |
-| npm packages for the builds | public esm.sh | none (community service, no SLA) |
+| Sandbox shell (`apps/sandbox-shell`): runs players' imported sites (its service worker `/v2/sw.js` serves them), plus the capture gate | Cloudflare Workers with static assets, Worker `build-roulette-sandbox` on a **second** free Cloudflare account (**B**): `https://build-roulette-sandbox.<subdomain B>.workers.dev/v2/` | none in practice (only `/v2/capture` runs the Worker: a few requests per battle; `/v2/sw.js` and the shell are static files) |
 | Database, Auth, Realtime, Storage, the `jobs` Edge Function (screenshots and deletes) | Supabase, Free plan | 500 MB database, 1 GB storage, 5 GB egress a month, a pause after 7 idle days (docs/08 §6) |
 | Screenshots | Cloudflare Browser Rendering (REST API) | 10 browser-minutes a day, then the players' own thumbnails |
 | Keep-alive against the 7-day pause | GitHub Actions (`.github/workflows/keep-alive.yml`) | ~31 of 2,000 free minutes a month on a private repository |
 | Optional: error reports, analytics, bot protection | Sentry, PostHog, Cloudflare Turnstile | free tiers |
 
 About 1,000 battles a month fit, and the screenshots of the first ~2,750 battles fit in the
-storage (docs/07 §7.8 says what to upgrade first and when). Plan on one to two hours. Nothing
+storage (docs/07 §7.8 says what to upgrade first and when; both figures were estimated before
+import mode, whose site packs are larger downloads than the old bundles: to be re-measured,
+docs/08 §6). Plan on one to two hours. Nothing
 here costs money; no credit card is needed (Cloudflare and Supabase may ask for one for other
 products: skip them).
 
@@ -23,6 +24,10 @@ Cloudflare Pages, but `*.pages.dev` is blocked in Turkey (a court/federation ord
 reported active again in 2026-08), where the players are. A Worker on `*.workers.dev` opens
 there without a VPN, so both sites are Workers with static assets now, still on free plans
 (docs/08-free-tier.md §2–§3).
+
+**Players build on their own computers (M6, docs/09).** They import the built site (the
+`dist/` folder or a `.zip`) into the BUILD stage. There is no editor, no bundler and no
+package CDN to deploy: the sandbox shell serves each imported site from a service worker.
 
 **Why a second Cloudflare account.** The sandbox shell runs players' code, so it must be
 another *site* than the app (docs/01 §1.1, docs/03 §3.5: the preview iframe's
@@ -131,9 +136,8 @@ Use the names exactly as written.
 | `TURNSTILE_SITE_KEY` | variable | no | Turnstile's site key: the app shows the challenge |
 | `TURNSTILE_SECRET_KEY` | secret | no | Turnstile's secret key: with the site key, the run turns CAPTCHA on in Supabase |
 | `APP_URL` | variable | no | a custom domain, like `https://play.example.com` (default: the web Worker's own `https://build-roulette-web.<subdomain A>.workers.dev`; a `pages.dev` address is refused) |
-| `PKG_CDN_URL` | variable | no | the package CDN (default `https://esm.sh`) |
 | `CF_WORKERS_SUBDOMAIN`, `CF_SANDBOX_WORKERS_SUBDOMAIN` | variables | no | the workers.dev subdomain to register on account A / B **when it has none yet** (defaults `buildroulette` and `buildroulette-sandbox`, with a short random suffix if taken; a name you set is used as is). An account that already has a subdomain keeps it |
-| `CF_WEB_WORKER`, `CF_SANDBOX_WORKER` | variables | no | other Worker names (defaults `build-roulette-web` and `build-roulette-sandbox`); the first part of each address. They replace `CF_PAGES_WEB_PROJECT` and `CF_PAGES_SHELL_PROJECT`, which the run no longer reads (delete them) |
+| `CF_WEB_WORKER`, `CF_SANDBOX_WORKER` | variables | no | other Worker names (defaults `build-roulette-web` and `build-roulette-sandbox`); the first part of each address. They replace `CF_PAGES_WEB_PROJECT` and `CF_PAGES_SHELL_PROJECT`, which the run no longer reads (delete them). `PKG_CDN_URL` is not read either since import mode (M6): delete it; the run warns while it is set |
 | `NEXT_PUBLIC_SENTRY_DSN` | variable | no | Sentry's DSN (browser error reports) |
 | `NEXT_PUBLIC_POSTHOG_KEY`, `NEXT_PUBLIC_POSTHOG_HOST` | variables | no | PostHog (analytics; the host defaults to `https://eu.i.posthog.com`) |
 
@@ -280,8 +284,7 @@ from Supabase Vault.
   CLOUDFLARE_SANDBOX_ACCOUNT_ID=
   CLOUDFLARE_SANDBOX_API_TOKEN=
   APP_URL=https://build-roulette-web.<subdomain A>.workers.dev
-  SHELL_URL=https://build-roulette-sandbox.<subdomain B>.workers.dev/v1/
-  PKG_CDN_URL=https://esm.sh
+  SHELL_URL=https://build-roulette-sandbox.<subdomain B>.workers.dev/v2/
   BROWSER_RENDERING_API_TOKEN=
   TURNSTILE_SITE_KEY=
   # Supabase (§3)
@@ -351,7 +354,7 @@ curl -sS -X PUT "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOU
 
 (Or in the dashboard: Workers & Pages → Overview → the subdomain in the right column. An
 interactive `wrangler deploy` also offers to register one.) Then set `APP_URL` and `SHELL_URL`
-in `.env.deploy` from the two subdomains (`SHELL_URL` ends with `/v1/`). A new subdomain can
+in `.env.deploy` from the two subdomains (`SHELL_URL` ends with `/v2/`). A new subdomain can
 take a few minutes to answer.
 
 ### 2.3 Browser Rendering (the screenshots)
@@ -477,7 +480,6 @@ Project Settings → **Realtime** (or Realtime → Settings):
    JOBS_CRON_SECRET=$JOBS_CRON_SECRET
    CAPTURE_SHELL_URL=${SHELL_URL}capture
    CAPTURE_HMAC_SECRET=$CAPTURE_HMAC_SECRET
-   PKG_CDN_URL=$PKG_CDN_URL
    BROWSER_RENDERING_ACCOUNT_ID=$CLOUDFLARE_ACCOUNT_ID
    BROWSER_RENDERING_API_TOKEN=$BROWSER_RENDERING_API_TOKEN
    ENV
@@ -486,7 +488,9 @@ Project Settings → **Realtime** (or Realtime → Settings):
    npx -y supabase@2.119.0 secrets list        # names and digests only
    ```
    `CAPTURE_SHELL_URL` is the shell's capture page (`${SHELL_URL}capture`:
-   `https://build-roulette-sandbox.<subdomain B>.workers.dev/v1/capture`).
+   `https://build-roulette-sandbox.<subdomain B>.workers.dev/v2/capture`). A `PKG_CDN_URL`
+   secret left from before import mode is ignored; delete it with
+   `npx -y supabase@2.119.0 secrets unset PKG_CDN_URL` (the Deploy workflow does).
    Supabase sets `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` for the function itself. The
    optional settings and their defaults (all fit the free plans) are listed in
    `apps/web/DEPLOY.md` → "Screenshots and jobs", step 4.
@@ -516,8 +520,8 @@ Project Settings → **Realtime** (or Realtime → Settings):
 
 ```sh
 set -a; . ./.env.deploy; set +a
-# Build: which app origins may frame the shell, and the package CDN its CSP allows.
-BR_APP_ORIGINS="$APP_URL" BR_PKG_CDN_URL="$PKG_CDN_URL" pnpm --filter @br/sandbox-shell build
+# Build: which app origins may frame the shell.
+BR_APP_ORIGINS="$APP_URL" pnpm --filter @br/sandbox-shell build
 # Deploy to account B, with the capture gate's secret in the same version (a private file,
 # deleted right after; the secret never goes on a command line):
 umask 077 && printf '{"CAPTURE_HMAC_SECRET":"%s"}' "$CAPTURE_HMAC_SECRET" > /tmp/br-shell-secrets.json
@@ -528,15 +532,18 @@ rm /tmp/br-shell-secrets.json
 
 - `workers:deploy` is `wrangler deploy` with `apps/sandbox-shell/wrangler.jsonc`: the Worker
   `build-roulette-sandbox` (the capture gate, `dist/worker.js`) with `dist/` as its static
-  assets; only `/v1/capture` runs the Worker. `--secrets-file` sets the Worker secret
+  assets; only `/v2/capture` runs the Worker. `--secrets-file` sets the Worker secret
   `CAPTURE_HMAC_SECRET` with the version, which also works on the very first deploy (a secret
   cannot be put on a Worker that does not exist yet). A later deploy without the file keeps the
   secret. `--name <other>` deploys under another name.
 - `BR_APP_ORIGINS`: comma-separated; add a custom domain of the app here when you add one.
-  `BR_PKG_CDN_URL` must be the same CDN as the app's `NEXT_PUBLIC_PKG_CDN_URL` and the
-  function's `PKG_CDN_URL`.
+- **The service worker:** the shell registers `/v2/sw.js` (the site worker, docs/09 §9.3) with
+  scope `/`, and it serves each imported site. `dist/_headers` gives it
+  `Service-Worker-Allowed: /` and `Cache-Control: no-store`; nothing to set by hand.
 - Check: `curl -sS -o /dev/null -w '%{http_code}\n' "${SHELL_URL}capture"` answers **403**
   (the gate refuses an unsigned request); **503** means the secret is missing.
+  `curl -sS -o /dev/null -D - "${SHELL_URL}sw.js"` answers **200** with a JavaScript
+  `content-type` and `service-worker-allowed: /` (deploy-check checks both).
 
 ### 4.2 The web app, on account A
 
@@ -545,7 +552,6 @@ set -a; . ./.env.deploy; set +a
 NEXT_PUBLIC_SUPABASE_URL="$SUPABASE_URL" \
 NEXT_PUBLIC_SUPABASE_ANON_KEY="$SUPABASE_ANON_KEY" \
 NEXT_PUBLIC_SANDBOX_SHELL_URL="$SHELL_URL" \
-NEXT_PUBLIC_PKG_CDN_URL="$PKG_CDN_URL" \
 NEXT_PUBLIC_SITE_URL="$APP_URL" \
 NEXT_PUBLIC_TURNSTILE_SITE_KEY="$TURNSTILE_SITE_KEY" \
   pnpm --filter @br/web build
@@ -605,7 +611,8 @@ day and fails (GitHub emails you) when the project is paused, restricted or read
 ## 6. Smoke checks
 
 1. **Automatic checks** (headers and CSP, real 404s, the shells, the link-preview Worker and
-   its Supabase call, the shell's CSP and capture gate and that its Worker code is not served,
+   its Supabase call, the shell's CSP, its site worker `/v2/sw.js`, its capture gate and that
+   its Worker code is not served,
    Auth with anonymous sign-ins, `keep_alive`, the `jobs` function with its secrets):
    ```sh
    set -a; . ./.env.deploy; set +a
@@ -614,8 +621,9 @@ day and fails (GitHub emails you) when the project is paused, restricted or read
    It reads `SUPABASE_ANON_KEY` and `JOBS_CRON_SECRET` from the environment and exits 1 on any
    FAIL, naming what is wrong. One WARN remains until step 3 (`--battle`).
 2. **Play.** Open `APP_URL` in two browsers (one private window): **Create room** in one,
-   join with the code or link in the other, start a battle (a 5-minute limit is quickest), ship
-   in both, reveal, vote, and see the results. Also try a solo battle from `/play`.
+   join with the code or link in the other, start a battle (a 10-minute limit is quickest),
+   import a built site in both (any `dist/` folder or `.zip`; `/try` checks one without a
+   battle), ship, reveal, vote, and see the results. Also try a solo battle from `/play`.
 3. **Screenshots.** Within a minute or two of RESULTS the builds' screenshots appear on the
    results page (`/battles/<id>`, linked from the results). Dashboard → Edge Functions → `jobs`
    → Logs shows `capture.rendered`. Then with that battle id:
@@ -647,8 +655,7 @@ situation you create, and note what was unclear.
 | Runbook | Drill |
 |---|---|
 | [stuck-battle](docs/runbooks/stuck-battle.md) | Start a solo battle; in the SQL Editor `select cron.unschedule('br-sweep-deadlines');` and let the timer run out (the client still nudges: close the tab). Confirm with Health, mitigate with the runbook (reschedule the sweep: its step 1). |
-| [capture-backlog](docs/runbooks/capture-backlog.md) | Set the function's daily budget to zero (`npx -y supabase@2.119.0 secrets set BROWSER_BUDGET_MS_PER_DAY=0`), play a solo battle: the screenshot is the client thumbnail ("fallback" in Health). Then unset it (`secrets unset BROWSER_BUDGET_MS_PER_DAY`). |
-| [package-cdn-outage](docs/runbooks/package-cdn-outage.md) | In a browser's DevTools → Network → block `esm.sh`, then start a build in a new room: the preview reports the package server; the runbook's esm.sh section. |
+| [capture-backlog](docs/runbooks/capture-backlog.md) | Set the function's daily budget to zero (`npx -y supabase@2.119.0 secrets set BROWSER_BUDGET_MS_PER_DAY=0`), play a solo battle: the screenshot is the client thumbnail ("fallback" in Health). Then unset it (`secrets unset BROWSER_BUDGET_MS_PER_DAY`). Run its step 7 check of the site worker too. |
 | [realtime-quota](docs/runbooks/realtime-quota.md) | Run its Confirm queries during the two-browser battle; read the dashboard's Realtime usage. (Reaching Free's 20 Presence messages a second needs ~10 busy rooms: not worth forcing.) |
 | [supabase-outage](docs/runbooks/supabase-outage.md) | Pause the project (Project Settings → General → Pause project) for a few minutes during a battle in a test room, restore it, then follow Mitigate (deadlines, deletes, Health). |
 | [free-plan-quotas](docs/runbooks/free-plan-quotas.md) | The paused project of the previous drill: run **Keep Supabase awake** while paused (it must fail with "PAUSED"), then again after the restore. Lower the storage limit (`update private.ops_settings set storage_limit_bytes = 1000000;`) and see Health's finding; set it back to `1000000000`. |
@@ -656,6 +663,29 @@ situation you create, and note what was unclear.
 | [removed-content-still-visible](docs/runbooks/removed-content-still-visible.md) | After that takedown, run its Confirm checks: the screenshot file answers 4xx within a minute, the preview shows the static card. |
 
 ## 8. Later
+
+### Deploying M6 (import mode)
+
+The release that turns the editor into imports (docs/09) changes the database, the jobs
+function, the shell and the app together: shell v2 (`/v2/`), the site pack `site.bin`, new
+storage file names and the 10–45 minute time limits. Deploy all four in one go (the Deploy
+workflow's target **all**; by hand: `db push`, `functions deploy jobs`, §4.1, §4.2), then run
+`scripts/deploy-check.mjs`.
+
+- **Battles running during the deploy** may end DNF: their autosaves and ships use the old
+  file names (`bundle.js`, `source.json`), which the new database refuses and does not ship.
+  Deploy when few battles run; nothing else is lost (finished battles keep their results and
+  screenshots).
+- **Cloudflare Browser Rendering must run service workers** for the v2 capture page (it loads
+  the site through `/v2/sw.js`). This could not be verified from the development container.
+  If the screenshots come back blank or failed after the deploy, the game still works: each
+  build falls back to the player's client thumbnail. To check: `/admin` → **Health** →
+  "Screenshots, last 24 h" (captured vs. fallback / failed), and Edge Functions → `jobs` →
+  Logs: `capture.rendered` / `capture.captured` lines are real screenshots,
+  `capture.render_unusable` followed by `capture.fallback` are thumbnails
+  ([capture-backlog.md](docs/runbooks/capture-backlog.md) step 7).
+- Delete the `PKG_CDN_URL` variable and function secret if they are still set (the Deploy
+  workflow deletes the secret and warns about the variable).
 
 - **Redeploying** after a code change: with the workflow, Actions → Deploy → Run workflow,
   target **all** ("Deploy with GitHub Actions" → F). By hand: `npx -y supabase@2.119.0 db push`
@@ -688,19 +718,16 @@ you set only the GitHub variables and secrets (the last rows); it sets everythin
 |---|---|---|
 | `NEXT_PUBLIC_SUPABASE_URL` | web build (§4.2) | `https://<ref>.supabase.co` |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` (or `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`) | web build | the publishable or anon key |
-| `NEXT_PUBLIC_SANDBOX_SHELL_URL` | web build | `https://build-roulette-sandbox.<subdomain B>.workers.dev/v1/` |
-| `NEXT_PUBLIC_PKG_CDN_URL` | web build | `https://esm.sh` |
+| `NEXT_PUBLIC_SANDBOX_SHELL_URL` | web build | `https://build-roulette-sandbox.<subdomain B>.workers.dev/v2/` |
 | `NEXT_PUBLIC_SITE_URL` | web build | the app's address (or custom domain) |
 | `NEXT_PUBLIC_TURNSTILE_SITE_KEY` | web build, optional | the Turnstile site key |
 | `NEXT_PUBLIC_SENTRY_DSN`, `NEXT_PUBLIC_SENTRY_ENVIRONMENT` | web build, optional | Sentry |
 | `NEXT_PUBLIC_POSTHOG_KEY`, `NEXT_PUBLIC_POSTHOG_HOST` | web build, optional | PostHog |
 | `BR_RELEASE` | web build, optional | release name (default: the commit) |
 | `BR_APP_ORIGINS` | shell build (§4.1) | the app's origin(s), comma-separated |
-| `BR_PKG_CDN_URL` | shell build | `https://esm.sh` (the default) |
 | `CAPTURE_HMAC_SECRET` | Worker secret of `build-roulette-sandbox` (account B) **and** function secret (the Deploy workflow keeps it in Vault `br_capture_hmac_secret` too) | 64 hex characters, the same in all |
 | `JOBS_CRON_SECRET` | function secret **and** Vault `br_jobs_cron_secret` | 64 hex characters, the same in both |
-| `CAPTURE_SHELL_URL` | function secret | `https://build-roulette-sandbox.<subdomain B>.workers.dev/v1/capture` |
-| `PKG_CDN_URL` | function secret | `https://esm.sh` |
+| `CAPTURE_SHELL_URL` | function secret | `https://build-roulette-sandbox.<subdomain B>.workers.dev/v2/capture` |
 | `BROWSER_RENDERING_ACCOUNT_ID`, `BROWSER_RENDERING_API_TOKEN` | function secrets | account A's id; the token of §2.3 |
 | `BROWSER_BUDGET_MS_PER_DAY`, `BROWSER_RENDERING_MIN_INTERVAL_MS`, `BROWSER_RESERVE_MS`, `CAPTURE_TIMEOUT_MS`, `CAPTURE_SIGNED_URL_TTL_S`, `JOBS_RUN_WINDOW_MS`, `JOBS_RUN_HARD_STOP_MS`, `JOBS_PUBLIC_SUPABASE_URL`, `BROWSER_RENDERING_API_URL`, `LOG_LEVEL` | function secrets, optional | defaults fit the free plans (`apps/capture-worker/src/edge/config.ts`) |
 | `br_jobs_function_url` | Vault | `https://<ref>.supabase.co/functions/v1/jobs` |
@@ -709,9 +736,13 @@ you set only the GitHub variables and secrets (the last rows); it sets everythin
 | `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_SANDBOX_ACCOUNT_ID` | GitHub variables (Deploy) | the ids of Cloudflare accounts A (the app) and B (the sandbox shell); they must differ |
 | `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_SANDBOX_API_TOKEN`, `BROWSER_RENDERING_API_TOKEN`, `SUPABASE_ACCESS_TOKEN`, `SUPABASE_DB_PASSWORD` | GitHub secrets (Deploy) | "Deploy with GitHub Actions" → B, C |
 | `TURNSTILE_SECRET_KEY` | GitHub secret (Deploy), optional | the Turnstile secret key; the run puts it in Supabase's CAPTCHA settings |
-| `TURNSTILE_SITE_KEY`, `APP_URL`, `PKG_CDN_URL`, `CF_WORKERS_SUBDOMAIN`, `CF_SANDBOX_WORKERS_SUBDOMAIN`, `CF_WEB_WORKER`, `CF_SANDBOX_WORKER`, `NEXT_PUBLIC_SENTRY_DSN`, `NEXT_PUBLIC_POSTHOG_KEY`, `NEXT_PUBLIC_POSTHOG_HOST` | GitHub variables (Deploy), optional | the run turns them into the build settings and function secrets above ("Deploy with GitHub Actions" → C) |
+| `TURNSTILE_SITE_KEY`, `APP_URL`, `CF_WORKERS_SUBDOMAIN`, `CF_SANDBOX_WORKERS_SUBDOMAIN`, `CF_WEB_WORKER`, `CF_SANDBOX_WORKER`, `NEXT_PUBLIC_SENTRY_DSN`, `NEXT_PUBLIC_POSTHOG_KEY`, `NEXT_PUBLIC_POSTHOG_HOST` | GitHub variables (Deploy), optional | the run turns them into the build settings and function secrets above ("Deploy with GitHub Actions" → C) |
 | `private.ops_settings` | SQL, optional | the plan limits behind Health's meters (Free's by default) |
 
 Not used by the free setup: `SENTRY_DSN` and the other settings of the self-hosted capture
-worker (`apps/capture-worker/.env.example`) and of our own package CDN (`apps/pkg-cdn`); the
-`jobs` function logs to Supabase (Edge Functions → `jobs` → Logs) and reports nothing to Sentry.
+worker (`apps/capture-worker/.env.example`); the `jobs` function logs to Supabase (Edge
+Functions → `jobs` → Logs) and reports nothing to Sentry.
+
+No longer used since import mode (M6): `PKG_CDN_URL` (GitHub variable and function secret),
+`BR_PKG_CDN_URL` (shell build) and `NEXT_PUBLIC_PKG_CDN_URL` (web build). Values left behind
+are ignored; delete them.

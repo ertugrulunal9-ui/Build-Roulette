@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   BUILD_TIME_LIMITS_MINUTES,
   DEFAULT_PHASE_DURATIONS,
+  RANDOM_BUILD_TIME_LIMITS_MINUTES,
   isBuildTimeLimitMinutes,
 } from './durations';
 
@@ -19,7 +20,14 @@ describe('DEFAULT_PHASE_DURATIONS', () => {
 
 describe('BUILD_TIME_LIMITS_MINUTES', () => {
   it('lists the allowed limits in ascending order', () => {
-    expect(BUILD_TIME_LIMITS_MINUTES).toEqual([3, 5, 10, 15, 20, 30]);
+    expect(BUILD_TIME_LIMITS_MINUTES).toEqual([10, 15, 20, 30, 45]);
+  });
+
+  it('draws the random limit from the three shortest (docs/09 §9.7)', () => {
+    expect(RANDOM_BUILD_TIME_LIMITS_MINUTES).toEqual([10, 15, 20]);
+    for (const minutes of RANDOM_BUILD_TIME_LIMITS_MINUTES) {
+      expect(isBuildTimeLimitMinutes(minutes)).toBe(true);
+    }
   });
 
   it('fits the time_limit_seconds check constraint (60..3600) in docs/05-database.md', () => {
@@ -35,10 +43,21 @@ describe('isBuildTimeLimitMinutes', () => {
     expect(isBuildTimeLimitMinutes(minutes)).toBe(true);
   });
 
-  it.each([0, 1, 4, 7.5, 60, -5, Number.NaN, Number.POSITIVE_INFINITY, '5', null, undefined])(
-    'rejects %j',
-    (value) => {
-      expect(isBuildTimeLimitMinutes(value)).toBe(false);
-    },
-  );
+  it.each([
+    0,
+    1,
+    3,
+    5,
+    4,
+    7.5,
+    60,
+    -5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    '10',
+    null,
+    undefined,
+  ])('rejects %j', (value) => {
+    expect(isBuildTimeLimitMinutes(value)).toBe(false);
+  });
 });

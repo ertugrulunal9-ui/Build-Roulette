@@ -1,7 +1,8 @@
 -- T-014 additions: get_public_battle (the permanent results page, readable
--- with the anon key) and the autosave/bundle.css storage slot.
+-- with the anon key) and the autosave storage slot (autosave/site.bin since T-046; it was
+-- autosave/bundle.css).
 --
--- Cast: nora (plays and ships), otto (only autosaves, with CSS → auto-shipped),
+-- Cast: nora (plays and ships), otto (only autosaves → auto-shipped),
 -- pia (her battle is abandoned).
 
 begin;
@@ -34,7 +35,7 @@ grant execute on function pg_temp.public_battle(uuid) to public;
 -- ═══ nora: SPINNING ═══════════════════════════════════════════════════════
 set local role authenticated;
 select set_config('request.jwt.claims', :'nora', true);
-select public.start_solo_battle('Nora', 300) as n_battle \gset
+select public.start_solo_battle('Nora', 600) as n_battle \gset
 reset role;
 \set np :n_battle '/' :nora_id
 
@@ -66,16 +67,16 @@ select throws_ok(format($$ select public.get_public_battle(%L) $$, :'n_battle'),
   'P0002', 'battle_not_found', 'BUILDING: anon gets battle_not_found');
 reset role;
 
--- ─── autosave/bundle.css (4) ──────────────────────────────────────────────
+-- ─── autosave/site.bin (4) ────────────────────────────────────────────────
 set local role authenticated;
 select set_config('request.jwt.claims', :'nora', true);
 select lives_ok(
   format($$ insert into storage.objects (bucket_id, name, owner_id) values ('ephemeral-builds', %L, %L) $$,
-         :'np' || '/autosave/bundle.css', :'nora_id'),
-  'the owner can create autosave/bundle.css while BUILDING');
+         :'np' || '/autosave/site.bin', :'nora_id'),
+  'the owner can create autosave/site.bin while BUILDING');
 with u as (
   update storage.objects set user_metadata = '{"v": 2}'
-  where bucket_id = 'ephemeral-builds' and name = :'np' || '/autosave/bundle.css'
+  where bucket_id = 'ephemeral-builds' and name = :'np' || '/autosave/site.bin'
   returning 1)
 select count(*) as n from u \gset
 select is(:n::int, 1, 'and overwrite it (upsert)');
@@ -83,19 +84,18 @@ select throws_ok(
   format($$ insert into storage.objects (bucket_id, name) values ('ephemeral-builds', %L) $$,
          :'np' || '/autosave/thumb.webp'),
   '42501', null, 'other autosave names are still refused');
-select is(public.can_write_build_object(:'np' || '/autosave/bundle.css'), true,
-  'can_write_build_object accepts autosave/bundle.css');
+select is(public.can_write_build_object(:'np' || '/autosave/bundle.css'), false,
+  'the old autosave/bundle.css slot is refused (T-046)');
 reset role;
 
 -- ═══ nora ships (SHIPPING is passed through at once) ══════════════════════
 update public.battles
    set building_started_at = now() - interval '60 seconds',
-       building_ends_at    = now() + interval '240 seconds',
-       phase_ends_at       = now() + interval '240 seconds'
+       building_ends_at    = now() + interval '540 seconds',
+       phase_ends_at       = now() + interval '540 seconds'
  where id = :'n_battle';
 insert into storage.objects (bucket_id, name) values
-  ('ephemeral-builds', :'np' || '/source.json'),
-  ('ephemeral-builds', :'np' || '/bundle.js');
+  ('ephemeral-builds', :'np' || '/site.bin');
 set local role authenticated;
 select set_config('request.jwt.claims', :'nora', true);
 select public.ship_build(:'n_battle', 'Snack Overflow',
@@ -115,7 +115,7 @@ select is((:'n_pub'::jsonb) -> 'challenge' -> 'build' ->> 'text',
   (select c.build_text from public.battles b join public.challenges c on c.id = b.challenge_id
    where b.id = :'n_battle'),
   'the challenge texts are included');
-select is((:'n_pub'::jsonb) -> 'challenge' ->> 'time_limit_seconds', '300', 'and the time limit');
+select is((:'n_pub'::jsonb) -> 'challenge' ->> 'time_limit_seconds', '600', 'and the time limit');
 select is((:'n_pub'::jsonb) -> 'players', '["Nora"]'::jsonb, 'players are display names only');
 select is(
   (select array_agg(k order by k) from jsonb_object_keys((:'n_pub'::jsonb) -> 'builds' -> 0) k),
@@ -135,7 +135,7 @@ select is((:'n_pub'::jsonb) -> 'awards',
   'the auto-award is included');
 select ok(position(:'nora_id' in :'n_pub') = 0,
   'the player''s user id appears nowhere in the output');
-select ok(:'n_pub' !~ '(source\.json|bundle\.js|bundle\.css|thumb\.webp|autosave)',
+select ok(:'n_pub' !~ '(site\.bin|source\.json|bundle\.js|bundle\.css|thumb\.webp|autosave)',
   'no ephemeral storage path appears in the output');
 
 set local role service_role;
@@ -159,19 +159,17 @@ select is((select phase::text from public.battles where id = :'n_battle'), 'dest
 select is(pg_temp.public_battle(:'n_battle') -> 'builds' -> 0 ->> 'name', 'Snack Overflow',
   'DESTROYED: the results stay public');
 
--- ═══ otto: autosave with CSS → auto_shipped (2) ═══════════════════════════
+-- ═══ otto: autosave → auto_shipped (2) ═══════════════════════════════════
 set local role authenticated;
 select set_config('request.jwt.claims', :'otto', true);
-select public.start_solo_battle('Otto', 300) as o_battle \gset
+select public.start_solo_battle('Otto', 600) as o_battle \gset
 reset role;
 update public.battles set phase_ends_at = now() - interval '1 second' where id = :'o_battle';
 select public.sweep_deadlines();
 insert into storage.objects (bucket_id, name) values
-  ('ephemeral-builds', :'o_battle' || '/' || :'otto_id' || '/autosave/source.json'),
-  ('ephemeral-builds', :'o_battle' || '/' || :'otto_id' || '/autosave/bundle.js'),
-  ('ephemeral-builds', :'o_battle' || '/' || :'otto_id' || '/autosave/bundle.css');
+  ('ephemeral-builds', :'o_battle' || '/' || :'otto_id' || '/autosave/site.bin');
 update public.battles
-   set building_started_at = now() - interval '320 seconds',
+   set building_started_at = now() - interval '620 seconds',
        building_ends_at    = now() - interval '20 seconds',
        phase_ends_at       = now() - interval '20 seconds'
  where id = :'o_battle';
@@ -181,12 +179,12 @@ select throws_ok(format($$ select pg_temp.public_battle(%L) $$, :'o_battle'),
 update public.battles set phase_ends_at = now() - interval '1 second' where id = :'o_battle';
 select public.sweep_deadlines();   -- SHIPPING → RESULTS, auto-ship
 select is(pg_temp.public_battle(:'o_battle') -> 'builds' -> 0 ->> 'status', 'auto_shipped',
-  'an autosave with CSS is auto-shipped (and public at RESULTS)');
+  'an autosave (autosave/site.bin) is auto-shipped (and public at RESULTS)');
 
 -- ═══ pia: ABANDONED is not public (1) ═════════════════════════════════════
 set local role authenticated;
 select set_config('request.jwt.claims', :'pia', true);
-select public.start_solo_battle('Pia', 300) as p_battle \gset
+select public.start_solo_battle('Pia', 600) as p_battle \gset
 reset role;
 update public.battles set phase = 'abandoned', phase_ends_at = null where id = :'p_battle';
 select throws_ok(format($$ select pg_temp.public_battle(%L) $$, :'p_battle'),

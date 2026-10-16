@@ -287,7 +287,7 @@ reset role;
 -- ═══ Solo battles are not subject to presence ═════════════════════════════
 set local role authenticated;
 select set_config('request.jwt.claims', :'qq', true);
-select public.start_solo_battle('qq', 300) as solo \gset
+select public.start_solo_battle('qq', 600) as solo \gset
 reset role;
 set local role service_role;
 select set_config('request.jwt.claims', :'service', true);

@@ -34,7 +34,7 @@ insert into public.profiles (id, display_name) values ('5a000000-0000-0000-0000-
 -- ═══ alice: start ═════════════════════════════════════════════════════════
 set local role authenticated;
 select set_config('request.jwt.claims', :'alice', true);
-select public.start_solo_battle('  alice  ', 300) as a_battle \gset
+select public.start_solo_battle('  alice  ', 600) as a_battle \gset
 reset role;
 
 select isnt(:'a_battle'::uuid, null::uuid, 'start_solo_battle returns a battle id');
@@ -54,7 +54,7 @@ select is((select settings from public.battles where id = :'a_battle'),
   'settings snapshot: mode solo plus the default durations');
 
 select ok(
-  (select c.time_limit_seconds = 300
+  (select c.time_limit_seconds = 600
           and c.build_card_id is not null and c.rule_card_id is not null and c.style_card_id is not null
           and c.build_text <> '' and c.rule_text <> '' and c.style_text <> ''
    from public.battles b join public.challenges c on c.id = b.challenge_id
@@ -94,8 +94,8 @@ select is(public.advance_battle(:'a_battle', 0) - 'phase_ends_at',
   'advance with a stale version is a no-op, even when due');
 select is(public.advance_battle(:'a_battle', 1),
   jsonb_build_object('changed', true, 'version', 2, 'phase', 'building',
-                     'phase_ends_at', now() + interval '300 seconds'),
-  'advance after the deadline: BUILDING, version 2, ends in 300 s');
+                     'phase_ends_at', now() + interval '600 seconds'),
+  'advance after the deadline: BUILDING, version 2, ends in 600 s');
 select is(public.advance_battle(:'a_battle', 2) ->> 'changed', 'false',
   'a second nudge is a no-op');
 select is(public.advance_battle(:'a_battle', 1) ->> 'changed', 'false',
@@ -105,7 +105,7 @@ reset role;
 select results_eq(
   format($$ select phase::text, version, building_started_at, building_ends_at, phase_ends_at, phase_started_at
             from public.battles where id = %L $$, :'a_battle'),
-  $$ select 'building', 2, now(), now() + interval '300 seconds', now() + interval '300 seconds', now() $$,
+  $$ select 'building', 2, now(), now() + interval '600 seconds', now() + interval '600 seconds', now() $$,
   'BUILDING stamps building_started_at/ends_at and phase_ends_at');
 select results_eq(
   format($$ select version, payload ->> 'from', payload ->> 'to', actor_id from public.battle_events
@@ -114,21 +114,20 @@ select results_eq(
   'the transition is logged with the nudging actor');
 
 -- ═══ alice: ship ══════════════════════════════════════════════════════════
--- 100 s into a 300 s build.
+-- 100 s into a 600 s build. One site pack (T-046).
 update public.battles
    set building_started_at = now() - interval '100 seconds',
-       building_ends_at    = now() + interval '200 seconds',
-       phase_ends_at       = now() + interval '200 seconds'
+       building_ends_at    = now() + interval '500 seconds',
+       phase_ends_at       = now() + interval '500 seconds'
  where id = :'a_battle';
 insert into storage.objects (bucket_id, name) values
-  ('ephemeral-builds', :'a_battle' || '/5a000000-0000-0000-0000-0000000000a1/source.json'),
-  ('ephemeral-builds', :'a_battle' || '/5a000000-0000-0000-0000-0000000000a1/bundle.js');
+  ('ephemeral-builds', :'a_battle' || '/5a000000-0000-0000-0000-0000000000a1/site.bin');
 
 set local role authenticated;
 select set_config('request.jwt.claims', :'alice', true);
 select public.ship_build(:'a_battle', '  Snack Overflow  ',
   '{"files": 3, "lines": 120, "deps": ["react", "react", "canvas-confetti"], "bundle_bytes": 99999999,
-    "rebuilds": 7, "pastes": 2, "secret": "dropped"}') as a_ship \gset
+    "imports": 4, "rebuilds": 7, "pastes": 2, "secret": "dropped"}') as a_ship \gset
 reset role;
 
 select is((:'a_ship'::jsonb) -> 'build' ->> 'status', 'shipped', 'ship_build returns the shipped build');
@@ -142,8 +141,8 @@ select results_eq(
   $$ select 'shipped', 'Snack Overflow', now(), 100000, 1 $$,
   'the build is shipped with the trimmed name, shipped_at = now(), completion 100 s, rank 1');
 select is((select stats from public.builds where battle_id = :'a_battle'),
-  '{"files": 3, "lines": 120, "deps": ["react", "canvas-confetti"], "bundle_bytes": 5242880, "rebuilds": 7, "pastes": 2}'::jsonb,
-  'stats are cleaned: unknown keys dropped, deps deduplicated, bundle_bytes capped');
+  '{"files": 3, "lines": 120, "deps": ["react", "canvas-confetti"], "bundle_bytes": 5242880, "imports": 4, "rebuilds": 7, "pastes": 2}'::jsonb,
+  'stats are cleaned: imports kept, unknown keys dropped, deps deduplicated, bundle_bytes capped');
 
 select results_eq(
   format($$ select phase::text, phase_started_at, phase_ends_at, shipping_ended_at, finished_at, is_complete
@@ -188,7 +187,7 @@ select ok(
   (:'a_snap'::jsonb) -> 'challenge' ->> 'id' = (select challenge_id::text from public.battles where id = :'a_battle')
   and (:'a_snap'::jsonb) -> 'challenge' -> 'build' ? 'text'
   and (:'a_snap'::jsonb) -> 'challenge' -> 'rule' ? 'hint'
-  and ((:'a_snap'::jsonb) -> 'challenge' ->> 'time_limit_seconds')::int = 300,
+  and ((:'a_snap'::jsonb) -> 'challenge' ->> 'time_limit_seconds')::int = 600,
   'snapshot: challenge with texts, hints and time limit');
 select is((:'a_snap'::jsonb) -> 'players',
   '[{"user_id": "5a000000-0000-0000-0000-0000000000a1", "display_name": "alice"}]'::jsonb,
@@ -201,8 +200,7 @@ select is((:'a_snap'::jsonb) -> 'me',
   'snapshot: me');
 select ok(
   not ((:'a_snap'::jsonb) ? 'votes')
-  and (:'a_snap'::jsonb)::text not like '%source.json%'
-  and (:'a_snap'::jsonb)::text not like '%bundle.js%'
+  and (:'a_snap'::jsonb)::text not like '%site.bin%'
   and (:'a_snap'::jsonb)::text not like '%ephemeral%',
   'snapshot: no votes, no ephemeral storage paths');
 
@@ -263,8 +261,11 @@ select is((select status::text from public.jobs where kind = 'destroy' and ref_i
 -- A rematch is allowed now that the first battle is over.
 set local role authenticated;
 select set_config('request.jwt.claims', :'alice', true);
-select lives_ok($$ select public.start_solo_battle('alice', 180) $$, 'a new solo battle can start after RESULTS');
+select public.start_solo_battle('alice', 2700) as a2_battle \gset
 reset role;
+select is((select c.time_limit_seconds from public.battles b join public.challenges c on c.id = b.challenge_id
+           where b.id = :'a2_battle'), 2700,
+  'a new solo battle can start after RESULTS, with the longest limit (45 minutes)');
 
 -- ═══ bob: autosave → auto_shipped ═════════════════════════════════════════
 set local role authenticated;
@@ -272,10 +273,10 @@ select set_config('request.jwt.claims', :'bob', true);
 select public.start_solo_battle('bob', null) as b_battle \gset
 reset role;
 
-select ok((select c.time_limit_seconds in (300, 600, 900)
+select ok((select c.time_limit_seconds in (600, 900, 1200)
            from public.battles b join public.challenges c on c.id = b.challenge_id
            where b.id = :'b_battle'),
-  'no time limit given: the server picks 5, 10 or 15 minutes');
+  'no time limit given: the server picks 10, 15 or 20 minutes');
 select c.time_limit_seconds as b_limit
 from public.battles b join public.challenges c on c.id = b.challenge_id where b.id = :'b_battle' \gset
 
@@ -286,8 +287,7 @@ select is(public.advance_battle(:'b_battle', 1) ->> 'phase', 'building', 'bob is
 reset role;
 
 insert into storage.objects (bucket_id, name) values
-  ('ephemeral-builds', :'b_battle' || '/5a000000-0000-0000-0000-0000000000b2/autosave/source.json'),
-  ('ephemeral-builds', :'b_battle' || '/5a000000-0000-0000-0000-0000000000b2/autosave/bundle.js');
+  ('ephemeral-builds', :'b_battle' || '/5a000000-0000-0000-0000-0000000000b2/autosave/site.bin');
 -- The build deadline passed 20 s ago (beyond the 15 s grace) and nobody nudged.
 update public.battles
    set building_started_at = now() - make_interval(secs => :b_limit + 20),
@@ -348,7 +348,7 @@ select is((select status::text from public.jobs where kind = 'destroy' and ref_i
 -- ═══ cleo: nothing uploaded → dnf ═════════════════════════════════════════
 set local role authenticated;
 select set_config('request.jwt.claims', :'cleo', true);
-select public.start_solo_battle('cleo', 180) as c_battle \gset
+select public.start_solo_battle('cleo', 600) as c_battle \gset
 reset role;
 update public.battles set phase_ends_at = now() - interval '1 second' where id = :'c_battle';
 set local role authenticated;
@@ -356,9 +356,12 @@ select set_config('request.jwt.claims', :'cleo', true);
 select is(public.advance_battle(:'c_battle', 1) ->> 'phase', 'building', 'cleo is BUILDING');
 reset role;
 
--- An autosave with only one of the two files does not count.
+-- Only autosave/site.bin counts (T-046): the old autosave files do not, and neither does a
+-- top-level site.bin that was never shipped.
 insert into storage.objects (bucket_id, name) values
-  ('ephemeral-builds', :'c_battle' || '/5a000000-0000-0000-0000-0000000000c3/autosave/bundle.js');
+  ('ephemeral-builds', :'c_battle' || '/5a000000-0000-0000-0000-0000000000c3/autosave/bundle.js'),
+  ('ephemeral-builds', :'c_battle' || '/5a000000-0000-0000-0000-0000000000c3/autosave/source.json'),
+  ('ephemeral-builds', :'c_battle' || '/5a000000-0000-0000-0000-0000000000c3/site.bin');
 update public.battles
    set building_started_at = now() - interval '200 seconds',
        building_ends_at    = now() - interval '20 seconds',
@@ -378,7 +381,7 @@ select results_eq(
   format($$ select status::text, shipped_at, completion_ms, final_rank, capture_status::text
             from public.builds where battle_id = %L $$, :'c_battle'),
   $$ values ('dnf', null::timestamptz, null::int, null::int, 'pending') $$,
-  'no complete autosave: dnf, no rank');
+  'no autosave/site.bin: dnf, no rank');
 select is_empty(
   format($$ select j.id from public.jobs j join public.builds bu on bu.id = j.ref_id
             where bu.battle_id = %L $$, :'c_battle'),
@@ -401,7 +404,7 @@ select results_eq(
 -- ═══ eve: clutch ship in the last 10 s ════════════════════════════════════
 set local role authenticated;
 select set_config('request.jwt.claims', :'eve', true);
-select public.start_solo_battle('eve', 300) as e_battle \gset
+select public.start_solo_battle('eve', 600) as e_battle \gset
 reset role;
 update public.battles set phase_ends_at = now() - interval '1 second' where id = :'e_battle';
 set local role authenticated;
@@ -409,13 +412,12 @@ select set_config('request.jwt.claims', :'eve', true);
 select is(public.advance_battle(:'e_battle', 1) ->> 'phase', 'building', 'eve is BUILDING');
 reset role;
 update public.battles
-   set building_started_at = now() - interval '295 seconds',
+   set building_started_at = now() - interval '595 seconds',
        building_ends_at    = now() + interval '5 seconds',
        phase_ends_at       = now() + interval '5 seconds'
  where id = :'e_battle';
 insert into storage.objects (bucket_id, name) values
-  ('ephemeral-builds', :'e_battle' || '/5a000000-0000-0000-0000-0000000000e5/source.json'),
-  ('ephemeral-builds', :'e_battle' || '/5a000000-0000-0000-0000-0000000000e5/bundle.js');
+  ('ephemeral-builds', :'e_battle' || '/5a000000-0000-0000-0000-0000000000e5/site.bin');
 set local role authenticated;
 select set_config('request.jwt.claims', :'eve', true);
 select is(public.ship_build(:'e_battle', 'Just in time', null) -> 'battle' ->> 'phase', 'results',
@@ -423,8 +425,8 @@ select is(public.ship_build(:'e_battle', 'Just in time', null) -> 'battle' ->> '
 reset role;
 select results_eq(
   format($$ select completion_ms, stats from public.builds where battle_id = %L $$, :'e_battle'),
-  $$ values (295000, '{}'::jsonb) $$,
-  'completion 295 s, empty stats');
+  $$ values (595000, '{}'::jsonb) $$,
+  'completion 595 s, empty stats');
 select results_eq(
   format($$ select award from public.awards where battle_id = %L order by award $$, :'e_battle'),
   $$ values ('clutch_ship') $$,
@@ -447,8 +449,7 @@ update public.battles
        phase_ends_at       = now() - interval '5 seconds'
  where id = :'f_battle';
 insert into storage.objects (bucket_id, name) values
-  ('ephemeral-builds', :'f_battle' || '/5a000000-0000-0000-0000-0000000000f6/source.json'),
-  ('ephemeral-builds', :'f_battle' || '/5a000000-0000-0000-0000-0000000000f6/bundle.js');
+  ('ephemeral-builds', :'f_battle' || '/5a000000-0000-0000-0000-0000000000f6/site.bin');
 set local role authenticated;
 select set_config('request.jwt.claims', :'finn', true);
 select is(public.ship_build(:'f_battle', 'Photo finish', '{}') -> 'battle' ->> 'phase', 'results',
@@ -483,7 +484,7 @@ reset role;
 
 set local role authenticated;
 select set_config('request.jwt.claims', :'cleo', true);
-select public.start_solo_battle('cleo', 300) as c2_battle \gset
+select public.start_solo_battle('cleo', 600) as c2_battle \gset
 reset role;
 set local role authenticated;
 select set_config('request.jwt.claims', :'eve', true);

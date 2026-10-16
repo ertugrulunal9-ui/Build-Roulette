@@ -4,9 +4,10 @@
 // with pg_cron driving some of the deadlines:
 //
 //   4 players + a late spectator + a stranger. alice and bob ship by hand, cleo only
-//   autosaves (auto-ship), dave has nothing (DNF) → SHIPPING → REVEAL (3 builds, shuffled):
-//   storage reads of the revealed bundles (allowed from REVEAL, refused before, never the
-//   sources), get_reveal_builds, host reveal_next (CAS), a slot deadline by pg_cron,
+//   autosaves (auto-ship), dave only has a thumbnail (DNF) → SHIPPING → REVEAL (3 builds,
+//   shuffled): storage reads of the revealed site packs (allowed from REVEAL, refused before,
+//   never the autosave of a hand-shipped build or a DNF player's files), get_reveal_builds
+//   (`files: {site, thumb}`), host reveal_next (CAS), a slot deadline by pg_cron,
 //   skip_to_vote → VOTING: guards, revotes, secret ballots, vote_progress counts, the
 //   early end when everyone voted → RESULTS with tallies, vote ranks and category awards →
 //   DESTROYED (reads refused again). Every listener must receive every battle version in
@@ -31,10 +32,10 @@ import {
   waitFor,
 } from './lib.mjs';
 
-const SOURCE = JSON.stringify({ files: { 'src/main.ts': 'secret source' } });
-const MANIFEST = JSON.stringify({ dependencies: { react: '19.2.0' } });
 const WEBP = new Uint8Array([0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50]);
-const bundle = (name) => `document.body.textContent = ${JSON.stringify(name)};`;
+// A stand-in for a site pack (@br/site): Storage never looks inside one, so any bytes do.
+const pack = (name) => `BRSITE1\n(a stand-in site pack: ${name})`;
+const PACK = 'application/octet-stream';
 
 const upload = (who, path, body, type) =>
   who.client.storage
@@ -121,21 +122,15 @@ sql(
 const path = (who, file) => `${battleId}/${who.id}/${file}`;
 {
   const results = await Promise.all([
-    upload(alice, path(alice, 'source.json'), SOURCE, 'application/json'),
-    upload(alice, path(alice, 'bundle.js'), bundle('Alpha'), 'text/javascript'),
-    upload(alice, path(alice, 'bundle.css'), 'body { color: red }', 'text/css'),
-    upload(alice, path(alice, 'manifest.json'), MANIFEST, 'application/json'),
+    upload(alice, path(alice, 'autosave/site.bin'), pack('Alpha draft'), PACK),
+    upload(alice, path(alice, 'site.bin'), pack('Alpha'), PACK),
     upload(alice, path(alice, 'thumb.webp'), WEBP, 'image/webp'),
-    upload(bob, path(bob, 'source.json'), SOURCE, 'application/json'),
-    upload(bob, path(bob, 'bundle.js'), bundle('Bravo'), 'text/javascript'),
-    upload(cleo, path(cleo, 'autosave/source.json'), SOURCE, 'application/json'),
-    upload(cleo, path(cleo, 'autosave/bundle.js'), bundle('Charlie'), 'text/javascript'),
-    upload(cleo, path(cleo, 'autosave/bundle.css'), 'body { color: blue }', 'text/css'),
-    upload(cleo, path(cleo, 'autosave/manifest.json'), MANIFEST, 'application/json'),
-    upload(dave, path(dave, 'autosave/source.json'), SOURCE, 'application/json'),
+    upload(bob, path(bob, 'site.bin'), pack('Bravo'), PACK),
+    upload(cleo, path(cleo, 'autosave/site.bin'), pack('Charlie'), PACK),
+    upload(dave, path(dave, 'thumb.webp'), WEBP, 'image/webp'),
   ]);
   check(
-    'uploads: two full builds (with CSS, manifest.json, thumb), one autosave, one lone source',
+    'uploads: two shipped site packs (one with an autosave and a thumb), one autosave, one lone thumb',
     results.every((r) => !r.error),
     results.map((r) => r.error?.message ?? 'ok'),
   );
@@ -146,13 +141,9 @@ const path = (who, file) => `${battleId}/${who.id}/${file}`;
     const ship = await rpc(who, 'ship_build', { p_battle_id: battleId, p_name: name, p_stats: {} });
     check(`${who.label} ships ${name}`, ship.data?.build?.status === 'shipped', ship);
   }
-  const peek = await download(bob, path(alice, 'bundle.js'));
-  check(
-    "before REVEAL another player cannot read alice's shipped bundle",
-    Boolean(peek.error),
-    peek,
-  );
-  const peek2 = await download(eve, path(alice, 'bundle.js'));
+  const peek = await download(bob, path(alice, 'site.bin'));
+  check("before REVEAL another player cannot read alice's shipped site", Boolean(peek.error), peek);
+  const peek2 = await download(eve, path(alice, 'site.bin'));
   check('nor can the spectator', Boolean(peek2.error), peek2);
   const early = await rpc(eve, 'get_reveal_builds', { p_battle_id: battleId });
   check('get_reveal_builds before REVEAL: wrong_phase', early.error === 'wrong_phase', early);
@@ -164,8 +155,8 @@ sql(`update public.battles set building_ends_at = now() - interval '20 seconds',
 {
   const s = await waitForSnapshot(bob, battleId, (d) => d.battle.phase === 'shipping');
   check('pg_cron: BUILDING → SHIPPING', s?.battle?.phase === 'shipping', s?.battle);
-  const peek = await download(bob, path(alice, 'bundle.js'));
-  check('during SHIPPING the bundle is still private', Boolean(peek.error), peek);
+  const peek = await download(bob, path(alice, 'site.bin'));
+  check('during SHIPPING the site is still private', Boolean(peek.error), peek);
   sql(
     `update public.battles set phase_ends_at = now() - interval '1 second' where id = '${battleId}'`,
   );
@@ -207,51 +198,53 @@ const buildOf = Object.fromEntries(reveal.builds.map((b) => [b.builder_id, b.id]
   );
   const byName = Object.fromEntries(list.map((b) => [b.builder_name, b]));
   check(
-    'paths: shipped builds at the top level, the auto-shipped one under autosave/; missing files are null',
-    byName.alice?.files?.js === path(alice, 'bundle.js') &&
-      byName.alice?.files?.css === path(alice, 'bundle.css') &&
-      byName.alice?.files?.manifest === path(alice, 'manifest.json') &&
+    'paths ({site, thumb}): shipped builds at the top level, the auto-shipped one under autosave/; missing files are null',
+    list.every(
+      (b) =>
+        Object.keys(b.files ?? {})
+          .sort()
+          .join() === 'site,thumb',
+    ) &&
+      byName.alice?.files?.site === path(alice, 'site.bin') &&
       byName.alice?.files?.thumb === path(alice, 'thumb.webp') &&
-      byName.bob?.files?.css === null &&
-      byName.bob?.files?.manifest === null &&
-      byName.cleo?.files?.js === path(cleo, 'autosave/bundle.js') &&
-      byName.cleo?.files?.manifest === path(cleo, 'autosave/manifest.json') &&
+      byName.bob?.files?.site === path(bob, 'site.bin') &&
+      byName.bob?.files?.thumb === null &&
+      byName.cleo?.files?.site === path(cleo, 'autosave/site.bin') &&
       byName.cleo?.files?.thumb === null,
     list,
   );
   const reads = await Promise.all([
-    download(eve, byName.alice.files.js),
-    download(eve, byName.bob.files.js),
-    download(eve, byName.cleo.files.js),
-    download(dave, byName.cleo.files.css),
-    download(bob, byName.alice.files.manifest),
+    download(eve, byName.alice.files.site),
+    download(eve, byName.bob.files.site),
+    download(eve, byName.cleo.files.site),
+    download(dave, byName.cleo.files.site),
+    download(bob, byName.alice.files.thumb),
   ]);
   check(
-    'the spectator and the players download the revealed bundles, CSS and manifest',
-    reads[0].text === bundle('Alpha') &&
-      reads[1].text === bundle('Bravo') &&
-      reads[2].text === bundle('Charlie') &&
-      reads[3].text === 'body { color: blue }' &&
-      reads[4].text === MANIFEST,
+    'the spectator and the players download the revealed site packs and the thumbnail',
+    reads[0].text === pack('Alpha') &&
+      reads[1].text === pack('Bravo') &&
+      reads[2].text === pack('Charlie') &&
+      reads[3].text === pack('Charlie') &&
+      reads[4].error === null,
     reads,
   );
   const signed = await bob.client.storage
     .from('ephemeral-builds')
-    .createSignedUrl(byName.alice.files.css, 60);
+    .createSignedUrl(byName.alice.files.site, 60);
   const fetched = signed.data ? await (await fetch(signed.data.signedUrl)).text() : null;
   check(
-    'a signed URL works too (what an iframe would load)',
-    fetched === 'body { color: red }',
+    'a signed URL works too (what the preview fetches)',
+    fetched === pack('Alpha'),
     signed.error?.message ?? fetched,
   );
   const denied = await Promise.all([
-    download(bob, path(alice, 'source.json')),
-    download(alice, path(cleo, 'autosave/source.json')),
-    download(eve, path(dave, 'autosave/source.json')),
-    download(mallory, byName.alice.files.js),
+    download(bob, path(alice, 'autosave/site.bin')),
+    download(eve, path(dave, 'thumb.webp')),
+    download(mallory, byName.alice.files.site),
   ]);
   check(
-    "never the sources, never a DNF player's autosave, never for a stranger",
+    "never a hand-shipped build's autosave, never a DNF player's files, never for a stranger",
     denied.every((d) => d.error && d.text === null),
     denied,
   );
@@ -417,8 +410,8 @@ check(
   );
   const spy = await mallory.client.from('votes').select('*').eq('battle_id', battleId);
   check('after RESULTS a stranger still reads no votes', spy.data?.length === 0, spy);
-  const last = await download(eve, path(alice, 'bundle.js'));
-  check('the last look still reads the revealed bundles', last.text === bundle('Alpha'), last);
+  const last = await download(eve, path(alice, 'site.bin'));
+  check('the last look still reads the revealed sites', last.text === pack('Alpha'), last);
 }
 
 // ─── DESTROYED: reads refused again ──────────────────────────────────────
@@ -427,8 +420,8 @@ sql(`update public.battles set phase_ends_at = now() - interval '1 second',
 {
   const s = await waitForSnapshot(alice, battleId, (d) => d.battle.phase === 'destroyed');
   check('pg_cron: RESULTS → DESTROYED (capture deadline passed)', s?.battle?.phase === 'destroyed');
-  const after = await download(eve, path(alice, 'bundle.js'));
-  check('after DESTROYED nobody else reads the bundle', Boolean(after.error), after);
+  const after = await download(eve, path(alice, 'site.bin'));
+  check('after DESTROYED nobody else reads the site', Boolean(after.error), after);
 }
 
 // ─── Realtime ────────────────────────────────────────────────────────────

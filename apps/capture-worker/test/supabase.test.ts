@@ -90,9 +90,9 @@ describe('SupabaseBackend', () => {
       json(400, { statusCode: '404', error: 'not_found', message: 'Object not found' }),
     );
     const b = new SupabaseBackend({ url: 'http://db', serviceKey: 'k', fetch: f.impl });
-    expect(await b.createSignedUrl('ephemeral-builds', 'a/b/bundle.js', 60)).toBeNull();
+    expect(await b.createSignedUrl('ephemeral-builds', 'a/b/site.bin', 60)).toBeNull();
     expect(await b.download('ephemeral-builds', 'a/b/thumb.webp')).toBeNull();
-    expect(f.calls[0]?.url).toBe('http://db/storage/v1/object/sign/ephemeral-builds/a/b/bundle.js');
+    expect(f.calls[0]?.url).toBe('http://db/storage/v1/object/sign/ephemeral-builds/a/b/site.bin');
     expect(f.calls[0]?.body).toEqual({ expiresIn: 60 });
     expect(f.calls[1]?.url).toBe(
       'http://db/storage/v1/object/authenticated/ephemeral-builds/a/b/thumb.webp',

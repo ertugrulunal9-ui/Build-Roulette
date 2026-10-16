@@ -31,8 +31,9 @@ import {
   waitFor,
 } from './lib.mjs';
 
-const SOURCE = JSON.stringify({ files: { 'src/main.ts': 'console.log("hi")' } });
-const BUNDLE = 'document.body.textContent = "Pomodoro Pro";';
+// A stand-in for a site pack (@br/site): Storage never looks inside one, so any bytes do.
+const SITE = 'BRSITE1\n(a stand-in site pack: Pomodoro Pro)';
+const PACK = 'application/octet-stream';
 
 const upload = (who, path, body, type, upsert = false) =>
   who.client.storage
@@ -147,7 +148,7 @@ const firstVersion = 2; // version 1 (SPINNING) happened before anyone subscribe
     snap.data?.battle?.phase === 'spinning' &&
       snap.data?.battle?.mode === 'multiplayer' &&
       snap.data?.builds?.length === 3 &&
-      [300, 600, 900].includes(snap.data?.challenge?.time_limit_seconds),
+      [600, 900, 1200].includes(snap.data?.challenge?.time_limit_seconds),
     snap,
   );
   const spec = await snapshot(dave, battleId);
@@ -183,36 +184,24 @@ sql(
   const s = await waitForPhase(bob, battleId, 'building');
   check('pg_cron moves SPINNING → BUILDING', s?.battle?.phase === 'building', s);
 }
-// A 300 s battle, 100 s in (the time limit is random; pin it for the award checks).
-sql(`update public.challenges set time_limit_seconds = 300
+// A 600 s battle, 100 s in (the time limit is random; pin it for the award checks).
+sql(`update public.challenges set time_limit_seconds = 600
        where id = (select challenge_id from public.battles where id = '${battleId}');
      update public.battles set building_started_at = now() - interval '100 seconds',
-       building_ends_at = now() + interval '200 seconds', phase_ends_at = now() + interval '200 seconds'
+       building_ends_at = now() + interval '500 seconds', phase_ends_at = now() + interval '500 seconds'
      where id = '${battleId}'`);
 
 // ─── Building: ship, autosave, nothing ───────────────────────────────────
 {
-  const a1 = await upload(alice, `${battleId}/${alice.id}/source.json`, SOURCE, 'application/json');
-  const a2 = await upload(alice, `${battleId}/${alice.id}/bundle.js`, BUNDLE, 'text/javascript');
-  check('alice uploads her build', !a1.error && !a2.error, { a1, a2 });
-  const b1 = await upload(
-    bob,
-    `${battleId}/${bob.id}/autosave/source.json`,
-    SOURCE,
-    'application/json',
-  );
-  const b2 = await upload(
-    bob,
-    `${battleId}/${bob.id}/autosave/bundle.js`,
-    BUNDLE,
-    'text/javascript',
-  );
-  check('bob autosaves', !b1.error && !b2.error, { b1, b2 });
-  const d1 = await upload(dave, `${battleId}/${dave.id}/bundle.js`, BUNDLE, 'text/javascript');
+  const a1 = await upload(alice, `${battleId}/${alice.id}/site.bin`, SITE, PACK);
+  check('alice uploads her build (site.bin)', !a1.error, a1);
+  const b1 = await upload(bob, `${battleId}/${bob.id}/autosave/site.bin`, SITE, PACK);
+  check('bob autosaves (autosave/site.bin)', !b1.error, b1);
+  const d1 = await upload(dave, `${battleId}/${dave.id}/site.bin`, SITE, PACK);
   check('the spectator cannot upload into the battle', Boolean(d1.error), d1.error?.message);
   const peek = await bob.client.storage
     .from('ephemeral-builds')
-    .download(`${battleId}/${alice.id}/bundle.js`);
+    .download(`${battleId}/${alice.id}/site.bin`);
   check("another player cannot read alice's files during BUILDING", Boolean(peek.error));
   const dShip = await rpc(dave, 'ship_build', { p_battle_id: battleId, p_name: 'x', p_stats: {} });
   check('the spectator cannot ship', dShip.error === 'not_on_roster', dShip);
@@ -220,7 +209,7 @@ sql(`update public.challenges set time_limit_seconds = 300
   const ship = await rpc(alice, 'ship_build', {
     p_battle_id: battleId,
     p_name: 'Pomodoro Pro',
-    p_stats: { files: 2, lines: 40, deps: ['canvas-confetti'] },
+    p_stats: { files: 2, bundle_bytes: SITE.length, imports: 1 },
   });
   check(
     'alice ships; bob and cleo still build, so no early end',
@@ -236,10 +225,10 @@ sql(`update public.challenges set time_limit_seconds = 300
 }
 
 // ─── The deadline passes; pg_cron ends SHIPPING ──────────────────────────
-// Move the whole timeline 220 s into the past (alice's ship included).
-sql(`update public.builds set shipped_at = shipped_at - interval '220 seconds'
+// Move the whole timeline 520 s into the past (alice's ship included).
+sql(`update public.builds set shipped_at = shipped_at - interval '520 seconds'
        where battle_id = '${battleId}' and status = 'shipped';
-     update public.battles set building_started_at = now() - interval '320 seconds',
+     update public.battles set building_started_at = now() - interval '620 seconds',
        building_ends_at = now() - interval '20 seconds', phase_ends_at = now() - interval '20 seconds'
      where id = '${battleId}'`);
 {
@@ -247,9 +236,9 @@ sql(`update public.builds set shipped_at = shipped_at - interval '220 seconds'
   check('pg_cron moves BUILDING → SHIPPING', s?.battle?.phase === 'shipping', s);
   const late = await upload(
     bob,
-    `${battleId}/${bob.id}/autosave/bundle.js`,
-    BUNDLE + '//late',
-    'text/javascript',
+    `${battleId}/${bob.id}/autosave/site.bin`,
+    SITE + '/late',
+    PACK,
     true,
   );
   check('after the deadline + grace, nothing can be written', Boolean(late.error));
@@ -268,7 +257,7 @@ let results;
       by[alice.id]?.final_rank === 1 &&
       by[bob.id]?.status === 'auto_shipped' &&
       by[bob.id]?.final_rank === 2 &&
-      by[bob.id]?.completion_ms === 300_000 &&
+      by[bob.id]?.completion_ms === 600_000 &&
       by[cleo.id]?.status === 'dnf' &&
       by[cleo.id]?.final_rank === null,
     results?.builds,
@@ -370,7 +359,7 @@ sql(
       !del.error &&
       !done.error &&
       left === '0' &&
-      paths.length === 4,
+      paths.length === 2,
     { paths, del: del.error, done: done.error, left },
   );
 }

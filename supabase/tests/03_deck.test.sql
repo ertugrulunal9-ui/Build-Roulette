@@ -3,7 +3,7 @@
 begin;
 create extension if not exists pgtap with schema extensions;
 
-select plan(26);
+select plan(28);
 
 -- ─── Counts and text (7) ──────────────────────────────────────────────────
 select is((select count(*)::int from public.prompt_cards where kind = 'build' and is_active), 60, '60 active BUILD cards');
@@ -74,10 +74,16 @@ select is_empty(
               and private.tags_compatible(r.tags, s.tags)) < 15 $$,
   'every compatible BUILD + RULE pair has at least 15 compatible STYLE cards');
 
--- ─── Shared constants (2) ─────────────────────────────────────────────────
+-- ─── Shared constants (4) ─────────────────────────────────────────────────
 -- Also compared with @br/game by packages/game/src/schema-drift.test.ts.
-select is(private.build_time_limits_seconds(), array[180, 300, 600, 900, 1200, 1800],
-  'allowed time limits: 3, 5, 10, 15, 20, 30 minutes');
+select is(private.build_time_limits_seconds(), array[600, 900, 1200, 1800, 2700],
+  'allowed time limits: 10, 15, 20, 30, 45 minutes');
+select is(private.random_build_time_limits_seconds(), array[600, 900, 1200],
+  'the server draws 10, 15 or 20 minutes when nobody chose');
+-- (2/3)^300 per missing value: never flaky in practice.
+select is((select array_agg(distinct l order by l)
+           from (select private.draw_build_time_limit() as l from generate_series(1, 300)) d),
+  array[600, 900, 1200], 'draw_build_time_limit draws only those, and each of them');
 select is(private.default_battle_settings(),
   '{"spinning_s": 6, "shipping_s": 15, "voting_s": 60, "results_s": 60, "capture_deadline_s": 600}'::jsonb,
   'default phase durations');

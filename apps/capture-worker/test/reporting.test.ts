@@ -11,9 +11,8 @@ const USER = '9d8e7f6a-5b4c-4d3e-8f2a-1b0c9d8e7f6a';
 const ENV = {
   SUPABASE_URL: 'http://127.0.0.1:54321/',
   SUPABASE_SERVICE_ROLE_KEY: 'eyJ.service.key',
-  CAPTURE_SHELL_URL: 'https://{build}.usercontent.example/v1/capture',
+  CAPTURE_SHELL_URL: 'https://{build}.usercontent.example/v2/capture',
   CAPTURE_HMAC_SECRET: 'config-secret-0123456789abcdef0123456789abcdef',
-  PKG_CDN_URL: 'https://pkg.example.net/',
 };
 
 let ingest: FakeIngest;
@@ -69,7 +68,7 @@ describe('error log lines → Sentry', () => {
     const jobLog = log.child({ job: 42, kind: 'capture', ref: BUILD }).child({ attempt: 2 });
     jobLog.warn('capture.render_unusable', { reason: 'pageerror: user code threw' });
     jobLog.error('capture.error', {
-      reason: `unexpected: upload failed: http://127.0.0.1:54321/storage/v1/object/sign/ephemeral-builds/${BATTLE}/${USER}/bundle.js?token=eyJabc.def.ghi`,
+      reason: `unexpected: upload failed: http://127.0.0.1:54321/storage/v1/object/sign/ephemeral-builds/${BATTLE}/${USER}/site.bin?token=eyJabc.def.ghi`,
     });
     jobLog.error('capture.error', { reason: 'again, within the minute' });
     now += REPORT_INTERVAL_MS;
@@ -95,7 +94,7 @@ describe('error log lines → Sentry', () => {
       build_id: BUILD,
     });
     expect(ev.message).toBe(
-      'capture.error: unexpected: upload failed: http://127.0.0.1:54321/storage/v1/object/sign/ephemeral-builds/[id]/[id]/bundle.js',
+      'capture.error: unexpected: upload failed: http://127.0.0.1:54321/storage/v1/object/sign/ephemeral-builds/[id]/[id]/site.bin',
     );
     const raw = ingest.requests.map((r) => r.body).join('\n');
     for (const secret of [USER, 'token', 'eyJabc', 'user code threw']) {

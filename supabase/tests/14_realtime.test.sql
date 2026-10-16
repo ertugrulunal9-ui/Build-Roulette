@@ -66,10 +66,8 @@ select public.advance_battle(:'battle', 1);
 select public.kick_member(:'room', :'dot_id');
 reset role;
 insert into storage.objects (bucket_id, name) values
-  ('ephemeral-builds', :'battle' || '/' || :'ava_id' || '/source.json'),
-  ('ephemeral-builds', :'battle' || '/' || :'ava_id' || '/bundle.js'),
-  ('ephemeral-builds', :'battle' || '/' || :'bo_id' || '/source.json'),
-  ('ephemeral-builds', :'battle' || '/' || :'bo_id' || '/bundle.js');
+  ('ephemeral-builds', :'battle' || '/' || :'ava_id' || '/site.bin'),
+  ('ephemeral-builds', :'battle' || '/' || :'bo_id' || '/site.bin');
 set local role authenticated;
 select set_config('request.jwt.claims', :'ava', true);
 select public.ship_build(:'battle', 'Alpha', '{"files": 3, "lines": 99}');

@@ -2,10 +2,15 @@
 -- per phase and role, as the Storage API does (RLS on storage.objects as the
 -- request's role), plus get_reveal_builds and abandonment during REVEAL.
 --
--- Cast: pia (host, ships by hand), quin (auto-ships; also has a stray
--- top-level bundle.js she never shipped), rae (DNF: only an autosave
--- source.json), sam (kicked while building: draft disqualified), tia (late
--- spectator), vic (room player, not on the roster), uma (stranger).
+-- Since T-046 a build is one site pack: site.bin (+ thumb.webp) when shipped by hand,
+-- autosave/site.bin when auto-shipped.
+--
+-- Cast: pia (host, ships by hand; also has an autosave and a leftover editor-era
+-- source.json), quin (auto-ships; also has a stray top-level site.bin she never shipped
+-- and a leftover autosave/bundle.js), rae (DNF: only an editor-era autosave
+-- source.json, which no longer counts), sam (kicked while building: draft
+-- disqualified), tia (late spectator), vic (room player, not on the roster), uma
+-- (stranger).
 
 begin;
 create extension if not exists pgtap with schema extensions;
@@ -85,28 +90,26 @@ select set_config('request.jwt.claims', :'pia', true);
 select public.advance_battle(:'b', 1);
 reset role;
 
--- ─── Writes: manifest.json is a new allowed file ──────────────────
+-- ─── Writes: the site pack names ──────────────────────────────────
 set local role authenticated;
 select set_config('request.jwt.claims', :'pia', true);
 select lives_ok(
   format($$ insert into storage.objects (bucket_id, name) values ('ephemeral-builds', %L), ('ephemeral-builds', %L) $$,
-         :'b' || '/' || :'pia_id' || '/manifest.json', :'b' || '/' || :'pia_id' || '/autosave/manifest.json'),
-  'the owner writes manifest.json and autosave/manifest.json while building');
+         :'b' || '/' || :'pia_id' || '/site.bin', :'b' || '/' || :'pia_id' || '/autosave/site.bin'),
+  'the owner writes site.bin and autosave/site.bin while building');
 select throws_ok(
   format($$ insert into storage.objects (bucket_id, name) values ('ephemeral-builds', %L) $$,
-         :'b' || '/' || :'pia_id' || '/autosave/thumb.webp'),
-  '42501', null, 'other names are still refused');
+         :'b' || '/' || :'pia_id' || '/manifest.json'),
+  '42501', null, 'the editor-era manifest.json is refused');
 reset role;
 
+-- Fixtures as the superuser, including names the clients can no longer write.
 insert into storage.objects (bucket_id, name)
 select 'ephemeral-builds', :'b' || '/' || f from unnest(array[
-  :'pia_id' || '/source.json', :'pia_id' || '/bundle.js', :'pia_id' || '/bundle.css', :'pia_id' || '/thumb.webp',
-  :'pia_id' || '/autosave/source.json', :'pia_id' || '/autosave/bundle.js',
-  :'quin_id' || '/bundle.js',
-  :'quin_id' || '/autosave/source.json', :'quin_id' || '/autosave/bundle.js', :'quin_id' || '/autosave/bundle.css',
-  :'quin_id' || '/autosave/manifest.json',
+  :'pia_id' || '/thumb.webp', :'pia_id' || '/source.json',
+  :'quin_id' || '/site.bin', :'quin_id' || '/autosave/site.bin', :'quin_id' || '/autosave/bundle.js',
   :'rae_id' || '/autosave/source.json',
-  :'sam_id' || '/source.json', :'sam_id' || '/bundle.js']) f;
+  :'sam_id' || '/site.bin']) f;
 
 set local role authenticated;
 select set_config('request.jwt.claims', :'pia', true);
@@ -116,8 +119,7 @@ reset role;
 
 -- ─── BUILDING: owners only ────────────────────────────────────────
 select is(pg_temp.readable(:'quin', :'b'),
-  array['quin/autosave/bundle.css', 'quin/autosave/bundle.js', 'quin/autosave/manifest.json',
-        'quin/autosave/source.json', 'quin/bundle.js'],
+  array['quin/autosave/bundle.js', 'quin/autosave/site.bin', 'quin/site.bin'],
   'BUILDING: a player reads only her own files (not the shipped build of another)');
 select is(pg_temp.readable(:'tia', :'b'), '{}'::text[], 'BUILDING: a spectator reads nothing');
 set local role authenticated;
@@ -145,25 +147,23 @@ select is(public.advance_battle(:'b', (select version from public.battles where 
   'REVEAL (pia shipped, quin auto-shipped, rae DNF, sam disqualified)');
 reset role;
 
-\set pia_final '''pia/bundle.css'', ''pia/bundle.js'', ''pia/manifest.json'', ''pia/thumb.webp'''
-\set quin_final '''quin/autosave/bundle.css'', ''quin/autosave/bundle.js'', ''quin/autosave/manifest.json'''
+\set pia_final '''pia/site.bin'', ''pia/thumb.webp'''
+\set quin_final '''quin/autosave/site.bin'''
 select is(pg_temp.readable(:'tia', :'b'), array[:pia_final, :quin_final],
-  'REVEAL, spectator: the shipped build''s bundle, CSS, manifest and thumb; the auto-shipped build''s autosave bundle, CSS and manifest');
+  'REVEAL, spectator: the shipped build''s site.bin and thumb; the auto-shipped build''s autosave/site.bin');
 select is(pg_temp.readable(:'vic', :'b'), array[:pia_final, :quin_final],
   'REVEAL, a room player who is not on the roster: the same');
 select is(pg_temp.readable(:'rae', :'b'), array[:pia_final, :quin_final, 'rae/autosave/source.json'],
   'REVEAL, a DNF player: the final builds of the others, and her own files');
 select is(pg_temp.readable(:'quin', :'b'),
-  array[:pia_final, 'quin/autosave/bundle.css', 'quin/autosave/bundle.js', 'quin/autosave/manifest.json',
-        'quin/autosave/source.json', 'quin/bundle.js'],
-  'REVEAL, quin: pia''s final build, never pia''s source.json or autosave');
+  array[:pia_final, 'quin/autosave/bundle.js', 'quin/autosave/site.bin', 'quin/site.bin'],
+  'REVEAL, quin: pia''s final build, never pia''s autosave or leftover source.json');
 select is(pg_temp.readable(:'pia', :'b'),
-  array['pia/autosave/bundle.js', 'pia/autosave/manifest.json', 'pia/autosave/source.json',
-        'pia/bundle.css', 'pia/bundle.js', 'pia/manifest.json', 'pia/source.json', 'pia/thumb.webp', :quin_final],
-  'REVEAL, pia: quin''s autosave bundle, CSS and manifest; never quin''s autosave source.json or her unshipped top-level bundle');
+  array['pia/autosave/site.bin', 'pia/site.bin', 'pia/source.json', 'pia/thumb.webp', :quin_final],
+  'REVEAL, pia: quin''s autosave/site.bin; never quin''s unshipped top-level site.bin or her leftover autosave/bundle.js');
 select ok(not ('rae/autosave/source.json' = any (pg_temp.readable(:'tia', :'b'))),
   'a DNF player''s autosave stays private');
-select is(pg_temp.readable(:'sam', :'b'), array['sam/bundle.js', 'sam/source.json'],
+select is(pg_temp.readable(:'sam', :'b'), array['sam/site.bin'],
   'REVEAL, the kicked player: only his own (disqualified) files');
 select is(pg_temp.readable(:'uma', :'b'), '{}'::text[], 'REVEAL, a stranger: nothing');
 select is(pg_temp.readable(null, :'b'), '{}'::text[], 'REVEAL, anon: nothing');
@@ -183,12 +183,10 @@ select is(
    from jsonb_array_elements(:'rb'::jsonb) e),
   jsonb_build_object(
     'pia', jsonb_build_object('name', 'Pia Pad', 'builder_name', 'pia', 'status', 'shipped', 'taken_down', false, 'files', jsonb_build_object(
-      'js', :'b' || '/' || :'pia_id' || '/bundle.js', 'css', :'b' || '/' || :'pia_id' || '/bundle.css',
-      'manifest', :'b' || '/' || :'pia_id' || '/manifest.json', 'thumb', :'b' || '/' || :'pia_id' || '/thumb.webp')),
+      'site', :'b' || '/' || :'pia_id' || '/site.bin', 'thumb', :'b' || '/' || :'pia_id' || '/thumb.webp')),
     'quin', jsonb_build_object('name', null, 'builder_name', 'quin', 'status', 'auto_shipped', 'taken_down', false, 'files', jsonb_build_object(
-      'js', :'b' || '/' || :'quin_id' || '/autosave/bundle.js', 'css', :'b' || '/' || :'quin_id' || '/autosave/bundle.css',
-      'manifest', :'b' || '/' || :'quin_id' || '/autosave/manifest.json', 'thumb', null))),
-  'get_reveal_builds: names, builders and the paths to fetch (autosave/ for the auto-shipped build)');
+      'site', :'b' || '/' || :'quin_id' || '/autosave/site.bin', 'thumb', null))),
+  'get_reveal_builds: names, builders and the one site path to fetch (autosave/site.bin for the auto-shipped build)');
 set local role authenticated;
 select set_config('request.jwt.claims', :'uma', true);
 select throws_ok(format($$ select public.get_reveal_builds(%L) $$, :'b'), 'P0002', 'battle_not_found',
@@ -197,7 +195,7 @@ select set_config('request.jwt.claims', :'sam', true);
 select throws_ok(format($$ select public.get_reveal_builds(%L) $$, :'b'), 'P0002', 'battle_not_found',
   'get_reveal_builds: a kicked player');
 reset role;
-select ok(public.can_read_revealed_object(:'b' || '/' || :'pia_id' || '/bundle.js') is false,
+select ok(public.can_read_revealed_object(:'b' || '/' || :'pia_id' || '/site.bin') is false,
   'can_read_revealed_object is false without a user');
 
 -- ─── VOTING and RESULTS: still readable ───────────────────────────
@@ -246,15 +244,15 @@ select public.advance_battle(:'b2', 1);
 reset role;
 insert into storage.objects (bucket_id, name)
 select 'ephemeral-builds', :'b2' || '/' || u || '/' || f
-from unnest(array[:'pia_id', :'quin_id']) u, unnest(array['source.json', 'bundle.js']) f;
+from unnest(array[:'pia_id', :'quin_id']) u, unnest(array['site.bin']) f;
 set local role authenticated;
 select set_config('request.jwt.claims', :'pia', true);
 select public.ship_build(:'b2', 'P2', '{}');
 select set_config('request.jwt.claims', :'quin', true);
 select is(public.ship_build(:'b2', 'Q2', '{}') -> 'battle' ->> 'phase', 'reveal', 'battle 2 is in REVEAL');
 reset role;
-select is(pg_temp.readable(:'quin', :'b2'), array['pia/bundle.js', 'quin/bundle.js', 'quin/source.json'],
-  'battle 2: quin reads pia''s bundle during REVEAL');
+select is(pg_temp.readable(:'quin', :'b2'), array['pia/site.bin', 'quin/site.bin'],
+  'battle 2: quin reads pia''s site pack during REVEAL');
 -- Nobody on the roster has been seen for 6 minutes.
 update public.room_members set last_seen_at = now() - interval '6 minutes' where room_id = :'room';
 set local role service_role;
@@ -269,7 +267,7 @@ select is((select payload ->> 'reason' from public.battle_events where battle_id
            order by id desc limit 1), 'no_presence', 'logged as no_presence');
 select is((select count(*)::int from public.builds where battle_id = :'b2' and final_rank is not null), 0,
   'abandoned: no ranks');
-select is(pg_temp.readable(:'quin', :'b2'), array['quin/bundle.js', 'quin/source.json'],
+select is(pg_temp.readable(:'quin', :'b2'), array['quin/site.bin'],
   'abandoned: only owners read their files');
 select is((select status::text from public.rooms where id = :'room'), 'open', 'the room reopens');
 
@@ -291,7 +289,7 @@ select public.advance_battle(:'b3', 1);
 reset role;
 insert into storage.objects (bucket_id, name)
 select 'ephemeral-builds', :'b3' || '/' || u || '/' || f
-from unnest(array[:'pia_id', :'quin_id']) u, unnest(array['source.json', 'bundle.js']) f;
+from unnest(array[:'pia_id', :'quin_id']) u, unnest(array['site.bin']) f;
 set local role authenticated;
 select set_config('request.jwt.claims', :'pia', true);
 select public.ship_build(:'b3', 'P3', '{}');
@@ -299,7 +297,7 @@ select set_config('request.jwt.claims', :'quin', true);
 select is(public.ship_build(:'b3', 'Q3', '{}') -> 'battle' ->> 'phase', 'results',
   'reveal_vote = false: the last ship goes straight to RESULTS (M3 flow)');
 reset role;
-select is(pg_temp.readable(:'quin', :'b3'), array['quin/bundle.js', 'quin/source.json'],
+select is(pg_temp.readable(:'quin', :'b3'), array['quin/site.bin'],
   'RESULTS without a reveal: only her own files');
 select is((select ranks from (select array_agg(final_rank order by final_rank) as ranks
                               from public.builds where battle_id = :'b3') x), array[1, 1],

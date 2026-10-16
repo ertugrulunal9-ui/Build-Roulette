@@ -11,6 +11,7 @@ export type { BattlePhase, TerminalPhase } from './phases';
 export {
   BUILD_TIME_LIMITS_MINUTES,
   DEFAULT_PHASE_DURATIONS,
+  RANDOM_BUILD_TIME_LIMITS_MINUTES,
   isBuildTimeLimitMinutes,
 } from './durations';
 export type { BuildTimeLimitMinutes } from './durations';

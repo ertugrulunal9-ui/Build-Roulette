@@ -5,8 +5,9 @@ Server-side screenshots and source destruction for finished battles
 [docs/03 §3.6–3.7](../../docs/03-sandbox.md)). It polls the job queue from T-011
 (`claim_job`), and:
 
-- **capture:** renders the frozen bundle of a shipped (or auto-shipped) build in the sandbox
-  shell's signed capture page, takes a 1280×800 PNG, converts it to WebP and stores it at
+- **capture:** renders the frozen site pack of a shipped (or auto-shipped) build (import
+  mode, [docs/09](../../docs/09-import-mode.md)) in the sandbox shell's signed v2 capture
+  page, takes a 1280×800 PNG, converts it to WebP and stores it at
   `screenshots/{battle}/{build}.webp`, then `complete_capture('captured')`;
 - **destroy:** deletes `ephemeral-builds/{battle}/**` through the Storage API, checks that
   nothing is left, then `complete_destroy(battle)`;
@@ -36,11 +37,11 @@ Server-side screenshots and source destruction for finished battles
 
 ```
 claim_job('capture') ─► builds row (status, battle, builder)
-  ─► signed Storage URLs, TTL 120 s: bundle.js (+ bundle.css when the build has one)
-       shipped:      {battle}/{uid}/bundle.js, bundle.css, source.json
-       auto_shipped: {battle}/{uid}/autosave/bundle.js, autosave/bundle.css, autosave/source.json
-  ─► import map from source.json's manifest (buildImportMap from @br/runtime, PKG_CDN_URL)
-  ─► capture URL signed with the HMAC secret, expiring with the Storage URLs
+  ─► ONE signed Storage URL, TTL 120 s: the site pack (@br/site)
+       shipped:      {battle}/{uid}/site.bin
+       auto_shipped: {battle}/{uid}/autosave/site.bin
+  ─► /v2/capture?src=<that URL>&exp=&sig=, signed with the HMAC secret, expiring with it
+     (no manifest, no import map: the pack is the whole built site)
   ─► renderer: fresh context, 1280×800 @1x, readiness rule, hard timeout ─► PNG
   ─► blank check ─► WebP (sharp) ─► upload (upsert) ─► complete_capture('captured')
 ```
@@ -52,8 +53,8 @@ re-encoded (a client file is never stored as uploaded), then `complete_capture('
 **Failure.** No usable render and no usable thumbnail: `fail_job`. SQL re-queues with
 10/20/40/80 s backoff; on the 5th attempt `fail_job` gives up and sets
 `capture_status = 'failed'` itself (T-011's `give_up_job`), so the worker never needs
-`complete_capture('failed')` for that. The one exception: neither `bundle.js` nor a thumbnail
-exists. Uploads are closed after ship, so retrying cannot help, and the worker calls
+`complete_capture('failed')` for that. The one exception: neither the site pack nor a
+thumbnail exists. Uploads are closed after ship, so retrying cannot help, and the worker calls
 `complete_capture('failed', null)` at once. A good render whose upload or RPC fails is
 retried, not downgraded to the thumbnail.
 
@@ -81,10 +82,10 @@ Then fonts and two animation frames, bounded by 1 s, then the screenshot. A forg
 only make a capture earlier; a request that never ends hits the cap; an infinite loop hits
 the hard per-capture timeout (`CAPTURE_TIMEOUT_MS`, default 20 s), which closes the context.
 
-### For templates: `window.buildRoulette.ready()`
+### For builds: `window.buildRoulette.ready()`
 
-Every build frame (preview, reveal and capture) has a read-only `window.buildRoulette` with
-one method:
+Every site frame (preview, reveal and capture) has a read-only `window.buildRoulette` with
+one method (the site worker's bootstrap installs it in every HTML document of the site):
 
 ```ts
 // After the first meaningful frame is on screen, e.g. in the root component:
@@ -100,11 +101,12 @@ sandbox. Builds that never call it are still captured (idle or cap).
 
 ## The capture page and the HMAC secret (sandbox-shell)
 
-`GET /v1/capture?css=…&exp=…&map=…&src=…&sig=…` on the sandbox origin (in production
-`https://{build}.<usercontent>/v1/capture`, so the build runs on its own origin, as in reveal).
+`GET /v2/capture?exp=…&src=…&sig=…` on the sandbox origin (protocol v2, T-045; in production
+`https://{build}.<usercontent>/v2/capture`, so the build runs on its own origin, as in reveal).
+`src` is a short-lived signed Storage URL of the build's `site.bin`.
 
 - **What is signed** (`apps/sandbox-shell/src/capture-sig.ts`): HMAC-SHA256 over
-  `br-capture-v1\n<host>\n<path>\n<query>`, where `<query>` is every parameter except `sig`,
+  `br-capture-v2\n<host>\n<path>\n<query>`, where `<query>` is every parameter except `sig`,
   sorted by name, `encodeURIComponent`-encoded, joined with `&`. Unknown or repeated
   parameters are refused; `src`, `exp` and `sig` are required; `exp` must be in the future and
   at most 10 minutes away. The host is part of the signature, so a URL cannot be replayed on
@@ -112,14 +114,14 @@ sandbox. Builds that never call it are still captured (idle or cap).
 - **Where it is verified: server-side, in a capture gate in front of the static shell**
   (`capture-gate.ts`). In production that is the shell's Cloudflare Worker (T-043; a Pages
   `_worker.js` before), `apps/sandbox-shell/src/worker.ts` built into `dist/worker.js`, run
-  only for `/v1/capture` (`run_worker_first` in `apps/sandbox-shell/wrangler.jsonc`; every
+  only for `/v{N}/capture` (`run_worker_first` in `apps/sandbox-shell/wrangler.jsonc`; every
   other path stays a plain static asset with the `_headers` rules). The secret is the
   Worker secret `CAPTURE_HMAC_SECRET` (`wrangler deploy --secrets-file`), shared only with
   this worker (`CAPTURE_HMAC_SECRET`). Locally `startShellServer({ captureSecret })` runs the same gate.
   Invalid, expired or missing signatures get an empty 403 (`no-store`), so nothing renders.
 - **Why this design.** The secret cannot be in the page's JS (anyone could read it and sign
   URLs). Verifying only on the renderer side would not stop anyone from opening
-  `/v1/capture?src=https://evil/x.js` in their own browser: the page would run attacker JS
+  `/v2/capture?src=https://evil/x.bin` in their own browser: the page would run attacker JS
   top-level on a build's origin (phishing outside the app chrome, planting storage on that
   origin). With the gate, the page simply does not exist without a valid signature, and the
   page itself (`capture.js`, public and immutable) holds no secret and embeds nothing from the
@@ -133,19 +135,25 @@ sandbox. Builds that never call it are still captured (idle or cap).
   `Cache-Control: no-store` and `X-Robots-Tag: noindex, nofollow`. The sandbox directive
   means no popups, no modals (`alert()` cannot stall the renderer) and no downloads.
 - **The page** (`capture.js`) wipes the origin's storage (including `Clear-Site-Data` from
-  `/v1/reset`), fetches the bundle and CSS with `cache: 'no-store'`, validates the import map
-  with the protocol schema, and runs the build in a fresh 1280×800 child frame exactly like
-  the preview shell (`build-frame.ts`). It does not stub `Math.random` or timers.
+  `/v2/reset`, which also unregisters the site worker), fetches the site pack with
+  `cache: 'no-store'` (at most `SITE_LIMITS.maxPackBytes`), registers the site worker
+  (`/v2/sw.js`), hands it the unpacked site and navigates a fresh 1280×800 child frame to it,
+  exactly like the preview shell (`site-loader.ts`, `build-frame.ts`). It does not stub
+  `Math.random` or timers.
 
 ## Renderer security
 
-- One fresh browser context per capture; service workers blocked, downloads refused,
-  dialogs dismissed.
+- One fresh browser context per capture; downloads refused, dialogs dismissed. Service
+  workers are **allowed** since T-046: the v2 capture page runs the site from the shell's
+  site worker (the sandbox host serves no other worker script, so a build cannot register
+  one of its own), and the fresh context keeps registrations apart between captures.
 - **Navigation guard:** the only navigation allowed is the main frame to the exact capture
-  URL. Every other navigation request (the main frame again, other frames, popups) is
-  answered with HTTP 204, which cancels it and leaves the capture page in place (aborting
-  would commit an error page). Popups that still open are closed. If the page is no longer at
-  the capture URL, the capture fails rather than photographing something else.
+  URL. Every other navigation request that reaches the network (the main frame again, other
+  frames, popups) is answered with HTTP 204, which cancels it and leaves the capture page in
+  place (aborting would commit an error page). The site frame's own navigations
+  (`/?__br_site=…`, in-site links) are answered by the site worker and never reach the
+  network. Popups that still open are closed. If the page is no longer at the capture URL,
+  the capture fails rather than photographing something else.
 - **Hard timeout** per capture; the job itself has `WORKER_JOB_TIMEOUT_MS` (90 s), well
   inside the 2-minute claim lease.
 - Signed URLs are never logged: Playwright error messages are passed through `redactUrls`
@@ -157,7 +165,7 @@ sandbox. Builds that never call it are still captured (idle or cap).
 
 ```bash
 # Supabase stack (see supabase/README.md), then:
-CAPTURE_HMAC_SECRET=$(openssl rand -hex 32) pnpm --filter @br/capture-worker dev:shell  # shell + mock CDN
+CAPTURE_HMAC_SECRET=$(openssl rand -hex 32) pnpm --filter @br/capture-worker dev:shell  # shell v2 + capture gate
 cp apps/capture-worker/.env.example apps/capture-worker/.env   # fill in, same secret
 pnpm --filter @br/capture-worker dev            # loops until SIGINT/SIGTERM
 pnpm --filter @br/capture-worker dev -- --once  # drain both queues once and exit
@@ -200,8 +208,9 @@ pnpm --filter @br/capture-worker test:function     # the jobs Edge Function in t
 
 - Function (`integration/function.test.ts`, T-034; the stack with the Edge Runtime): `supabase
   functions serve` runs the function against the Browser Rendering stand-in, the shell's
-  capture page and Storage. A React build is captured (WebP 1280×800, the budget counts its
-  browser time); a throwing build falls back to its thumbnail (container rebuilt, EXIF gone);
+  capture page and Storage. A built site (a `packSite` pack in `site.bin`) is captured (WebP
+  1280×800, the budget counts its browser time); a site that throws on load falls back to its
+  thumbnail (container rebuilt, EXIF gone);
   a spent budget falls back without calling Browser Rendering; a 429 with a short Retry-After
   is retried in the run, a long one is handed back twice and then falls back; a run killed
   mid-capture leaves the job leased, and once the lease is over the next run captures it;
@@ -209,27 +218,32 @@ pnpm --filter @br/capture-worker test:function     # the jobs Edge Function in t
   reaches the function through pg_net with the cron secret from Vault.
 
 - Unit (`test/`): readiness rule, blank detection and WebP encoding, the capture job
-  (signed URL contents, captured / fallback / retry / final failure / missing bundle /
-  aborts), the destroy job (recursive delete, guards), the takedown job (only the build's
+  (one signed `site.bin` URL in a v2 capture URL, nothing downloaded, the autosave pack for
+  auto-shipped builds, captured / fallback / retry / final failure / missing pack / aborts), the destroy job (recursive delete, guards), the takedown job (only the build's
   screenshots, the taken-down guard, leftovers retried, aborts), the runner (drain, backoff,
   concurrency, job timeout, graceful and forced shutdown), config, the Supabase client against
   a fake `fetch`, URL redaction.
-- Integration, renderer (`integration/renderer.test.ts`, no Supabase): a React build bundled
-  with @br/runtime takes the ready signal; a build without it is captured at idle + 2 s; a
-  never-ending request hits the 6 s cap; popups, `top.location`, a navigation from the capture
-  page's realm and `alert()` are all neutralised; an infinite loop hits the hard timeout and
-  the browser keeps working; forged and expired signatures are refused by the gate.
+- Integration, renderer (`integration/renderer.test.ts`, no Supabase): site packs built with
+  `packSite` (`integration/support.ts`: a Vite-like site with root-relative hashed assets, a
+  lazy chunk and `fetch('/data.json')`, or a one-script site) served by a local file server.
+  A site that signals takes the ready signal (and the site worker's frame navigation is never
+  blocked); a site without it is captured at idle + 2 s; a never-ending request hits the 6 s
+  cap; popups, `top.location`, a navigation of the capture page made by the site through the
+  page's DOM and `alert()` are all neutralised; an infinite loop hits the hard timeout and the
+  browser keeps working; forged and expired signatures are refused by the gate; a missing pack
+  fails fast with `site.bin: HTTP 404`.
 - Integration, stack (`integration/stack.test.ts`): anonymous players play solo battles
-  through Auth/PostgREST/Storage. A shipped React build is captured (WebP, 1280×800, not
-  blank, dominant colour and white title pixels checked); a bundle that throws on load falls
-  back to the client thumbnail; an auto-shipped build is captured from its autosave; a
-  throwing bundle without a thumbnail is retried with backoff and fails on the 5th attempt;
+  through Auth/PostgREST/Storage, uploading `site.bin` (`application/octet-stream`). A
+  shipped site is captured (WebP, 1280×800, not blank, dominant colour and white title pixels
+  checked); a site that throws on load falls back to the client thumbnail; an auto-shipped
+  build is captured from `autosave/site.bin`; a throwing site without a thumbnail is retried
+  with backoff and fails on the 5th attempt;
   all four battles go to DESTROYED and the destroy worker leaves zero objects, with
   `destroyed_at` / `source_destroyed_at` set and the screenshots kept. Then (T-024) an email
   admin (Auth admin API + `private.admins`) takes alice's build down through
   `admin_take_down_build`: the anon-key results hide it at once, the takedown worker deletes
   its screenshot object (and only that one) and `complete_takedown` closes the job.
-  `CAPTURE_TEST_SHOT_OUT=/path/shot.webp` keeps the React screenshot,
+  `CAPTURE_TEST_SHOT_OUT=/path/shot.webp` keeps alice's screenshot,
   `CAPTURE_TEST_LOG=/path/log.jsonl` the worker log. The test commits data, like
   `supabase/scripts/e2e-solo.mjs`. It runs on a stack other scripts have used: the
   harness's `OwnJobsBackend` claims only the test's own jobs (the product's `claim_job`,
@@ -265,14 +279,11 @@ Run it locally: the stack with the Edge Runtime, then
 `integration/function.test.ts`'s `functionEnv`; or simply `pnpm --filter @br/web dev:solo`,
 which does all of it (apps/web/scripts/solo-services.ts).
 
-**The package CDN** (T-035): set `PKG_CDN_URL` (the worker's variable, the function's secret)
-to the same base URL as the app's
-`NEXT_PUBLIC_PKG_CDN_URL` and the sandbox shell's `BR_PKG_CDN_URL`. On the free plan that is
-the public `https://esm.sh` (docs/08-free-tier.md §4). The capture page's CSP is the shell's,
-so it allows that origin only; a different value here makes every capture load nothing and
-fall back to the client thumbnail. The renderer is a fresh browser each time, so it downloads
-React from the CDN on every capture (it has no warm cache); while the CDN is down, captures
-fall back to the client thumbnail.
+**No package CDN any more** (T-046): a site pack is the whole built site, so the capture
+needs no import map. `PKG_CDN_URL` is no longer read (a value still set as a function secret
+or in the worker's environment is ignored; it can be removed). A built site may still load
+scripts from public CDNs itself (the site CSP allows `https:`); while such a CDN is down, that
+site's capture may fall back to its thumbnail.
 
 ## Known limitations
 
@@ -281,8 +292,11 @@ fall back to the client thumbnail.
 - A build can always ruin its own capture (navigate its page, paint nothing, loop forever);
   the result is the thumbnail fallback or `failed`, never someone else's content.
 - A uniform single-colour build counts as blank and gets the thumbnail if there is one.
-- Autosaves made before the `autosave/bundle.css` slot (T-014) have no CSS file; such a
-  build is captured without its CSS.
+- Builds made before import mode (T-046) have no `site.bin`: a capture job of such a build
+  finds no pack and falls back to its thumbnail (or fails without one). Battles finish and
+  are destroyed within 24 h, so this only touches battles running during the deploy.
+- **Browser Rendering must run service workers** for the v2 capture page (the stand-in's
+  Chromium does). This is not verified against Cloudflare's REST API yet.
 - **The Edge Function's captures** (T-034) differ from this worker's:
   - there is no "network idle + 2 s", so a build without the ready signal waits the full 6 s;
   - there is no navigation guard (the CSP sandbox remains);

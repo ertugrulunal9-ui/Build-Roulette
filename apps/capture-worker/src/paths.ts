@@ -1,8 +1,8 @@
 /**
- * Object names (docs/05 §5.5, supabase/migrations/20261004120200_storage.sql).
+ * Object names (docs/05 §5.5, docs/09 §9.4, supabase/migrations/20261016120000_import_mode.sql).
  *
- *   ephemeral-builds/{battle}/{uid}/source.json | bundle.js | bundle.css | thumb.webp
- *   ephemeral-builds/{battle}/{uid}/autosave/source.json | autosave/bundle.js | autosave/bundle.css
+ *   ephemeral-builds/{battle}/{uid}/site.bin | thumb.webp      (SHIP)
+ *   ephemeral-builds/{battle}/{uid}/autosave/site.bin          (every import during BUILD)
  *   screenshots/{battle}/{build}.webp
  *
  * Every id is checked to be a canonical UUID before it goes into a path, so a bad row can
@@ -11,15 +11,10 @@
 import { isUuid, type BuildRow } from './backend';
 
 export interface BuildSources {
-  /** Where the frozen bundle lives: `shipped` uses the final files, `auto_shipped` the autosave. */
+  /** Where the frozen site lives: `shipped` uses the final pack, `auto_shipped` the autosave. */
   kind: 'shipped' | 'autosave';
-  js: string;
-  /**
-   * The CSS file. Optional in both cases: a build without CSS has none, and autosaves made
-   * before the `autosave/bundle.css` slot existed (T-014) have none either.
-   */
-  css: string;
-  source: string;
+  /** The site pack (`@br/site`), one object. */
+  site: string;
   /** The client thumbnail (fallback), if the client uploaded one. */
   thumb: string;
 }
@@ -35,22 +30,10 @@ export function buildSources(
   assertUuid('builder_id', build.builder_id);
   const base = `${build.battle_id}/${build.builder_id}/`;
   if (build.status === 'shipped') {
-    return {
-      kind: 'shipped',
-      js: `${base}bundle.js`,
-      css: `${base}bundle.css`,
-      source: `${base}source.json`,
-      thumb: `${base}thumb.webp`,
-    };
+    return { kind: 'shipped', site: `${base}site.bin`, thumb: `${base}thumb.webp` };
   }
   if (build.status === 'auto_shipped') {
-    return {
-      kind: 'autosave',
-      js: `${base}autosave/bundle.js`,
-      css: `${base}autosave/bundle.css`,
-      source: `${base}autosave/source.json`,
-      thumb: `${base}thumb.webp`,
-    };
+    return { kind: 'autosave', site: `${base}autosave/site.bin`, thumb: `${base}thumb.webp` };
   }
   throw new Error(`a ${build.status} build has nothing to capture`);
 }

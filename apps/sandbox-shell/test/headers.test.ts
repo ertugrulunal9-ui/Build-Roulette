@@ -2,38 +2,41 @@ import { describe, expect, it } from 'vitest';
 import {
   CAPTURE_SANDBOX_FLAGS,
   FORM_ACTION,
+  PERMISSIONS_POLICY,
+  RESET_HEADERS,
+  SITE_WORKER_HEADERS,
   captureCsp,
   captureHeaders,
-  PERMISSIONS_POLICY,
-  PUBLIC_ESM_SH_URL,
-  RESET_HEADERS,
-  cdnOriginOf,
   renderHeadersFile,
   securityHeaders,
   shellCsp,
   shellHeaders,
+  siteCsp,
+  siteHeaders,
   staticHeaderRules,
 } from '../src/headers';
 
-const PROD = { appOrigins: ['https://buildroulette.app'], cdnOrigin: 'https://pkg.example.net' };
+const PROD = { appOrigins: ['https://buildroulette.app'] };
 
 describe('shell headers', () => {
-  it('matches the docs/03 §3.5 policy (plus the documented inline/eval exceptions)', () => {
+  it('the shell document runs its own script only, registers the site worker and frames the site', () => {
     expect(shellCsp(PROD)).toBe(
       [
         "default-src 'none'",
-        "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: https://pkg.example.net",
-        "style-src 'self' 'unsafe-inline' blob: https:",
-        'img-src * data: blob:',
-        'font-src * data:',
-        'media-src * data: blob:',
+        "script-src 'self'",
+        "style-src 'self' 'unsafe-inline'",
+        'img-src data: blob:',
         "connect-src 'self' https: wss:",
-        'worker-src blob:',
+        "frame-src 'self'",
+        "worker-src 'self'",
         'frame-ancestors https://buildroulette.app',
         "base-uri 'none'",
         "form-action 'none'",
       ].join('; '),
     );
+    // No package CDN any more (protocol v2), and no inline or eval code in the shell.
+    expect(shellCsp(PROD)).not.toContain('unsafe-eval');
+    expect(shellCsp(PROD)).not.toContain('esm.sh');
     expect(FORM_ACTION).toBe("'none'");
     const h = shellHeaders(PROD);
     expect(h['Permissions-Policy']).toBe(PERMISSIONS_POLICY);
@@ -49,21 +52,12 @@ describe('shell headers', () => {
     expect(h['Cache-Control']).toContain('immutable');
   });
 
-  it('keeps worker-src blob-only (no service worker scripts from the origin)', () => {
-    expect(shellCsp(PROD)).toContain('; worker-src blob:;');
-  });
-
-  it('adds the http CDN origin to style-src and connect-src only when asked (local dev)', () => {
+  it('adds extra connect-src origins only when asked (local dev)', () => {
     const local = shellCsp({
       appOrigins: ['http://localhost:4310'],
-      cdnOrigin: 'http://localhost:4312',
-      extraConnectSrc: ['http://localhost:4312'],
+      extraConnectSrc: ['http://127.0.0.1:54321'],
     });
-    expect(local).toContain(
-      "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: http://localhost:4312",
-    );
-    expect(local).toContain("style-src 'self' 'unsafe-inline' blob: https: http://localhost:4312");
-    expect(local).toContain("connect-src 'self' https: wss: http://localhost:4312");
+    expect(local).toContain("connect-src 'self' https: wss: http://127.0.0.1:54321;");
     expect(local).toContain('frame-ancestors http://localhost:4310');
   });
 
@@ -87,29 +81,37 @@ describe('shell headers', () => {
     });
   });
 
+  it('the site worker script may control the whole origin and is never cached', () => {
+    expect(SITE_WORKER_HEADERS).toEqual({
+      'Service-Worker-Allowed': '/',
+      'Cache-Control': 'no-store',
+    });
+  });
+
   it('static rules: security headers on /*, Cache-Control only on non-overlapping rules', () => {
-    const rules = staticHeaderRules(PROD, '/v1/');
+    const rules = staticHeaderRules(PROD, '/v2/');
     expect(rules.map((r) => r.pattern)).toEqual([
       '/*',
-      '/v1/',
-      '/v1/index.html',
-      '/v1/shell.js',
-      '/v1/capture.js',
-      '/v1/reset',
+      '/v2/',
+      '/v2/index.html',
+      '/v2/shell.js',
+      '/v2/capture.js',
+      '/v2/sw.js',
+      '/v2/reset',
     ]);
     expect(rules[0]?.headers).toEqual(securityHeaders(PROD));
-    // Pages joins repeated header names from overlapping rules: /* must not set Cache-Control.
+    // Cloudflare joins repeated header names from overlapping rules: /* must not set Cache-Control.
     const withCache = rules.filter((r) => 'Cache-Control' in r.headers).map((r) => r.pattern);
     expect(withCache).not.toContain('/*');
-    expect(rules.find((r) => r.pattern === '/v1/reset')?.headers).toEqual(RESET_HEADERS);
-    expect(rules.find((r) => r.pattern === '/v1/shell.js')?.headers['Cache-Control']).toContain(
+    expect(rules.find((r) => r.pattern === '/v2/reset')?.headers).toEqual(RESET_HEADERS);
+    expect(rules.find((r) => r.pattern === '/v2/sw.js')?.headers).toEqual(SITE_WORKER_HEADERS);
+    expect(rules.find((r) => r.pattern === '/v2/shell.js')?.headers['Cache-Control']).toContain(
       'immutable',
     );
   });
 
   it('capture page: shell CSP family, top-level only, sandboxed, never cached', () => {
     const csp = captureCsp(PROD);
-    // Same sources as the preview shell, so a build behaves the same in a capture.
     expect(csp).toContain(
       shellCsp(PROD).replace('frame-ancestors https://buildroulette.app', "frame-ancestors 'none'"),
     );
@@ -117,6 +119,8 @@ describe('shell headers', () => {
     expect(
       csp.endsWith('; sandbox allow-scripts allow-same-origin allow-forms allow-pointer-lock'),
     ).toBe(true);
+    // The site worker needs a real origin: allow-same-origin stays.
+    expect(CAPTURE_SANDBOX_FLAGS).toContain('allow-same-origin');
     expect(CAPTURE_SANDBOX_FLAGS).not.toContain('allow-popups');
     expect(CAPTURE_SANDBOX_FLAGS).not.toContain('allow-modals');
     expect(CAPTURE_SANDBOX_FLAGS).not.toContain('allow-top-navigation');
@@ -131,40 +135,57 @@ describe('shell headers', () => {
   it('renders a _headers file', () => {
     const file = renderHeadersFile([
       { pattern: '/*', headers: { A: '1', B: 'two' } },
-      { pattern: '/v1/reset', headers: { C: '3' } },
+      { pattern: '/v2/reset', headers: { C: '3' } },
     ]);
-    expect(file).toBe('/*\n  A: 1\n  B: two\n\n/v1/reset\n  C: 3\n');
+    expect(file).toBe('/*\n  A: 1\n  B: two\n\n/v2/reset\n  C: 3\n');
   });
 });
 
-describe('the package CDN setting (T-035)', () => {
-  it('turns a base URL into the origin the CSP allows', () => {
-    expect(PUBLIC_ESM_SH_URL).toBe('https://esm.sh');
-    expect(cdnOriginOf('https://esm.sh')).toBe('https://esm.sh');
-    expect(cdnOriginOf(' https://esm.sh/ ')).toBe('https://esm.sh');
-    expect(cdnOriginOf('https://pkg.example.net/esm/')).toBe('https://pkg.example.net');
-    expect(cdnOriginOf('http://localhost:4322')).toBe('http://localhost:4322');
-    expect(() => cdnOriginOf('esm.sh')).toThrow(/not a URL/);
-    expect(() => cdnOriginOf('ftp://esm.sh')).toThrow(/http\(s\)/);
-    expect(() => cdnOriginOf('https://u:p@esm.sh')).toThrow(/credentials/);
+describe('site headers (docs/09 §9.3)', () => {
+  const APPS = { appOrigins: ['https://buildroulette.app', 'https://br.pages.dev'] };
+
+  it('preview: scripts from the site and any https host, framed by the shell and the app', () => {
+    expect(siteCsp(APPS, 'preview')).toBe(
+      [
+        "default-src 'none'",
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: https:",
+        "style-src 'self' 'unsafe-inline' blob: https:",
+        'img-src * data: blob:',
+        'font-src * data:',
+        'media-src * data: blob:',
+        "connect-src 'self' https: wss:",
+        "worker-src 'self' blob:",
+        "frame-ancestors 'self' https://buildroulette.app https://br.pages.dev",
+        "base-uri 'none'",
+        "form-action 'none'",
+      ].join('; '),
+    );
   });
 
-  it('with esm.sh, every module it serves (entry URLs and /x@v/es2022/… paths) is allowed', () => {
-    const esm = {
-      appOrigins: ['https://build-roulette-web.pages.dev'],
-      cdnOrigin: 'https://esm.sh',
-    };
-    for (const csp of [shellCsp(esm), captureCsp(esm)]) {
-      expect(csp).toContain(
-        "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: https://esm.sh;",
-      );
-      // Package CSS is inlined by the bundler; its url()s and fonts load from the CDN.
-      expect(csp).toContain("style-src 'self' 'unsafe-inline' blob: https:;");
-      expect(csp).toContain('img-src * data: blob:');
-      expect(csp).toContain('font-src * data:');
-      // WebAssembly and data files that packages fetch from the CDN.
-      expect(csp).toContain("connect-src 'self' https: wss:;");
+  it('capture: framed by the capture page only, with its sandbox flags', () => {
+    const csp = siteCsp(APPS, 'capture');
+    expect(csp).toContain("; frame-ancestors 'self'; ");
+    expect(csp).not.toContain('https://buildroulette.app');
+    expect(csp.endsWith(`; sandbox ${CAPTURE_SANDBOX_FLAGS.join(' ')}`)).toBe(true);
+    // Otherwise the same policy as the preview.
+    expect(csp.split('; ').slice(0, 8)).toEqual(siteCsp(APPS, 'preview').split('; ').slice(0, 8));
+  });
+
+  it('local dev: extra connect-src origins reach the sites too', () => {
+    expect(siteCsp({ ...APPS, extraConnectSrc: ['http://localhost:4312'] }, 'preview')).toContain(
+      "connect-src 'self' https: wss: http://localhost:4312;",
+    );
+  });
+
+  it("every site response: the site CSP, the host's other security headers, never cached", () => {
+    for (const context of ['preview', 'capture'] as const) {
+      const h = siteHeaders(APPS, context);
+      const { 'Content-Security-Policy': csp, 'Cache-Control': cache, ...rest } = h;
+      expect(csp).toBe(siteCsp(APPS, context));
+      expect(cache).toBe('no-store');
+      const { 'Content-Security-Policy': _shellCsp, ...hostRest } = securityHeaders(APPS);
+      expect(_shellCsp).not.toBe(csp);
+      expect(rest).toEqual(hostRest);
     }
-    expect(shellCsp(esm)).toContain('frame-ancestors https://build-roulette-web.pages.dev');
   });
 });

@@ -3,11 +3,13 @@
 /**
  * `/try` (docs/09 §9.5, §9.6): practice the import before a battle. The same drop zone and
  * live preview as the BUILD stage, without a battle, an account or an upload: the site stays
- * in this tab. The onboarding (T-049) links here.
+ * in this tab. The onboarding (T-049) links here; "How it works" goes to the guide.
  */
 import type { ImportedSite } from '@br/site';
 import Link from 'next/link';
 import { useState } from 'react';
+import { ImportHelp } from '../onboarding/ImportHelp';
+import { HowItWorksLink } from '../onboarding/Welcome';
 import { SiteWorkbench } from '../site/SiteWorkbench';
 
 export const TRY_COPY = {
@@ -26,14 +28,15 @@ export default function Try() {
           Build Roulette <span className="font-normal text-zinc-500">· {TRY_COPY.title}</span>
         </h1>
         <p className="text-xs text-zinc-500">{TRY_COPY.intro}</p>
+        <HowItWorksLink className="ml-auto rounded-md border border-zinc-300 px-2.5 py-1 text-xs font-semibold hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800" />
         <Link
           href="/"
-          className="ml-auto rounded-md border border-zinc-300 px-2.5 py-1 text-xs font-semibold hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+          className="rounded-md border border-zinc-300 px-2.5 py-1 text-xs font-semibold hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
         >
           {TRY_COPY.home}
         </Link>
       </header>
-      <SiteWorkbench site={site} onImported={setSite} battleId={null} />
+      <SiteWorkbench site={site} onImported={setSite} battleId={null} help={<ImportHelp />} />
     </main>
   );
 }

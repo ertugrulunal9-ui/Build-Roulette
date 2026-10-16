@@ -16,6 +16,8 @@ import { myBuild, type SoloController, type SoloState } from '../../lib/solo/con
 import { describeError } from '../../lib/solo/errors';
 import { formatCountdown } from '../../lib/solo/format';
 import { suggestBuildName } from '../../lib/solo/names';
+import { ImportHelp } from '../onboarding/ImportHelp';
+import { HowItWorksLink } from '../onboarding/Welcome';
 import { CARD_LABEL, cardClass } from '../results/ResultPieces';
 import { SiteWorkbench } from '../site/SiteWorkbench';
 import { Countdown, LOW_TIME_MS, timeLevel, type TimeLevel } from './Countdown';
@@ -36,7 +38,7 @@ interface BuildStageProps {
   onActivity?: (activity: Activity) => void;
   /** After "Shipped … Your build is locked." (a room: waiting for the others). */
   shippedNote?: ReactNode;
-  /** The "How do I import?" help next to the drop zone (T-049). */
+  /** The "How do I import?" help next to the drop zone (default: `ImportHelp`, T-049). */
   importHelp?: ReactNode;
 }
 
@@ -73,7 +75,7 @@ export function BuildStage({
   sidebar,
   onActivity,
   shippedNote = 'Wrapping up the battle…',
-  importHelp,
+  importHelp = <ImportHelp />,
 }: BuildStageProps) {
   const snapshot = state.snapshot;
   if (!snapshot) throw new Error('BuildStage needs a snapshot');
@@ -165,6 +167,11 @@ export function BuildStage({
           <h1 className="text-sm font-bold tracking-tight">
             Build Roulette <span className="font-normal text-zinc-500">· {subtitle}</span>
           </h1>
+          {/* A new tab: the battle keeps running here. */}
+          <HowItWorksLink
+            newTab
+            className="rounded-md border border-zinc-300 px-2.5 py-1 text-xs font-semibold hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+          />
           {headerActions}
           <div className="ml-auto flex flex-wrap items-center gap-3 text-xs">
             <span

@@ -11,6 +11,8 @@
 import { describeImportError } from '@br/site';
 import type { ReactNode } from 'react';
 import type { ImportState } from '../../lib/site/use-site-import';
+import { GUIDE_PATH, IMPORT_HELP_COPY, NEW_TAB } from '../onboarding/copy';
+import { IMPORT_HELP_ID, openImportHelp } from '../onboarding/ImportHelp';
 import { CodeText } from './CodeText';
 import { IMPORT_COPY } from './copy';
 
@@ -25,12 +27,11 @@ export interface DropZoneProps {
   disabled?: boolean;
   /** Shown instead of the title while an earlier import is being brought back. */
   restoring?: boolean;
-  /**
-   * The "How do I import?" help, next to the steps. Filled by the onboarding (T-049); empty
-   * until then.
-   */
+  /** The "How do I import?" help next to the steps (onboarding, T-049: `ImportHelp`). */
   help?: ReactNode;
 }
+
+const fixLink = 'mt-1 inline-block text-sm font-semibold underline underline-offset-2';
 
 const button =
   'min-h-11 rounded-xl px-5 py-2.5 text-sm font-bold shadow-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500 disabled:cursor-not-allowed disabled:opacity-50';
@@ -49,7 +50,7 @@ export function DropZone({
   const error = state.status === 'error' ? describeImportError(state.error) : null;
   return (
     <div
-      className="flex h-full min-h-0 flex-col items-center justify-center gap-6 overflow-y-auto p-4 sm:p-8"
+      className="flex h-full min-h-0 flex-col items-center justify-center-safe gap-6 overflow-y-auto p-4 sm:p-8"
       data-testid="import-panel"
     >
       <section
@@ -113,7 +114,12 @@ export function DropZone({
         )}
 
         {error && !reading && (
-          <ImportErrorNote title={error.title} hint={error.hint} onDismiss={onDismissError} />
+          <ImportErrorNote
+            title={error.title}
+            hint={error.hint}
+            onDismiss={onDismissError}
+            inPageHelp={help !== undefined}
+          />
         )}
       </section>
 
@@ -135,7 +141,6 @@ export function DropZone({
             ))}
           </ol>
         </section>
-        {/* T-049 fills this with the collapsible "How do I import?" help. */}
         {help !== undefined && (
           <div className="flex-1" data-testid="import-help-slot">
             {help}
@@ -146,15 +151,22 @@ export function DropZone({
   );
 }
 
-/** Why the last import failed and what to do next (`describeImportError`). */
+/**
+ * Why the last import failed and what to do next (`describeImportError`), with "How do I fix
+ * this?": it opens the page's "How do I import?" help, or (none on the page, e.g. over a
+ * running preview) the guide's troubleshooting in a new tab.
+ */
 export function ImportErrorNote({
   title,
   hint,
   onDismiss,
+  inPageHelp = false,
 }: {
   title: string;
   hint: string;
   onDismiss: () => void;
+  /** The page shows the "How do I import?" help (`ImportHelp`) next to this note. */
+  inPageHelp?: boolean;
 }) {
   return (
     <div
@@ -169,6 +181,29 @@ export function ImportErrorNote({
         <p className="text-sm" data-testid="import-error-hint">
           <CodeText text={hint} />
         </p>
+        {inPageHelp ? (
+          <a
+            href={`#${IMPORT_HELP_ID}`}
+            data-testid="import-error-fix"
+            onClick={(e) => {
+              if (openImportHelp()) e.preventDefault();
+            }}
+            className={fixLink}
+          >
+            {IMPORT_HELP_COPY.howToFix}
+          </a>
+        ) : (
+          <a
+            href={`${GUIDE_PATH}#troubleshooting`}
+            target="_blank"
+            rel="noopener"
+            data-testid="import-error-fix"
+            className={fixLink}
+          >
+            {IMPORT_HELP_COPY.howToFix} <span aria-hidden="true">↗</span>
+            <span className="sr-only"> {NEW_TAB}</span>
+          </a>
+        )}
       </div>
       <button
         type="button"

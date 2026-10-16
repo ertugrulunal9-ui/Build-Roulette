@@ -10,7 +10,8 @@
  *   copy as transparent; the DOM path below then still gives the page around it.
  * - **Everything else**: the build's DOM is serialized into an SVG `<foreignObject>` and
  *   drawn onto a canvas (the "DOM to image" technique). The build's `<style>` elements
- *   travel with it; scripts are dropped; canvases inside the DOM are replaced by images of
+ *   travel with it, and its linked stylesheets as `<style>` elements with their rules (an
+ *   imported site's CSS is a file under `/assets/`); scripts are dropped; canvases inside the DOM are replaced by images of
  *   their pixels. External images and web fonts do not load inside an SVG image, so they are
  *   missing, which is acceptable for a fallback.
  *
@@ -114,6 +115,21 @@ export function domToSvg(doc: Document, vw: number, vh: number): string {
       c.replaceWith(img);
     } catch {
       // tainted: leave the empty canvas
+    }
+  });
+  // Linked stylesheets (`/assets/index-abc.css`, what bundlers emit) do not load inside an
+  // SVG image: put their rules, read from the live document, in their place.
+  const liveLinks = Array.from(doc.documentElement.querySelectorAll('link'));
+  const clonedLinks = Array.from(clone.querySelectorAll('link'));
+  clonedLinks.forEach((link, i) => {
+    const sheet = liveLinks[i]?.sheet;
+    if (!sheet) return;
+    try {
+      const style = doc.createElement('style');
+      style.textContent = Array.from(sheet.cssRules, (r) => r.cssText).join('\n');
+      link.replaceWith(style);
+    } catch {
+      // a stylesheet from another origin: its rules are not readable
     }
   });
   // Form state is not in the attributes; copy what the user typed.

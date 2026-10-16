@@ -11,16 +11,13 @@ import shellWorker from '../src/worker';
 
 const SECRET = 'gate-secret-0123456789abcdef0123456789abcdef';
 const NOW_MS = 1_800_000_000_000;
-const HEADERS = captureHeaders({
-  appOrigins: ['https://buildroulette.app'],
-  cdnOrigin: 'https://pkg.example.net',
-});
+const HEADERS = captureHeaders({ appOrigins: ['https://buildroulette.app'] });
 const CAPTURE_URL = `https://b1.usercontent.example${CAPTURE_PATH}`;
 
 async function signed(exp = NOW_MS / 1000 + 60): Promise<string> {
   return signCaptureUrl({
     captureUrl: CAPTURE_URL,
-    src: 'https://db.example.co/bundle.js?token=t',
+    src: 'https://db.example.co/site.bin?token=t',
     exp,
     secret: SECRET,
   });
@@ -112,7 +109,7 @@ describe('the Worker (dist/worker.js)', () => {
       expect(refused.status).toBe(403);
       expect(assets.fetch).not.toHaveBeenCalled();
       const other = await shellWorker.fetch(
-        new Request('https://b1.usercontent.example/v1/shell.js'),
+        new Request('https://b1.usercontent.example/v2/shell.js'),
         env,
       );
       expect(await other.text()).toBe('static');

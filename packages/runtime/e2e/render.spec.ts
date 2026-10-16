@@ -1,41 +1,39 @@
 import { expect, test } from '@playwright/test';
-import { buildFrame, fmt, openPlayground } from './helpers';
+import { buildFrame, fmt, openPlayground, siteFrame } from './helpers';
 
-test('a. React + TS + local CSS + zustand + package CSS render inside the cross-site iframe', async ({
+test('a. the sample site (module entry, CSS, lazy chunk, data file) renders inside the cross-site iframe', async ({
   page,
 }) => {
   const boot = await openPlayground(page);
   console.log(
-    `[metrics] worker cold start (new Worker -> esbuild-wasm ready): ${fmt(boot.coldStartMs)} (wasm init inside worker ${fmt(boot.wasmInitMs)})`,
-  );
-  console.log(
-    `[metrics] first build ${fmt(boot.firstBuildMs)}, first preview (build -> ready, cold CDN) ${fmt(boot.firstPreviewMs)}`,
+    `[metrics] handshake ${fmt(boot.connectMs)} after page start; first preview (load -> ready, worker registration included) ${fmt(boot.firstPreviewMs)}`,
   );
 
   const frame = buildFrame(page);
   const title = frame.getByTestId('title');
   await expect(title).toHaveText('Hello Build Roulette');
-  // Local styles.css
+  // The site's own stylesheet (/assets/index-s4mpl3.css).
   await expect(title).toHaveCSS('color', 'rgb(255, 0, 128)');
-  // Package CSS (animate.css fetched from the CDN by the worker and inlined)
-  await expect(title).toHaveCSS('animation-name', 'fadeIn');
-  // zustand store + React event handling (single React instance, hooks work)
+  await expect(frame.getByTestId('data')).toHaveText('data from /data.json');
+  await expect(frame.locator('#root')).toHaveAttribute('data-lazy', 'loaded');
   await frame.getByTestId('inc').click();
   await frame.getByTestId('inc').click();
   await expect(frame.getByTestId('inc')).toHaveText('count is 2');
 
-  // The build document is a standards-mode document with the import map applied.
-  const info = await page
-    .frames()
-    .find((f) => f.parentFrame()?.parentFrame() === page.mainFrame())
-    ?.evaluate(() => ({
-      compatMode: document.compatMode,
-      origin: location.origin,
-      importMap: document.querySelector('script[type="importmap"]')?.textContent ?? null,
-    }));
-  expect(info?.compatMode).toBe('CSS1Compat');
-  expect(info?.origin).toMatch(/^http:\/\/127\.0\.0\.1:/);
-  expect(info?.importMap).toContain('"react"');
+  // The site's document: standards mode, on the sandbox origin, at `/` (the site id is gone
+  // from the address), with the bootstrap first in <head>.
+  const info = await siteFrame(page).evaluate(() => ({
+    compatMode: document.compatMode,
+    origin: location.origin,
+    path: location.pathname + location.search,
+    firstInHead: document.head.firstElementChild?.outerHTML.slice(0, 30) ?? null,
+    controlled: navigator.serviceWorker.controller?.scriptURL ?? null,
+  }));
+  expect(info.compatMode).toBe('CSS1Compat');
+  expect(info.origin).toMatch(/^http:\/\/127\.0\.0\.1:/);
+  expect(info.path).toBe('/');
+  expect(info.firstInHead).toMatch(/^<script>\(function\(\)\{/);
+  expect(info.controlled).toMatch(/\/v2\/sw\.js$/);
 
   // The app page cannot reach into the sandbox (cross-origin).
   const crossOriginBlocked = await page.evaluate(() => {

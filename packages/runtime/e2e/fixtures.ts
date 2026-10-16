@@ -1,55 +1,80 @@
-import type { FileMap, Manifest } from '../src/types';
-import { SAMPLE_FILES, SAMPLE_MANIFEST } from '../playground/sample-project';
+/**
+ * Fixture sites for the e2e tests: text files that the playground packs with `packSite`
+ * (`@br/site`) and loads as a protocol v2 `load`.
+ */
+import type { SiteSpec } from '../playground/main';
 
-export const REACT_MANIFEST: Manifest = {
-  entry: 'src/main.tsx',
-  dependencies: { react: '19.3.0', 'react-dom': '19.3.0', zustand: '5.0.15' },
-};
+export type { SiteSpec };
 
-const MAIN = `import { createRoot } from 'react-dom/client';
-import { App } from './App';
-createRoot(document.getElementById('root')!).render(<App />);
+/** An HTML document with `head` and `body` markup. */
+export function html(opts: { title?: string; head?: string; body?: string } = {}): string {
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>${opts.title ?? 'Fixture'}</title>
+    ${opts.head ?? ''}
+  </head>
+  <body>
+    ${opts.body ?? '<div id="root"></div>'}
+  </body>
+</html>
 `;
+}
 
-/** Single-component React app; `body` is the JSX returned by App, `prelude` runs at module top. */
-export function reactApp(body: string, prelude = ''): FileMap {
+/**
+ * A one-module site, as a bundler emits it: `index.html` loads `/assets/app.js` (a module
+ * script, so top-level `await` works) and `<div id="root">`. `js` runs at the module's top
+ * level; `extra` adds files.
+ */
+export function moduleSite(js: string, extra: SiteSpec = {}): SiteSpec {
   return {
-    'src/main.tsx': MAIN,
-    'src/App.tsx': `${prelude}\nexport function App() {\n  return (${body});\n}\n`,
+    'index.html': html({ head: '<script type="module" src="/assets/app.js"></script>' }),
+    'assets/app.js': `const root = document.getElementById('root');\n${js}\n`,
+    ...extra,
   };
 }
 
-/** The playground sample (4 files) plus 6 components: the 10-file project of the §3.8 budget. */
-export function tenFileProject(label: string): { files: FileMap; manifest: Manifest } {
-  const files: FileMap = { ...SAMPLE_FILES };
-  const names = ['Header', 'Footer', 'Card', 'List', 'Badge', 'Panel'];
-  for (const n of names) {
-    files[`src/components/${n}.tsx`] = `import { useState } from 'react';
-export function ${n}({ title }: { title: string }) {
-  const [open, setOpen] = useState(true);
-  const items = Array.from({ length: 20 }, (_, i) => \`${n} item \${i}\`);
-  return (
-    <section className="${n.toLowerCase()}" onClick={() => setOpen(!open)}>
-      <h2>{title}</h2>
-      {open && <ul>{items.map((it) => <li key={it}>{it}</li>)}</ul>}
-    </section>
-  );
+/** A site whose module renders `markup` into `#root` (after running `prelude`). */
+export function markupSite(markup: string, prelude = ''): SiteSpec {
+  return moduleSite(`${prelude}\nroot.innerHTML = ${JSON.stringify(markup)};`);
 }
-`;
-  }
-  files['src/App.tsx'] = `import { useCounter } from './store';
-${names.map((n) => `import { ${n} } from './components/${n}';`).join('\n')}
 
-export function App() {
-  const { count, increment } = useCounter();
-  return (
-    <main className="app">
-      <h1 className="title" data-testid="title">${label}</h1>
-      <button data-testid="inc" onClick={increment}>count is {count}</button>
-      ${names.map((n) => `<${n} title="${n}" />`).join('\n      ')}
-    </main>
-  );
-}
-`;
-  return { files, manifest: SAMPLE_MANIFEST };
+/**
+ * The Vite-like site of e2e (a): an entry module and a stylesheet under `/assets/` with
+ * hashed names, a lazily imported chunk, an image at the root, `fetch('/data.json')` and a
+ * module worker that fetches too. Every outcome is written into `#out` as JSON.
+ */
+export function viteLikeSite(label: string): SiteSpec {
+  return {
+    'index.html': html({
+      title: label,
+      head: `<script type="module" crossorigin src="/assets/index-abc.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-abc.css" />`,
+      body: `<div id="root"><h1 class="title" data-testid="title">${label}</h1><img data-testid="logo" src="/logo.svg" alt="logo" /><pre data-testid="out"></pre></div>`,
+    }),
+    'assets/index-abc.css': `.title { color: rgb(255, 0, 128); }\nbody { margin: 0; }\n`,
+    'assets/index-abc.js': `const out = {};
+const show = () => { document.querySelector('[data-testid="out"]').textContent = JSON.stringify(out); };
+const settle = (key, p) => p.then((v) => { out[key] = v; show(); }, (e) => { out[key] = 'error: ' + e; show(); });
+settle('lazy', import('./chunk-x.js').then((m) => m.answer()));
+settle('data', fetch('/data.json').then((r) => r.json()).then((d) => d.label));
+settle('worker', new Promise((resolve, reject) => {
+  const w = new Worker('/assets/worker.js', { type: 'module' });
+  w.onmessage = (e) => resolve(e.data);
+  w.onerror = (e) => reject(new Error(e.message || 'worker error'));
+}));
+const img = document.querySelector('[data-testid="logo"]');
+settle('image', img.decode().then(() => img.naturalWidth + 'x' + img.naturalHeight));
+console.log('vite-like site started', location.pathname);
+`,
+    'assets/chunk-x.js': `export function answer() { return 'chunk ok'; }\n`,
+    'assets/worker.js': `import { WORD } from './worker-dep.js';
+const data = await (await fetch('/data.json')).json();
+postMessage(WORD + ' ' + data.label);
+`,
+    'assets/worker-dep.js': `export const WORD = 'worker';\n`,
+    'logo.svg': `<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><rect width="40" height="20" fill="#f08"/></svg>\n`,
+    'data.json': `{ "label": "${label} data" }\n`,
+  };
 }

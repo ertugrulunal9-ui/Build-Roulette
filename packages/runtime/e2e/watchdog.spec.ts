@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
-import { REACT_MANIFEST, reactApp } from './fixtures';
-import { buildFrame, fmt, openPlayground } from './helpers';
+import { markupSite, moduleSite } from './fixtures';
+import { buildFrame, fmt, loadSite, openPlayground } from './helpers';
 
 test('c. an infinite loop triggers the watchdog crash within 6 s and the parent stays responsive', async ({
   page,
@@ -15,7 +15,7 @@ test('c. an infinite loop triggers the watchdog crash within 6 s and the parent 
   expect(
     targetInfos.filter((t) => t.type === 'iframe').map((t) => t.url),
     'preview iframe must be out-of-process',
-  ).toEqual([expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/v1\/$/)]);
+  ).toEqual([expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/v2\/$/)]);
 
   // Parent-side jank probe: records the worst gap between 50 ms ticks on the app page.
   await page.evaluate(() => {
@@ -29,18 +29,13 @@ test('c. an infinite loop triggers the watchdog crash within 6 s and the parent 
     }, 50);
   });
 
-  const files = reactApp(
-    `<h1 data-testid="title">about to freeze</h1>`,
-    `setTimeout(() => { console.log('loop-start'); while (true) {} }, 300);`,
+  await loadSite(
+    page,
+    markupSite(
+      '<h1 data-testid="title">about to freeze</h1>',
+      `setTimeout(() => { console.log('loop-start'); while (true) {} }, 300);`,
+    ),
   );
-  const loaded = await page.evaluate(
-    async ({ files, manifest }) => {
-      await window.__playground.setProject(files, manifest);
-      return window.__playground.buildAndLoad();
-    },
-    { files, manifest: REACT_MANIFEST },
-  );
-  expect(loaded.ok).toBe(true);
   // The build logs right before it starts spinning; the port message still gets out.
   const marker = await page.waitForFunction(() =>
     window.__playground.events.find(
@@ -88,15 +83,9 @@ test('c. an infinite loop triggers the watchdog crash within 6 s and the parent 
   await expect(page.locator('#crashed')).toContainText('Build froze');
   expect(await page.evaluate(() => window.__playground.previewState())).toBe('crashed');
 
-  // Restart preview with a fixed build: works again.
-  await page.evaluate(
-    async ({ files, manifest }) => {
-      await window.__playground.setProject(files, manifest);
-      await window.__playground.restartPreview();
-      await window.__playground.buildAndLoad();
-    },
-    { files: reactApp(`<h1 data-testid="title">recovered</h1>`), manifest: REACT_MANIFEST },
-  );
+  // Restart preview with a fixed site: works again.
+  await page.evaluate(() => window.__playground.restartPreview());
+  await loadSite(page, markupSite('<h1 data-testid="title">recovered</h1>'));
   await expect(buildFrame(page).getByTestId('title')).toHaveText('recovered');
 });
 
@@ -104,15 +93,11 @@ test('c. a loop that runs on load (before ready) is caught within the 15 s load 
   page,
 }) => {
   await openPlayground(page);
-  const t0 = await page.evaluate(
-    async ({ files, manifest }) => {
-      await window.__playground.setProject(files, manifest);
-      const start = performance.now();
-      void window.__playground.buildAndLoad().catch(() => undefined);
-      return start;
-    },
-    { files: reactApp(`<p>never</p>`, `while (true) {}`), manifest: REACT_MANIFEST },
-  );
+  const t0 = await page.evaluate((files) => {
+    const start = performance.now();
+    window.__playground.sendSite(files);
+    return start;
+  }, moduleSite('while (true) {}'));
   const crash = await page.waitForFunction(
     () => window.__playground.events.find((e) => e.type === 'crash'),
     null,
@@ -122,14 +107,14 @@ test('c. a loop that runs on load (before ready) is caught within the 15 s load 
     t: number;
     data: { reason: string; silentForMs: number; phase: string };
   };
-  // The build result is logged right before the playground calls preview.load() (the send).
+  // The playground logs `load` right after preview.load() (the send).
   const loadSentAt = await page.evaluate(
     (since) =>
-      window.__playground.events.findLast((e) => e.type === 'build' && e.t >= since)?.t ?? NaN,
+      window.__playground.events.findLast((e) => e.type === 'load' && e.t >= since)?.t ?? NaN,
     t0,
   );
   console.log(
-    `[metrics] watchdog detection for a loop at module top level: build start -> crash ${fmt(crashEvent.t - t0)}, load sent -> crash ${fmt(crashEvent.t - loadSentAt)}, silence ${fmt(crashEvent.data.silentForMs)}`,
+    `[metrics] watchdog detection for a loop at module top level: pack start -> crash ${fmt(crashEvent.t - t0)}, load sent -> crash ${fmt(crashEvent.t - loadSentAt)}, silence ${fmt(crashEvent.data.silentForMs)}`,
   );
   // T-027: until the load grace ends, a loop during the load can't be told apart from a slow
   // load on a busy CPU. The grace ends 15 s after the load was sent (and the last pong is at

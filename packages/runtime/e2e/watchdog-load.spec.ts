@@ -2,34 +2,28 @@
  * T-027: a slow but finite load on a busy CPU is not a crash (the load grace), while a loop
  * after `ready` is still caught at about 5 s.
  *
- * The shell evaluates every new bundle on its own main thread: tearing down the previous
- * build, writing the new document, then compiling and evaluating the module graph (one long
- * task). Pongs can't be sent during that time. On a contended CPU (the chaos suite: load
+ * The site's frame shares the shell's main thread (same origin): tearing down the previous
+ * site, then compiling and evaluating the new site's module graph (one long task). Pongs
+ * can't be sent during that time. On a contended CPU (the chaos suite: load
  * average 13–24 on 4 CPUs) that took over 5 s, and the old watchdog reported a crash.
  *
- * Here the shell's renderer is slowed with CDP CPU throttling, and the build does a
+ * Here the shell's renderer is slowed with CDP CPU throttling, and the site does a
  * calibrated amount of start-up work at module top level, so that its evaluation blocks the
  * shell for about 8 s (more than the 5 s limit, well within the 15 s grace) on any machine.
  */
-import { expect, test, type Frame, type Page } from '@playwright/test';
-import { REACT_MANIFEST, reactApp } from './fixtures';
-import { buildFrame, fmt, openPlayground } from './helpers';
+import { expect, test, type Frame } from '@playwright/test';
+import { moduleSite } from './fixtures';
+import { buildFrame, fmt, openPlayground, shellFrame } from './helpers';
 
 const THROTTLE_RATE = 6;
 /**
  * Calibrated top-level work. The same loop runs about 1.25x slower at module top level than
- * in the calibration (measured), and React plus the bundle add a little, so the shell blocks
+ * in the calibration (measured), and compiling the module adds a little, so the shell blocks
  * for about 8–9 s: well over the 5 s limit, well under the 15 s grace.
  */
 const TARGET_BLOCK_MS = 6500;
 /** The build's top-level start-up work (`timeWork` runs the same loop to calibrate it). */
 const WORK = `let h = 0; for (let i = 0; i < n; i++) h = (h * 31 + i) | 0;`;
-
-function shellFrame(page: Page): Frame {
-  const frame = page.frames().find((f) => /^http:\/\/127\.0\.0\.1:\d+\/v1\/$/.test(f.url()));
-  if (!frame) throw new Error('shell frame not found');
-  return frame;
-}
 
 /** ms for `n` iterations of WORK in the shell's (throttled) realm. */
 async function timeWork(frame: Frame, n: number): Promise<number> {
@@ -43,29 +37,26 @@ async function timeWork(frame: Frame, n: number): Promise<number> {
   }, n);
 }
 
-/** A React app whose module top level does `iterations` of WORK, plus a bundle to compile. */
-function heavyApp(iterations: number) {
+/** A site whose module top level does `iterations` of WORK, plus a module to compile. */
+function heavySite(iterations: number) {
   const fns = Array.from(
     { length: 3000 },
-    (_, i) => `(a: number) => ({ k: a * ${String(i)}, s: 'v${String(i)}' }).k,`,
+    (_, i) => `(a) => ({ k: a * ${String(i)}, s: 'v${String(i)}' }).k,`,
   ).join('\n');
-  const prelude = `
+  return moduleSite(`
 const evalStart = Date.now();
-const fns: ((a: number) => number)[] = [
+const fns = [
 ${fns}
 ];
 const n = ${String(iterations)};
 ${WORK}
 const total = fns.reduce((acc, f) => acc + f(1), h);
 console.log('heavy-eval ' + String(Date.now() - evalStart) + ' ' + String(total));
-`;
-  return reactApp(
-    `<main>
-      <h1 data-testid="title">heavy but finite</h1>
-      <button className="freeze" onClick={() => { setTimeout(() => { console.log('loop-start'); for (;;) {} }, 300); }}>Freeze</button>
-    </main>`,
-    prelude,
-  );
+root.innerHTML = '<main><h1 data-testid="title">heavy but finite</h1><button class="freeze">Freeze</button></main>';
+root.querySelector('button.freeze').addEventListener('click', () => {
+  setTimeout(() => { console.log('loop-start'); for (;;) {} }, 300);
+});
+`);
 }
 
 test('a slow load under CPU throttling is not a crash; a loop after ready is still caught at ~5 s', async ({
@@ -109,31 +100,26 @@ test('a slow load under CPU throttling is not a crash; a loop after ready is sti
     }).observe({ type: 'longtask' });
   });
 
-  // Build and load; stop early if the watchdog fires (the old 5 s watchdog did, here).
-  const outcome = await page.evaluate(
-    async ({ files, manifest }) => {
-      await window.__playground.setProject(files, manifest);
-      const crashed = new Promise<{ crash: unknown }>((resolve) => {
-        const poll = setInterval(() => {
-          const c = window.__playground.events.find((e) => e.type === 'crash');
-          if (c) {
-            clearInterval(poll);
-            resolve({ crash: c.data });
-          }
-        }, 50);
-      });
-      return Promise.race([
-        window.__playground.buildAndLoad().then((loaded) => ({ loaded })),
-        crashed,
-      ]);
-    },
-    { files: heavyApp(iterations), manifest: REACT_MANIFEST },
-  );
+  // Load; stop early if the watchdog fires (the old 5 s watchdog did, here).
+  const outcome = await page.evaluate(async (files) => {
+    const crashed = new Promise<{ crash: unknown }>((resolve) => {
+      const poll = setInterval(() => {
+        const c = window.__playground.events.find((e) => e.type === 'crash');
+        if (c) {
+          clearInterval(poll);
+          resolve({ crash: c.data });
+        }
+      }, 50);
+    });
+    return Promise.race([
+      window.__playground.loadSite(files).then((loaded) => ({ loaded })),
+      crashed,
+    ]);
+  }, heavySite(iterations));
   if ('crash' in outcome) {
     throw new Error(`the watchdog fired during the slow load: ${JSON.stringify(outcome.crash)}`);
   }
   const loaded = outcome.loaded;
-  expect(loaded.ok).toBe(true);
   await expect(buildFrame(page).getByTestId('title')).toHaveText('heavy but finite');
   await page.waitForTimeout(1500); // a few normal pongs after the load
 
@@ -151,7 +137,7 @@ test('a slow load under CPU throttling is not a crash; a loop after ready is sti
     Math.max(0, ...(window as unknown as { __longTasks: number[] }).__longTasks),
   );
   console.log(
-    `[metrics] slow load: build -> ready ${fmt(loaded.totalMs)}, top-level evaluation ${fmt(evalMs)}, longest shell task ${fmt(longestTask)}, longest pong gap ${fmt(maxPongGap)}`,
+    `[metrics] slow load: load -> ready ${fmt(loaded.totalMs)}, top-level evaluation ${fmt(evalMs)}, longest shell task ${fmt(longestTask)}, longest pong gap ${fmt(maxPongGap)}`,
   );
   // The shell really was silent for longer than the 5 s limit (the old watchdog crashed here)…
   expect(maxPongGap).toBeGreaterThan(5500);

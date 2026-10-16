@@ -1,6 +1,7 @@
 /**
  * Builds the shell (Node only): bundles src/shell.ts into one classic script with the
- * allowed app origins baked in, and src/capture.ts into the capture page's script. Used by
+ * allowed app origins baked in, src/capture.ts into the capture page's script, and src/sw.ts
+ * into the site worker (`sw.js`) with the sites' response headers baked in. Used by
  * scripts/build.ts and by the dev server.
  */
 import { readFileSync } from 'node:fs';
@@ -8,6 +9,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as esbuild from 'esbuild';
 import { PROTOCOL_VERSION } from '@br/protocol';
+import { CAPTURE_PATH } from './capture-gate';
+import { siteHeaders, type ShellHeaderOptions } from './headers';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -42,6 +45,8 @@ export interface BuiltShell {
   js: string;
   /** `capture.js`, the script of the capture page (the page itself comes from the capture gate). */
   captureJs: string;
+  /** `sw.js`, the site worker (docs/09 §9.3). */
+  swJs: string;
 }
 
 async function bundleEntry(
@@ -66,20 +71,32 @@ async function bundleEntry(
   return js;
 }
 
-export async function buildShell(opts: {
-  appOrigins: readonly string[];
-  minify?: boolean;
-}): Promise<BuiltShell> {
+/**
+ * `opts` are the header options of the host (`ShellHeaderOptions`): the app origins go into
+ * the shell (postMessage targets) and, with `extraConnectSrc`, into the site worker's
+ * `siteHeaders` (the sites' CSP).
+ */
+export async function buildShell(
+  opts: ShellHeaderOptions & { minify?: boolean },
+): Promise<BuiltShell> {
   for (const o of opts.appOrigins) {
     if (new URL(o).origin !== o)
       throw new Error(`invalid app origin "${o}" (expected scheme://host[:port])`);
   }
   const minify = opts.minify ?? true;
-  const [js, captureJs] = await Promise.all([
+  const headers = {
+    preview: siteHeaders(opts, 'preview'),
+    capture: siteHeaders(opts, 'capture'),
+  };
+  const [js, captureJs, swJs] = await Promise.all([
     bundleEntry('src/shell.ts', minify, { __BR_APP_ORIGINS__: JSON.stringify(opts.appOrigins) }),
     bundleEntry('src/capture.ts', minify, {}),
+    bundleEntry('src/sw.ts', minify, {
+      __BR_SITE_HEADERS__: JSON.stringify(headers),
+      __BR_CAPTURE_PATH__: JSON.stringify(CAPTURE_PATH),
+    }),
   ]);
-  return { html: readFileSync(path.join(ROOT, 'index.html'), 'utf8'), js, captureJs };
+  return { html: readFileSync(path.join(ROOT, 'index.html'), 'utf8'), js, captureJs, swJs };
 }
 
 /**

@@ -3,7 +3,7 @@ import { APP_SERVER_ENV, appServerCommand } from './e2e/app-server';
 
 /**
  * E2E for moderation (T-024, `e2e/moderation.spec.ts`) and the per-battle link previews
- * (T-038, `e2e/link-preview.spec.ts`: the Pages Function on `/battles/*`) against the REAL
+ * (T-038, `e2e/link-preview.spec.ts`: the Worker on `/battles/*`) against the REAL
  * local Supabase stack, with the jobs Edge Function running (its takedown job deletes the
  * screenshot): `pnpm --filter @br/web test:e2e:moderation` (builds first). The stack must be
  * up (`supabase start`); the tests insert finished battles with psql, seed an email admin with
@@ -11,11 +11,11 @@ import { APP_SERVER_ENV, appServerCommand } from './e2e/app-server';
  *
  * scripts/solo-services.ts starts the sandbox shell (with the capture gate), the mock CDN and
  * the jobs Edge Function with its Browser Rendering stand-in (T-034; `--worker`: the Node
- * worker); Playwright serves the static export with `wrangler pages dev` (e2e/app-server.ts),
- * the way Cloudflare Pages serves it. The production build uses the
+ * worker); Playwright serves the static export with `wrangler dev` (e2e/app-server.ts),
+ * the way Cloudflare serves it. The production build uses the
  * default (local) Supabase URL and anon key. `E2E_REUSE_SERVERS=1` reuses servers already
- * running (e.g. `tsx scripts/solo-services.ts` + `wrangler pages dev --port 3100 --ip
- * localhost`) while iterating.
+ * running (e.g. `tsx scripts/solo-services.ts` + `wrangler dev --port 3100 --ip localhost`)
+ * while iterating.
  */
 const APP_PORT = Number(process.env['APP_PORT'] ?? 3100);
 const APP_ORIGIN = `http://localhost:${String(APP_PORT)}`;

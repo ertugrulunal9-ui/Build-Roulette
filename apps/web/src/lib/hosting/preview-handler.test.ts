@@ -1,7 +1,7 @@
 /**
- * T-038's link-preview Function, per case (preview-handler.ts), with its I/O stubbed: Pages'
+ * T-038's link-preview Worker, per case (preview-handler.ts), with its I/O stubbed: the static
  * assets, `get_public_battle` and the head injection (HTMLRewriter exists only in workerd; the
- * e2e runs the real one under `wrangler pages dev`).
+ * e2e runs the real one under `wrangler dev`).
  *
  * - a public battle: 200 and the battle's head; unknown / not public: 404 and the "not found"
  *   head; malformed: 404 without asking Supabase;

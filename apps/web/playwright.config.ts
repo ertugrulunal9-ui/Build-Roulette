@@ -2,8 +2,9 @@ import { defineConfig } from '@playwright/test';
 import { APP_SERVER_ENV, appServerCommand } from './e2e/app-server';
 
 /**
- * E2E for /playground against the static export served like Cloudflare Pages serves it
- * (`wrangler pages dev out/`, e2e/app-server.ts), plus the local sandbox shell and mock CDN
+ * E2E for /playground against the static export served like Cloudflare serves it (the
+ * Worker with static assets under `wrangler dev`, e2e/app-server.ts), plus the local sandbox
+ * shell and mock CDN
  * (scripts/sandbox-servers.ts). Run with `pnpm --filter @br/web test:e2e` (builds first).
  * Not part of `pnpm test`.
  *

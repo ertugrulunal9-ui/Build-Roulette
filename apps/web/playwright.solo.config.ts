@@ -10,9 +10,9 @@ import { APP_SERVER_ENV, appServerCommand } from './e2e/app-server';
  *
  * scripts/solo-services.ts starts the sandbox shell (with the capture gate), the mock CDN and
  * the jobs Edge Function with its Browser Rendering stand-in (`--worker`: the Node worker);
- * Playwright serves the static export with `wrangler pages dev` (e2e/app-server.ts). The production build uses the default (local) Supabase URL and anon
+ * Playwright serves the static export with `wrangler dev` (e2e/app-server.ts). The production build uses the default (local) Supabase URL and anon
  * key. `E2E_REUSE_SERVERS=1` reuses servers already running (e.g. `tsx
- * scripts/solo-services.ts` + `wrangler pages dev --port 3100 --ip localhost`) while
+ * scripts/solo-services.ts` + `wrangler dev --port 3100 --ip localhost`) while
  * iterating.
  */
 const APP_PORT = Number(process.env['APP_PORT'] ?? 3100);

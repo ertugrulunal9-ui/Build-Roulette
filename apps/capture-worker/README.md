@@ -110,11 +110,12 @@ sandbox. Builds that never call it are still captured (idle or cap).
   at most 10 minutes away. The host is part of the signature, so a URL cannot be replayed on
   another build's origin.
 - **Where it is verified: server-side, in a capture gate in front of the static shell**
-  (`capture-gate.ts`). In production that is the Cloudflare Pages advanced-mode
-  `dist/_worker.js`, limited by `dist/_routes.json` to `/v1/capture` (every other path stays
-  a plain static asset with the `_headers` rules). The secret is a Pages secret
-  (`wrangler pages secret put CAPTURE_HMAC_SECRET`), shared only with this worker
-  (`CAPTURE_HMAC_SECRET`). Locally `startShellServer({ captureSecret })` runs the same gate.
+  (`capture-gate.ts`). In production that is the shell's Cloudflare Worker (T-043; a Pages
+  `_worker.js` before), `apps/sandbox-shell/src/worker.ts` built into `dist/worker.js`, run
+  only for `/v1/capture` (`run_worker_first` in `apps/sandbox-shell/wrangler.jsonc`; every
+  other path stays a plain static asset with the `_headers` rules). The secret is the
+  Worker secret `CAPTURE_HMAC_SECRET` (`wrangler deploy --secrets-file`), shared only with
+  this worker (`CAPTURE_HMAC_SECRET`). Locally `startShellServer({ captureSecret })` runs the same gate.
   Invalid, expired or missing signatures get an empty 403 (`no-store`), so nothing renders.
 - **Why this design.** The secret cannot be in the page's JS (anyone could read it and sign
   URLs). Verifying only on the renderer side would not stop anyone from opening

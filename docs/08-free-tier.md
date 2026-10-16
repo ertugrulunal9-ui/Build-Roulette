@@ -2,9 +2,10 @@
 
 The user decided on 2026-10-09 to deploy on free plans only (docs/BOARD.md, T-033…T-036).
 This document collects what that takes. §1 is the web app on Workers Free (T-033: it does
-not fit); §2 is what replaced it, the web app as a static site on Cloudflare Pages (T-037);
-§3 is the one piece of edge code left, the per-battle link previews (T-038: a Pages Function
-that fits); §4 is the package CDN, the public esm.sh instead of our own (T-035); §5 is the
+not fit); §2 is what replaced it, the web app as a static site (T-037; on Cloudflare Pages,
+since T-043 the static assets of a Worker on `workers.dev`, §2.7); §3 is the one piece of edge
+code left, the per-battle link previews (T-038: a Pages Function that fits; a Worker since
+T-043); §4 is the package CDN, the public esm.sh instead of our own (T-035); §5 is the
 screenshots and the delete jobs without an always-on server (T-034: a Supabase Edge
 Function and Browser Rendering's REST API); §6 is Supabase Free itself (T-036: the 7-day pause
 and the keep-alive, storage, database, and what each quota allows per month). The step-by-step
@@ -314,17 +315,26 @@ requests a day of Workers Free do not apply to it: static requests on Pages are 
 unlimited and not Worker invocations. Per-battle link previews come back with a small Pages
 Function on `/battles/*` in T-038, measured against the 10 ms first (§3).
 
+**Since T-043 (2026-10-16) the host is Workers, not Pages:** `*.pages.dev` is blocked in
+Turkey, where the players are (a court/federation order of 2025-11, reported active again in
+2026-08), while `*.workers.dev` opens there (the user checked a Hello World Worker). The same
+static export is now the **static assets of a Worker** on `workers.dev` (Workers Free), and the
+link-preview Function is that Worker's code, run only for `/battles/*`. Static requests stay
+free, unlimited and not Worker invocations. The sandbox shell moved the same way, to a
+second Cloudflare account (§2.7). The rest of this section describes the static site; where it
+says Pages, the Worker's static assets now do the same (§2.7 lists the differences).
+
 ### 2.1 What changed
 
 | | Before (T-012…T-033) | After (T-037) |
 |---|---|---|
 | Build | `next build` + OpenNext → a Worker (1.3 MB gzip) + assets | `next build` with `output: 'export'` → `apps/web/out/` (94 files, 15.8 MiB; JS 706 KiB gzip) + `_headers` and `_redirects` written by `scripts/pages-config.ts` |
-| Hosting | Workers (+ R2 incremental cache, D1 tag cache, Durable Object queue) | Pages, static files only (`apps/web/wrangler.jsonc`: `pages_build_output_dir`) |
+| Hosting | Workers (+ R2 incremental cache, D1 tag cache, Durable Object queue) | Pages, static files only (`apps/web/wrangler.jsonc`: `pages_build_output_dir`); since T-043 a Worker's static assets (`assets.directory: ./out`, §2.7) |
 | `/`, `/play`, `/playground` | prerendered, served from R2 by the Worker | static files |
 | `/r/{code}` | one prerendered page behind a Next rewrite (T-033) | one shell (`out/r.html`) behind a Pages rewrite (`/r/:code /r 200`); the code is read in the browser, as before |
 | `/battles/{id}` | ISR: rendered by the Worker, cached up to an hour, revalidated by takedowns | one shell (`out/battles.html`, rewrite `/battles/:id /battles 200`); the browser calls `get_public_battle` (anon key) on every load: loading, not found, "could not load" with a retry, or the results; the tab title is set in the browser |
 | `/u/{id}` | rendered per request from data cached ≤ 60 s | one shell (`out/u.html`, rewrite `/u/:id /u 200`); `get_player_history` in the browser, the keyset cursor still in the query string |
-| Unknown paths | Next's 404, rendered in the Worker (~163 ms CPU in a fresh isolate) | `out/404.html`, served by Pages with a 404 |
+| Unknown paths | Next's 404, rendered in the Worker (~163 ms CPU in a fresh isolate) | `out/404.html`, served by Pages with a 404 (since T-043 by the static assets, `not_found_handling: "404-page"`) |
 | `/admin` | server-rendered; httpOnly cookies; server actions | a static page; the moderator's own Supabase session in the browser (§2.3); the admin RPCs called with it |
 | Takedown visible | on the next request, through tag revalidation (and a second expiry 10 s later) | on the next page load: nothing is cached, nothing to revalidate; a takedown made with SQL shows too |
 | Security headers | none set by the app | `_headers`: a CSP without `'unsafe-inline'` scripts (§2.4), `frame-ancestors 'none'`, `X-Frame-Options`, `nosniff`, referrer and permissions policies, COOP, HSTS |
@@ -410,12 +420,14 @@ longer protects anything (the page is a public file); the Auth endpoint is what 
 Next's static export puts two inline scripts in every page (its flight data). They differ per
 page but are fixed per build, so `scripts/pages-config.ts` hashes them: 10 distinct hashes
 for the 10 HTML files, one policy for every path (a rewritten shell and the 404 page get the
-same one). The header line is ~950 characters against Pages' 2,000 per line; the build fails
-if it ever grows past that. The hosts come from the build's own `NEXT_PUBLIC_*` values, so the
+same one). The header line is ~950 characters against the 2,000 per line that Pages and
+Workers static assets both allow (one shared parser, §2.7); the build fails if it ever grows
+past that. The hosts come from the build's own `NEXT_PUBLIC_*` values, so the
 policy always matches the bundles. `'wasm-unsafe-eval'` is for the playground's esbuild
 (WebAssembly); there is no `'unsafe-eval'`.
 
-Every e2e suite runs under it (`wrangler pages dev` applies `_headers`), and the playground,
+Every e2e suite runs under it (`wrangler dev` applies `_headers`; `wrangler pages dev`
+before T-043), and the playground,
 solo, moderation, rooms and chaos suites fail on any CSP violation of the app's pages
 (`e2e/csp.ts`).
 
@@ -429,18 +441,84 @@ warm and 0.5–1.4 ms in a fresh isolate for `/`, the shells, a JS chunk, `og-ca
 404. That is wrangler's local shim, which Cloudflare does not run or bill for static files;
 the tool is kept for T-038's Function on `/battles/*`, which must fit 10 ms (its fixtures,
 battles with and without a rank-1 screenshot, are in `scripts/measure-cpu/fixtures.ts`).
-Since T-038 production runs one Worker, that Function, and only for `/battles/*` (§3).
+Since T-038 production runs one Worker, that Function, and only for `/battles/*` (§3). Since
+T-043 the local runtime is `wrangler dev` with static assets: a static path never enters the
+Worker's isolate at all (the asset router is a separate worker), as in production.
 
 ### 2.6 Verification
 
-`pnpm --filter @br/web build` checks the export (the pages present, no secret key, Pages'
-limits) and prints its size. Every e2e suite serves `out/` with `wrangler pages dev`
-(`e2e/app-server.ts`): the playground (with `e2e/static-site.spec.ts`: rewrites, the 404
-page, the headers, the CSP enforced and never violated, `/admin` without a session), solo,
+`pnpm --filter @br/web build` checks the export (the pages present, no secret key, the host's
+limits) and prints its size. Every e2e suite serves `out/` and the Worker with `wrangler dev`
+(`e2e/app-server.ts`; `wrangler pages dev` before T-043): the playground (with
+`e2e/static-site.spec.ts`: rewrites, the 404 page, the headers, the CSP enforced and never violated, `/admin` without a session), solo,
 moderation (a takedown visible on the next load; the admin session's storage, its separation
 from the player session and from another tab, sign-out revoking the refresh token), rooms,
 telemetry (the admin's test error from the browser, no server events) and the three chaos
 shards.
+
+### 2.7 Workers instead of Pages (T-043)
+
+**Why:** `*.pages.dev` is blocked in Turkey (a court/federation order of 2025-11, reported
+active again in 2026-08) and the players are there; `*.workers.dev` is not (§2). The first
+production deploy (Deploy run 2, 2026-10) had been on Pages and passed every check.
+
+| | Web app | Sandbox shell |
+|---|---|---|
+| Cloudflare account | A, the existing one (also Browser Rendering, Turnstile) | B, a second free account |
+| Worker | `build-roulette-web` | `build-roulette-sandbox` |
+| Address | `https://build-roulette-web.<subdomain A>.workers.dev` | `https://build-roulette-sandbox.<subdomain B>.workers.dev/v1/` |
+| Config | `apps/web/wrangler.jsonc` | `apps/sandbox-shell/wrangler.jsonc` |
+| Static assets | `apps/web/out/` with `_headers`, `_redirects`, `404.html` | `apps/sandbox-shell/dist/` with `_headers`, `404.html` |
+| Worker code, run only for (`run_worker_first`) | `dist/worker.js`: the link previews, `/battles/*` | `dist/worker.js`: the capture gate, `/v1/capture` (Worker secret `CAPTURE_HMAC_SECRET`) |
+
+**Why two accounts.** A Worker's address is `<worker>.<account subdomain>.workers.dev`, one
+subdomain per account. The Public Suffix List lists `workers.dev` but not `*.workers.dev`
+(checked in the `psl` npm package 1.15.0: the registrable domain of
+`build-roulette-web.buildroulette.workers.dev` is `buildroulette.workers.dev`), so two Workers
+of one account are one *site*, and the shell must be another site than the app (docs/01 §1.1,
+docs/03 §3.5). On Pages each project had its own `<project>.pages.dev`, and `pages.dev` is on
+the list, so one account was enough. Now the shell goes to a second free account with its own
+subdomain; the deploy refuses the same account for both (`scripts/deploy/settings.mjs`).
+
+**What we rely on, checked offline** against wrangler 4.147.0 (its config schema, its source,
+and the workers-shared router and asset workers it runs locally through miniflare
+5.20261001.0, the code Cloudflare runs in front of a Worker with static assets) and against
+`wrangler dev`:
+
+| Claim | Status | How |
+|---|---|---|
+| A request served from the assets does not invoke the Worker unless it matches `run_worker_first` | **confirmed** | the router's source: a `run_worker_first` match goes to the Worker; any other path goes to the assets when they can answer it, and with `run_worker_first` set the 404 page counts as an answer. Measured with an instrumented Worker under `wrangler dev`: `/v1/`, `/v1/shell.js` and an unknown path did not invoke it, `/v1/capture` did. **Without a `404.html` an unknown path does invoke the Worker** (measured), which is why the shell got one |
+| … and is free and unlimited | assumed (Cloudflare's docs and pricing) | not in the source; consistent with it: when an account's Free requests are used up, the router still serves the assets (below) |
+| Worker invocations count toward 100,000 a day, with 10 ms CPU each | confirmed in T-033 (§1.3, Cloudflare's limits page) | not checkable offline; the router's "rate limited" answer for an account over its Free requests is in the source |
+| 20,000 files per version | assumed (Cloudflare's docs) | wrangler checks no file count before a Workers upload (it does for Pages: 20,000); the export has 94 files, the shell 5 |
+| 25 MiB per file | **confirmed** | wrangler refuses a larger asset (`MAX_ASSET_SIZE = 25 * 1024 * 1024`); `esbuild.wasm` is 13.3 MiB |
+| `_headers` and `_redirects` | **confirmed** | wrangler reads both from the assets directory (and never uploads them as assets); the same workers-shared parser as Pages, with the same limits (100 header rules, 2,000 characters a line, 2,000 static and 100 dynamic redirects); the e2e (§2.6) |
+| `_redirects` 200 rewrites (`/u/:id /u 200`) | **confirmed** | the asset worker serves the destination as a proxied path for status 200; the e2e: `/u/x`, `/r/K7QXM` answer 200 with the shell, the URL kept |
+| `_headers` applies to what the Worker gets through `env.ASSETS.fetch` | **confirmed** | the asset worker adds the matching `_headers` rules to every answer, also those for the binding; measured: a Worker passing an `env.ASSETS.fetch` answer through keeps the `_headers` CSP. It does not apply to a response the Worker builds itself (`/v1/capture`'s gate, a preview's 200/404), so those set their headers in code, as before (§3.2) |
+| `run_worker_first` as a list of patterns, `not_found_handling: "404-page"`, `workers_dev`, `preview_urls` | **confirmed** | wrangler's config schema |
+| `wrangler deploy --secrets-file` | **confirmed** | wrangler 4.147.0: "secrets to upload with the version (JSON or .env format)… omitted secrets will not be deleted"; with `secrets.required` in the config, a deploy without the secret fails on a new Worker and keeps the current value on an existing one |
+| Account → Workers Scripts → Edit covers the workers.dev subdomain and route endpoints | confirmed indirectly | wrangler's matching OAuth scope `workers_scripts:write`: "See and change Cloudflare Workers scripts, durable objects, subdomains, triggers, and tail data" |
+| A Worker on workers.dev needs the account's workers.dev subdomain, and wrangler registers none without a prompt | **confirmed** | wrangler's source: `GET /accounts/{id}/workers/subdomain` answers error 10007 when there is none, then wrangler asks, which fails in CI. The deploy registers it first (`PUT …/workers/subdomain`; error 10031: the name is taken) |
+
+**What differs from Pages:**
+
+- **No "fail open" at the daily limit.** Past 100,000 Worker requests a day on account A,
+  Cloudflare answers `/battles/*` with its own 429 "This website has been temporarily rate
+  limited" page until 00:00 UTC (the router's source); every other page is static and keeps
+  working. Pages Functions could skip the Function and serve the static shell. On account B the
+  same would turn captures into 429s (the players' thumbnails are the fallback, §5).
+  `scripts/deploy-check.mjs` names that page. At ~1,000 battles a month neither is near.
+- **The sandbox's unknown paths** get its new `404.html` (404, with the `/*` headers) instead
+  of an empty 404, so they invoke no Worker.
+- **Redirects of the HTML handling** (`/battles/` → `/battles`, `/v1` → `/v1/`) are 307 (Pages:
+  308). Nothing links to those forms.
+- **Addresses:** `<worker>.<subdomain>.workers.dev`; no per-version preview addresses
+  (`preview_urls: false`), no per-deployment `<hash>.<project>.pages.dev` aliases.
+- **Deploys are Worker versions:** rollback in Workers & Pages → the Worker → Deployments.
+  Logs: `wrangler tail` with the account's token.
+- **CPU:** the code is the same. The Worker's isolate no longer runs Pages' routing shim
+  (`_routes.json`): the router is a separate worker, so T-038's numbers (§3.3), which include
+  the shim, lean pessimistic.
 
 ## 3. Link previews (T-038)
 
@@ -469,12 +547,17 @@ that invokes nothing. It is a `_worker.js` rather than a `functions/` directory 
 reason as the sandbox shell's capture gate: its settings are inlined at build time, like the
 bundles', so the Function, the bundles and the CSP always agree.
 
+**Since T-043 a Worker module** (§2.7): the same bundle is `dist/worker.js`, outside `out/`
+(never a static file), and `main` of `apps/web/wrangler.jsonc`, deployed as is (`no_bundle`);
+`run_worker_first: ["/battles/*"]` takes the place of `_routes.json`. The code did not change:
+a Pages `_worker.js` already is a Worker module with `env.ASSETS`.
+
 - **Supabase:** the URL and the anon key are the build's `NEXT_PUBLIC_SUPABASE_URL` and
   `NEXT_PUBLIC_SUPABASE_ANON_KEY` (or `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`), inlined into the
   worker exactly as Next inlines them into the bundles (`lib/supabase/config.ts`; the build
   fails if the worker still reads `process.env`). The anon key is public by design and already
-  in every bundle. **No Pages environment variable is involved:** nothing to set on Pages and
-  no second copy of the settings to keep in sync. (Pages env vars would have needed the
+  in every bundle. **No Pages environment variable is involved:** nothing to set on Pages (or,
+  since T-043, on the Worker) and no second copy of the settings to keep in sync. (Pages env vars would have needed the
   values in `wrangler.jsonc`, the project's source of truth once it has one, or in the
   dashboard, and could drift from the build.)
 - **The site's origin** for `og:url` and the canonical link: `NEXT_PUBLIC_SITE_URL` (already
@@ -490,7 +573,7 @@ bundles', so the Function, the bundles and the CSP always agree.
 | an unknown id, or a battle not public yet | `get_public_battle` (`battle_not_found`) | **404** | "Battle not found", `noindex` | `not-found` |
 | a malformed id (not a UUID, or a broken escape) | **not called** | **404** | "Battle not found", `noindex` | `malformed` |
 | Supabase does not answer within **1.5 s**, answers an error, or answers something without `get_public_battle`'s shape | called, given up | 200 | the shell's own (generic title, static card) | `fail-open; reason=timeout\|error\|shape` |
-| anything that throws in the Function | — | what Pages serves without it | the shell's own | — |
+| anything that throws in the Function | — | what the static assets serve without it (the shell, 200) | the shell's own | — |
 | `/battles`, `/battles/{id}/more`, a method other than GET/HEAD | — | Pages' own answer | — | — |
 
 The shell (`/battles` from `env.ASSETS`) and `get_public_battle` (with the anon key over
@@ -528,7 +611,11 @@ Function; whether it applies to a shell fetched through `env.ASSETS` is not docu
 Function therefore sets the `/*` headers itself on every answer it writes (locally,
 `wrangler pages dev` applies `_headers` either way; the e2e check the CSP, `X-Frame-Options`
 and `nosniff` on the Function's 200s, 404s and fail-opens). It keeps the shell's
-`Cache-Control` and drops its `ETag` (the body differs per battle and per moment).
+`Cache-Control` and drops its `ETag` (the body differs per battle and per moment). On Workers
+(T-043) the static assets do apply `_headers` to the shell that `env.ASSETS.fetch` hands the
+Worker (workers-shared source, measured; §2.7), and still not to an answer the Worker builds,
+so the Worker keeps setting them: the same headers either way, and the e2e still check them
+under `wrangler dev`.
 
 **In the browser** the page hydrates as before and reads the battle itself. React then
 re-adds the shell's generic `og:*` tags after the battle's (it matches head tags by
@@ -605,7 +692,7 @@ browser or crawler gets a fresh answer every time. Considered and rejected:
   when the entry expires. Settled battles are exactly the ones takedowns are about (a report
   usually comes after RESULTS), and purging the entry from `/admin` would need a second moving
   part. The Cache API also only stores on a zone the account controls (a custom domain), not
-  reliably on `*.pages.dev` (assumed, not testable here).
+  reliably on `*.pages.dev` or `*.workers.dev` (assumed, not testable here).
 - **`Cache-Control` with a lifetime on the HTML:** browsers and Cloudflare's edge would serve
   a stale preview to the next visitor: the same takedown problem, and the page (which reads
   its own data) gains nothing.
@@ -623,19 +710,21 @@ until the takedown job deletes it (seconds), plus up to 5 minutes in Storage's C
 
 ### 3.5 Limits and failure modes
 
-- **Requests:** every view of `/battles/{id}` (people and crawlers) is one Function request,
-  counted in Workers Free's **100,000 a day**, shared with every Worker of the account (T-034
-  ended up with no Worker: its jobs run as a Supabase Edge Function, §5) and reset at 00:00 UTC. Static requests are not counted
-  (`_routes.json`). Past the allowance, Pages Functions **fail open by default**: the request
-  skips the Function and gets the static shell through `_redirects`, i.e. the page as in
-  T-037 (the generic preview, 200 for an unknown battle). "Fail closed" (Error 1027) is the
-  other setting; keep fail open (Cloudflare's docs, read through search; DEPLOY.md).
+- **Requests:** every view of `/battles/{id}` (people and crawlers) is one Worker request,
+  counted in Workers Free's **100,000 a day**, shared with every Worker of account A (T-034
+  ended up with no Worker: its jobs run as a Supabase Edge Function, §5; the sandbox shell's
+  capture gate is on account B since T-043) and reset at 00:00 UTC. Static requests are not
+  counted (`run_worker_first`; `_routes.json` on Pages). On Pages, past the allowance, Pages
+  Functions **failed open by default** (the static shell, the page as in T-037). **On Workers
+  (T-043) there is no such setting:** past the allowance Cloudflare answers `/battles/*` with
+  its own 429 "temporarily rate limited" page until 00:00 UTC, while every static page keeps
+  working (§2.7). At ~1,000 battles a month it is far away; deploy-check names that page.
 - **CPU:** §3.3. Error 1102 would be the failure mode if a request exceeded the limit with no
   rollover left; no warm sample came within 6 ms of it.
 - **Supabase slow:** a crawler waits up to 1.5 s more, then gets the generic preview (crawlers
   generally allow several seconds per page; assumed). The browser reads its data itself, as
   before. Each fail-open is logged (`battle preview: fail open (…)`, visible with
-  `wrangler pages deployment tail`).
+  `wrangler tail build-roulette-web` and account A's token).
 - **Supabase down:** the generic preview at once (connection refused) or after 1.5 s.
 - **Previews of `/u/{id}` and `/r/{code}`** stay generic (not in scope).
 - **WebP screenshots** as `og:image` rely on the crawler accepting WebP (T-033's note); the
@@ -1195,7 +1284,7 @@ screenshot views cost 2.1 MB at q70 (60.9 KiB) and 2.7 MB at q82: **4.1 MB** per
 | Realtime messages/s 100, joins/s 100 | confirmed | | not reached | the compressed run peaked at 144 inbound/s across 60 clients, no closes |
 | Edge Function invocations 500,000 | secondary | 2–4 runs | never | pg_cron starts the `jobs` function at most once a minute: ≤ 43,200 a month |
 | MAU 50,000 | secondary | 2 new players | ~25,000 | 3 battles per player a month (docs/07 §7.4.2); anonymous sign-ins count |
-| Pages Functions 100,000 requests/day (Cloudflare) | confirmed (§3.5) | one per results-page view | not reached | fails open |
+| Workers Free 100,000 Worker requests/day (Cloudflare; Pages Functions before T-043) | confirmed (§3.5) | one per results-page view | not reached | since T-043: Cloudflare's 429 page on `/battles/*` until 00:00 UTC (§2.7) |
 
 **Load test on the Free Realtime quotas (measured, 2026-10-10):** `pnpm --filter @br/loadtest
 loadtest --realtime-limits free` (200 connections, 100 messages/s, 20 Presence messages/s,

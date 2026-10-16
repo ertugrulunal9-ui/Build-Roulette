@@ -1,14 +1,15 @@
 # @br/web
 
-The Next.js app (App Router), exported as static files (`output: 'export'`) and served by
-Cloudflare Pages (T-037; [DEPLOY.md](DEPLOY.md)). There is no server: every page is a file,
+The Next.js app (App Router), exported as static files (`output: 'export'`) and served as the
+static assets of a Cloudflare Worker on `workers.dev` (T-037, T-043; Cloudflare Pages until
+T-043; [DEPLOY.md](DEPLOY.md)). There is no server: every page is a file,
 and data loads in the browser from Supabase. Routes:
 
 | Route | What |
 |---|---|
 | `/` | Landing page: "Play solo" (`/play`), "Create room" (a name → `create_room` → `/r/{code}`) and "Join with code" (any case, trimmed, or a pasted invite link). |
 | `/play` | The solo game: name → SPIN → BUILD → SHIP → RESULTS → DESTROY. `?battle={id}` resumes a battle after a refresh. |
-| `/battles/[id]` | The permanent, shareable results page. One static shell for every battle (`src/app/battles/page.tsx`, "Static site" below): the browser reads the id from the URL and calls `get_public_battle` on every load, so a takedown shows on the next load. A small Pages Function serves the shell with each battle's own link preview, and a real 404 for an unknown battle ("Link previews" below). |
+| `/battles/[id]` | The permanent, shareable results page. One static shell for every battle (`src/app/battles/page.tsx`, "Static site" below): the browser reads the id from the URL and calls `get_public_battle` on every load, so a takedown shows on the next load. The Worker's code (a Pages Function until T-043) serves the shell with each battle's own link preview, and a real 404 for an unknown battle ("Link previews" below). |
 | `/playground` | Single-player editor and live preview, no game. |
 | `/r/[code]` | A room (M3): join → lobby → SPIN → BUILD → SHIP → REVEAL → VOTE → RESULTS → DESTROY → lobby (rematch). One static shell (`src/app/r/page.tsx`) serves every room: the host rewrites `/r/{code}` to it and the code is read in the browser (T-033, T-037). |
 | `/u/[id]` | A player's history (M4): their finished battles, newest first, from `get_player_history` with the anon key, paginated (`?before=…&before_battle=…`). One static shell (`src/app/u/page.tsx`); the browser reads the id and the cursor from the URL and the data on every load. |
@@ -40,23 +41,25 @@ and data loads in the browser from Supabase. Routes:
   `frame-ancestors 'none'`, `X-Frame-Options`, `nosniff`, the referrer and permissions
   policies, COOP, HSTS; a year's cache for `/_next/static/*`; `noindex` for `/admin`.
 - **Checks** (the build fails): `404.html` and every shell exist; no file holds a Supabase key
-  other than the public anon key; Pages' limits (header lines ≤ 2,000 characters, rules,
+  other than the public anon key; the host's limits (header lines ≤ 2,000 characters, rules,
   file count and size).
-- **Locally:** `pnpm --filter @br/web preview` serves `out/` with `wrangler pages dev`
+- **Locally:** `pnpm --filter @br/web preview` serves `out/` and the Worker with `wrangler dev`
   (http://localhost:3000), which applies `_redirects` and `_headers` and runs the link-preview
-  Function like Pages does. Every e2e suite uses it.
+  Worker for `/battles/*` like production. Every e2e suite uses it.
 
 ## Link previews (T-038)
 
 Crawlers (Slack, Discord, X, Facebook…) do not run the page's script, so a static shell alone
-would give every battle the same preview. A Cloudflare Pages Function on `/battles/*` fixes
-that (docs/08-free-tier.md §3 has the design and its CPU numbers):
+would give every battle the same preview. The Worker's code on `/battles/*` fixes that (a
+Pages Function until T-043, "the Function" below; docs/08-free-tier.md §3 has the design and
+its CPU numbers):
 
-- **Where:** `src/lib/hosting/preview-worker.ts` (the worker entry: Pages' assets,
+- **Where:** `src/lib/hosting/preview-worker.ts` (the worker entry: the static assets,
   `get_public_battle`, `HTMLRewriter`), `preview-handler.ts` (what it does per request, tested
   in Node), `battle-preview.ts` (the head: pure, tested). `scripts/preview-worker.ts` bundles
-  it into `out/_worker.js` (Pages "advanced mode") with the build's `NEXT_PUBLIC_*` values and
-  the `/*` headers of `_headers`, and writes `out/_routes.json` (`/battles/*` only).
+  it into `dist/worker.js` (`main` of `wrangler.jsonc`) with the build's `NEXT_PUBLIC_*` values
+  and the `/*` headers of `_headers`; `run_worker_first: ["/battles/*"]` in `wrangler.jsonc`
+  limits it to `/battles/*`.
 - **Per request:** `get_public_battle` with the anon key (the page's own call,
   `lib/solo/public-battle.ts`) and the shell (`/battles`) at once; then the shell with its
   title, description, `og:*` (`og:url`, `og:image` with its size and type), `twitter:*` and
@@ -70,8 +73,8 @@ that (docs/08-free-tier.md §3 has the design and its CPU numbers):
     (still the shell: the browser shows its not-found view); a malformed id: the same 404
     without asking Supabase;
   - **fail open:** Supabase slower than 1.5 s, an error or an odd answer: the shell
-    unchanged with 200 (the generic head). Anything else that throws: Pages' plain static
-    answer.
+    unchanged with 200 (the generic head). Anything else that throws: the static assets'
+    plain answer.
 - **Escaping:** names and challenge texts are HTML-escaped; the tags are our own strings
   (unit tests round-trip `"><script>` and friends through an HTML parser).
 - **Headers:** the Function's answers carry the `_headers` security headers (it sets them
@@ -412,7 +415,7 @@ CDN (T-006) replaces it.
 | React binding | `src/lib/solo/use-solo-game.ts` |
 | Screens | `src/components/solo/*` |
 | Results page (shell, loader, page) + its title and social image | `src/app/battles/page.tsx`, `src/components/results/BattleView.tsx`, `BattleResults.tsx`, `src/lib/solo/public-battle.ts`, `battle-meta.ts`, `og-image.ts`, `public/og-card.png` (`scripts/og-card.ts`) |
-| Static hosting: shells and rewrites, `_headers` and the CSP, the export checks, page loads | `src/lib/hosting/*`, `scripts/pages-config.ts`, `wrangler.jsonc` (Pages) |
+| Static hosting: shells and rewrites, `_headers` and the CSP, the export checks, page loads | `src/lib/hosting/*`, `scripts/pages-config.ts`, `wrangler.jsonc` (the Worker with static assets) |
 | Player history page | `src/app/u/page.tsx`, `src/components/results/PlayerHistoryView.tsx`, `PlayerHistory.tsx`, `src/lib/history/*`, `src/components/results/MyHistoryLink.tsx` |
 | Phones and tablets (touch-primary check) | `src/lib/device.ts`, `src/components/room/DesktopNeeded.tsx` |
 | Moderation: report dialog, "Removed by moderators" | `src/components/moderation/*`, `src/lib/moderation/report.ts` |
@@ -445,11 +448,11 @@ pnpm --filter @br/web test:e2e:telemetry      # error reporting + analytics agai
   loaded and no request goes to any host but the app, Supabase and the sandbox servers
   (`e2e/telemetry-off.spec.ts`). It leaves the plain build in `out/`.
 
-- **Every suite serves the static export the way Cloudflare Pages does:** `pnpm build`, then
-  Playwright starts `wrangler pages dev` on port 3100 (`e2e/app-server.ts`: the `_redirects`
-  rewrites, the `_headers` CSP, the 404 page). The playground, solo, moderation, rooms and
+- **Every suite serves the static export the way Cloudflare does:** `pnpm build`, then
+  Playwright starts `wrangler dev` on port 3100 (`e2e/app-server.ts`: the `_redirects`
+  rewrites, the `_headers` CSP, the 404 page, the Worker on `/battles/*`). The playground, solo, moderation, rooms and
   chaos suites fail on any CSP violation of the app's pages (`e2e/csp.ts`).
-- `test:e2e` runs `pnpm build`, then Playwright starts `wrangler pages dev --port 3100` and
+- `test:e2e` runs `pnpm build`, then Playwright starts `wrangler dev --port 3100` and
   `scripts/sandbox-servers.ts` (allowing `http://localhost:3100`) and runs `e2e/` except the
   suites that need Supabase. `e2e/static-site.spec.ts` (T-037) checks the host's behaviour:
   every page is a file, the shells keep their URL, unknown paths get the 404 page with a 404,
@@ -464,7 +467,7 @@ pnpm --filter @br/web test:e2e:telemetry      # error reporting + analytics agai
   CDN that never answers shows "still loading" until it does.
 - `test:e2e:solo` (`playwright.solo.config.ts`) needs the local Supabase stack running. It
   builds, then starts `scripts/solo-services.ts` (shell with the capture gate, mock CDN,
-  capture worker) and `wrangler pages dev --port 3100`, and plays two battles
+  capture worker) and `wrangler dev --port 3100`, and plays two battles
   (`e2e/solo.spec.ts`):
   - **ship:** name → spin → edit `App.tsx` → ship → RESULTS with the real 1280×800
     screenshot and the `speedrun` award → the last-look deadline is forced with psql →
@@ -624,18 +627,21 @@ pnpm --filter @br/web test:e2e:telemetry      # error reporting + analytics agai
   click that lost that race was dropped (T-023: the other cause of the 8-player test's
   failures). The controller now resends it with the version the server returned while the
   phase and the spotlight are unchanged (`HOST_RETRIES`, `src/lib/room/reveal-vote.ts`).
-## Cloudflare Pages
+## Cloudflare Workers (static assets)
 
-Production is a static site on Cloudflare Pages (`wrangler.jsonc`: `pages_build_output_dir:
-./out`). `pnpm build` + `pnpm preview` serve it locally with `wrangler pages dev`, no account
-needed; `pnpm pages:deploy` uploads it. See [DEPLOY.md](DEPLOY.md) for the account setup,
-deploys, the security headers, observability and the custom domain.
+Production is a static site served as the static assets of the Worker `build-roulette-web`
+(`wrangler.jsonc`: `assets.directory: ./out`, `main: ./dist/worker.js`, T-043; Cloudflare
+Pages before, blocked in Turkey). `pnpm build` + `pnpm preview` serve it locally with
+`wrangler dev`, no account needed; `pnpm workers:deploy` uploads it. See
+[DEPLOY.md](DEPLOY.md) for the account setup, deploys, the security headers, observability
+and the custom domain.
 
 **CPU per request (T-033, kept for T-038).** `pnpm --filter @br/web measure:cpu` (after
-`pnpm build`) measures what `wrangler pages dev` runs per request on workerd, warm and in a
-fresh isolate: a V8 CPU profile of the user isolate plus the workerd thread's CPU, with a
-method check on a known Worker (`scripts/measure-cpu/`). Today that is wrangler's local
-shim (production runs no Worker for static files); T-038 measures its Pages Function with it.
+`pnpm build`) measures what `wrangler dev` runs per request on workerd, warm and in a fresh
+isolate: a V8 CPU profile of the user isolate plus the workerd thread's CPU, with a method
+check on a known Worker (`scripts/measure-cpu/`). Static files never enter the Worker's
+isolate (production runs no Worker for them); T-038 measured the link-preview Function with
+it (then on `wrangler pages dev`).
 The T-033 results for Next.js on Workers and the static site's are in
 [docs/08-free-tier.md](../../docs/08-free-tier.md) §1 and §2; raw data lands in
 `cpu-results/` (gitignored).

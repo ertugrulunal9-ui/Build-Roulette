@@ -177,7 +177,9 @@ function standIns() {
       appHeaders: true,
       fn: true,
       fnReachesSupabase: true,
+      overDailyLimit: false,
       shellSecret: true,
+      workerServed: false,
       paused: false,
       readOnly: false,
       anonymous: true,
@@ -191,6 +193,13 @@ function standIns() {
     app(req, res) {
       const url = new URL(req.url, 'http://x');
       const h = state.appHeaders ? appHeaders(cfg()) : {};
+      if (url.pathname.startsWith('/battles/') && state.overDailyLimit) {
+        // Cloudflare's own page once an account's Workers Free requests are used up.
+        res
+          .writeHead(429, { 'content-type': 'text/html' })
+          .end('<title>This website has been temporarily rate limited | x | Cloudflare</title>');
+        return;
+      }
       if (url.pathname.startsWith('/battles/') && state.fn) {
         const id = url.pathname.slice('/battles/'.length);
         if (!/^[0-9a-f-]{36}$/.test(id)) {
@@ -227,6 +236,8 @@ function standIns() {
       if (url.pathname === '/v1/')
         res.writeHead(200, { 'content-security-policy': csp }).end('<html></html>');
       else if (url.pathname === '/v1/capture') res.writeHead(state.shellSecret ? 403 : 503).end();
+      else if (url.pathname === '/worker.js' && state.workerServed)
+        res.writeHead(200, { 'content-type': 'text/javascript' }).end('export default {}');
       else res.writeHead(404).end();
     },
     supabase(req, res) {
@@ -329,9 +340,23 @@ describe('runChecks against stand-ins', () => {
 
   const broken = [
     ['the _headers file is missing', { appHeaders: false }, /content-security-policy.*missing/],
-    ['the link-preview Function is missing', { fn: false }, /without x-br-preview/],
-    ['the Function cannot reach Supabase', { fnReachesSupabase: false }, /fail-open/],
-    ['the shell has no capture secret', { shellSecret: false }, /CAPTURE_HMAC_SECRET/],
+    [
+      'the link-preview Worker is missing',
+      { fn: false },
+      /without x-br-preview .*run_worker_first \["\/battles\/\*"\]/,
+    ],
+    ['the Worker cannot reach Supabase', { fnReachesSupabase: false }, /fail-open/],
+    [
+      "the account's daily Worker requests are used up",
+      { overDailyLimit: true },
+      /used up for today \(100,000 a day/,
+    ],
+    [
+      'the shell has no capture secret',
+      { shellSecret: false },
+      /CAPTURE_HMAC_SECRET is not set on the shell's Worker/,
+    ],
+    ['the shell serves its Worker code', { workerServed: true }, /worker\.js.*\.assetsignore/],
     ['the project is paused', { paused: true }, /PAUSED/],
     ['the database is read-only', { readOnly: true }, /READ-ONLY/],
     ['anonymous sign-ins are off', { anonymous: false }, /anonymous sign-ins/],

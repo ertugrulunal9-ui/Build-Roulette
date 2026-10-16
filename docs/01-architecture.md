@@ -37,7 +37,7 @@ flowchart LR
     UI <-->|"postMessage<br/>(MessageChannel)"| IF
   end
 
-  subgraph CFApp["Cloudflare Pages (app)"]
+  subgraph CFApp["Cloudflare Worker + static assets (app, account A)"]
     NX["Static export of the Next.js app<br/>HTML, JS chunks, esbuild.wasm<br/>(no server code)"]
   end
 
@@ -51,7 +51,7 @@ flowchart LR
   end
 
   subgraph Cloudflare
-    SB["Sandbox origin<br/>*.&lt;usercontent-domain&gt;<br/>static runtime shell"]
+    SB["Sandbox origin (account B)<br/>build-roulette-sandbox.&lt;subdomain B&gt;.workers.dev<br/>static runtime shell"]
     CDN["Package CDN<br/>esm.sh-compatible, allowlisted"]
     BR["Browser Rendering<br/>headless Chromium"]
   end
@@ -73,12 +73,15 @@ flowchart LR
 
 ## 1.3 Components
 
-### Web app: a static Next.js export on Cloudflare Pages
+### Web app: a static Next.js export on Cloudflare (a Worker's static assets)
 The app is written with Next.js (App Router) and exported as static files
-(`output: 'export'`), which **Cloudflare Pages** serves (T-037). No server code runs for the
-app: every page is a file, and every piece of data is loaded in the browser from Supabase
-with the visitor's own credentials (the anon key, a player's anonymous session, a
-moderator's session). Static requests on Pages are free and unlimited.
+(`output: 'export'`), served as the **static assets of a Cloudflare Worker** on
+`build-roulette-web.<subdomain A>.workers.dev` (T-043; Cloudflare Pages from T-037 until
+`*.pages.dev` turned out to be blocked in Turkey, [08-free-tier](08-free-tier.md) §2.7). No
+server code runs for the app's pages: every page is a file, and every piece of data is loaded
+in the browser from Supabase with the visitor's own credentials (the anon key, a player's
+anonymous session, a moderator's session). Requests for static files are free, unlimited and
+invoke no Worker; the Worker's own code runs only for `/battles/*` (link previews, T-038).
 
 How it got here: the first plan was Next.js on Cloudflare Workers through OpenNext
 (T-012: GO with caveats, on Workers Paid). The user then chose free plans only, and T-033
@@ -90,8 +93,8 @@ static site ([08-free-tier](08-free-tier.md) §2).
 |---|---|---|
 | `/` | static file + client | Landing page, "Create room", "Join with code" |
 | `/play`, `/playground` | static file + client-heavy | Solo game; editor and preview without a game |
-| `/r/[code]` | one static shell for every room (a Pages rewrite `/r/:code → /r`; the code is read in the browser) | Room: lobby, spin, build workspace, reveal, vote, results |
-| `/battles/[id]` | one static shell (rewrite `/battles/:id → /battles`); `get_public_battle` in the browser on every load | Permanent results page (shareable). Reads only persisted data. Link previews show the static `/og-card.png` until T-038 adds a Pages Function that writes each battle's `og:*` tags |
+| `/r/[code]` | one static shell for every room (a `_redirects` rewrite `/r/:code → /r`; the code is read in the browser) | Room: lobby, spin, build workspace, reveal, vote, results |
+| `/battles/[id]` | one static shell (rewrite `/battles/:id → /battles`); `get_public_battle` in the browser on every load | Permanent results page (shareable). Reads only persisted data. The Worker (T-038; a Pages Function until T-043) serves the shell with each battle's own `og:*` tags and a real 404 for an unknown battle |
 | `/u/[id]` | one static shell (rewrite `/u/:id → /u`); `get_player_history` in the browser | Player history (builds, awards), paginated in the query string |
 | `/admin` | static file + client; the moderator's own Supabase session | Moderation, event logs, Health (`is_admin()` in every admin RPC) |
 
@@ -138,11 +141,15 @@ capture worker. Per-battle link previews will be the one piece of code at the ed
 
 ### Cloudflare
 - **Sandbox origin**, in two stages:
-  - **Stage 1 (launch):** the shell is hosted on Cloudflare Pages at a free `*.pages.dev`
-    address. `pages.dev` is already on the Public Suffix List, so the sandbox is a
-    different *site* from the app with no second domain to buy. All builds share this one
-    origin, so cross-build storage isolation relies on the shell's full storage wipe on
-    every load and reset (T-009).
+  - **Stage 1 (launch):** the shell is a Cloudflare Worker with static assets at a free
+    `workers.dev` address, `build-roulette-sandbox.<subdomain B>.workers.dev`, on a **second
+    Cloudflare account (B)** (T-043; a Pages project on `*.pages.dev` before, blocked in
+    Turkey). The Public Suffix List lists `workers.dev` but not `*.workers.dev`, so a site is
+    `<account subdomain>.workers.dev`, and each account has its own subdomain: the app's
+    Worker on account A and the shell's on account B are different *sites*, with no second
+    domain to buy (two Workers of one account would be one site; the deploy refuses that).
+    All builds share this one origin, so cross-build storage isolation relies on the
+    shell's full storage wipe on every load and reset (T-009).
   - **Stage 2 (growth):** our own usercontent domain with wildcard DNS and TLS, one
     subdomain per build (`{build_id}.<usercontent-domain>`), and a Public Suffix List entry
     so every build is its own site (security finding F1).
@@ -260,7 +267,7 @@ sequenceDiagram
 | Realtime | Broadcast from DB triggers + Presence | **Postgres Changes**: RLS is evaluated per subscriber per change and doesn't scale as well. **Self-hosted WebSockets**: we'd have to operate them. |
 | Timers | Server timestamps + lazy client nudges + pg_cron backstop | **Server `setTimeout`**: we have no persistent server, and it gets lost on deploy. |
 | Canonical screenshot | Server-side headless render of the frozen bundle | **Client-only capture**: lower fidelity (DOM-to-canvas misses WebGL, fonts and filters) and can be forged. Clients could upload a fake screenshot as their permanent result. We keep the client thumbnail as a fallback. |
-| App hosting | A static export on Cloudflare Pages (T-037; user decisions 2026-10-04 and 2026-10-09: Cloudflare, free plans only) | **Next.js on Cloudflare Workers via OpenNext** (T-012, the plan until T-033): every server render is over Workers Free's 10 ms of CPU ([08-free-tier](08-free-tier.md) §1), and Workers Paid is not free. **Vercel**: one more vendor and account, and the user prefers not to use it. **Fly.io (Node)**: not free. |
+| App hosting | A static export as the static assets of a Cloudflare Worker on `workers.dev` (T-043; on Cloudflare Pages T-037–T-042, until `*.pages.dev` turned out to be blocked in Turkey; user decisions 2026-10-04 and 2026-10-09: Cloudflare, free plans only) | **Next.js on Cloudflare Workers via OpenNext** (T-012, the plan until T-033): every server render is over Workers Free's 10 ms of CPU ([08-free-tier](08-free-tier.md) §1), and Workers Paid is not free. **Vercel**: one more vendor and account, and the user prefers not to use it. **Fly.io (Node)**: not free. |
 | Auth | Supabase anonymous, linkable later | **Required sign-up**: kills the "open link, play" moment. |
 
 ## 1.7 Cost model (rough estimates; validate in M5)
@@ -277,7 +284,7 @@ Assume a battle has 6 players and a 10-minute build.
 | Realtime | ~6 connections × ~15 min plus a few hundred messages | Activity pulses are throttled to ≤1 per 2 s per player |
 | Postgres | A few hundred small writes | Negligible |
 
-Fixed baseline: Supabase (free tier to start, Pro at launch), Cloudflare (Free since the 2026-10-09 decision: the app on Pages, docs/08), plus one domain for the app. The main
+Fixed baseline: Supabase (free tier to start, Pro at launch), Cloudflare (Free since the 2026-10-09 decision: the app and the sandbox shell as Workers with static assets on two free accounts, docs/08), plus one domain for the app. The main
 things that drive costs up are Realtime concurrent connections and messages (plan limits),
 reveal egress, and Browser Rendering minutes. We watch all three from day one.
 
@@ -285,7 +292,7 @@ reveal egress, and Browser Rendering minutes. We watch all three from day one.
 
 ```
 apps/
-  web/                 Next.js app, exported as static files for Cloudflare Pages
+  web/                 Next.js app, exported as static files (a Cloudflare Worker's static assets)
   sandbox-shell/       Static runtime shell deployed to the usercontent domain (versioned paths)
   capture-worker/      Cloudflare Worker wrapping Browser Rendering (called by the Edge Function)
 packages/

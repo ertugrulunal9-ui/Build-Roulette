@@ -1,20 +1,25 @@
-// Unit tests of scripts/deploy (T-042), without any network: an injected fetch emulates the
-// Cloudflare and Supabase endpoints the deploy uses (with their error codes), and a fake
-// runner records every command (its environment with secrets replaced by their names) and
-// answers like the Supabase CLI, pnpm, wrangler and deploy-check would.
+// Unit tests of scripts/deploy (T-042, T-043), without any network: an injected fetch emulates
+// the Cloudflare (two accounts, Workers) and Supabase endpoints the deploy uses (with their
+// error codes), and a fake runner records every command (its environment with secrets replaced
+// by their names) and answers like the Supabase CLI, pnpm, wrangler and deploy-check would.
 //   node --test scripts/deploy/*.test.mjs
 // No key-shaped literal anywhere: every token and key is built at runtime (docs/WORKFLOW.md).
 import assert from 'node:assert/strict';
 import { createHash, randomBytes } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { describe, it } from 'node:test';
 import {
   CLI_TOKEN_FORMAT,
+  NEW_ADDRESS_DELAYS_MS,
   PLANS,
   SHELL_PATH,
   SMOKE_DELAYS_MS,
+  SUBDOMAIN_SUFFIX_TRIES,
   TOKEN_HINT,
   deploy,
+  deriveUrls,
   explainCliFailure,
   mergeAllowList,
   parseArgs,
@@ -39,10 +44,13 @@ const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
 const jwt = (payload) => [b64({ alg: 'HS256', typ: 'JWT' }), b64(payload), hex(16)].join('.');
 
 const REF = 'abcdefghijklmnopqrst';
+/** Account A (the web app, Browser Rendering) and account B (the sandbox shell). */
 const ACCOUNT = hex(16);
+const ACCOUNT_B = hex(16);
 /** Every secret of a run, built at runtime. */
 const T = {
   cf: `cfdeploy${hex(16)}`,
+  cfb: `cfsandbox${hex(16)}`,
   br: `cfbrowser${hex(16)}`,
   sb: ['sbp', hex(20)].join('_'),
   db: `pw-${hex(12)}%x`,
@@ -57,8 +65,10 @@ function baseEnv(over = {}) {
     PATH: '/usr/bin',
     HOME: '/home/runner',
     CLOUDFLARE_ACCOUNT_ID: ACCOUNT,
+    CLOUDFLARE_SANDBOX_ACCOUNT_ID: ACCOUNT_B,
     SUPABASE_URL: `https://${REF}.supabase.co`,
     CLOUDFLARE_API_TOKEN: T.cf,
+    CLOUDFLARE_SANDBOX_API_TOKEN: T.cfb,
     BROWSER_RENDERING_API_TOKEN: T.br,
     SUPABASE_ACCESS_TOKEN: T.sb,
     SUPABASE_DB_PASSWORD: T.db,
@@ -75,14 +85,28 @@ const passResults = () => [
 
 // ─── The emulated world ─────────────────────────────────────────────────────
 
+/** The default addresses of a first run (the subdomains it registers). */
+const APP = 'https://build-roulette-web.buildroulette.workers.dev';
+const SHELL = 'https://build-roulette-sandbox.buildroulette-sandbox.workers.dev/v1/';
+
 function world(over = {}) {
   const st = {
+    // `workers`: the token has Account → Workers Scripts → Edit on `accounts`.
     tokens: new Map([
-      [T.cf, { status: 'active', kind: 'user', pages: true }],
-      [T.br, { status: 'active', kind: 'user', pages: false }],
+      [T.cf, { status: 'active', kind: 'user', workers: true, accounts: [ACCOUNT] }],
+      [T.cfb, { status: 'active', kind: 'user', workers: true, accounts: [ACCOUNT_B] }],
+      [T.br, { status: 'active', kind: 'user', workers: false, accounts: [ACCOUNT] }],
     ]),
-    projects: new Map(),
-    subdomains: {},
+    /** Each account's workers.dev subdomain (null: none yet). */
+    accountSubdomains: { [ACCOUNT]: null, [ACCOUNT_B]: null },
+    /** workers.dev subdomains taken anywhere on Cloudflare (they are global). */
+    taken: new Set(),
+    /** `${account}/${worker}` → {enabled, previews_enabled, secrets, deploys}. */
+    scripts: new Map(),
+    /** wrangler deploys with `workers_dev: true` leave the route off (a broken API, say). */
+    routeOff: false,
+    /** What the fake wrangler saw of each secrets file. */
+    secretFiles: [],
     sbProject: {
       ref: REF,
       name: 'build-roulette',
@@ -129,21 +153,6 @@ function world(over = {}) {
   const cfOk = (result) => json(200, { success: true, errors: [], messages: [], result });
   const cfErr = (status, code, message) =>
     json(status, { success: false, errors: [{ code, message }], messages: [], result: null });
-  const masked = (p) => {
-    const env = p.deployment_configs.production.env_vars;
-    return {
-      ...p,
-      deployment_configs: {
-        ...p.deployment_configs,
-        production: {
-          ...p.deployment_configs.production,
-          env_vars: Object.fromEntries(
-            Object.entries(env).map(([k, v]) => [k, { type: v.type, value: '' }]),
-          ),
-        },
-      },
-    };
-  };
   const literal = (q) => /\$(q_[0-9a-f]{16})\$([\s\S]*?)\$\1\$/.exec(q)?.[2];
 
   function runSql(q) {
@@ -196,33 +205,37 @@ function world(over = {}) {
         if (!t || t.kind !== 'user') return cfErr(401, 1000, 'Invalid API Token');
         return cfOk({ id: 't1', status: t.status });
       }
-      if (p === `/accounts/${ACCOUNT}/tokens/verify`) {
-        if (!t || t.kind !== 'account') return cfErr(401, 1000, 'Invalid API Token');
+      let m = /^\/accounts\/([^/]+)\/tokens\/verify$/.exec(p);
+      if (m) {
+        if (!t || t.kind !== 'account' || !t.accounts.includes(m[1]))
+          return cfErr(401, 1000, 'Invalid API Token');
         return cfOk({ id: 't2', status: t.status });
       }
-      const m = /^\/accounts\/([^/]+)\/pages\/projects(?:\/([^/]+))?$/.exec(p);
+      m = /^\/accounts\/([^/]+)\/workers\/(subdomain|scripts\/([^/]+)\/subdomain)$/.exec(p);
       if (m) {
-        if (!t?.pages || m[1] !== ACCOUNT) return cfErr(403, 10000, 'Authentication error');
-        if (!m[2] && method === 'POST') {
-          if (st.projects.has(body.name)) return cfErr(409, 8000002, 'name taken');
-          const project = {
-            name: body.name,
-            subdomain: st.subdomains[body.name] ?? `${body.name}.pages.dev`,
-            production_branch: body.production_branch,
-            deployment_configs: { production: { env_vars: {} }, preview: { env_vars: {} } },
-          };
-          st.projects.set(body.name, project);
-          return cfOk(masked(project));
+        const [, acct, what, script] = m;
+        if (!t?.workers || !t.accounts.includes(acct))
+          return cfErr(403, 10000, 'Authentication error');
+        if (what === 'subdomain' && method === 'GET') {
+          const sub = st.accountSubdomains[acct];
+          return sub
+            ? cfOk({ subdomain: sub })
+            : cfErr(404, 10007, 'This account does not have a workers.dev subdomain');
         }
-        const proj = st.projects.get(decodeURIComponent(m[2] ?? ''));
-        if (!proj) return cfErr(404, 8000007, 'Project not found');
-        if (method === 'GET') return cfOk(masked(proj));
-        if (method === 'PATCH') {
-          Object.assign(
-            proj.deployment_configs.production.env_vars,
-            body.deployment_configs.production.env_vars,
-          );
-          return cfOk(masked(proj));
+        if (what === 'subdomain' && method === 'PUT') {
+          if (st.accountSubdomains[acct]) return cfErr(400, 10036, 'already has a subdomain');
+          if (st.taken.has(body.subdomain)) return cfErr(409, 10031, 'Subdomain unavailable');
+          st.taken.add(body.subdomain);
+          st.accountSubdomains[acct] = body.subdomain;
+          return cfOk({ subdomain: body.subdomain });
+        }
+        const sc = st.scripts.get(`${acct}/${decodeURIComponent(script)}`);
+        if (!sc) return cfErr(404, 10007, 'workers.api.error.script_not_found');
+        if (method === 'GET')
+          return cfOk({ enabled: sc.enabled, previews_enabled: sc.previews_enabled });
+        if (method === 'POST') {
+          Object.assign(sc, body);
+          return cfOk({ enabled: sc.enabled, previews_enabled: sc.previews_enabled });
         }
       }
       return cfErr(404, 7000, 'No route for that URI');
@@ -273,6 +286,7 @@ function world(over = {}) {
     const known = [
       ...Object.entries({
         CLOUDFLARE_API_TOKEN: T.cf,
+        CLOUDFLARE_SANDBOX_API_TOKEN: T.cfb,
         BROWSER_RENDERING_API_TOKEN: T.br,
         SUPABASE_ACCESS_TOKEN: T.sb,
         SUPABASE_DB_PASSWORD: T.db,
@@ -332,6 +346,32 @@ function world(over = {}) {
       }
       if (cmd === 'pnpm') {
         say(`pnpm ${args.join(' ')} with ${JSON.stringify(opts.env)}`);
+        if (args[2] === 'workers:deploy') {
+          // wrangler deploy: the Worker on the account of CLOUDFLARE_ACCOUNT_ID, with the token
+          // of CLOUDFLARE_API_TOKEN; `workers_dev: true` turns its route on.
+          const acct = opts.env.CLOUDFLARE_ACCOUNT_ID;
+          const tok = st.tokens.get(opts.env.CLOUDFLARE_API_TOKEN);
+          if (!tok?.workers || !tok.accounts.includes(acct))
+            return { code: 1, stdout: '', stderr: 'Authentication error [code: 10000]\n' };
+          if (!st.accountSubdomains[acct])
+            return {
+              code: 1,
+              stdout: '',
+              stderr: 'You need to register a workers.dev subdomain\n',
+            };
+          const key = `${acct}/${argAfter(args, '--name')}`;
+          const sc = st.scripts.get(key) ?? { secrets: {}, deploys: 0 };
+          if (args.includes('--secrets-file')) {
+            const file = argAfter(args, '--secrets-file');
+            const mode = statSync(file).mode & 0o777;
+            const secrets = JSON.parse(readFileSync(file, 'utf8'));
+            st.secretFiles.push({ file, mode, names: Object.keys(secrets) });
+            Object.assign(sc.secrets, secrets);
+          }
+          Object.assign(sc, { enabled: !st.routeOff, previews_enabled: false });
+          sc.deploys++;
+          st.scripts.set(key, sc);
+        }
         return done;
       }
       if (cmd === process.execPath && args[0].endsWith('deploy-check.mjs')) {
@@ -353,6 +393,7 @@ async function run(w, { argv = ['--target', 'all'], env = {}, github = true } = 
   let stderr = '';
   const files = {};
   const sleeps = [];
+  const tmpDir = mkdtempSync(path.join(tmpdir(), 'br-deploy-test-'));
   const e = baseEnv(env);
   if (github) {
     Object.assign(e, {
@@ -379,7 +420,12 @@ async function run(w, { argv = ['--target', 'all'], env = {}, github = true } = 
       sleeps.push(ms);
     },
     repoRoot: '/repo',
+    tmpDir,
   });
+  // Whatever happened, the shell's secrets file is gone (with its private directory).
+  const left = readdirSync(tmpDir);
+  rmSync(tmpDir, { recursive: true, force: true });
+  assert.deepEqual(left, [], 'the secrets file was removed');
   return {
     code,
     stdout,
@@ -402,10 +448,24 @@ const changes = (w) => writes(w).filter((e) => !readOnlySql(e));
 const commandOf = (r) =>
   r.cmd === 'npx'
     ? `supabase ${r.args[2]} ${r.args[3] ?? ''}`.trim()
-    : `${r.cmd === 'pnpm' ? 'pnpm' : 'node'} ${r.args.join(' ')}`;
+    : `${r.cmd === 'pnpm' ? 'pnpm' : 'node'} ${r.args.join(' ')}`.replace(
+        /--secrets-file \S+/,
+        '--secrets-file <file>',
+      );
 const findRun = (w, pred) => runs(w).find(pred);
 const pnpmRun = (w, needle) =>
   findRun(w, (r) => r.cmd === 'pnpm' && r.args.join(' ').includes(needle));
+const WEB_DEPLOY = '@br/web workers:deploy';
+const SHELL_DEPLOY = '@br/sandbox-shell workers:deploy';
+/** A world whose accounts already have their subdomains and Workers (a later run). */
+function deployedWorld(over = {}) {
+  const w = world(over);
+  w.st.accountSubdomains = { [ACCOUNT]: 'buildroulette', [ACCOUNT_B]: 'buildroulette-sandbox' };
+  for (const key of [`${ACCOUNT}/build-roulette-web`, `${ACCOUNT_B}/build-roulette-sandbox`]) {
+    w.st.scripts.set(key, { enabled: true, previews_enabled: false, secrets: {}, deploys: 1 });
+  }
+  return w;
+}
 const smokeRun = (w) => findRun(w, (r) => r.cmd === process.execPath);
 const argAfter = (args, flag) => args[args.indexOf(flag) + 1];
 
@@ -477,6 +537,37 @@ describe('settings', () => {
     assert.doesNotMatch(readSettings({}, 'shell').problems.join('\n'), /SUPABASE_ANON_KEY/);
   });
 
+  it('account B not set up yet: one message that says what to create and why', () => {
+    const env = baseEnv({ CLOUDFLARE_SANDBOX_ACCOUNT_ID: '', CLOUDFLARE_SANDBOX_API_TOKEN: '' });
+    for (const target of ['all', 'check', 'supabase', 'shell', 'web']) {
+      const { problems } = readSettings(env, target);
+      assert.equal(problems.length, 1, target);
+      assert.match(
+        problems[0],
+        /account \(B\) is not set up yet: CLOUDFLARE_SANDBOX_ACCOUNT_ID \(a variable\) and CLOUDFLARE_SANDBOX_API_TOKEN \(a secret\) are missing\. Create a second free Cloudflare account, a token there with Account → Workers Scripts → Edit/,
+      );
+      assert.match(problems[0], /Public Suffix List lists workers\.dev \(not \*\.workers\.dev\)/);
+    }
+    // Half of it: the missing one is named on its own.
+    const half = readSettings(baseEnv({ CLOUDFLARE_SANDBOX_API_TOKEN: '' }), 'all').problems;
+    assert.deepEqual(half.length, 1);
+    assert.match(
+      half[0],
+      /^CLOUDFLARE_SANDBOX_API_TOKEN is missing \(secret: a custom Cloudflare API token of account B with Account → Workers Scripts → Edit\)/,
+    );
+  });
+
+  it('refuses account B = account A: the same account is the same site', () => {
+    for (const b of [ACCOUNT, ACCOUNT.toUpperCase()]) {
+      const { problems } = readSettings(baseEnv({ CLOUDFLARE_SANDBOX_ACCOUNT_ID: b }), 'check');
+      assert.equal(problems.length, 1);
+      assert.match(
+        problems[0],
+        /CLOUDFLARE_SANDBOX_ACCOUNT_ID is the same account as CLOUDFLARE_ACCOUNT_ID: the sandbox shell must be deployed to a SECOND Cloudflare account\. The sandbox shell runs players' code, so it must be another site than the app\..*two Workers of ONE account share the site <account subdomain>\.workers\.dev/,
+      );
+    }
+  });
+
   it('derives the ref and the defaults; empty variables count as unset', () => {
     const { settings: s, problems } = readSettings(
       baseEnv({ APP_URL: '', PKG_CDN_URL: '' }),
@@ -487,8 +578,11 @@ describe('settings', () => {
     assert.equal(s.supabaseUrl, `https://${REF}.supabase.co`);
     assert.equal(s.appUrl, undefined);
     assert.equal(s.pkgCdnUrl, 'https://esm.sh');
-    assert.equal(s.webProject, 'build-roulette-web');
-    assert.equal(s.shellProject, 'build-roulette-sandbox');
+    assert.equal(s.webWorker, 'build-roulette-web');
+    assert.equal(s.shellWorker, 'build-roulette-sandbox');
+    assert.equal(s.webSubdomain, undefined, 'the default is used only to register one');
+    assert.equal(s.sandboxAccountId, ACCOUNT_B);
+    assert.equal(s.sandboxToken, T.cfb);
   });
 
   it('refuses malformed values without echoing them', () => {
@@ -496,25 +590,52 @@ describe('settings', () => {
       CLOUDFLARE_ACCOUNT_ID: 'acct-123',
       SUPABASE_URL: 'https://example.com',
       BROWSER_RENDERING_API_TOKEN: T.cf,
+      CLOUDFLARE_SANDBOX_ACCOUNT_ID: 'acct-456',
+      CLOUDFLARE_SANDBOX_API_TOKEN: 'not a token',
       APP_URL: 'http://play.example.com/x',
-      CF_PAGES_WEB_PROJECT: 'Same_Name',
+      CF_WEB_WORKER: 'Same_Name',
+      CF_SANDBOX_WORKERS_SUBDOMAIN: 'sandbox.workers.dev',
       NEXT_PUBLIC_SENTRY_DSN: 'not a dsn',
     };
     const { problems } = readSettings(baseEnv(bad), 'all');
     const text = problems.join('\n');
     assert.match(text, /CLOUDFLARE_ACCOUNT_ID must be the 32-character/);
+    assert.match(text, /CLOUDFLARE_SANDBOX_ACCOUNT_ID must be the 32-character id of account B/);
+    assert.match(text, /CLOUDFLARE_SANDBOX_API_TOKEN does not look like a Cloudflare API token/);
     assert.match(text, /SUPABASE_URL must be/);
-    assert.match(text, /must be a separate token/);
+    assert.match(
+      text,
+      /BROWSER_RENDERING_API_TOKEN must be a separate token from CLOUDFLARE_API_TOKEN/,
+    );
     assert.match(text, /APP_URL must start with https/);
-    assert.match(text, /CF_PAGES_WEB_PROJECT must be a Pages project name/);
+    assert.match(text, /CF_WEB_WORKER must be a Worker name/);
+    assert.match(text, /CF_SANDBOX_WORKERS_SUBDOMAIN must be a workers\.dev subdomain/);
     assert.match(text, /NEXT_PUBLIC_SENTRY_DSN/);
     assert.ok(!text.includes(T.cf));
+    assert.ok(!text.includes('not a token'));
+    assert.match(
+      readSettings(baseEnv({ BROWSER_RENDERING_API_TOKEN: T.cfb }), 'all').problems.join(),
+      /BROWSER_RENDERING_API_TOKEN must be a separate token from CLOUDFLARE_SANDBOX_API_TOKEN/,
+    );
     assert.match(
       readSettings(
-        baseEnv({ CF_PAGES_SHELL_PROJECT: 'build-roulette-web' }),
+        baseEnv({ CF_WORKERS_SUBDOMAIN: 'br-x', CF_SANDBOX_WORKERS_SUBDOMAIN: 'br-x' }),
         'all',
       ).problems.join(),
-      /must differ/,
+      /CF_WORKERS_SUBDOMAIN and CF_SANDBOX_WORKERS_SUBDOMAIN must differ/,
+    );
+    // A pages.dev APP_URL is refused: the app is not deployed there any more.
+    assert.match(
+      readSettings(
+        baseEnv({ APP_URL: 'https://build-roulette-web.pages.dev' }),
+        'all',
+      ).problems.join(),
+      /APP_URL is a pages\.dev address: .*blocked in Turkey.*Delete the APP_URL variable/,
+    );
+    // Two Workers of the same name on two accounts are two addresses: allowed.
+    assert.deepEqual(
+      readSettings(baseEnv({ CF_SANDBOX_WORKER: 'build-roulette-web' }), 'all').problems,
+      [],
     );
     assert.match(
       readSettings(baseEnv({ APP_URL: 'https://play.example.com/game' }), 'all').problems.join(),
@@ -562,7 +683,24 @@ describe('settings', () => {
       /half configured.*TURNSTILE_SITE_KEY is set but not TURNSTILE_SECRET_KEY/,
     );
     assert.match(warnings.join('\n'), /JOBS_CRON_SECRET from the environment is not used/);
-    assert.match(warnings.join('\n'), /SHELL_URL/);
+    assert.match(warnings.join('\n'), /SHELL_URL .*account B's workers\.dev subdomain/);
+  });
+
+  it('warns about the old Pages project names and one token for both accounts', () => {
+    const { warnings, problems } = readSettings(
+      baseEnv({
+        CF_PAGES_WEB_PROJECT: 'build-roulette-web',
+        CF_PAGES_SHELL_PROJECT: 'x',
+        CLOUDFLARE_SANDBOX_API_TOKEN: T.cf,
+      }),
+      'all',
+    );
+    assert.deepEqual(problems, []);
+    const text = warnings.join('\n');
+    assert.match(text, /CF_PAGES_WEB_PROJECT is not used any more .*CF_WEB_WORKER now/);
+    assert.match(text, /CF_PAGES_SHELL_PROJECT is not used any more .*CF_SANDBOX_WORKER now/);
+    assert.match(text, /CLOUDFLARE_SANDBOX_API_TOKEN is the same token as CLOUDFLARE_API_TOKEN/);
+    assert.ok(!text.includes(T.cf));
   });
 
   it('childEnv drops every secret and build setting of the parent', () => {
@@ -572,6 +710,10 @@ describe('settings', () => {
         NEXT_PUBLIC_SITE_URL: 'https://stale',
         BR_APP_ORIGINS: 'x',
         TURNSTILE_SECRET_KEY: 'y',
+        // wrangler's old names for the token and the account: never inherited.
+        CF_API_TOKEN: T.cf,
+        CF_ACCOUNT_ID: ACCOUNT,
+        CF_WEB_WORKER: 'w',
       },
       { BR_PKG_CDN_URL: 'https://esm.sh' },
     );
@@ -735,8 +877,31 @@ describe('helpers', () => {
     assert.equal(SHELL_PATH, `/v${String(version)}/`);
   });
 
+  it('derives the addresses from the two subdomains; a custom APP_URL adds an origin', () => {
+    const s = readSettings(baseEnv(), 'all').settings;
+    const subs = { web: 'buildroulette', shell: 'buildroulette-sandbox' };
+    assert.deepEqual(deriveUrls(s, subs), {
+      app: APP,
+      workersApp: APP,
+      shell: SHELL,
+      appOrigins: [APP],
+    });
+    const custom = { ...s, appUrl: 'https://play.example.com' };
+    assert.deepEqual(deriveUrls(custom, subs).appOrigins, ['https://play.example.com', APP]);
+    const named = { ...s, webWorker: 'w', shellWorker: 'sb' };
+    assert.equal(deriveUrls(named, subs).app, 'https://w.buildroulette.workers.dev');
+    assert.equal(deriveUrls(named, subs).shell, 'https://sb.buildroulette-sandbox.workers.dev/v1/');
+    assert.throws(
+      () => deriveUrls({ ...s, appUrl: 'https://other.buildroulette.workers.dev' }, subs),
+      /APP_URL \(https:\/\/other\.buildroulette\.workers\.dev\) is a workers\.dev address, but not the web Worker's/,
+    );
+  });
+
   it('every target starts with the preflight; only `all` runs deploy-check', () => {
     for (const plan of Object.values(PLANS)) assert.equal(plan[0], 'preflight');
+    // Every other target needs both addresses: the subdomains come right after the preflight.
+    for (const [t, plan] of Object.entries(PLANS))
+      if (t !== 'check') assert.equal(plan[1], 'workers');
     assert.deepEqual(PLANS.check, ['preflight']);
     assert.ok(PLANS.all.includes('smoke'));
     assert.ok(Object.entries(PLANS).every(([t, p]) => t === 'all' || !p.includes('smoke')));
@@ -811,12 +976,52 @@ describe('deploy: settings and preflight', () => {
       'supabase migration list',
     ]);
     assert.match(ok.summary, /### Checks/);
-    assert.match(ok.summary, /Pages project build-roulette-web\*\*: missing: it will be created/);
+    assert.match(
+      ok.summary,
+      /workers\.dev subdomain of account A \(the app\)\*\*: none yet: the run registers buildroulette \(with a short suffix if it is taken\)/,
+    );
+    assert.match(
+      ok.summary,
+      /workers\.dev subdomain of account B \(the sandbox shell\)\*\*: none yet: the run registers buildroulette-sandbox/,
+    );
+    assert.match(ok.summary, /CLOUDFLARE_SANDBOX_API_TOKEN\*\*: active \(user token\)/);
     assert.match(ok.summary, /3 migration\(s\) to apply/);
     assert.match(ok.summary, /mod@example\.com exists/);
     assert.match(ok.summary, /run the workflow again with target \*\*all\*\*/);
-    assert.equal(w2.st.projects.size, 0);
+    assert.deepEqual(w2.st.accountSubdomains, { [ACCOUNT]: null, [ACCOUNT_B]: null });
     assert.equal(w2.st.vault.size, 0);
+    // Both accounts are named (ids are settings, not secrets).
+    assert.match(
+      ok.summary,
+      new RegExp(
+        `\\| Cloudflare accounts \\| A ${ACCOUNT} \\(the app\\): no workers\\.dev subdomain yet; B ${ACCOUNT_B}`,
+      ),
+    );
+
+    // With both subdomains in place, `check` shows the addresses the run will use.
+    const w3 = deployedWorld();
+    const later = await run(w3, { argv: ['--target', 'check'] });
+    assert.equal(later.code, 0, later.summary);
+    assert.match(later.summary, new RegExp(`\\| App \\| ${APP.replaceAll('.', '\\.')} \\|`));
+    assert.match(
+      later.summary,
+      /\*\*Addresses\*\*: the app https:\/\/build-roulette-web\.buildroulette\.workers\.dev, the sandbox shell https:\/\/build-roulette-sandbox\.buildroulette-sandbox\.workers\.dev\/v1\//,
+    );
+    assert.deepEqual(changes(w3), []);
+  });
+
+  it('an account that already has another subdomain keeps it, with a warning', async () => {
+    const w = deployedWorld();
+    const res = await run(w, {
+      argv: ['--target', 'check'],
+      env: { CF_WORKERS_SUBDOMAIN: 'my-games' },
+    });
+    assert.equal(res.code, 0, res.summary);
+    assert.match(
+      res.summary,
+      /CF_WORKERS_SUBDOMAIN is my-games, but account A already has the workers\.dev subdomain buildroulette: buildroulette is kept/,
+    );
+    assert.deepEqual(changes(w), []);
   });
 
   it('a paused project: a clear message, and nothing changes', async () => {
@@ -832,18 +1037,59 @@ describe('deploy: settings and preflight', () => {
 
   it('names token and permission problems together', async () => {
     const w = world();
-    w.st.tokens.get(T.cf).pages = false;
-    w.st.tokens.set(T.br, { status: 'expired', kind: 'user', pages: true });
+    w.st.tokens.get(T.cf).workers = false;
+    w.st.tokens.set(T.br, { status: 'expired', kind: 'user', workers: true, accounts: [ACCOUNT] });
     w.st.anonKeys.clear();
     const res = await run(w);
     assert.equal(res.code, 1);
     assert.match(
       res.summary,
-      /CLOUDFLARE_API_TOKEN cannot use Cloudflare Pages.*Cloudflare Pages → Edit/,
+      new RegExp(
+        `CLOUDFLARE_API_TOKEN cannot use Workers on account A \\(the app, CLOUDFLARE_ACCOUNT_ID\\), ${ACCOUNT} \\(reading the workers\\.dev subdomain of account ${ACCOUNT}: 10000 Authentication error \\(HTTP 403\\)\\)\\. The token needs Account → Workers Scripts → Edit, for the account of CLOUDFLARE_ACCOUNT_ID\\.`,
+      ),
     );
     assert.match(res.summary, /BROWSER_RENDERING_API_TOKEN is expired/);
     assert.match(res.summary, /SUPABASE_ANON_KEY is not a key of the project/);
     assert.deepEqual(changes(w), []);
+  });
+
+  it("account B's token: refused, inactive, or without Workers on account B", async () => {
+    // A token of account A pasted as the sandbox token: it cannot reach account B.
+    const w = world();
+    const wrong = await run(w, {
+      argv: ['--target', 'check'],
+      env: { CLOUDFLARE_SANDBOX_API_TOKEN: T.cf },
+    });
+    assert.equal(wrong.code, 1);
+    assert.match(
+      wrong.summary,
+      /CLOUDFLARE_SANDBOX_API_TOKEN cannot use Workers on account B \(the sandbox shell, CLOUDFLARE_SANDBOX_ACCOUNT_ID\).*Account → Workers Scripts → Edit, for the account of CLOUDFLARE_SANDBOX_ACCOUNT_ID/,
+    );
+    const w2 = world();
+    w2.st.tokens.get(T.cfb).status = 'disabled';
+    const off = await run(w2, { argv: ['--target', 'check'] });
+    assert.match(
+      off.summary,
+      /CLOUDFLARE_SANDBOX_API_TOKEN is disabled, not active: create a new token in account B/,
+    );
+    const w3 = world();
+    w3.st.tokens.delete(T.cfb);
+    const gone = await run(w3, { argv: ['--target', 'check'] });
+    assert.match(gone.summary, /CLOUDFLARE_SANDBOX_API_TOKEN was refused by Cloudflare/);
+    for (const r of [wrong, off, gone]) assertNoLeaks(r, Object.values(T));
+    assert.deepEqual([...changes(w), ...changes(w2), ...changes(w3)], []);
+  });
+
+  it('A = B never reaches Cloudflare: refused with the reason, nothing called', async () => {
+    const w = world();
+    const res = await run(w, { env: { CLOUDFLARE_SANDBOX_ACCOUNT_ID: ACCOUNT } });
+    assert.equal(res.code, 1);
+    assert.match(res.summary, /### Failed: Settings/);
+    assert.match(
+      res.summary,
+      /the same account as CLOUDFLARE_ACCOUNT_ID.*SECOND Cloudflare account.*another site than the app/,
+    );
+    assert.equal(w.st.events.length, 0);
   });
 
   it('the Browser Rendering token is only verified (/user/tokens/verify), nothing else', async () => {
@@ -863,25 +1109,26 @@ describe('deploy: settings and preflight', () => {
     assert.match(refused.summary, /BROWSER_RENDERING_API_TOKEN was refused.*Browser Run → Edit/);
   });
 
-  it('accepts an account-owned Cloudflare deploy token', async () => {
+  it('accepts account-owned Cloudflare deploy tokens, each verified on its own account', async () => {
     const w = world();
     w.st.tokens.get(T.cf).kind = 'account';
+    w.st.tokens.get(T.cfb).kind = 'account';
     const res = await run(w, { argv: ['--target', 'check'] });
     assert.equal(res.code, 0, res.summary);
     assert.match(res.summary, /CLOUDFLARE_API_TOKEN\*\*: active \(account token\)/);
+    assert.match(res.summary, /CLOUDFLARE_SANDBOX_API_TOKEN\*\*: active \(account token\)/);
+    const verified = http(w).filter(
+      (e) => e.path.endsWith('/tokens/verify') && e.path.includes('/accounts/'),
+    );
+    assert.deepEqual(
+      verified.map((e) => `${e.token} ${e.path.split('/')[4]}`),
+      [`cf ${ACCOUNT}`, `cfb ${ACCOUNT_B}`],
+    );
   });
 
-  it('refuses a wrong Supabase access token, a Git-connected project, remote-only migrations', async () => {
+  it('refuses a wrong Supabase access token, remote-only migrations', async () => {
     const w = world({ remoteOnly: ['20250101000000'] });
-    w.st.projects.set('build-roulette-web', {
-      name: 'build-roulette-web',
-      subdomain: 'build-roulette-web.pages.dev',
-      production_branch: 'main',
-      source: { type: 'github' },
-      deployment_configs: { production: { env_vars: {} } },
-    });
     const res = await run(w, { argv: ['--target', 'check'] });
-    assert.match(res.summary, /connected to Git \(github\)/);
     assert.match(res.summary, /migrations that this repository does not \(20250101000000\)/);
     const w2 = world();
     const res2 = await run(w2, {
@@ -957,7 +1204,7 @@ describe('deploy: settings and preflight', () => {
       writes(w).filter((e) => !e.path.endsWith('/database/query')),
       [],
     );
-    assert.equal(w.st.projects.size, 0);
+    assert.deepEqual(w.st.accountSubdomains, { [ACCOUNT]: null, [ACCOUNT_B]: null });
   });
 
   it('a write the scoped token may not do fails with the token hint', async () => {
@@ -983,20 +1230,20 @@ describe('deploy: settings and preflight', () => {
 });
 
 describe('deploy: target all', () => {
-  it('a first run creates the projects, generates both secrets and deploys everything, in order', async () => {
+  it('a first run registers both subdomains, generates both secrets and deploys everything, in order', async () => {
     const w = world();
     const res = await run(w);
     assert.equal(res.code, 0, res.summary);
 
-    // Pages projects created, with production branch main.
-    const creates = writes(w).filter(
-      (e) => e.method === 'POST' && e.path.endsWith('/pages/projects'),
+    // The workers.dev subdomains: one per account, the defaults.
+    const puts = writes(w).filter(
+      (e) => e.method === 'PUT' && e.path.endsWith('/workers/subdomain'),
     );
     assert.deepEqual(
-      creates.map((e) => e.body),
+      puts.map((e) => [e.path.split('/')[4], e.token, e.body]),
       [
-        { name: 'build-roulette-web', production_branch: 'main' },
-        { name: 'build-roulette-sandbox', production_branch: 'main' },
+        [ACCOUNT, 'cf', { subdomain: 'buildroulette' }],
+        [ACCOUNT_B, 'cfb', { subdomain: 'buildroulette-sandbox' }],
       ],
     );
     // Vault: two generated secrets (64 hex) and the function URL.
@@ -1006,23 +1253,38 @@ describe('deploy: target all', () => {
     assert.match(capture, /^[0-9a-f]{64}$/);
     assert.notEqual(cron, capture);
     assert.equal(w.st.vault.get(VAULT.functionUrl), `https://${REF}.supabase.co/functions/v1/jobs`);
-    // The function's secrets.
+    // The function's secrets: the shell's capture page on account B's subdomain; Browser
+    // Rendering stays on account A.
     assert.deepEqual(Object.fromEntries(w.st.fnSecrets), {
       JOBS_CRON_SECRET: cron,
-      CAPTURE_SHELL_URL: 'https://build-roulette-sandbox.pages.dev/v1/capture',
+      CAPTURE_SHELL_URL: `${SHELL}capture`,
       CAPTURE_HMAC_SECRET: capture,
       PKG_CDN_URL: 'https://esm.sh',
       BROWSER_RENDERING_ACCOUNT_ID: ACCOUNT,
       BROWSER_RENDERING_API_TOKEN: T.br,
     });
-    // The shell's Pages secret is the same capture secret.
-    const shellVars =
-      w.st.projects.get('build-roulette-sandbox').deployment_configs.production.env_vars;
-    assert.deepEqual(shellVars.CAPTURE_HMAC_SECRET, { type: 'secret_text', value: capture });
+    // The Workers: the app on account A, the shell on account B with the same capture secret,
+    // set with its version through a private file (mode 600), and both routes on.
+    assert.deepEqual(
+      [...w.st.scripts.keys()],
+      [`${ACCOUNT_B}/build-roulette-sandbox`, `${ACCOUNT}/build-roulette-web`],
+    );
+    const shellWorker = w.st.scripts.get(`${ACCOUNT_B}/build-roulette-sandbox`);
+    assert.deepEqual(shellWorker.secrets, { CAPTURE_HMAC_SECRET: capture });
+    assert.deepEqual(
+      w.st.secretFiles.map((f) => [f.mode, f.names]),
+      [[0o600, ['CAPTURE_HMAC_SECRET']]],
+    );
+    assert.ok(!existsSync(w.st.secretFiles[0].file), 'the secrets file is gone');
+    assert.deepEqual(w.st.scripts.get(`${ACCOUNT}/build-roulette-web`).secrets, {});
+    for (const sc of w.st.scripts.values()) {
+      assert.equal(sc.enabled, true);
+      assert.equal(sc.previews_enabled, false);
+    }
     // Auth.
     assert.equal(w.st.auth.external_anonymous_users_enabled, true);
-    assert.equal(w.st.auth.site_url, 'https://build-roulette-web.pages.dev');
-    assert.equal(w.st.auth.uri_allow_list, 'https://build-roulette-web.pages.dev');
+    assert.equal(w.st.auth.site_url, APP);
+    assert.equal(w.st.auth.uri_allow_list, APP);
     assert.equal(w.st.auth.security_captcha_enabled, false);
 
     // The commands, in order, with what each needs and nothing more.
@@ -1032,10 +1294,10 @@ describe('deploy: target all', () => {
       'supabase db push',
       'supabase functions deploy',
       'pnpm --filter @br/sandbox-shell build',
-      'pnpm --filter @br/web exec wrangler pages deploy dist --cwd ../sandbox-shell --project-name build-roulette-sandbox --branch main',
+      'pnpm --filter @br/sandbox-shell workers:deploy --name build-roulette-sandbox --secrets-file <file>',
       'pnpm --filter @br/web build',
-      'pnpm --filter @br/web pages:deploy --branch main',
-      `node /repo/scripts/deploy-check.mjs --app https://build-roulette-web.pages.dev --shell https://build-roulette-sandbox.pages.dev/v1/ --supabase https://${REF}.supabase.co --cdn https://esm.sh --json`,
+      'pnpm --filter @br/web workers:deploy --name build-roulette-web',
+      `node /repo/scripts/deploy-check.mjs --app ${APP} --shell ${SHELL} --supabase https://${REF}.supabase.co --cdn https://esm.sh --json`,
     ]);
     const [link, list, push, fn, shellBuild, shellDeploy, webBuild, webDeploy, check] = runs(w);
     for (const r of [link, list, push]) {
@@ -1057,12 +1319,18 @@ describe('deploy: target all', () => {
       REF,
     ]);
     assert.equal(fn.env.SUPABASE_DB_PASSWORD, undefined);
-    assert.equal(shellBuild.env.BR_APP_ORIGINS, 'https://build-roulette-web.pages.dev');
+    assert.equal(shellBuild.env.BR_APP_ORIGINS, APP);
     assert.equal(shellBuild.env.BR_PKG_CDN_URL, 'https://esm.sh');
+    // Each wrangler deploy gets its own account's token and id, and nothing else.
+    assert.equal(shellDeploy.env.CLOUDFLARE_API_TOKEN, '<secret:CLOUDFLARE_SANDBOX_API_TOKEN>');
+    assert.equal(shellDeploy.env.CLOUDFLARE_ACCOUNT_ID, ACCOUNT_B);
+    assert.equal(webDeploy.env.CLOUDFLARE_API_TOKEN, '<secret:CLOUDFLARE_API_TOKEN>');
+    assert.equal(webDeploy.env.CLOUDFLARE_ACCOUNT_ID, ACCOUNT);
     for (const r of [shellDeploy, webDeploy]) {
-      assert.equal(r.env.CLOUDFLARE_API_TOKEN, '<secret:CLOUDFLARE_API_TOKEN>');
-      assert.equal(r.env.CLOUDFLARE_ACCOUNT_ID, ACCOUNT);
       assert.equal(r.env.SUPABASE_ACCESS_TOKEN, undefined);
+      assert.equal(r.env.CLOUDFLARE_SANDBOX_API_TOKEN, undefined);
+      assert.equal(r.env.CLOUDFLARE_SANDBOX_ACCOUNT_ID, undefined);
+      assert.ok(!r.args.some((a) => a.includes(capture)), 'the secret is never an argument');
     }
     assert.deepEqual(
       Object.fromEntries(
@@ -1071,14 +1339,15 @@ describe('deploy: target all', () => {
       {
         NEXT_PUBLIC_SUPABASE_URL: `https://${REF}.supabase.co`,
         NEXT_PUBLIC_SUPABASE_ANON_KEY: '<secret:SUPABASE_ANON_KEY>',
-        NEXT_PUBLIC_SANDBOX_SHELL_URL: 'https://build-roulette-sandbox.pages.dev/v1/',
+        NEXT_PUBLIC_SANDBOX_SHELL_URL: SHELL,
         NEXT_PUBLIC_PKG_CDN_URL: 'https://esm.sh',
-        NEXT_PUBLIC_SITE_URL: 'https://build-roulette-web.pages.dev',
+        NEXT_PUBLIC_SITE_URL: APP,
       },
     );
     for (const r of [shellBuild, webBuild]) {
       for (const name of [
         'CLOUDFLARE_API_TOKEN',
+        'CLOUDFLARE_SANDBOX_API_TOKEN',
         'SUPABASE_ACCESS_TOKEN',
         'SUPABASE_DB_PASSWORD',
         'BROWSER_RENDERING_API_TOKEN',
@@ -1093,18 +1362,51 @@ describe('deploy: target all', () => {
     assert.equal(check.env.SUPABASE_ANON_KEY, '<secret:SUPABASE_ANON_KEY>');
     assert.equal(check.env.JOBS_CRON_SECRET, '<secret:JOBS_CRON_SECRET>');
 
-    // The summary: URLs, outcomes, deploy-check, next steps.
+    // The summary: URLs, accounts, outcomes, deploy-check, next steps.
     assert.match(res.summary, /## Deploy, target `all`: succeeded/);
-    assert.match(res.summary, /\| App \| https:\/\/build-roulette-web\.pages\.dev \|/);
-    assert.match(res.summary, /\| Pages project build-roulette-web \| created \|/);
+    assert.match(res.summary, new RegExp(`\\| App \\| ${APP.replaceAll('.', '\\.')} \\|`));
+    assert.match(
+      res.summary,
+      new RegExp(`\\| Sandbox shell \\| ${SHELL.replaceAll('.', '\\.')} \\|`),
+    );
+    assert.match(
+      res.summary,
+      new RegExp(
+        `\\| Cloudflare accounts \\| A ${ACCOUNT} \\(the app\\): buildroulette\\.workers\\.dev; B ${ACCOUNT_B} \\(the sandbox shell\\): buildroulette-sandbox\\.workers\\.dev \\|`,
+      ),
+    );
+    assert.match(
+      res.summary,
+      /\| workers\.dev subdomain, account A \(the app\) \| created \| buildroulette\.workers\.dev \|/,
+    );
+    assert.match(
+      res.summary,
+      /\| workers\.dev subdomain, account B \(the sandbox shell\) \| created \| buildroulette-sandbox\.workers\.dev \|/,
+    );
+    assert.match(
+      res.summary,
+      /\| Sandbox shell, Worker build-roulette-sandbox \| deployed \| .*account B; CAPTURE_HMAC_SECRET from Vault/,
+    );
+    assert.match(
+      res.summary,
+      /\| Web app, Worker build-roulette-web \| deployed \| .*\(account A\) \|/,
+    );
+    assert.match(
+      res.summary,
+      /\| workers\.dev route of build-roulette-web \| unchanged \| on \(no preview URLs\) \|/,
+    );
     assert.match(res.summary, /\| JOBS_CRON_SECRET \(Vault br_jobs_cron_secret\) \| created \|/);
     assert.match(res.summary, /\| CAPTCHA \| skipped \| no Turnstile keys set \|/);
     assert.match(res.summary, /### deploy-check\n\n2 passed, 1 warnings, 0 failed/);
     assert.match(res.summary, /\| WARN \| preview: a finished battle \|/);
     assert.match(res.summary, /Create the moderator: Supabase → Authentication → Users/);
     assert.match(res.summary, /DEPLOY\.md §6\.2/);
-    assert.match(res.outputs, /^app_url=https:\/\/build-roulette-web\.pages\.dev$/m);
-    assert.match(res.outputs, /^shell_url=https:\/\/build-roulette-sandbox\.pages\.dev\/v1\/$/m);
+    assert.match(
+      res.summary,
+      /The old Cloudflare Pages projects .*Workers & Pages → the project \(build-roulette-web, build-roulette-sandbox\) → Settings → Delete/,
+    );
+    assert.match(res.outputs, new RegExp(`^app_url=${APP}$`, 'm'));
+    assert.match(res.outputs, new RegExp(`^shell_url=${SHELL}$`, 'm'));
     assert.match(res.stdout, /Next steps:/, 'a readable form on stdout too');
     assertNoLeaks(res, allSecrets(w));
   });
@@ -1114,6 +1416,8 @@ describe('deploy: target all', () => {
     assert.equal((await run(w)).code, 0);
     const vaultBefore = new Map(w.st.vault);
     const fnBefore = new Map(w.st.fnSecrets);
+    const subdomainsBefore = { ...w.st.accountSubdomains };
+    const shellSecrets = { ...w.st.scripts.get(`${ACCOUNT_B}/build-roulette-sandbox`).secrets };
     w.st.events.length = 0;
     w.st.sql.length = 0;
 
@@ -1121,17 +1425,27 @@ describe('deploy: target all', () => {
     assert.equal(res.code, 0, res.summary);
     assert.deepEqual(w.st.vault, vaultBefore);
     assert.deepEqual(w.st.fnSecrets, fnBefore);
-    const changes = writes(w).filter((e) => !e.path.endsWith('/database/query'));
-    // Only the shell's Pages secret is set again (Cloudflare never shows it back).
+    assert.deepEqual(w.st.accountSubdomains, subdomainsBefore);
+    // The shell's version carries the same secret again (wrangler uploads it with every
+    // version; Cloudflare never shows it back).
+    assert.deepEqual(w.st.scripts.get(`${ACCOUNT_B}/build-roulette-sandbox`).secrets, shellSecrets);
+    // No API write at all: no subdomain registered, no route turned on, nothing in Supabase.
     assert.deepEqual(
-      changes.map((e) => `${e.method} ${e.path.replace(/^.*\/pages\/projects/, 'pages/projects')}`),
-      ['PATCH pages/projects/build-roulette-sandbox'],
+      writes(w).filter((e) => !e.path.endsWith('/database/query')),
+      [],
     );
     assert.ok(
       w.st.sql.every((q) => !/create_secret|update_secret/.test(q)),
       'no Vault writes',
     );
-    assert.match(res.summary, /\| Pages project build-roulette-web \| unchanged \|/);
+    assert.match(
+      res.summary,
+      /\| workers\.dev subdomain, account A \(the app\) \| unchanged \| buildroulette\.workers\.dev \|/,
+    );
+    assert.match(
+      res.summary,
+      /\| workers\.dev subdomain, account B \(the sandbox shell\) \| unchanged \|/,
+    );
     assert.match(
       res.summary,
       /\| JOBS_CRON_SECRET \(Vault br_jobs_cron_secret\) \| unchanged \| kept \|/,
@@ -1144,10 +1458,9 @@ describe('deploy: target all', () => {
     assert.match(res.summary, /\| Database migrations \| unchanged \| already up to date \|/);
     assert.match(res.summary, /\| Auth settings \| unchanged \|/);
     assert.match(res.summary, /\| Function secrets \| unchanged \|/);
-    assert.match(
-      res.summary,
-      /\| Pages secret CAPTURE_HMAC_SECRET \| updated \| set again from Vault/,
-    );
+    assert.match(res.summary, /\| workers\.dev route of build-roulette-sandbox \| unchanged \|/);
+    // Nothing new: deploy-check gets the usual retries only.
+    assert.deepEqual(res.sleeps, []);
     assertNoLeaks(res, allSecrets(w));
   });
 
@@ -1181,17 +1494,21 @@ describe('deploy: target all', () => {
     assert.match(res.summary, /br_jobs_cron_secret is not usable.*delete from vault\.secrets/);
   });
 
-  it('a suffixed pages.dev name reaches every URL, origin and build setting', async () => {
-    const w = world({
-      subdomains: {
-        'build-roulette-web': 'build-roulette-web-3xk.pages.dev',
-        'build-roulette-sandbox': 'build-roulette-sandbox-9q2.pages.dev',
-      },
-    });
+  it('a taken default subdomain: a short random suffix, in every URL, origin and setting', async () => {
+    const w = world({ taken: new Set(['buildroulette', 'buildroulette-sandbox']) });
     const res = await run(w);
     assert.equal(res.code, 0, res.summary);
-    const app = 'https://build-roulette-web-3xk.pages.dev';
-    const shell = 'https://build-roulette-sandbox-9q2.pages.dev/v1/';
+    const subA = w.st.accountSubdomains[ACCOUNT];
+    const subB = w.st.accountSubdomains[ACCOUNT_B];
+    assert.match(subA, /^buildroulette-[0-9a-f]{4}$/);
+    assert.match(subB, /^buildroulette-sandbox-[0-9a-f]{4}$/);
+    const puts = writes(w).filter((e) => e.method === 'PUT');
+    assert.deepEqual(
+      puts.map((e) => e.body.subdomain),
+      ['buildroulette', subA, 'buildroulette-sandbox', subB],
+    );
+    const app = `https://build-roulette-web.${subA}.workers.dev`;
+    const shell = `https://build-roulette-sandbox.${subB}.workers.dev/v1/`;
     assert.equal(w.st.fnSecrets.get('CAPTURE_SHELL_URL'), `${shell}capture`);
     assert.equal(pnpmRun(w, 'sandbox-shell build').env.BR_APP_ORIGINS, app);
     const webBuild = pnpmRun(w, '@br/web build');
@@ -1203,52 +1520,141 @@ describe('deploy: target all', () => {
     assert.equal(argAfter(check.args, '--app'), app);
     assert.equal(argAfter(check.args, '--shell'), shell);
     assert.match(res.summary, new RegExp(`\\| App \\| ${app.replaceAll('.', '\\.')} \\|`));
+    assert.match(
+      res.summary,
+      new RegExp(
+        `\\| workers\\.dev subdomain, account A \\(the app\\) \\| created \\| ${subA}\\.workers\\.dev \\|`,
+      ),
+    );
     assert.match(res.outputs, new RegExp(`app_url=${app}`));
+    assert.match(res.stdout, /the workers\.dev subdomain buildroulette is taken; trying another/);
   });
 
-  it('a custom APP_URL: the app address everywhere, and the pages.dev origin may frame the shell too', async () => {
+  it('every suffix taken, or an explicit subdomain taken: a clear failure, nothing deployed', async () => {
+    // The fake registry says every name is taken.
+    const w = world();
+    w.st.taken = { has: () => true, add: () => {} };
+    const res = await run(w);
+    assert.equal(res.code, 1);
+    assert.match(res.summary, /### Failed: Cloudflare accounts: workers\.dev subdomains/);
+    assert.match(
+      res.summary,
+      /No workers\.dev subdomain could be registered for account A: buildroulette, buildroulette-[0-9a-f]{4}, .* are taken\. Set CF_WORKERS_SUBDOMAIN to a name of your choice\./,
+    );
+    assert.equal(writes(w).filter((e) => e.method === 'PUT').length, SUBDOMAIN_SUFFIX_TRIES + 1);
+    assert.deepEqual(
+      runs(w).filter((r) => r.cmd === 'pnpm'),
+      [],
+    );
+
+    const w2 = world({ taken: new Set(['my-games']) });
+    const res2 = await run(w2, { env: { CF_WORKERS_SUBDOMAIN: 'my-games' } });
+    assert.equal(res2.code, 1);
+    assert.match(
+      res2.summary,
+      /The workers\.dev subdomain my-games \(CF_WORKERS_SUBDOMAIN\) is taken: workers\.dev subdomains are global across Cloudflare\. Set CF_WORKERS_SUBDOMAIN to another name/,
+    );
+    assert.equal(
+      writes(w2).filter((e) => e.method === 'PUT').length,
+      1,
+      'no suffix for a chosen name',
+    );
+  });
+
+  it('chosen subdomains are registered as given', async () => {
+    const w = world();
+    const res = await run(w, {
+      env: { CF_WORKERS_SUBDOMAIN: 'my-games', CF_SANDBOX_WORKERS_SUBDOMAIN: 'my-sandbox' },
+    });
+    assert.equal(res.code, 0, res.summary);
+    assert.deepEqual(w.st.accountSubdomains, { [ACCOUNT]: 'my-games', [ACCOUNT_B]: 'my-sandbox' });
+    assert.equal(
+      argAfter(smokeRun(w).args, '--app'),
+      'https://build-roulette-web.my-games.workers.dev',
+    );
+  });
+
+  it('a Worker whose workers.dev route is off gets it turned on (without preview URLs)', async () => {
+    const w = deployedWorld({ routeOff: true });
+    const res = await run(w);
+    assert.equal(res.code, 0, res.summary);
+    const posts = writes(w).filter((e) => e.method === 'POST' && e.path.endsWith('/subdomain'));
+    assert.deepEqual(
+      posts.map((e) => [e.path.split('/')[4], e.path.split('/')[7], e.body]),
+      [
+        [ACCOUNT_B, 'build-roulette-sandbox', { enabled: true, previews_enabled: false }],
+        [ACCOUNT, 'build-roulette-web', { enabled: true, previews_enabled: false }],
+      ],
+    );
+    assert.match(
+      res.summary,
+      /\| workers\.dev route of build-roulette-web \| updated \| turned on/,
+    );
+    for (const sc of w.st.scripts.values()) assert.equal(sc.enabled, true);
+  });
+
+  it('a custom APP_URL: the app address everywhere, and the workers.dev origin may frame the shell too', async () => {
     const w = world({ auth: { ...world().st.auth, uri_allow_list: 'http://localhost:3000' } });
     const res = await run(w, { env: { APP_URL: 'https://play.example.com' } });
     assert.equal(res.code, 0, res.summary);
     assert.equal(
       pnpmRun(w, 'sandbox-shell build').env.BR_APP_ORIGINS,
-      'https://play.example.com,https://build-roulette-web.pages.dev',
+      `https://play.example.com,${APP}`,
     );
     assert.equal(pnpmRun(w, '@br/web build').env.NEXT_PUBLIC_SITE_URL, 'https://play.example.com');
     assert.equal(w.st.auth.site_url, 'https://play.example.com');
-    assert.equal(
-      w.st.auth.uri_allow_list,
-      'http://localhost:3000,https://play.example.com,https://build-roulette-web.pages.dev',
-    );
+    assert.equal(w.st.auth.uri_allow_list, `http://localhost:3000,https://play.example.com,${APP}`);
     assert.equal(argAfter(smokeRun(w).args, '--app'), 'https://play.example.com');
   });
 
-  it("refuses an APP_URL on pages.dev that is not the web project's", async () => {
-    const w = world();
-    const res = await run(w, { env: { APP_URL: 'https://build-roulette-web.pages.dev' } });
-    assert.equal(res.code, 0, 'the default address itself is fine');
-    const w2 = world({ subdomains: { 'build-roulette-web': 'build-roulette-web-3xk.pages.dev' } });
-    const res2 = await run(w2, { env: { APP_URL: 'https://build-roulette-web.pages.dev' } });
-    assert.equal(res2.code, 1);
+  it('moves Auth from the old pages.dev address to the new one, keeping the old entry', async () => {
+    const old = 'https://build-roulette-web.pages.dev';
+    const w = deployedWorld({ auth: { ...world().st.auth, site_url: old, uri_allow_list: old } });
+    const res = await run(w);
+    assert.equal(res.code, 0, res.summary);
+    assert.equal(w.st.auth.site_url, APP);
+    assert.equal(w.st.auth.uri_allow_list, `${old},${APP}`);
     assert.match(
-      res2.summary,
-      /not the web project's \(https:\/\/build-roulette-web-3xk\.pages\.dev\)/,
+      res.summary,
+      new RegExp(`\\| Auth settings \\| updated \\| .*site URL ${APP.replaceAll('.', '\\.')}`),
     );
   });
 
-  it('other project names, an existing production branch, and the optional build settings', async () => {
-    const w = world();
-    w.st.projects.set('my-shell', {
-      name: 'my-shell',
-      subdomain: 'my-shell.pages.dev',
-      production_branch: 'production',
-      deployment_configs: { production: { env_vars: {}, wrangler_config_hash: 'h1' } },
+  it("refuses an APP_URL on workers.dev that is not the web Worker's", async () => {
+    const w = deployedWorld();
+    const res = await run(w, { env: { APP_URL: APP } });
+    assert.equal(res.code, 0, 'the default address itself is fine');
+    // Refused in the preflight, before anything changes.
+    const w2 = deployedWorld();
+    const res2 = await run(w2, {
+      env: { APP_URL: 'https://build-roulette-web.someone-else.workers.dev' },
     });
+    assert.equal(res2.code, 1);
+    assert.match(res2.summary, /### Failed: Preflight/);
+    assert.match(
+      res2.summary,
+      new RegExp(`not the web Worker's \\(${APP.replaceAll('.', '\\.')}\\)`),
+    );
+    assert.deepEqual(changes(w2), []);
+    assert.deepEqual(
+      runs(w2).filter((r) => r.cmd === 'pnpm'),
+      [],
+    );
+    // Account A without a subdomain yet: no workers.dev address can be the Worker's.
+    const w3 = world();
+    const res3 = await run(w3, { env: { APP_URL: APP } });
+    assert.equal(res3.code, 1);
+    assert.match(res3.summary, /account A has no workers\.dev subdomain yet/);
+    assert.deepEqual(changes(w3), []);
+  });
+
+  it('other Worker names, and the optional build settings', async () => {
+    const w = world();
     const sentry = `https://${hex(16)}@o1.ingest.sentry.io/2`;
     const res = await run(w, {
       env: {
-        CF_PAGES_WEB_PROJECT: 'my-web',
-        CF_PAGES_SHELL_PROJECT: 'my-shell',
+        CF_WEB_WORKER: 'my-web',
+        CF_SANDBOX_WORKER: 'my-shell',
         PKG_CDN_URL: 'https://cdn.example.com/',
         NEXT_PUBLIC_SENTRY_DSN: sentry,
         NEXT_PUBLIC_POSTHOG_KEY: `phc_${hex(10)}`,
@@ -1256,19 +1662,21 @@ describe('deploy: target all', () => {
       },
     });
     assert.equal(res.code, 0, res.summary);
-    const shellDeploy = pnpmRun(w, 'wrangler pages deploy');
-    assert.equal(argAfter(shellDeploy.args, '--project-name'), 'my-shell');
-    assert.equal(argAfter(shellDeploy.args, '--branch'), 'production');
-    const webDeploy = pnpmRun(w, 'pages:deploy');
-    assert.deepEqual(webDeploy.args.slice(3), ['--branch', 'main', '--project-name', 'my-web']);
+    assert.equal(argAfter(pnpmRun(w, SHELL_DEPLOY).args, '--name'), 'my-shell');
+    assert.deepEqual(pnpmRun(w, WEB_DEPLOY).args.slice(3), ['--name', 'my-web']);
+    assert.deepEqual([...w.st.scripts.keys()], [`${ACCOUNT_B}/my-shell`, `${ACCOUNT}/my-web`]);
     const env = pnpmRun(w, '@br/web build').env;
     assert.equal(env.NEXT_PUBLIC_SENTRY_DSN, sentry);
     assert.equal(env.NEXT_PUBLIC_POSTHOG_HOST, 'https://eu.i.posthog.com');
     assert.equal(env.NEXT_PUBLIC_PKG_CDN_URL, 'https://cdn.example.com');
+    assert.equal(env.NEXT_PUBLIC_SITE_URL, 'https://my-web.buildroulette.workers.dev');
+    assert.equal(
+      env.NEXT_PUBLIC_SANDBOX_SHELL_URL,
+      'https://my-shell.buildroulette-sandbox.workers.dev/v1/',
+    );
     assert.equal(w.st.fnSecrets.get('PKG_CDN_URL'), 'https://cdn.example.com');
-    const patch = writes(w).find((e) => e.method === 'PATCH' && e.path.endsWith('/my-shell'));
-    assert.equal(patch.body.deployment_configs.production.wrangler_config_hash, 'h1');
     assert.match(res.summary, /with Sentry, PostHog/);
+    assert.match(res.summary, /Sentry \/ PostHog: if their projects only accept listed domains/);
   });
 
   it('turns CAPTCHA on only with both keys, and only after the web deploy', async () => {
@@ -1278,7 +1686,9 @@ describe('deploy: target all', () => {
     });
     assert.equal(res.code, 0, res.summary);
     const events = w.st.events;
-    const webDeploy = events.findIndex((e) => e.kind === 'run' && e.args.includes('pages:deploy'));
+    const webDeploy = events.findIndex(
+      (e) => e.kind === 'run' && e.args.join(' ').includes(WEB_DEPLOY),
+    );
     const captchaPatch = events.findIndex(
       (e) => e.kind === 'http' && e.method === 'PATCH' && e.body?.security_captcha_enabled === true,
     );
@@ -1287,6 +1697,11 @@ describe('deploy: target all', () => {
     assert.equal(w.st.auth.security_captcha_secret, T.turnstileSecret);
     assert.equal(pnpmRun(w, '@br/web build').env.NEXT_PUBLIC_TURNSTILE_SITE_KEY, TURNSTILE_SITE);
     assert.match(res.summary, /\| CAPTCHA \| created \| Cloudflare Turnstile \|/);
+    // The widget must know the new hostname, or nobody can sign in.
+    assert.match(
+      res.summary,
+      /### Warnings\n\n- Turnstile: the widget must list the app's hostname build-roulette-web\.buildroulette\.workers\.dev/,
+    );
     assertNoLeaks(res, allSecrets(w));
 
     w.st.events.length = 0;
@@ -1298,15 +1713,30 @@ describe('deploy: target all', () => {
   });
 
   it('a failed web deploy leaves CAPTCHA off', async () => {
-    const w = world({ fail: (cmd, args) => cmd === 'pnpm' && args.includes('pages:deploy') });
+    const w = world({
+      fail: (cmd, args) => cmd === 'pnpm' && args.join(' ').includes(WEB_DEPLOY),
+    });
     const res = await run(w, {
       env: { TURNSTILE_SITE_KEY: TURNSTILE_SITE, TURNSTILE_SECRET_KEY: T.turnstileSecret },
     });
     assert.equal(res.code, 1);
     assert.equal(w.st.auth.security_captcha_enabled, false);
     assert.match(res.summary, /### Failed: Web app/);
-    assert.match(res.summary, /wrangler pages deploy \(web app\) failed \(exit 1\)/);
+    assert.match(res.summary, /wrangler deploy \(web app, account A\) failed \(exit 1\)/);
     assert.match(res.summary, /- last line/);
+    assertNoLeaks(res, allSecrets(w));
+  });
+
+  it('a failed shell deploy: the secrets file is removed, the secret never printed', async () => {
+    const w = world({
+      fail: (cmd, args) => cmd === 'pnpm' && args.join(' ').includes(SHELL_DEPLOY),
+    });
+    const res = await run(w);
+    assert.equal(res.code, 1);
+    assert.match(res.summary, /### Failed: Sandbox shell/);
+    assert.match(res.summary, /wrangler deploy \(sandbox shell, account B\) failed \(exit 1\)/);
+    assert.ok(!runs(w).some((r) => r.args.join(' ').includes(WEB_DEPLOY)), 'the app waits');
+    // run() checks that the temporary directory is empty again.
     assertNoLeaks(res, allSecrets(w));
   });
 
@@ -1354,14 +1784,15 @@ describe('deploy: target all', () => {
     assert.match(second.summary, /\| Moderator mod@example\.com \| unchanged \|/);
   });
 
-  it('retries deploy-check while Pages propagates; WARNs go to the summary', async () => {
+  it('retries deploy-check while a new version spreads; WARNs go to the summary', async () => {
     const fail = [{ level: 'FAIL', name: 'app / answers 200', detail: 'HTTP 404' }];
-    const w = world({ smoke: [fail, fail] });
+    const w = deployedWorld({ smoke: [fail, fail] });
     const res = await run(w);
     assert.equal(res.code, 0, res.summary);
     assert.deepEqual(res.sleeps, SMOKE_DELAYS_MS.slice(0, 2));
     assert.equal(runs(w).filter((r) => r.cmd === process.execPath).length, 3);
     assert.match(res.summary, /\| WARN \| preview: a finished battle \|/);
+    assert.match(res.stdout, /a new version takes a moment to spread/);
   });
 
   it('fails when deploy-check still FAILs after every try', async () => {
@@ -1373,13 +1804,29 @@ describe('deploy: target all', () => {
         detail: '503: CAPTURE_HMAC_SECRET is not set',
       },
     ];
-    const w = world({ smoke: [fail, fail, fail, fail] });
+    const w = deployedWorld({ smoke: [fail, fail, fail, fail] });
     const res = await run(w);
     assert.equal(res.code, 1);
     assert.deepEqual(res.sleeps, SMOKE_DELAYS_MS);
     assert.match(res.summary, /deploy-check still FAILs after 4 tries/);
     assert.match(res.summary, /\| FAIL \| shell: the capture gate \| 503/);
     assert.match(res.summary, /1 passed, 0 warnings, 1 failed/);
+  });
+
+  it('new addresses get minutes more before deploy-check gives up', async () => {
+    const fail = [{ level: 'FAIL', name: 'app / answers 200', detail: 'fetch failed' }];
+    const w = world({ smoke: Array.from({ length: 6 }, () => fail) });
+    const res = await run(w);
+    assert.equal(res.code, 1);
+    assert.deepEqual(res.sleeps, [...SMOKE_DELAYS_MS, ...NEW_ADDRESS_DELAYS_MS]);
+    assert.match(res.summary, /deploy-check still FAILs after 6 tries/);
+    assert.match(res.stdout, /a new workers\.dev address can take a few minutes to answer/);
+    // A first deploy of a Worker on an account that had its subdomain counts as new too.
+    const w2 = world({ smoke: [fail, fail, fail, fail] });
+    w2.st.accountSubdomains = { [ACCOUNT]: 'buildroulette', [ACCOUNT_B]: 'buildroulette-sandbox' };
+    const res2 = await run(w2);
+    assert.equal(res2.code, 0, 'the fifth try passed');
+    assert.deepEqual(res2.sleeps, [...SMOKE_DELAYS_MS, NEW_ADDRESS_DELAYS_MS[0]]);
   });
 
   it('stops when the schema checks fail after db push', async () => {
@@ -1414,22 +1861,27 @@ describe('deploy: partial targets', () => {
     assert.deepEqual(runs(w), []);
   });
 
-  it('`shell` alone takes the secret from Vault and deploys only the shell', async () => {
+  it('`shell` alone takes the secret from Vault and deploys only the shell, on account B', async () => {
     const capture = hex(32);
     const w = world({ vault: new Map([[VAULT.captureSecret, capture]]) });
     const res = await run(w, { argv: ['--target', 'shell'] });
     assert.equal(res.code, 0, res.summary);
     assert.deepEqual(runs(w).map(commandOf), [
       'pnpm --filter @br/sandbox-shell build',
-      'pnpm --filter @br/web exec wrangler pages deploy dist --cwd ../sandbox-shell --project-name build-roulette-sandbox --branch main',
+      'pnpm --filter @br/sandbox-shell workers:deploy --name build-roulette-sandbox --secrets-file <file>',
     ]);
-    const vars = w.st.projects.get('build-roulette-sandbox').deployment_configs.production.env_vars;
-    assert.equal(vars.CAPTURE_HMAC_SECRET.value, capture);
+    const deployRun = pnpmRun(w, SHELL_DEPLOY);
+    assert.equal(deployRun.env.CLOUDFLARE_ACCOUNT_ID, ACCOUNT_B);
+    assert.equal(deployRun.env.CLOUDFLARE_API_TOKEN, '<secret:CLOUDFLARE_SANDBOX_API_TOKEN>');
+    assert.deepEqual(w.st.scripts.get(`${ACCOUNT_B}/build-roulette-sandbox`).secrets, {
+      CAPTURE_HMAC_SECRET: capture,
+    });
+    assert.equal(pnpmRun(w, 'sandbox-shell build').env.BR_APP_ORIGINS, APP);
     assert.match(res.summary, /Run target \*\*all\*\*/);
     assertNoLeaks(res, [...Object.values(T), capture]);
   });
 
-  it('`web` alone builds and deploys the app (and CAPTCHA), nothing else', async () => {
+  it('`web` alone builds and deploys the app (and CAPTCHA) on account A, nothing else', async () => {
     const w = world();
     const res = await run(w, {
       argv: ['--target', 'web', '--admin-email', 'mod@example.com'],
@@ -1438,8 +1890,11 @@ describe('deploy: partial targets', () => {
     assert.equal(res.code, 0, res.summary);
     assert.deepEqual(runs(w).map(commandOf), [
       'pnpm --filter @br/web build',
-      'pnpm --filter @br/web pages:deploy --branch main',
+      'pnpm --filter @br/web workers:deploy --name build-roulette-web',
     ]);
+    assert.equal(pnpmRun(w, WEB_DEPLOY).env.CLOUDFLARE_ACCOUNT_ID, ACCOUNT);
+    // It still needs the shell's address: account B's subdomain.
+    assert.equal(pnpmRun(w, '@br/web build').env.NEXT_PUBLIC_SANDBOX_SHELL_URL, SHELL);
     assert.match(res.summary, /admin_email is used by the targets all and supabase/);
     assert.equal(w.st.vault.size, 0);
   });
@@ -1454,10 +1909,9 @@ describe('deploy: partial targets', () => {
       'supabase db push',
       'supabase functions deploy',
     ]);
-    assert.equal(
-      w.st.fnSecrets.get('CAPTURE_SHELL_URL'),
-      'https://build-roulette-sandbox.pages.dev/v1/capture',
-    );
+    assert.equal(w.st.fnSecrets.get('CAPTURE_SHELL_URL'), `${SHELL}capture`);
+    assert.equal(w.st.auth.site_url, APP);
+    assert.equal(w.st.scripts.size, 0);
     assert.match(res.summary, /Create the moderator/);
   });
 });

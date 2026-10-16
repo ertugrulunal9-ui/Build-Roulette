@@ -1,13 +1,14 @@
 /**
- * The link-preview Function (T-038) against a Supabase that is slow or down, for the CPU
+ * The link-preview Worker (T-038) against a Supabase that is slow or down, for the CPU
  * measurement (scripts/measure-cpu) and the outage e2e (e2e/link-preview.spec.ts).
  *
- * The Function's Supabase URL is baked in at build time (scripts/preview-worker.ts), so an
- * outage is simulated with a **variant** of the built site: a small Pages directory with the
- * battle shell, the host files of `out/` (`_headers`, `_redirects`, `_routes.json`, `404.html`,
- * `og-card.png`) and the same Function bundled with one change, `NEXT_PUBLIC_SUPABASE_URL`
- * pointing at a {@link MockSupabase} that hangs, refuses connections or answers 503. Nothing
- * in the production build can be redirected at run time.
+ * The Worker's Supabase URL is baked in at build time (scripts/preview-worker.ts), so an
+ * outage is simulated with a **variant** of the built site: a small Worker directory
+ * (T-043) with `assets/` (the battle shell and the host files of `out/`: `_headers`,
+ * `_redirects`, `404.html`, `og-card.png`), `worker.js` (the same Worker bundled with one
+ * change, `NEXT_PUBLIC_SUPABASE_URL` pointing at a {@link MockSupabase} that hangs, refuses
+ * connections or answers 503) and a `wrangler.json` routed like apps/web/wrangler.jsonc.
+ * Nothing in the production build can be redirected at run time.
  */
 import { spawn, type ChildProcess } from 'node:child_process';
 import { copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -16,7 +17,7 @@ import type { AddressInfo, Socket } from 'node:net';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { bundlePreviewWorker, previewRoutesJson } from './preview-worker';
+import { bundlePreviewWorker, siteWranglerConfig } from './preview-worker';
 
 const webDir = fileURLToPath(new URL('../', import.meta.url));
 const outDir = join(webDir, 'out');
@@ -36,22 +37,30 @@ export function everyPathHeaders(headersFile: string): Record<string, string> {
   return headers;
 }
 
+/** The variant's wrangler config, in the directory `writePreviewVariant` wrote. */
+export const variantConfig = (dir: string): string => join(dir, 'wrangler.json');
+
 /**
- * Writes the variant site to `dir` (replacing it): the build's shell and host files, and the
- * Function bundled against `supabaseUrl` (everything else as the build had it).
+ * Writes the variant site to `dir` (replacing it): the build's shell and host files as its
+ * assets, the Worker bundled against `supabaseUrl` (everything else as the build had it), and
+ * its wrangler config ({@link variantConfig}).
  */
 export async function writePreviewVariant(dir: string, supabaseUrl: string): Promise<void> {
   rmSync(dir, { recursive: true, force: true });
-  mkdirSync(dir, { recursive: true });
+  const assets = join(dir, 'assets');
+  mkdirSync(assets, { recursive: true });
   for (const f of ['battles.html', '404.html', 'og-card.png', '_headers', '_redirects']) {
-    copyFileSync(join(outDir, f), join(dir, f));
+    copyFileSync(join(outDir, f), join(assets, f));
   }
   const worker = await bundlePreviewWorker({
     env: { ...process.env, NEXT_PUBLIC_SUPABASE_URL: supabaseUrl },
     headers: everyPathHeaders(readFileSync(join(outDir, '_headers'), 'utf8')),
   });
-  writeFileSync(join(dir, '_worker.js'), worker);
-  writeFileSync(join(dir, '_routes.json'), previewRoutesJson());
+  writeFileSync(join(dir, 'worker.js'), worker);
+  writeFileSync(
+    variantConfig(dir),
+    `${JSON.stringify(siteWranglerConfig({ name: 'build-roulette-web-variant', main: './worker.js', assets: './assets' }), null, 2)}\n`,
+  );
 }
 
 export type SupabaseOutage = 'hang' | 'refuse' | 'error';
@@ -114,8 +123,8 @@ export class MockSupabase {
   }
 }
 
-/** `wrangler pages dev <dir>` on a port, until `stop()`. */
-export async function startPagesDev(
+/** `wrangler dev` on the variant in `dir` (its wrangler.json) on a port, until `stop()`. */
+export async function startWorkerDev(
   dir: string,
   port: number,
 ): Promise<{ origin: string; stop: () => Promise<void> }> {
@@ -123,9 +132,9 @@ export async function startPagesDev(
     process.execPath,
     [
       join(webDir, 'node_modules/wrangler/bin/wrangler.js'),
-      'pages',
       'dev',
-      dir,
+      '--config',
+      variantConfig(dir),
       '--port',
       String(port),
       '--ip',
@@ -157,7 +166,7 @@ export async function startPagesDev(
   };
   const deadline = Date.now() + 90_000;
   for (;;) {
-    if (child.exitCode !== null) throw new Error(`wrangler pages dev exited:\n${output}`);
+    if (child.exitCode !== null) throw new Error(`wrangler dev exited:\n${output}`);
     try {
       const res = await fetch(`${origin}/og-card.png`);
       await res.arrayBuffer();
@@ -167,7 +176,7 @@ export async function startPagesDev(
     }
     if (Date.now() > deadline) {
       await stop();
-      throw new Error(`wrangler pages dev not ready:\n${output}`);
+      throw new Error(`wrangler dev not ready:\n${output}`);
     }
     await sleep(250);
   }

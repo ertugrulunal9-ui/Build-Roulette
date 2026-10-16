@@ -14,6 +14,29 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 /** Shell files are served from `/v{PROTOCOL_VERSION}/` (immutable, versioned). */
 export const SHELL_BASE_PATH = `/v${PROTOCOL_VERSION}/`;
 
+/** The Worker's file in `dist/` (`main` in wrangler.jsonc), never uploaded as an asset. */
+export const WORKER_FILE = 'worker.js';
+
+/**
+ * `dist/.assetsignore`: what wrangler leaves out of the uploaded assets (gitignore syntax;
+ * `_headers`, `_redirects` and the file itself are left out anyway). The Worker's bundle holds
+ * no secret, but it is code, not a page.
+ */
+export const ASSETS_IGNORE = `/${WORKER_FILE}\n`;
+
+/** `dist/404.html`: the answer to an unknown path (404, with the `/*` security headers). */
+export const NOT_FOUND_HTML = `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Not found</title>
+  </head>
+  <body>
+    Not found
+  </body>
+</html>
+`;
+
 export interface BuiltShell {
   html: string;
   js: string;
@@ -60,14 +83,15 @@ export async function buildShell(opts: {
 }
 
 /**
- * Bundles the Cloudflare Pages advanced-mode worker (`dist/_worker.js`): the capture gate in
- * front of the static shell, with the capture page's headers baked in.
+ * Bundles the shell's Worker (`dist/worker.js`, src/worker.ts): the capture gate in front of
+ * the static shell, with the capture page's headers baked in. An ES module, deployed as is
+ * (`no_bundle` in wrangler.jsonc).
  */
-export async function buildPagesWorker(
+export async function buildWorker(
   captureHeaders: Readonly<Record<string, string>>,
 ): Promise<string> {
   const result = await esbuild.build({
-    entryPoints: [path.join(ROOT, 'src/pages-worker.ts')],
+    entryPoints: [path.join(ROOT, 'src/worker.ts')],
     bundle: true,
     write: false,
     format: 'esm',
@@ -79,6 +103,6 @@ export async function buildPagesWorker(
     define: { __BR_CAPTURE_HEADERS__: JSON.stringify(captureHeaders) },
   });
   const js = result.outputFiles[0]?.text;
-  if (js === undefined) throw new Error('pages worker build produced no output');
+  if (js === undefined) throw new Error('shell worker build produced no output');
   return js;
 }

@@ -5,7 +5,7 @@ import { APP_SERVER_ENV, appServerCommand } from './e2e/app-server';
  * Error reporting and analytics end to end (T-030) against a local fake ingest (Sentry
  * envelopes and PostHog batches, `@br/telemetry/testing`, started by the specs on port 4399).
  * Needs the local Supabase stack (rooms, the admin). The app is the static export served by
- * `wrangler pages dev` (e2e/app-server.ts): every event is the browser's (T-037: no server).
+ * `wrangler dev` (e2e/app-server.ts): every event is the browser's (T-037: no server).
  * `pnpm --filter @br/web test:e2e:telemetry` runs both halves, each against its own build:
  *
  * - `E2E_TELEMETRY=on` (`build:telemetry`: the DSN, the PostHog key and host pointing at the

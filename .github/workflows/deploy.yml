@@ -1,22 +1,26 @@
 # One-click deploy of the free setup (T-042; DEPLOY.md, "Deploy with GitHub Actions").
 #
 # Actions → Deploy → Run workflow. The run does on GitHub's servers what DEPLOY.md §2.2,
-# §3.2–§3.8, §4 and §6.1 do by hand: the two Cloudflare Pages projects, the Supabase schema,
-# the generated secrets (kept in Supabase Vault), the Auth settings, the jobs Edge Function and
-# its secrets, the sandbox shell, the web app, CAPTCHA (with Turnstile), the first moderator
-# (input admin_email), and scripts/deploy-check.mjs. Running it again with nothing changed
-# creates nothing and keeps every secret. All the logic is scripts/deploy/deploy.mjs.
+# §3.2–§3.8, §4 and §6.1 do by hand: the workers.dev subdomains of the two Cloudflare
+# accounts (T-043: the web app on account A, the sandbox shell on account B, so the shell is
+# another site), the Supabase schema, the generated secrets (kept in Supabase Vault), the Auth
+# settings, the jobs Edge Function and its secrets, the sandbox shell and the web app as
+# Workers with static assets, CAPTCHA (with Turnstile), the first moderator (input
+# admin_email), and scripts/deploy-check.mjs. Running it again with nothing changed creates
+# nothing and keeps every secret. All the logic is scripts/deploy/deploy.mjs.
 #
 # Targets: `check` verifies the settings and the tokens and changes nothing (the first, safe
 # try); `all` does everything; `supabase`, `shell` and `web` redeploy one part.
 #
 # Settings (repository → Settings → Secrets and variables → Actions; DEPLOY.md lists where each
 # value comes from):
-#   variables  CLOUDFLARE_ACCOUNT_ID, SUPABASE_URL; optional APP_URL, PKG_CDN_URL,
-#              TURNSTILE_SITE_KEY, CF_PAGES_WEB_PROJECT, CF_PAGES_SHELL_PROJECT,
+#   variables  CLOUDFLARE_ACCOUNT_ID (account A), CLOUDFLARE_SANDBOX_ACCOUNT_ID (account B),
+#              SUPABASE_URL; optional APP_URL, PKG_CDN_URL, TURNSTILE_SITE_KEY, CF_WEB_WORKER,
+#              CF_SANDBOX_WORKER, CF_WORKERS_SUBDOMAIN, CF_SANDBOX_WORKERS_SUBDOMAIN,
 #              NEXT_PUBLIC_SENTRY_DSN, NEXT_PUBLIC_POSTHOG_KEY, NEXT_PUBLIC_POSTHOG_HOST
-#   secrets    CLOUDFLARE_API_TOKEN, BROWSER_RENDERING_API_TOKEN, SUPABASE_ACCESS_TOKEN,
-#              SUPABASE_DB_PASSWORD, SUPABASE_ANON_KEY; optional TURNSTILE_SECRET_KEY
+#   secrets    CLOUDFLARE_API_TOKEN (account A), CLOUDFLARE_SANDBOX_API_TOKEN (account B),
+#              BROWSER_RENDERING_API_TOKEN, SUPABASE_ACCESS_TOKEN, SUPABASE_DB_PASSWORD,
+#              SUPABASE_ANON_KEY; optional TURNSTILE_SECRET_KEY
 # The script masks every secret (and the secrets it reads or generates) before printing
 # anything, and writes the run's summary: the app's address, each step's outcome,
 # deploy-check's results and the next manual steps.
@@ -62,7 +66,7 @@ jobs:
     name: Deploy (${{ inputs.target }})
     runs-on: ubuntu-latest
     # A first `all`: install ~2 min, the schema and the function ~3 min, two builds ~5 min,
-    # deploy-check up to ~3 min (estimated).
+    # deploy-check up to ~6 min while new workers.dev addresses start to answer (estimated).
     timeout-minutes: 30
     steps:
       - name: Checkout
@@ -89,16 +93,23 @@ jobs:
           DEPLOY_TARGET: ${{ inputs.target }}
           ADMIN_EMAIL: ${{ inputs.admin_email }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_SANDBOX_ACCOUNT_ID: ${{ vars.CLOUDFLARE_SANDBOX_ACCOUNT_ID }}
           SUPABASE_URL: ${{ vars.SUPABASE_URL }}
           APP_URL: ${{ vars.APP_URL }}
           PKG_CDN_URL: ${{ vars.PKG_CDN_URL }}
           TURNSTILE_SITE_KEY: ${{ vars.TURNSTILE_SITE_KEY }}
+          CF_WEB_WORKER: ${{ vars.CF_WEB_WORKER }}
+          CF_SANDBOX_WORKER: ${{ vars.CF_SANDBOX_WORKER }}
+          CF_WORKERS_SUBDOMAIN: ${{ vars.CF_WORKERS_SUBDOMAIN }}
+          CF_SANDBOX_WORKERS_SUBDOMAIN: ${{ vars.CF_SANDBOX_WORKERS_SUBDOMAIN }}
+          # Read only to warn that they are not used any more (Pages, before T-043).
           CF_PAGES_WEB_PROJECT: ${{ vars.CF_PAGES_WEB_PROJECT }}
           CF_PAGES_SHELL_PROJECT: ${{ vars.CF_PAGES_SHELL_PROJECT }}
           NEXT_PUBLIC_SENTRY_DSN: ${{ vars.NEXT_PUBLIC_SENTRY_DSN }}
           NEXT_PUBLIC_POSTHOG_KEY: ${{ vars.NEXT_PUBLIC_POSTHOG_KEY }}
           NEXT_PUBLIC_POSTHOG_HOST: ${{ vars.NEXT_PUBLIC_POSTHOG_HOST }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_SANDBOX_API_TOKEN: ${{ secrets.CLOUDFLARE_SANDBOX_API_TOKEN }}
           BROWSER_RENDERING_API_TOKEN: ${{ secrets.BROWSER_RENDERING_API_TOKEN }}
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
           SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}

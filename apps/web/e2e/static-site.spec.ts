@@ -3,9 +3,10 @@ import { watchCsp } from './csp';
 import { buildFrame, openPlayground } from './helpers';
 
 /**
- * The static site as Cloudflare Pages serves it (T-037), through `wrangler pages dev out/`
- * (playwright.config.ts): the shells behind `_redirects` rewrites (and `/battles/{id}` behind
- * T-038's link-preview Function), the 404 page, the headers of `_headers`, and no CSP
+ * The static site as Cloudflare serves it (T-037; a Worker with static assets since T-043),
+ * through `wrangler dev` (playwright.config.ts): the shells behind `_redirects` rewrites (and
+ * `/battles/{id}` behind T-038's link-preview Worker), the 404 page, the headers of
+ * `_headers`, and no CSP
  * violation on any page. Needs no Supabase stack: every page is checked in a state it
  * reaches without data (a malformed id, no session). The Function's other cases need the
  * stack: link-preview.spec.ts.

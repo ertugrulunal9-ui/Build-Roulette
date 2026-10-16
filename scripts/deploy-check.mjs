@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 // Checks a deployment of Build Roulette on the free setup (T-036, DEPLOY.md §6): the web app
-// on Cloudflare Pages (headers and CSP, real 404s, the shells, the link-preview Function),
-// the sandbox shell (its CSP and the capture gate), and Supabase (the API, anonymous
+// (a Cloudflare Worker with static assets since T-043: headers and CSP, real 404s, the shells,
+// the link-preview Worker on /battles/*), the sandbox shell (its own Worker on a second
+// account: its CSP, the capture gate, its code not served), and Supabase (the API, anonymous
 // sign-ins, the keep-alive RPC, the jobs Edge Function). Read-only, except that it pings
 // keep_alive like the daily workflow does. Node 22, no dependencies.
 //
 //   node scripts/deploy-check.mjs \
-//     --app https://build-roulette-web.pages.dev \
-//     --shell https://build-roulette-sandbox.pages.dev/v1/ \
+//     --app https://build-roulette-web.<subdomain A>.workers.dev \
+//     --shell https://build-roulette-sandbox.<subdomain B>.workers.dev/v1/ \
 //     --supabase https://<ref>.supabase.co --anon-key <anon or publishable key> \
 //     [--cdn https://esm.sh] [--site https://<the address people share>] \
 //     [--battle <id of a finished battle>] [--cron-secret <JOBS_CRON_SECRET>] [--json]
@@ -80,7 +81,7 @@ export function parseArgs(argv, env = {}) {
   };
 }
 
-/** An http(s) origin-only URL without a trailing slash (`https://x.pages.dev`). */
+/** An http(s) URL without a trailing slash (`https://x.example.workers.dev`). */
 export function baseUrl(value, name) {
   let u;
   try {
@@ -101,7 +102,7 @@ export function shellUrl(value) {
   const u = new URL(base);
   if (!/^\/v\d+$/.test(u.pathname)) {
     throw new Error(
-      '--shell must be the shell URL with its version path, e.g. https://<sandbox>.pages.dev/v1/',
+      '--shell must be the shell URL with its version path, e.g. https://build-roulette-sandbox.<subdomain>.workers.dev/v1/',
     );
   }
   return `${base}/`;
@@ -320,6 +321,17 @@ async function request(fetchImpl, url, init = {}, timeoutMs = TIMEOUT_MS) {
   return { status: res.status, headers: res.headers, body };
 }
 
+/**
+ * Workers Free's daily limit: past 100,000 Worker requests a day (per account, reset at 00:00
+ * UTC) Cloudflare answers every request that would run the Worker with its own 429 page
+ * ("This website has been temporarily rate limited"), while static files are still served.
+ */
+function overDailyLimit(r) {
+  return r.status === 429 && /temporarily rate limited/i.test(r.body);
+}
+const DAILY_LIMIT_TEXT =
+  "HTTP 429: Cloudflare's rate-limit page, the account's Workers Free requests are used up for today (100,000 a day, back at 00:00 UTC)";
+
 function supabaseHeaders(key) {
   const h = { apikey: key };
   // A legacy anon key is a JWT and also goes in Authorization; a publishable key does not.
@@ -339,7 +351,7 @@ export async function runChecks(cfg, fetchImpl = fetch) {
     }
   };
 
-  // ── The web app (Pages) ──
+  // ── The web app (a Worker with static assets, account A) ──
   await step('app /', async () => {
     const r = await request(fetchImpl, `${cfg.app}/`);
     if (r.status !== 200) return fail('app /', `HTTP ${r.status}`);
@@ -351,7 +363,7 @@ export async function runChecks(cfg, fetchImpl = fetch) {
       ? pass('app: an unknown path answers 404')
       : fail(
           'app: an unknown path answers 404',
-          `HTTP ${r.status} (404.html missing from the upload?)`,
+          `HTTP ${r.status} (404.html missing from the upload, or not_found_handling not "404-page"?)`,
         );
   });
   await step('app shells', async () => {
@@ -377,14 +389,15 @@ export async function runChecks(cfg, fetchImpl = fetch) {
       : fail('app /admin: X-Robots-Tag noindex', robots ? robots : 'missing');
   });
 
-  // ── The link-preview Function on /battles/* ──
+  // ── The link-preview Worker on /battles/* ──
   await step('preview malformed', async () => {
     const r = await request(fetchImpl, `${cfg.app}/battles/not-a-battle`);
     const tag = r.headers.get('x-br-preview');
+    if (overDailyLimit(r)) return fail('preview: /battles/* runs the Worker', DAILY_LIMIT_TEXT);
     if (tag === null) {
       return fail(
-        'preview: /battles/* runs the Function',
-        `HTTP ${r.status} without x-br-preview (_worker.js or _routes.json missing?)`,
+        'preview: /battles/* runs the Worker',
+        `HTTP ${r.status} without x-br-preview (the web app's Worker not deployed, or without run_worker_first ["/battles/*"]?)`,
       );
     }
     const out = [
@@ -402,11 +415,12 @@ export async function runChecks(cfg, fetchImpl = fetch) {
     const r = await request(fetchImpl, `${cfg.app}/battles/${randomUUID()}`);
     const tag = r.headers.get('x-br-preview') ?? '';
     if (r.status === 404 && tag === 'not-found') {
-      return pass('preview: an unknown battle answers 404 (the Function reached Supabase)');
+      return pass('preview: an unknown battle answers 404 (the Worker reached Supabase)');
     }
+    if (overDailyLimit(r)) return fail('preview: an unknown battle answers 404', DAILY_LIMIT_TEXT);
     if (tag.startsWith('fail-open')) {
       return fail(
-        'preview: the Function reaches Supabase',
+        'preview: the Worker reaches Supabase',
         `${tag}: check NEXT_PUBLIC_SUPABASE_URL/ANON_KEY of the build and the project`,
       );
     }
@@ -470,7 +484,7 @@ export async function runChecks(cfg, fetchImpl = fetch) {
     );
   }
 
-  // ── The sandbox shell (Pages) ──
+  // ── The sandbox shell (its own Worker with static assets, account B) ──
   await step('shell', async () => {
     const r = await request(fetchImpl, cfg.shell);
     if (r.status !== 200) return fail('shell: the shell page answers 200', `HTTP ${r.status}`);
@@ -482,12 +496,26 @@ export async function runChecks(cfg, fetchImpl = fetch) {
     if (r.status === 503) {
       return fail(
         'shell: the capture gate',
-        "503: CAPTURE_HMAC_SECRET is not set on the shell's Pages project",
+        "503: CAPTURE_HMAC_SECRET is not set on the shell's Worker",
       );
     }
     if (r.status === 200)
       return fail('shell: the capture gate', 'served the capture page WITHOUT a signature');
-    return fail('shell: the capture gate', `HTTP ${r.status} (want 403; is _worker.js deployed?)`);
+    if (overDailyLimit(r)) return fail('shell: the capture gate', DAILY_LIMIT_TEXT);
+    return fail(
+      'shell: the capture gate',
+      `HTTP ${r.status} (want 403; is the shell's Worker deployed, with run_worker_first ["/v1/capture"]?)`,
+    );
+  });
+  await step('shell worker code', async () => {
+    // The Worker's bundle sits next to the assets (dist/worker.js); .assetsignore keeps it out.
+    const r = await request(fetchImpl, `${new URL(cfg.shell).origin}/worker.js`);
+    return r.status === 404
+      ? pass("shell: the Worker's code is not served as a file (404)")
+      : fail(
+          "shell: the Worker's code is not served as a file",
+          `HTTP ${r.status} for /worker.js (dist/.assetsignore missing from the upload?)`,
+        );
   });
 
   // ── Supabase ──

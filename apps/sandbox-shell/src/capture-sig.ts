@@ -4,8 +4,8 @@
  *   https://{build}.<usercontent>/v1/capture?src=<url>&css=<url>&map=<json>&exp=<unix>&sig=<hmac>
  *
  * The capture worker signs the URL with a secret it shares with the shell host's capture
- * gate (`capture-gate.ts`), which runs server-side: a Cloudflare Pages `_worker.js` in
- * production, the local Node server in dev and tests. The secret never reaches the
+ * gate (`capture-gate.ts`), which runs server-side: the shell's Cloudflare Worker
+ * (`worker.ts`) in production, the local Node server in dev and tests. The secret never reaches the
  * browser: the capture page is only served after the gate verified the signature, so the
  * page's JS can use `location.search` as is.
  *

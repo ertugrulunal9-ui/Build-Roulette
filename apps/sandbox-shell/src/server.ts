@@ -10,7 +10,8 @@
  * Routes mirror the static build (scripts/build.ts): `/v{N}/`, `/v{N}/index.html`,
  * `/v{N}/shell.js`, `/v{N}/capture.js`, `/v{N}/reset` (`Clear-Site-Data`, fetched by the
  * shell's `reset-storage`) and `/v{N}/capture`, answered by the same capture gate as the
- * production `_worker.js` (HMAC check with `captureSecret`; without a secret it answers 503).
+ * production Worker (`worker.ts`; HMAC check with `captureSecret`; without a secret it
+ * answers 503).
  * `/v{N}/sw-test.js` is a same-origin script used only by the policy e2e (service worker
  * registration must be rejected); it is not part of the static build.
  */

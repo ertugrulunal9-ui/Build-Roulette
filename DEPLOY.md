@@ -5,8 +5,8 @@ free plan (the user's decision of 2026-10-09, docs/08-free-tier.md):
 
 | Part | Where | Free limit that matters |
 |---|---|---|
-| Web app (`apps/web`): static files + one small Function on `/battles/*` (link previews) | Cloudflare Pages, project `build-roulette-web` | 100,000 Function requests a day (fails open) |
-| Sandbox shell (`apps/sandbox-shell`): runs players' builds, plus the capture gate | Cloudflare Pages, project `build-roulette-sandbox` | none in practice |
+| Web app (`apps/web`): static files + one small Worker on `/battles/*` (link previews) | Cloudflare Workers with static assets, Worker `build-roulette-web` on your Cloudflare account (**A**): `https://build-roulette-web.<subdomain A>.workers.dev` | static files: free and unlimited; 100,000 Worker requests a day for `/battles/*` (after that, until 00:00 UTC, `/battles/*` shows Cloudflare's "rate limited" page) |
+| Sandbox shell (`apps/sandbox-shell`): runs players' builds, plus the capture gate | Cloudflare Workers with static assets, Worker `build-roulette-sandbox` on a **second** free Cloudflare account (**B**): `https://build-roulette-sandbox.<subdomain B>.workers.dev/v1/` | none in practice (only `/v1/capture` runs the Worker: a few requests per battle) |
 | npm packages for the builds | public esm.sh | none (community service, no SLA) |
 | Database, Auth, Realtime, Storage, the `jobs` Edge Function (screenshots and deletes) | Supabase, Free plan | 500 MB database, 1 GB storage, 5 GB egress a month, a pause after 7 idle days (docs/08 §6) |
 | Screenshots | Cloudflare Browser Rendering (REST API) | 10 browser-minutes a day, then the players' own thumbnails |
@@ -17,6 +17,20 @@ About 1,000 battles a month fit, and the screenshots of the first ~2,750 battles
 storage (docs/07 §7.8 says what to upgrade first and when). Plan on one to two hours. Nothing
 here costs money; no credit card is needed (Cloudflare and Supabase may ask for one for other
 products: skip them).
+
+**Why Workers on `workers.dev`, not Pages (T-043).** The first deploy (2026-10) used
+Cloudflare Pages, but `*.pages.dev` is blocked in Turkey (a court/federation order of 2025-11,
+reported active again in 2026-08), where the players are. A Worker on `*.workers.dev` opens
+there without a VPN, so both sites are Workers with static assets now, still on free plans
+(docs/08-free-tier.md §2–§3).
+
+**Why a second Cloudflare account.** The sandbox shell runs players' code, so it must be
+another *site* than the app (docs/01 §1.1, docs/03 §3.5: the preview iframe's
+`allow-same-origin` is safe only because of that). A Worker's address is
+`<worker>.<account subdomain>.workers.dev`, and the Public Suffix List lists `workers.dev` but
+not `*.workers.dev`, so the site is `<account subdomain>.workers.dev`: two Workers of one
+account are one site. The shell therefore goes to a second free account, whose own subdomain is
+another site. The deploy refuses to put both on the same account.
 
 Dashboard labels move from time to time. Where a menu path below does not match, search the
 dashboard for the setting's name. Steps that could not be tried here (no accounts are
@@ -36,40 +50,49 @@ There are two ways to do it:
 The workflow **Deploy** (`.github/workflows/deploy.yml`; the logic is `scripts/deploy/deploy.mjs`)
 runs on GitHub's servers. One run does, in this order:
 
-1. it checks every setting, and both clouds' access;
-2. it creates the two Pages projects (§2.2) and reads back their real addresses;
+1. it checks every setting, and both clouds' access (both Cloudflare accounts);
+2. it reads each Cloudflare account's workers.dev subdomain, registers one when an account has
+   none yet (§2.2), and derives the two addresses from them;
 3. it pushes the schema and checks it (§3.2, §3.3);
 4. it generates the two secrets (§3.8) and keeps them in Supabase Vault;
 5. it sets the Auth settings (§3.6);
 6. it deploys the `jobs` function with its secrets (§3.8);
-7. it builds and deploys the sandbox shell and the web app (§4);
+7. it builds and deploys the sandbox shell (account B, with its secret) and the web app
+   (account A) as Workers, and makes sure each one's workers.dev address is on (§4);
 8. it turns on CAPTCHA when Turnstile is set (§3.6);
 9. it lists the moderator (§3.5);
 10. it runs `scripts/deploy-check.mjs` (§6.1).
 
-Running it again with nothing changed changes nothing that matters: no new projects, no new
+Running it again with nothing changed changes nothing that matters: no new subdomains, no new
 secrets.
 
 ### A. Accounts and the Supabase project
 
 1. **GitHub**: this repository, with Actions allowed (Settings → Actions → General). The
    workflow appears under **Actions** once `deploy.yml` is on the repository's default branch.
-2. **Cloudflare**, Free plan: <https://dash.cloudflare.com/sign-up>.
-3. **Supabase**, Free plan: <https://supabase.com/dashboard>. Then create **the project**
+2. **Cloudflare**, Free plan: <https://dash.cloudflare.com/sign-up>. This is account **A**: the
+   web app and the screenshots.
+3. **A second Cloudflare account**, Free plan, for the sandbox shell: account **B** ("Why a
+   second Cloudflare account" above). Sign up again with another email address; a Gmail
+   address with `+sandbox` before the `@` (`you+sandbox@gmail.com`) usually works and arrives in
+   the same inbox. Nothing else runs on it.
+4. **Supabase**, Free plan: <https://supabase.com/dashboard>. Then create **the project**
    (§3.1): a name (`build-roulette`), a generated **database password** (keep it in your
    password manager), the region closest to most players.
-4. Optional:
-   - a **Turnstile** widget (§2.4). Its hostname is the app's address, which the first run's
-     summary shows; you can add the widget after the first run;
+5. Optional:
+   - a **Turnstile** widget (§2.4), on account A. Its hostname is the app's address, which the
+     first run's summary shows; you can add the widget after the first run;
    - **Sentry** and **PostHog** (`apps/web/DEPLOY.md` → "Observability" → "Accounts").
 
 ### B. Tokens and keys
 
 | Value | Where to get it |
 |---|---|
-| Cloudflare **account id** | Cloudflare dashboard → Workers & Pages → Overview, right column, "Account ID" (32 characters). |
-| Cloudflare **deploy token** | My Profile → API Tokens → **Create Token** → **Create Custom Token**. Name: `Build Roulette deploy`. Permissions: **Account → Cloudflare Pages → Edit**. Account Resources: Include → your account. Continue to summary → Create Token, and copy it (it is shown once). |
-| Cloudflare **screenshot token** | The same again, a **second** token. Name: `Build Roulette screenshots`. Permissions: **Account → Browser Run → Edit** (named Browser Rendering before April 2026). It is a separate token on purpose: it is stored in Supabase as a function secret, and a leak there must not let anyone deploy the site. |
+| Cloudflare **account id** of account A | Signed in to account A: Cloudflare dashboard → Workers & Pages → Overview, right column, "Account ID" (32 characters). |
+| Cloudflare **deploy token** of account A | Signed in to account A: My Profile → API Tokens → **Create Token** → **Create Custom Token**. Name: `Build Roulette deploy`. Permissions: **Account → Workers Scripts → Edit**. Account Resources: Include → account A. Continue to summary → Create Token, and copy it (it is shown once). **You already have one from the Pages setup?** Edit it instead ("Moving from Pages to Workers" below): the value stays the same. |
+| Cloudflare **account id** of account B | Signed in to account B (the second account): the same place, its "Account ID". It must be another id than A's. |
+| Cloudflare **deploy token** of account B | Signed in to account B: the same steps as A's deploy token. Name: `Build Roulette sandbox deploy`. Permissions: **Account → Workers Scripts → Edit**. Account Resources: Include → account B. |
+| Cloudflare **screenshot token** | Signed in to account A: a **separate** token. Name: `Build Roulette screenshots`. Permissions: **Account → Browser Run → Edit** (named Browser Rendering before April 2026). It is a separate token on purpose: it is stored in Supabase as a function secret, and a leak there must not let anyone deploy a site. |
 | Supabase **access token** | supabase.com → your avatar → **Account** → **Access Tokens** → Generate new token (name: `Build Roulette deploy`). A token scoped to this project works when it has **full access to the project**: the run reads the project and its API keys, runs SQL, and changes the Auth settings, the Edge Functions and their secrets. A legacy token (all projects of the account) works too. |
 | **Database password** | The one from §3.1. Forgotten: Project Settings → Database → Reset database password. |
 | **Project URL** | `https://<ref>.supabase.co`; the ref is Project Settings → General → **Project ID** (20 letters). |
@@ -82,8 +105,9 @@ secrets.
   not only this one; a token scoped to this project reaches only this project. You can revoke
   either at any time: Account → Access Tokens → Revoke. The workflow then fails until you save
   a new one.
-- The deploy token can change any Pages project of your Cloudflare account. Revoke it the
-  same way: My Profile → API Tokens.
+- Each deploy token can change any Worker of its own Cloudflare account (and register the
+  account's workers.dev subdomain). Revoke it the same way: My Profile → API Tokens, in that
+  account.
 - Only people with **write access** to the repository can start the workflow. GitHub never
   shows a saved secret again, and does not give secrets to workflows started from forks.
 
@@ -95,31 +119,39 @@ Use the names exactly as written.
 
 | Name | Kind | Needed | Value |
 |---|---|---|---|
-| `CLOUDFLARE_ACCOUNT_ID` | variable | yes | the account id (B) |
+| `CLOUDFLARE_ACCOUNT_ID` | variable | yes | the account id of account A (B) |
+| `CLOUDFLARE_SANDBOX_ACCOUNT_ID` | variable | yes | the account id of account B, the sandbox shell's (B) |
 | `SUPABASE_URL` | variable | yes | `https://<ref>.supabase.co` (the keep-alive uses it too, §5) |
-| `CLOUDFLARE_API_TOKEN` | secret | yes | the deploy token (B) |
+| `CLOUDFLARE_API_TOKEN` | secret | yes | the deploy token of account A (B) |
+| `CLOUDFLARE_SANDBOX_API_TOKEN` | secret | yes | the deploy token of account B (B) |
 | `BROWSER_RENDERING_API_TOKEN` | secret | yes | the screenshot token (B) |
 | `SUPABASE_ACCESS_TOKEN` | secret | yes | the access token (B) |
 | `SUPABASE_DB_PASSWORD` | secret | yes | the database password (B) |
 | `SUPABASE_ANON_KEY` | secret | yes | the publishable or anon key (the keep-alive uses it too, §5) |
 | `TURNSTILE_SITE_KEY` | variable | no | Turnstile's site key: the app shows the challenge |
 | `TURNSTILE_SECRET_KEY` | secret | no | Turnstile's secret key: with the site key, the run turns CAPTCHA on in Supabase |
-| `APP_URL` | variable | no | a custom domain, like `https://play.example.com` (default: the web project's own `https://<name>.pages.dev`) |
+| `APP_URL` | variable | no | a custom domain, like `https://play.example.com` (default: the web Worker's own `https://build-roulette-web.<subdomain A>.workers.dev`; a `pages.dev` address is refused) |
 | `PKG_CDN_URL` | variable | no | the package CDN (default `https://esm.sh`) |
-| `CF_PAGES_WEB_PROJECT`, `CF_PAGES_SHELL_PROJECT` | variables | no | other Pages project names (defaults `build-roulette-web` and `build-roulette-sandbox`; they must differ) |
+| `CF_WORKERS_SUBDOMAIN`, `CF_SANDBOX_WORKERS_SUBDOMAIN` | variables | no | the workers.dev subdomain to register on account A / B **when it has none yet** (defaults `buildroulette` and `buildroulette-sandbox`, with a short random suffix if taken; a name you set is used as is). An account that already has a subdomain keeps it |
+| `CF_WEB_WORKER`, `CF_SANDBOX_WORKER` | variables | no | other Worker names (defaults `build-roulette-web` and `build-roulette-sandbox`); the first part of each address. They replace `CF_PAGES_WEB_PROJECT` and `CF_PAGES_SHELL_PROJECT`, which the run no longer reads (delete them) |
 | `NEXT_PUBLIC_SENTRY_DSN` | variable | no | Sentry's DSN (browser error reports) |
 | `NEXT_PUBLIC_POSTHOG_KEY`, `NEXT_PUBLIC_POSTHOG_HOST` | variables | no | PostHog (analytics; the host defaults to `https://eu.i.posthog.com`) |
 
-Nothing else is needed. The run reads the shell's address from Cloudflare, generates the cron
-and capture secrets, and sets the function's settings itself.
+Nothing else is needed. The run reads (or registers) both accounts' workers.dev subdomains,
+derives the two addresses from them, generates the cron and capture secrets, and sets the
+function's settings itself.
 
 ### D. Run it
 
 1. Actions → **Deploy** → **Run workflow**, target **check** → Run workflow. This run changes
    nothing. It checks:
-   - every setting above (missing or malformed ones are all named at once);
-   - that both Cloudflare tokens are active, and that the deploy token can use Pages on the
-     account;
+   - every setting above (missing or malformed ones are all named at once), including that
+     accounts A and B are **different** accounts (the same account would put the shell on the
+     app's site: the run refuses and says why), and what is missing when account B is not set
+     up yet;
+   - that the three Cloudflare tokens are active, and that each deploy token can use Workers on
+     its own account (it reads the account's workers.dev subdomain: the summary shows it, or
+     "none yet" with the name the run will register);
    - that the Supabase project exists and is **healthy** (a paused project is named as such);
    - that the access token can read what the run needs (the project, SQL, the Auth settings,
      the functions' secrets), and that the Supabase CLI accepts it (`supabase link`, which
@@ -130,17 +162,51 @@ and capture secrets, and sets the function's settings itself.
    The run's **summary** (on the run's page, below the job) lists each check.
 2. Run it again with target **all**. The first time takes about 10–15 minutes (estimated).
    Its summary shows:
-   - the app's address, the sandbox shell's address and the Supabase project;
+   - the app's address, the sandbox shell's address, the two Cloudflare accounts with their
+     workers.dev subdomains, and the Supabase project;
    - each step's outcome: created, unchanged, updated, deployed or skipped;
    - deploy-check's results (one WARN remains until a battle has been played, §6.3);
    - the next steps.
 3. Open the app's address: players can play.
 
 If a run fails, its summary names the step and what to fix. Fix it and run again: every step
-is safe to repeat. When a project name is taken on `pages.dev`, Cloudflare adds a suffix
-(`build-roulette-web-3xk.pages.dev`): the run reads the real address and uses it everywhere.
-No secret value appears in the log or the summary: the script masks each one before it can be
-printed.
+is safe to repeat. When an account has no workers.dev subdomain yet, the run registers one
+(`buildroulette` on A, `buildroulette-sandbox` on B, or `CF_WORKERS_SUBDOMAIN` /
+`CF_SANDBOX_WORKERS_SUBDOMAIN`); subdomains are global across Cloudflare, so when the default
+is taken it adds a short suffix (`buildroulette-3f9a`) and uses the real address everywhere. A
+new address can take a few minutes to answer: the run then gives deploy-check up to about 4
+minutes. No secret value appears in the log or the summary: the script masks each one before
+it can be printed.
+
+### Moving from Pages to Workers (after the first deploy of T-042)
+
+The first deploy put both sites on Cloudflare Pages (`*.pages.dev`), which is blocked in Turkey.
+To move them to `*.workers.dev`:
+
+1. **Edit the existing deploy token** (account A): My Profile → API Tokens → `Build Roulette
+   deploy` → ⋯ → **Edit** → **+ Add more** → **Account → Workers Scripts → Edit** → Continue
+   to summary → **Update token**. The token's value does not change, so the GitHub secret
+   `CLOUDFLARE_API_TOKEN` stays as it is. Account → Cloudflare Pages → Edit can be removed from
+   it now (the workflow no longer uses Pages).
+2. **Create a second free Cloudflare account** (account B): sign up with another email address;
+   Gmail's `+sandbox` alias (`you+sandbox@gmail.com`) usually works.
+3. **In account B**, create a token: My Profile → API Tokens → Create Token → Create Custom
+   Token, name `Build Roulette sandbox deploy`, **Account → Workers Scripts → Edit**, Account
+   Resources: Include → account B → Create Token; copy it. Copy account B's **Account ID** too
+   (Workers & Pages → Overview, right column).
+4. **Add the new settings** in GitHub (Settings → Secrets and variables → Actions): the
+   variable `CLOUDFLARE_SANDBOX_ACCOUNT_ID` (account B's id) and the secret
+   `CLOUDFLARE_SANDBOX_API_TOKEN` (account B's token). If you set `CF_PAGES_WEB_PROJECT` or
+   `CF_PAGES_SHELL_PROJECT`, delete them; if `APP_URL` is a `pages.dev` address, delete it.
+5. **Run** Deploy with target **check**, then with target **all**. The summary shows the new
+   addresses. Auth's Site URL moves to the new app address (the old one stays in Redirect URLs
+   until you remove it), and the function's `CAPTURE_SHELL_URL` moves to the new shell.
+6. With **Turnstile**: add the new app hostname (`build-roulette-web.<subdomain A>.workers.dev`)
+   to the widget (Turnstile → the widget → Settings → Hostname management) right away; until
+   then the challenge fails and nobody can sign in. The run's summary reminds you.
+7. Once the new addresses work (§6), **delete the old Pages projects**: Workers & Pages → the
+   project (`build-roulette-web`, then `build-roulette-sandbox`) → Settings → Delete. The
+   workflow never deletes them.
 
 ### E. What stays manual
 
@@ -157,6 +223,8 @@ printed.
   Supabase awake** once by hand, and read §5.3 (private repositories and Actions minutes).
 - Optional: Realtime's pool size (§3.7). A custom domain (`apps/web/DEPLOY.md` → "Custom
   domain"): then set `APP_URL`, run **all** again, and add the domain to the Turnstile widget.
+- Deleting the old Pages projects, if you deployed with Pages before ("Moving from Pages to
+  Workers" above, step 7).
 - The checks that need a person: §6.2–§6.6, then the runbook rehearsal (§7).
 
 ### F. After a code change
@@ -165,8 +233,9 @@ Bring the change to the branch you deploy from. Then Actions → Deploy → Run 
 that branch in "Use workflow from", target **all**:
 
 - new migrations are applied, in order;
-- the function, the shell and the app are rebuilt and deployed again;
-- the projects and the secrets stay as they are.
+- the function, the shell and the app are rebuilt and deployed again (each deploy is a new
+  version of its Worker);
+- the subdomains and the secrets stay as they are.
 
 One part only: target **supabase** (migrations, Auth, the function), **shell** or **web**;
 each still runs the checks first. A second deploy waits until the first one has finished.
@@ -181,9 +250,11 @@ node --env-file=.env.deploy scripts/deploy/deploy.mjs --target check
 ```
 
 It needs Node 22, pnpm and the installed dependencies (§0), but no `wrangler login` or
-`supabase login`: the tokens are enough. It ignores `SHELL_URL`, `JOBS_CRON_SECRET` and
-`CAPTURE_HMAC_SECRET` from that file: it reads the shell's address from Cloudflare and the
-secrets from Supabase Vault.
+`supabase login`: the tokens are enough (add `CLOUDFLARE_API_TOKEN`,
+`CLOUDFLARE_SANDBOX_API_TOKEN`, `SUPABASE_ACCESS_TOKEN` and `SUPABASE_DB_PASSWORD` to the file
+for that). It ignores `SHELL_URL`, `JOBS_CRON_SECRET` and `CAPTURE_HMAC_SECRET` from that file:
+it derives the shell's address from account B's workers.dev subdomain and reads the secrets
+from Supabase Vault.
 
 ## Deploy from your own machine
 
@@ -203,10 +274,13 @@ secrets from Supabase Vault.
   (`.env.*` in `.gitignore`); keep it private and back it up in a password manager:
   ```sh
   cat > .env.deploy <<'ENV'
-  # Cloudflare (§2)
+  # Cloudflare (§2): account A (the app, the screenshots) and account B (the sandbox shell)
   CLOUDFLARE_ACCOUNT_ID=
-  APP_URL=https://build-roulette-web.pages.dev
-  SHELL_URL=https://build-roulette-sandbox.pages.dev/v1/
+  CLOUDFLARE_API_TOKEN=
+  CLOUDFLARE_SANDBOX_ACCOUNT_ID=
+  CLOUDFLARE_SANDBOX_API_TOKEN=
+  APP_URL=https://build-roulette-web.<subdomain A>.workers.dev
+  SHELL_URL=https://build-roulette-sandbox.<subdomain B>.workers.dev/v1/
   PKG_CDN_URL=https://esm.sh
   BROWSER_RENDERING_API_TOKEN=
   TURNSTILE_SITE_KEY=
@@ -225,51 +299,67 @@ secrets from Supabase Vault.
 
 ## 1. Accounts
 
-1. **Cloudflare**, Free plan: <https://dash.cloudflare.com/sign-up>.
-2. **Supabase**, Free plan: <https://supabase.com/dashboard> (sign in with GitHub or email).
+1. **Cloudflare**, Free plan: <https://dash.cloudflare.com/sign-up>. This is account **A** (the
+   web app, Browser Rendering, Turnstile).
+2. **A second Cloudflare account**, Free plan, for the sandbox shell: account **B**. Sign up
+   again with another email address (Gmail's `+sandbox` alias usually works). Why: "Why a
+   second Cloudflare account" at the top.
+3. **Supabase**, Free plan: <https://supabase.com/dashboard> (sign in with GitHub or email).
    The Free plan allows two active projects.
-3. **GitHub**: the repository (it runs the keep-alive, §5). Public or private both work;
+4. **GitHub**: the repository (it runs the keep-alive, §5). Public or private both work;
    §5 explains the difference.
-4. Optional:
-   - **Cloudflare Turnstile** (bot protection for anonymous sign-up; same Cloudflare account):
-     §2.4.
+5. Optional:
+   - **Cloudflare Turnstile** (bot protection for anonymous sign-up; account A): §2.4.
    - **Sentry** (browser error reports) and **PostHog** (product analytics, EU region):
      `apps/web/DEPLOY.md` → "Observability" → "Accounts" says how to set each project up
      (IP storage off, allowed domains). Without them nothing is sent.
 
 ## 2. Cloudflare
 
-### 2.1 Log in from this machine
+### 2.1 The two accounts' ids and deploy tokens
+
+wrangler uses an API token per command, so the two accounts never mix (a `wrangler login`
+would be one person's login, and account B belongs to another email address). For each
+account, signed in to it in the dashboard:
+
+- **Account ID**: Workers & Pages → Overview, right column. Into `.env.deploy`:
+  `CLOUDFLARE_ACCOUNT_ID` (A) and `CLOUDFLARE_SANDBOX_ACCOUNT_ID` (B). They must differ.
+- **Deploy token**: My Profile → API Tokens → **Create Token** → **Create Custom Token**;
+  permissions **Account → Workers Scripts → Edit**, Account Resources: Include → that account;
+  Create Token, copy it once into `.env.deploy`: `CLOUDFLARE_API_TOKEN` (A),
+  `CLOUDFLARE_SANDBOX_API_TOKEN` (B).
+
+### 2.2 The workers.dev subdomains
+
+Each account needs a **workers.dev subdomain**: the Workers' addresses are
+`https://<worker>.<subdomain>.workers.dev` (`build-roulette-web` on A, `build-roulette-sandbox`
+on B). Subdomains are global across Cloudflare: pick names nobody has, like `buildroulette`
+(A) and `buildroulette-sandbox` (B). An account that already has one keeps it (renaming it
+changes every workers.dev address of the account). Check, and register one if there is none,
+for account A (then the same with B's id, token and name):
 
 ```sh
-pnpm --filter @br/web exec wrangler login        # opens a browser once
-pnpm --filter @br/web exec wrangler whoami       # shows the account name and id
+set -a; . ./.env.deploy; set +a
+curl -sS "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/subdomain" \
+  -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN"
+# {"result":{"subdomain":"…"},"success":true,…}: it has one. Error 10007: none yet; register it:
+curl -sS -X PUT "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/subdomain" \
+  -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H 'Content-Type: application/json' \
+  --data '{"subdomain":"buildroulette"}'
+# Error 10031: the name is taken; try another.
 ```
 
-Put the **account id** in `.env.deploy` as `CLOUDFLARE_ACCOUNT_ID` (also on the dashboard:
-Workers & Pages → Overview, right column).
-
-### 2.2 Create the two Pages projects
-
-The names become the free addresses `https://<name>.pages.dev`. The two must be **different
-sites** (the shell runs untrusted code; `pages.dev` is on the Public Suffix List, so two
-projects are two sites).
-
-```sh
-pnpm --filter @br/web exec wrangler pages project create build-roulette-web --production-branch main
-pnpm --filter @br/web exec wrangler pages project create build-roulette-sandbox --production-branch main
-```
-
-If Cloudflare adds a suffix to a name that was taken, use the address it prints in
-`APP_URL` and `SHELL_URL` (`SHELL_URL` ends with `/v1/`), and in every command below. Using
-other project names: also change `name` in `apps/web/wrangler.jsonc`.
+(Or in the dashboard: Workers & Pages → Overview → the subdomain in the right column. An
+interactive `wrangler deploy` also offers to register one.) Then set `APP_URL` and `SHELL_URL`
+in `.env.deploy` from the two subdomains (`SHELL_URL` ends with `/v1/`). A new subdomain can
+take a few minutes to answer.
 
 ### 2.3 Browser Rendering (the screenshots)
 
-Dashboard → My Profile → API Tokens → **Create Token** → **Create Custom Token**:
+Signed in to account A: My Profile → API Tokens → **Create Token** → **Create Custom Token**:
 
 - Permissions: **Account → Browser Run → Edit** (named Browser Rendering before April 2026);
-- Account Resources: Include → your account;
+- Account Resources: Include → account A;
 - Continue → Create Token. Copy it once into `.env.deploy` as `BROWSER_RENDERING_API_TOKEN`.
 
 Browser Rendering's REST API is included in Workers Free: 10 browser-minutes a day, one
@@ -277,10 +367,10 @@ request every 10 seconds; the `jobs` function stays inside both (docs/08 §5.4).
 
 ### 2.4 Turnstile (optional)
 
-Dashboard → **Turnstile** → **Add widget**: a name, the hostname(s) of the app
-(`build-roulette-web.pages.dev`, and a custom domain if you have one), widget mode **Managed**,
-→ Create. Copy the **site key** into `.env.deploy` as `TURNSTILE_SITE_KEY`; keep the **secret
-key** for Supabase (§3.6).
+Account A's dashboard → **Turnstile** → **Add widget**: a name, the hostname(s) of the app
+(`build-roulette-web.<subdomain A>.workers.dev`, and a custom domain if you have one), widget
+mode **Managed**, → Create. Copy the **site key** into `.env.deploy` as `TURNSTILE_SITE_KEY`;
+keep the **secret key** for Supabase (§3.6).
 
 ## 3. Supabase
 
@@ -395,7 +485,8 @@ Project Settings → **Realtime** (or Realtime → Settings):
    rm /tmp/br-jobs.env
    npx -y supabase@2.119.0 secrets list        # names and digests only
    ```
-   `CAPTURE_SHELL_URL` is the shell's capture page (`https://build-roulette-sandbox.pages.dev/v1/capture`).
+   `CAPTURE_SHELL_URL` is the shell's capture page (`${SHELL_URL}capture`:
+   `https://build-roulette-sandbox.<subdomain B>.workers.dev/v1/capture`).
    Supabase sets `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` for the function itself. The
    optional settings and their defaults (all fit the free plans) are listed in
    `apps/web/DEPLOY.md` → "Screenshots and jobs", step 4.
@@ -419,29 +510,35 @@ Project Settings → **Realtime** (or Realtime → Settings):
    curl -sS -o /dev/null -w '%{http_code}\n' -X POST "$SUPABASE_URL/functions/v1/jobs"   # → 401
    ```
 
-## 4. Cloudflare Pages
+## 4. Cloudflare Workers
 
-### 4.1 The sandbox shell (first: the app's build needs its address)
+### 4.1 The sandbox shell, on account B (first: the app's build needs its address)
 
 ```sh
 set -a; . ./.env.deploy; set +a
-# The capture gate's secret, before the deploy (a Pages secret applies to the next deployment):
-printf %s "$CAPTURE_HMAC_SECRET" | \
-  pnpm --filter @br/web exec wrangler pages secret put CAPTURE_HMAC_SECRET --cwd ../sandbox-shell --project-name build-roulette-sandbox
 # Build: which app origins may frame the shell, and the package CDN its CSP allows.
 BR_APP_ORIGINS="$APP_URL" BR_PKG_CDN_URL="$PKG_CDN_URL" pnpm --filter @br/sandbox-shell build
-pnpm --filter @br/web exec wrangler pages deploy dist --cwd ../sandbox-shell --project-name build-roulette-sandbox --branch main
+# Deploy to account B, with the capture gate's secret in the same version (a private file,
+# deleted right after; the secret never goes on a command line):
+umask 077 && printf '{"CAPTURE_HMAC_SECRET":"%s"}' "$CAPTURE_HMAC_SECRET" > /tmp/br-shell-secrets.json
+CLOUDFLARE_ACCOUNT_ID="$CLOUDFLARE_SANDBOX_ACCOUNT_ID" CLOUDFLARE_API_TOKEN="$CLOUDFLARE_SANDBOX_API_TOKEN" \
+  pnpm --filter @br/sandbox-shell workers:deploy --secrets-file /tmp/br-shell-secrets.json
+rm /tmp/br-shell-secrets.json
 ```
 
+- `workers:deploy` is `wrangler deploy` with `apps/sandbox-shell/wrangler.jsonc`: the Worker
+  `build-roulette-sandbox` (the capture gate, `dist/worker.js`) with `dist/` as its static
+  assets; only `/v1/capture` runs the Worker. `--secrets-file` sets the Worker secret
+  `CAPTURE_HMAC_SECRET` with the version, which also works on the very first deploy (a secret
+  cannot be put on a Worker that does not exist yet). A later deploy without the file keeps the
+  secret. `--name <other>` deploys under another name.
 - `BR_APP_ORIGINS`: comma-separated; add a custom domain of the app here when you add one.
   `BR_PKG_CDN_URL` must be the same CDN as the app's `NEXT_PUBLIC_PKG_CDN_URL` and the
   function's `PKG_CDN_URL`.
-- `--cwd ../sandbox-shell` keeps wrangler away from the web app's `wrangler.jsonc`
-  (`pnpm --filter @br/web exec` runs in `apps/web`, where wrangler is installed).
 - Check: `curl -sS -o /dev/null -w '%{http_code}\n' "${SHELL_URL}capture"` answers **403**
   (the gate refuses an unsigned request); **503** means the secret is missing.
 
-### 4.2 The web app
+### 4.2 The web app, on account A
 
 ```sh
 set -a; . ./.env.deploy; set +a
@@ -452,20 +549,24 @@ NEXT_PUBLIC_PKG_CDN_URL="$PKG_CDN_URL" \
 NEXT_PUBLIC_SITE_URL="$APP_URL" \
 NEXT_PUBLIC_TURNSTILE_SITE_KEY="$TURNSTILE_SITE_KEY" \
   pnpm --filter @br/web build
-pnpm --filter @br/web pages:deploy --branch main
+pnpm --filter @br/web workers:deploy        # CLOUDFLARE_ACCOUNT_ID and _API_TOKEN: account A's
 ```
 
+- `workers:deploy` is `wrangler deploy` with `apps/web/wrangler.jsonc`: the Worker
+  `build-roulette-web` (the link previews, `dist/worker.js`) with `out/` as its static assets;
+  only `/battles/*` runs the Worker.
 - Every value is baked in at build time (the bundles, the CSP in `_headers`, the link-preview
-  Function); there is nothing to set on the Pages project. A changed value means build and
-  deploy again.
+  Worker); there is nothing to set on the Worker. A changed value means build and deploy again.
 - Optional, in the same build command: `NEXT_PUBLIC_SENTRY_DSN`,
   `NEXT_PUBLIC_SENTRY_ENVIRONMENT` (default `production`), `NEXT_PUBLIC_POSTHOG_KEY`,
   `NEXT_PUBLIC_POSTHOG_HOST` (default `https://eu.i.posthog.com`), `BR_RELEASE` (default: the
   git commit). An empty `NEXT_PUBLIC_TURNSTILE_SITE_KEY` means no Turnstile.
 - With Turnstile: now turn on CAPTCHA in Supabase (§3.6).
-- Workers & Pages → `build-roulette-web` → Settings → Functions: keep the default **fail
-  open** for the Functions' daily request limit (past 100,000 requests a day `/battles/*`
-  answers without its link preview instead of an error page).
+- **The daily limit:** static files are free and unlimited, but each view of `/battles/{id}`
+  runs the Worker, and Workers Free allows 100,000 Worker requests a day per account (reset
+  00:00 UTC). Past that, `/battles/*` shows Cloudflare's "temporarily rate limited" page until
+  the reset, while every other page keeps working. Pages Functions had a "fail open" setting
+  for this; Workers have none (docs/08 §3.5). At ~1,000 battles a month this is far away.
 - A custom domain (optional, later): `apps/web/DEPLOY.md` → "Custom domain"; then rebuild the
   app with `NEXT_PUBLIC_SITE_URL` set to it, add it to `BR_APP_ORIGINS` and rebuild the
   shell, and add it to Supabase's URL configuration and the Turnstile widget.
@@ -503,9 +604,9 @@ day and fails (GitHub emails you) when the project is paused, restricted or read
 
 ## 6. Smoke checks
 
-1. **Automatic checks** (headers and CSP, real 404s, the shells, the link-preview Function and
-   its Supabase call, the shell's CSP and capture gate, Auth with anonymous sign-ins,
-   `keep_alive`, the `jobs` function with its secrets):
+1. **Automatic checks** (headers and CSP, real 404s, the shells, the link-preview Worker and
+   its Supabase call, the shell's CSP and capture gate and that its Worker code is not served,
+   Auth with anonymous sign-ins, `keep_alive`, the `jobs` function with its secrets):
    ```sh
    set -a; . ./.env.deploy; set +a
    node scripts/deploy-check.mjs --app "$APP_URL" --shell "$SHELL_URL" --supabase "$SUPABASE_URL"
@@ -540,7 +641,7 @@ day and fails (GitHub emails you) when the project is paused, restricted or read
 M5 is signed off when every runbook in `docs/runbooks/` has been rehearsed once on a deployed
 copy. Do it before you announce the game: until then this deployment is the staging copy
 (a separate staging copy needs a second Supabase project, which the Free plan allows, and two
-more Pages projects). For each one: follow **Symptoms → Confirm → Mitigate → Verify** on a
+more Workers under other names: `CF_WEB_WORKER`, `CF_SANDBOX_WORKER`). For each one: follow **Symptoms → Confirm → Mitigate → Verify** on a
 situation you create, and note what was unclear.
 
 | Runbook | Drill |
@@ -561,13 +662,16 @@ situation you create, and note what was unclear.
   (new migrations, always first), `functions deploy jobs --no-verify-jwt --use-api` when
   `supabase/functions/jobs` changed, then the shell (§4.1) if `apps/sandbox-shell` changed,
   then the app (§4.2). Re-run `scripts/deploy-check.mjs`.
-- **Rollback** of a Pages deployment: Workers & Pages → the project → Deployments → an older
-  one → Rollback (instant). Migrations are not rolled back.
+- **Rollback** of a Worker (the app on account A, the shell on account B): Workers & Pages →
+  the Worker → Deployments → an older version → Rollback (instant; or `wrangler rollback` in
+  `apps/web` / `apps/sandbox-shell` with that account's token). Migrations are not rolled
+  back.
 - **Every week or month:** Supabase → Organization → **Usage** (egress, Realtime messages,
   MAU) and `/admin` → Health → Plan usage (storage, database). docs/07 §7.8 says when to
   upgrade; `docs/runbooks/free-plan-quotas.md` what to do near a limit.
 - **Rotating secrets:** the cron secret (`supabase/README.md` → "Jobs"), the capture secret
-  (Pages secret + function secret, then redeploy the shell), the Browser Rendering token
+  (the shell Worker's secret, deployed with `--secrets-file` as in §4.1, + the function
+  secret), the Browser Rendering token
   (function secret), the anon key (rebuild the app and update the GitHub secret). With the
   workflow: update the GitHub secret and run **all**. For the two generated secrets, first
   delete the Vault entry in the SQL Editor
@@ -584,7 +688,7 @@ you set only the GitHub variables and secrets (the last rows); it sets everythin
 |---|---|---|
 | `NEXT_PUBLIC_SUPABASE_URL` | web build (§4.2) | `https://<ref>.supabase.co` |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` (or `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`) | web build | the publishable or anon key |
-| `NEXT_PUBLIC_SANDBOX_SHELL_URL` | web build | `https://build-roulette-sandbox.pages.dev/v1/` |
+| `NEXT_PUBLIC_SANDBOX_SHELL_URL` | web build | `https://build-roulette-sandbox.<subdomain B>.workers.dev/v1/` |
 | `NEXT_PUBLIC_PKG_CDN_URL` | web build | `https://esm.sh` |
 | `NEXT_PUBLIC_SITE_URL` | web build | the app's address (or custom domain) |
 | `NEXT_PUBLIC_TURNSTILE_SITE_KEY` | web build, optional | the Turnstile site key |
@@ -593,19 +697,19 @@ you set only the GitHub variables and secrets (the last rows); it sets everythin
 | `BR_RELEASE` | web build, optional | release name (default: the commit) |
 | `BR_APP_ORIGINS` | shell build (§4.1) | the app's origin(s), comma-separated |
 | `BR_PKG_CDN_URL` | shell build | `https://esm.sh` (the default) |
-| `CAPTURE_HMAC_SECRET` | Pages secret of `build-roulette-sandbox` **and** function secret (the Deploy workflow keeps it in Vault `br_capture_hmac_secret` too) | 64 hex characters, the same in all |
+| `CAPTURE_HMAC_SECRET` | Worker secret of `build-roulette-sandbox` (account B) **and** function secret (the Deploy workflow keeps it in Vault `br_capture_hmac_secret` too) | 64 hex characters, the same in all |
 | `JOBS_CRON_SECRET` | function secret **and** Vault `br_jobs_cron_secret` | 64 hex characters, the same in both |
-| `CAPTURE_SHELL_URL` | function secret | `https://build-roulette-sandbox.pages.dev/v1/capture` |
+| `CAPTURE_SHELL_URL` | function secret | `https://build-roulette-sandbox.<subdomain B>.workers.dev/v1/capture` |
 | `PKG_CDN_URL` | function secret | `https://esm.sh` |
-| `BROWSER_RENDERING_ACCOUNT_ID`, `BROWSER_RENDERING_API_TOKEN` | function secrets | Cloudflare account id; the token of §2.3 |
+| `BROWSER_RENDERING_ACCOUNT_ID`, `BROWSER_RENDERING_API_TOKEN` | function secrets | account A's id; the token of §2.3 |
 | `BROWSER_BUDGET_MS_PER_DAY`, `BROWSER_RENDERING_MIN_INTERVAL_MS`, `BROWSER_RESERVE_MS`, `CAPTURE_TIMEOUT_MS`, `CAPTURE_SIGNED_URL_TTL_S`, `JOBS_RUN_WINDOW_MS`, `JOBS_RUN_HARD_STOP_MS`, `JOBS_PUBLIC_SUPABASE_URL`, `BROWSER_RENDERING_API_URL`, `LOG_LEVEL` | function secrets, optional | defaults fit the free plans (`apps/capture-worker/src/edge/config.ts`) |
 | `br_jobs_function_url` | Vault | `https://<ref>.supabase.co/functions/v1/jobs` |
 | `SUPABASE_URL` | GitHub variable (keep-alive and Deploy) | `https://<ref>.supabase.co` |
 | `SUPABASE_ANON_KEY` | GitHub secret (keep-alive and Deploy) | the publishable or anon key |
-| `CLOUDFLARE_ACCOUNT_ID` | GitHub variable (Deploy) | the Cloudflare account id |
-| `CLOUDFLARE_API_TOKEN`, `BROWSER_RENDERING_API_TOKEN`, `SUPABASE_ACCESS_TOKEN`, `SUPABASE_DB_PASSWORD` | GitHub secrets (Deploy) | "Deploy with GitHub Actions" → B, C |
+| `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_SANDBOX_ACCOUNT_ID` | GitHub variables (Deploy) | the ids of Cloudflare accounts A (the app) and B (the sandbox shell); they must differ |
+| `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_SANDBOX_API_TOKEN`, `BROWSER_RENDERING_API_TOKEN`, `SUPABASE_ACCESS_TOKEN`, `SUPABASE_DB_PASSWORD` | GitHub secrets (Deploy) | "Deploy with GitHub Actions" → B, C |
 | `TURNSTILE_SECRET_KEY` | GitHub secret (Deploy), optional | the Turnstile secret key; the run puts it in Supabase's CAPTCHA settings |
-| `TURNSTILE_SITE_KEY`, `APP_URL`, `PKG_CDN_URL`, `CF_PAGES_WEB_PROJECT`, `CF_PAGES_SHELL_PROJECT`, `NEXT_PUBLIC_SENTRY_DSN`, `NEXT_PUBLIC_POSTHOG_KEY`, `NEXT_PUBLIC_POSTHOG_HOST` | GitHub variables (Deploy), optional | the run turns them into the build settings and function secrets above ("Deploy with GitHub Actions" → C) |
+| `TURNSTILE_SITE_KEY`, `APP_URL`, `PKG_CDN_URL`, `CF_WORKERS_SUBDOMAIN`, `CF_SANDBOX_WORKERS_SUBDOMAIN`, `CF_WEB_WORKER`, `CF_SANDBOX_WORKER`, `NEXT_PUBLIC_SENTRY_DSN`, `NEXT_PUBLIC_POSTHOG_KEY`, `NEXT_PUBLIC_POSTHOG_HOST` | GitHub variables (Deploy), optional | the run turns them into the build settings and function secrets above ("Deploy with GitHub Actions" → C) |
 | `private.ops_settings` | SQL, optional | the plan limits behind Health's meters (Free's by default) |
 
 Not used by the free setup: `SENTRY_DSN` and the other settings of the self-hosted capture

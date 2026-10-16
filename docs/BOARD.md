@@ -24,7 +24,7 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 | T-040 | **esm.sh: one instance per package and a fully pinned template** (from CI run 60, compat against esm.sh: 52/57, React contract 1 problem). esm.sh resolves a package's own dependencies by **range** (`/scheduler@^0.28.0?target=es2022`, `/three@…`, `/chart.js@…`), cached 10 min only, and a range can resolve to a second copy. Seen as: react-dom → scheduler cached only 600 s (the template outage window); `@react-three/fiber (one three)` ok:false; `react-chartjs-2` "category is not a registered scale" (two chart.js). Fix the esm.sh way: externalize every manifest package in every other package's URL (`?external=react,react-dom,three,…`) and map each in the import map to its exact pinned URL. Pin react-dom's `scheduler` in the template map. Also look at `p5` (a dependency's missing export on esm.sh) and `pixi.js` (ready timeout; the unsafe-eval variant passes). Re-run CI compat with `compat_cdn=https://esm.sh`. | `packages/runtime/`, `apps/sandbox-shell/`, `apps/pkg-cdn/` (compat) | done | Merged; **esm.sh CI 56/58, 0 unexpected, React contract ok** |
 | T-041 | **Bundler start: the stall timer can kill a slow compile.** T-039's 15 s no-progress timer gets no messages after the last wasm byte (`compileStreaming` + esbuild `initialize`), so a compile slowed by CPU contention can be killed and retried, and the retry adds load. Seen as CI run 63, chaos shard 3 (8 players on a 4-vCPU runner): a page at "Starting bundler…" for 30 s at battle start, the same symptom as run 52. Fix: a separate, generous compile-stage bound (or worker heartbeats while compiling); keep the stall retry for real network stalls. Reproduce with CPU contention and 8 concurrent boots. | `packages/runtime/`, `apps/web/` (e2e) | done | Merged |
 | T-042 | **One-click deploy from GitHub Actions** (user decision 2026-10-16: the development container cannot reach Cloudflare or Supabase, and the user prefers a browser-only setup to running DEPLOY.md's commands locally). A `workflow_dispatch` workflow plus a tested Node script that does DEPLOY.md §2–§6 from GitHub secrets and variables: Pages projects (real `pages.dev` addresses read back), `db push`, Auth settings, Vault and function secrets (generated once, kept in Vault), the `jobs` function, shell and app deploys, the first admin, optional Turnstile CAPTCHA, `deploy-check`. | `.github/workflows/deploy.yml`, `scripts/deploy/`, `DEPLOY.md`, root `package.json` (test wiring) | done | Merged; deployed 2026-10-16 (Deploy run 2) |
-| T-043 | **Move the web app and the sandbox shell from Cloudflare Pages to Workers (static assets) on `workers.dev`.** `*.pages.dev` is blocked in Turkey; the user confirmed `workers.dev` opens without a VPN (2026-10-16). The PSL lists `workers.dev` (not `*.workers.dev`), so the shell goes to a **second free Cloudflare account** to stay a different site. The app's link-preview Function and the shell's capture gate become Worker scripts with `run_worker_first`; `_headers`/`_redirects` stay; local dev and e2e move to `wrangler dev`; the deploy script and workflow deploy Workers (account subdomains read or created, URLs derived); docs updated. | `apps/web/`, `apps/sandbox-shell/`, `scripts/deploy/`, `scripts/deploy-check.mjs`, `.github/workflows/`, `DEPLOY.md`, `docs/01`, `docs/03`, `docs/08`, `tools/loadtest/src/cost.ts` | in-progress | |
+| T-043 | **Move the web app and the sandbox shell from Cloudflare Pages to Workers (static assets) on `workers.dev`.** `*.pages.dev` is blocked in Turkey; the user confirmed `workers.dev` opens without a VPN (2026-10-16). The PSL lists `workers.dev` (not `*.workers.dev`), so the shell goes to a **second free Cloudflare account** to stay a different site. The app's link-preview Function and the shell's capture gate become Worker scripts with `run_worker_first`; `_headers`/`_redirects` stay; local dev and e2e move to `wrangler dev`; the deploy script and workflow deploy Workers (account subdomains read or created, URLs derived); docs updated. | `apps/web/`, `apps/sandbox-shell/`, `scripts/deploy/`, `scripts/deploy-check.mjs`, `.github/workflows/`, `DEPLOY.md`, `docs/01`, `docs/03`, `docs/08`, `tools/loadtest/src/cost.ts` | done | Merged; redeploy pending (user: second account + token permission) |
 | T-034 | Free tier: capture + destroy/takedown jobs without an always-on server. Preferred: a Supabase Edge Function (free: 2 s CPU, 500k invocations) run by pg_cron + pg_net, calling Cloudflare Browser Rendering's REST API (free: 10 browser-min/day). A Cloudflare cron Worker would face the same 10 ms CPU limit as T-033. The client thumbnail is the fallback when the budget is spent. | `supabase/` (function, cron), `apps/capture-worker/` (shared code, local stand-in) | done | Merged |
 | T-035 | Free tier: public esm.sh as the package CDN (config, CSP, import-map URL shapes); compat suite against esm.sh in GitHub CI (this container cannot reach esm.sh) | `packages/runtime/`, `apps/sandbox-shell/`, `apps/web/`, `apps/pkg-cdn/` (compat), `ci.yml` | done | Merged; CI compat on esm.sh 52/57 → follow-up T-040 |
 | T-036 | Free tier: Supabase Free adjustments (keep-alive against the 7-day pause, screenshot size/retention for the 1 GB storage, quotas in docs/07), deploy checklist rewritten for the free setup | `supabase/`, `docs/`, `DEPLOY.md` | done | Merged |
@@ -946,3 +946,34 @@ Start M5.
   - The Public Suffix List (the `psl` npm package's copy) lists `workers.dev` (not `*.workers.dev`), `netlify.app` and `deno.dev`. So two Workers in one Cloudflare account are the **same site**, and a sandbox on `workers.dev` needs a second Cloudflare account.
   - No report was found of `workers.dev` being blocked in Turkey. The user's test without a VPN is pending.
 - UI nit: the DESTROY stamp covers the start of the line below it on the results page.
+
+### T-043: accepted (pages.dev blocked in Turkey; the user confirmed workers.dev opens without a VPN)
+- **What:** both sites are Cloudflare Workers with static assets on `workers.dev`.
+  - **Web app**, account A: `run_worker_first: ["/battles/*"]` for the link previews, `not_found_handling: 404-page`. `_headers` and `_redirects` work as on Pages, including the 200 rewrites.
+  - **Sandbox shell**, a second account B: `run_worker_first: ["/v1/capture"]` for the HMAC gate, `secrets.required: [CAPTURE_HMAC_SECRET]` set with `wrangler deploy --secrets-file`, a `404.html`, and `.assetsignore` keeping `worker.js` out of the assets.
+  - Both Workers are bundled by our build (`no_bundle`).
+  - Local dev and e2e moved from `wrangler pages dev` to `wrangler dev`.
+- **Deploy:**
+  - new settings `CLOUDFLARE_SANDBOX_ACCOUNT_ID` and `CLOUDFLARE_SANDBOX_API_TOKEN`; both deploy tokens need Account → Workers Scripts → Edit;
+  - preflight refuses A = B (same account means same site);
+  - account subdomains are read, or registered with a suffix retry;
+  - URLs `build-roulette-web.<subA>.workers.dev` and `build-roulette-sandbox.<subB>.workers.dev/v1/`;
+  - each Worker's workers.dev route is turned on with no preview URLs;
+  - the old Pages projects are left for the user to delete.
+- **Differences from Pages:**
+  - past 100k Worker requests a day, `/battles/*` gets Cloudflare's 429 page (there is no fail-open), while static pages keep working;
+  - trailing-slash redirects are 307;
+  - the shell answers unknown paths with a `404.html`.
+- **Hub re-ran on the worker's branch:**
+  - format, lint, typecheck, `pnpm test` (11/11 tasks; scripts 112);
+  - **e2e:** playground + static site 24/24, moderation + link preview 8/8, solo 3/3, multiplayer 5/5, all against `wrangler dev` and a fresh local stack.
+  - The worker also ran chaos shard 1 (3/3) and telemetry (7/7), and `wrangler deploy --dry-run` for both configs.
+- **Workers claims confirmed offline** from wrangler 4.147.0's source and `wrangler dev`:
+  - `run_worker_first` keeps assets from invoking the Worker;
+  - the 25 MiB file limit;
+  - `_headers` and `_redirects` (including 200 rewrites) apply, also to `env.ASSETS.fetch`;
+  - `--secrets-file` exists.
+- **Assumed** (Cloudflare's docs):
+  - asset requests are free and unlimited;
+  - 20,000 files per version;
+  - Workers Scripts → Edit covers the subdomain endpoints.

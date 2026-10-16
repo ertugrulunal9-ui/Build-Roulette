@@ -7,14 +7,14 @@
  *
  * - **One live build:** only the spotlighted build runs, in a fresh preview iframe in
  *   **reveal** mode (no popups, modals or clipboard; docs/03 §3.9), whose sandbox storage is
- *   wiped before the bundle loads. A new spotlight is a new iframe.
+ *   wiped before its site pack loads. A new spotlight is a new iframe.
  * - **Chrome:** the frame is labelled as a user-made build; nothing inside it can act for
  *   the app (shell messages are display-only).
  * - **Skip / stopped:** "Skip this build" lives outside the iframe, so it works even when
  *   the build hangs; it stops the build in this tab only and shows its screenshot (or
  *   thumbnail). The watchdog's crash states show the same fallback: "this build froze" (no
  *   pong for 5 s) or "this build couldn't start" (the sandbox never answered), and so does a
- *   build whose packages can't load while the package CDN is down (T-032).
+ *   build whose site the sandbox cannot serve in this browser (site-errors.ts).
  * - **Phones and tablets** (touch-primary, `useTouchPrimary`): each build shows its
  *   screenshot or thumbnail first, with a big "Tap to run live" button (docs/02 R2: mobile
  *   browsers isolate cross-site frames less, so running someone's build is the viewer's
@@ -31,7 +31,8 @@
 import { PreviewHandle, type PreviewBuild, type PreviewCrash } from '@br/runtime';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useTouchPrimary } from '../../lib/device';
-import { playgroundConfig } from '../../lib/playground/config';
+import { previewConfig } from '../../lib/preview/config';
+import { isSiteLoadFailure } from '../../lib/preview/site-errors';
 import type { PreviewHealth } from '../../lib/telemetry/sandbox-health';
 import {
   spotlightBuild,
@@ -67,7 +68,7 @@ export type SpotlightView =
   | 'skipped'
   | 'frozen'
   | 'no_start'
-  | 'no_packages'
+  | 'no_load'
   | 'still'
   | 'live'
   | 'loading'
@@ -76,7 +77,7 @@ export type SpotlightView =
 /**
  * The spotlight's content for this viewer: a build removed by a moderator never runs; then
  * a local stop (skip, freeze, failed start) wins; then a touch device shows the still image
- * until the viewer taps "run live"; then the bundle's state decides.
+ * until the viewer taps "run live"; then the site pack's state decides.
  */
 export function spotlightView(
   showState: RevealVoteState,
@@ -92,19 +93,19 @@ export function spotlightView(
   if (showState.skipped.includes(buildId)) return 'skipped';
   if (showState.frozen.includes(buildId)) return 'frozen';
   if (showState.failedToStart.includes(buildId)) return 'no_start';
-  if (showState.noPackages.includes(buildId)) return 'no_packages';
+  if (showState.noLoad.includes(buildId)) return 'no_load';
   if (stillFirst && !tapped.includes(buildId)) return 'still';
-  const bundle = showState.bundles[buildId];
-  if (bundle?.status === 'ready') return 'live';
-  if (bundle?.status === 'missing' || bundle?.status === 'error') return 'unavailable';
+  const site = showState.sites[buildId];
+  if (site?.status === 'ready') return 'live';
+  if (site?.status === 'missing' || site?.status === 'error') return 'unavailable';
   return 'loading';
 }
 
 /** Why this tab stopped running the spotlight (each shows the still image instead). */
-export type StoppedView = 'skipped' | 'frozen' | 'no_start' | 'no_packages';
+export type StoppedView = 'skipped' | 'frozen' | 'no_start' | 'no_load';
 
 export function isStopped(view: SpotlightView): view is StoppedView {
-  return view === 'skipped' || view === 'frozen' || view === 'no_start' || view === 'no_packages';
+  return view === 'skipped' || view === 'frozen' || view === 'no_start' || view === 'no_load';
 }
 
 /** The fallback of a build this tab stopped running, by why it stopped. */
@@ -121,10 +122,10 @@ export const STOPPED: Record<StoppedView, { testId: string; text: string }> = {
     testId: 'build-no-start',
     text: 'This build couldn’t start on your screen (its sandbox never answered). Everyone else keeps watching.',
   },
-  // T-032: with the package CDN down, a package this browser never loaded can't load.
-  no_packages: {
-    testId: 'build-no-packages',
-    text: 'This build’s packages couldn’t load on your screen (the package server isn’t answering), so here is its screenshot. Everyone else keeps watching.',
+  // The sandbox could not serve the site in this browser (e.g. no service workers here).
+  no_load: {
+    testId: 'build-no-load',
+    text: 'This build couldn’t load on your screen, so here is its screenshot. Everyone else keeps watching.',
   },
 };
 
@@ -163,7 +164,7 @@ export function RevealStage({
   const name = removed ? REMOVED_TEXT : (spot?.name ?? fallback?.name ?? `${builderName}'s build`);
   const autoShipped = (spot?.status ?? fallback?.status) === 'auto_shipped';
   const mine = builderId === snapshot.me.user_id;
-  const bundle = buildId ? showState.bundles[buildId] : undefined;
+  const site = buildId ? showState.sites[buildId] : undefined;
   const stillFirst = useTouchPrimary();
   // Builds this viewer chose to run live (a touch device starts each one as a still image).
   const [tapped, setTapped] = useState<readonly string[]>([]);
@@ -322,18 +323,18 @@ export function RevealStage({
                     ▶ Tap to run live
                   </button>
                 </StillImage>
-              ) : view === 'live' && bundle?.status === 'ready' && buildId ? (
+              ) : view === 'live' && site?.status === 'ready' && buildId ? (
                 <LiveBuild
                   key={buildId}
                   buildId={buildId}
-                  build={bundle.build}
+                  build={site.build}
                   title={`${name} by ${builderName} (user-made build)`}
                   health={show.previewHealth}
                   onCrash={(id, crash) => {
                     show.previewCrashed(id, crash);
                   }}
-                  onPackagesFailed={(id) => {
-                    show.packagesFailed(id);
+                  onLoadFailed={(id) => {
+                    show.loadFailed(id);
                   }}
                 />
               ) : view === 'unavailable' ? (
@@ -342,8 +343,8 @@ export function RevealStage({
                   name={name}
                   testId="build-unavailable"
                   message={
-                    bundle?.status === 'error'
-                      ? `This build could not be loaded. ${describeError(bundle.error)}`
+                    site?.status === 'error'
+                      ? `This build could not be loaded. ${describeError(site.error)}`
                       : 'This build has nothing to run.'
                   }
                 />
@@ -391,7 +392,7 @@ export function RevealStage({
 
 /**
  * One fresh preview per build (the parent keys it by build id): a new iframe in reveal
- * mode, the sandbox origin's storage wiped first, then the bundle. Unmounting disposes it,
+ * mode, the sandbox origin's storage wiped first, then the site pack. Unmounting disposes it,
  * which removes the iframe and stops everything the build runs. Its watchdog stats count
  * for the battle's preview health (T-031) while it runs.
  */
@@ -401,7 +402,7 @@ function LiveBuild({
   title,
   health,
   onCrash,
-  onPackagesFailed,
+  onLoadFailed,
 }: {
   buildId: string;
   build: PreviewBuild;
@@ -409,20 +410,20 @@ function LiveBuild({
   health: PreviewHealth;
   /** The watchdog stopped the build: it froze, or it never started. */
   onCrash: (buildId: string, crash: PreviewCrash) => void;
-  /** Its code or packages could not load (the shell's `module-load` error, T-032). */
-  onPackagesFailed: (buildId: string) => void;
+  /** The sandbox could not serve its site here (site-errors.ts). */
+  onLoadFailed: (buildId: string) => void;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const onCrashRef = useRef(onCrash);
-  const onPackagesFailedRef = useRef(onPackagesFailed);
+  const onLoadFailedRef = useRef(onLoadFailed);
   const titleRef = useRef(title);
   const healthRef = useRef(health);
   useEffect(() => {
     onCrashRef.current = onCrash;
-    onPackagesFailedRef.current = onPackagesFailed;
+    onLoadFailedRef.current = onLoadFailed;
     titleRef.current = title;
     healthRef.current = health;
-  }, [onCrash, onPackagesFailed, title, health]);
+  }, [onCrash, onLoadFailed, title, health]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -435,17 +436,17 @@ function LiveBuild({
       'position:absolute;inset:0;width:100%;height:100%;border:0;background:#fff';
     host.replaceChildren(iframe);
     const preview = new PreviewHandle(iframe, {
-      shellUrl: playgroundConfig.shellUrl,
+      shellUrl: previewConfig.shellUrl,
       mode: 'reveal',
     });
     const stopFollowing = healthRef.current.follow(preview);
     const offCrash = preview.on('crash', (crash) => {
       onCrashRef.current(buildId, crash);
     });
-    // A package that can't load (or still hasn't after 8 s) while the package CDN is down:
-    // the screenshot is more use to the room than a blank frame (T-032).
+    // A site the sandbox cannot serve in this browser: the screenshot is more use to the room
+    // than a blank frame. (A single file that fails to load does not stop the site.)
     const offError = preview.on('error', (m) => {
-      if (m.kind === 'module-load') onPackagesFailedRef.current(buildId);
+      if (isSiteLoadFailure(m)) onLoadFailedRef.current(buildId);
     });
     // Wipe what an earlier build left on the sandbox origin, in a fresh iframe; the load
     // waits for the new shell, which handles the wipe first.
@@ -457,7 +458,7 @@ function LiveBuild({
       preview.dispose();
       stopFollowing();
     };
-    // A new build (or bundle) is a new preview; a new title alone is not.
+    // A new build (or site pack) is a new preview; a new title alone is not.
   }, [buildId, build]);
 
   return <div ref={hostRef} className="absolute inset-0" data-testid="reveal-live" />;

@@ -7,11 +7,10 @@
  */
 import { isTerminalPhase } from '@br/game';
 import { useCallback, useMemo } from 'react';
-import { playgroundConfig } from '../../lib/playground/config';
+import { indexedDbSites } from '../../lib/site/local-sites';
 import { SupabaseSoloApi } from '../../lib/solo/api';
 import type { SoloControllerDeps } from '../../lib/solo/controller';
 import { describeError } from '../../lib/solo/errors';
-import { indexedDbWorkspaces } from '../../lib/solo/local-workspaces';
 import { useSoloGame } from '../../lib/solo/use-solo-game';
 import { useTicker } from '../../lib/solo/use-ticker';
 import { ensureSignedIn, getSupabase } from '../../lib/supabase/browser';
@@ -37,8 +36,7 @@ export default function SoloGame() {
   const createDeps = useCallback(
     (): SoloControllerDeps => ({
       api: new SupabaseSoloApi(getSupabase(), ensureSignedIn),
-      cdnBaseUrl: playgroundConfig.cdnBaseUrl,
-      localWorkspaces: indexedDbWorkspaces,
+      localSites: indexedDbSites,
       onBattleChange: setBattleParam,
     }),
     [],
@@ -90,7 +88,7 @@ export default function SoloGame() {
     const me = snapshot.players.find((p) => p.user_id === snapshot.me.user_id);
     return (
       <>
-        {/* Mounted during SPIN too, under the reels: preloads the editor and bundler. */}
+        {/* Mounted during SPIN too, under the reels: the preview's sandbox connects early. */}
         <BuildStage controller={controller} state={state} remaining={remaining} />
         {phase === 'spinning' &&
           snapshot.battle.phase_started_at &&

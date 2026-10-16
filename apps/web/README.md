@@ -10,7 +10,7 @@ and data loads in the browser from Supabase. Routes:
 | `/` | Landing page: "Play solo" (`/play`), "Create room" (a name → `create_room` → `/r/{code}`) and "Join with code" (any case, trimmed, or a pasted invite link). |
 | `/play` | The solo game: name → SPIN → BUILD → SHIP → RESULTS → DESTROY. `?battle={id}` resumes a battle after a refresh. |
 | `/battles/[id]` | The permanent, shareable results page. One static shell for every battle (`src/app/battles/page.tsx`, "Static site" below): the browser reads the id from the URL and calls `get_public_battle` on every load, so a takedown shows on the next load. The Worker's code (a Pages Function until T-043) serves the shell with each battle's own link preview, and a real 404 for an unknown battle ("Link previews" below). |
-| `/playground` | Single-player editor and live preview, no game. |
+| `/try` | "Try an import" (M6, docs/09 §9.5): the BUILD stage's drop zone and live preview without a battle, an account or an upload. The practice page the onboarding links to. `/playground` (the editor's old page) redirects here with a 301 (`REDIRECTS` in `src/lib/hosting/shells.ts`, written to `_redirects`). |
 | `/r/[code]` | A room (M3): join → lobby → SPIN → BUILD → SHIP → REVEAL → VOTE → RESULTS → DESTROY → lobby (rematch). One static shell (`src/app/r/page.tsx`) serves every room: the host rewrites `/r/{code}` to it and the code is read in the browser (T-033, T-037). |
 | `/u/[id]` | A player's history (M4): their finished battles, newest first, from `get_player_history` with the anon key, paginated (`?before=…&before_battle=…`). One static shell (`src/app/u/page.tsx`); the browser reads the id and the cursor from the URL and the data on every load. |
 | `/admin` | Moderation (M5, T-024), in the browser with the moderator's own session ("Moderation" below): the report queue (dismiss, take down), the battle / room event logs (`?q={battle id or room code}`), the admin log, and **Health** (T-030: `admin_ops_health`, the signals of docs/runbooks/). **The plain "not found" screen for everyone who is not a signed-in admin.** |
@@ -105,7 +105,7 @@ Error reporting (Sentry) and product analytics (PostHog), both **off unless conf
   sandbox iframe's errors (another origin) and build code can never be reported.
   `app/global-error.tsx` reports render errors the window never sees.
 - **No server errors** since T-037: the app is a static site. (`@br/telemetry`'s server
-  reporter on `@sentry/core` stays, for the capture worker and the package CDN.)
+  reporter on `@sentry/core` stays, for the capture worker.)
 - **Privacy:** every event goes through `scrubSentryEvent` (`packages/telemetry`): no query
   strings or fragments, route templates instead of paths (`/r/[code]`), UUIDs, emails and
   tokens masked in messages, no breadcrumbs, `extra`, cookies, headers or bodies; the user is
@@ -124,10 +124,10 @@ Error reporting (Sentry) and product analytics (PostHog), both **off unless conf
   this tab's preview counts for the battle: crashes, restarts, app stalls of 1 s or more and
   their total, and `preview_spared` (silences the pre-T-031 watchdog would have called a
   crash). Only the battle UUID, enums and numbers: no build code, console output or names.
-  A bundler start that stalls (no progress for 15 s during the download, or not ready 60 s
-  after it; T-041) or fails, and the automatic retry after a stall, is a `bundler_start` event
-  (`outcome`, `stage`, `attempt`, `elapsed_ms`, `awake_ms` (the page-awake part the limits
-  count), `loaded_bytes`; T-039).
+- **Imports (M6):** every import of a built site is a `site_import` event: the battle (null on
+  `/try`), `via` (`drop`, `folder` or `zip`), the `outcome` and, for a refused import, the
+  `@br/site` error code (`not_built`, `no_index`, `too_large`, …). Never a file or folder
+  name, a size or anything from the site (`src/lib/site/use-site-import.ts`).
 - `/admin` → Health has "Send a test error to Sentry": it throws an uncaught error from the
   page's own code, the path any app error takes (the window's handler, then Sentry with the
   page's tags); with no DSN in the build it says reporting is off.
@@ -198,8 +198,7 @@ pnpm --filter @br/web dev:solo     # then open http://localhost:3000/play
 | Piece | Where | Notes |
 |---|---|---|
 | Local Supabase stack | `http://127.0.0.1:54321` | Used if it is running, otherwise started with `supabase start -x …` (see [supabase/README.md](../../supabase/README.md)). In the cloud dev container, start `dockerd` first and set `SUPABASE_INTERNAL_IMAGE_REGISTRY=docker.io`. |
-| Mock package CDN | `http://localhost:4322` | React and a few packages from `@br/runtime`'s test support. |
-| Sandbox shell | `http://127.0.0.1:4321/v1/` | The preview (a different site from the app), plus the signed capture page `/v1/capture` with a random per-run HMAC secret. |
+| Sandbox shell | `http://127.0.0.1:4321/v2/` | The preview (a different site from the app; protocol v2: the shell's site worker serves imported sites), plus the signed capture page `/v2/capture` with a random per-run HMAC secret. |
 | Jobs (T-034) | (no port) | As in production: the `jobs` Edge Function (`supabase functions serve`), started by pg_cron every 2 s through pg_net (Vault holds its URL and secret), rendering through a local Browser Rendering stand-in on Playwright Chromium (port 4325). It screenshots shipped builds, deletes ephemeral files after DESTROY and taken-down screenshots. Needs the stack's Edge Runtime. `--worker` runs the self-hosted `@br/capture-worker` instead. |
 | Next.js | `http://localhost:3000` | `next dev`, pointed at all of the above. |
 
@@ -210,29 +209,40 @@ next to your own `next dev` or for the e2e.
 
 The game, step by step:
 
-1. **Name + Spin.** A random fun name is prefilled; `start_solo_battle` draws the challenge.
-   If you already have a running battle (`battle_in_progress`), you're offered to resume it.
+1. **Name + Spin.** A random fun name is prefilled; `start_solo_battle` draws the challenge
+   (10, 15 or 20 minutes when nobody chose; `BUILD_TIME_LIMITS_MINUTES` in `@br/game` are
+   10/15/20/30/45). If you already have a running battle (`battle_in_progress`), you're
+   offered to resume it.
 2. **SPIN** (6 s). Three reels (BUILD, RULE, STYLE) and the time limit land on the server's
-   cards. The BUILD screen is already mounted underneath, so the editor, the bundler worker
-   and `esbuild.wasm` load during the spin.
-3. **BUILD.** The playground editor and preview, a challenge header with the hints, and a
-   countdown from server time (`server_now()` samples, `estimateClockOffset`, `remainingMs`)
-   that turns amber at 1 minute and pulses red for the last 10 s. Each battle gets a fresh
-   template in IndexedDB under `battle:{id}` (restored from the remote autosave on another
-   device). Autosave every 30 s, when the tab is hidden, 3 s before the deadline and once
-   in the SHIPPING grace: `autosave/{source.json,bundle.js,bundle.css}`.
-4. **SHIP.** "Ship it? You can't edit after." with a build name. Then a client thumbnail
-   (best effort), a production build, the uploads (`source.json`, `bundle.js`,
-   `bundle.css`, `thumb.webp`) and `ship_build` with stats. Every error code of the RPC
-   contract has a message (`src/lib/solo/errors.ts`).
-5. **T-0.** Without a ship, the editor locks and the last autosave is auto-shipped by the
-   server. The client nudges `advance_battle` at each deadline (0–500 ms jitter); a battle
+   cards. The BUILD screen is already mounted underneath, so its preview sandbox is connected
+   by the time the build starts.
+3. **BUILD** (import mode, docs/09 §9.5). You build the site on your own computer with your
+   own AI tools, run its build (`npm run build`; plain HTML needs none) and import the
+   result: a challenge header with the hints, a countdown from server time (`server_now()`
+   samples, `estimateClockOffset`, `remainingMs`) that turns amber at 1 minute and pulses red
+   for the last 10 s, and a large **drop zone** ("Drop your built site here": the `dist`
+   folder, the whole project folder or a .zip; **Choose folder** / **Choose .zip**; a drop
+   anywhere on the page works, with a full-screen overlay). `@br/site` finds the site root,
+   refuses source code with what to do next, and packs it. Then the site runs in the live
+   preview, under a bar with what was imported (root folder, files, size, skipped) and
+   **Import again**; Problems and Console sit in a collapsible panel. Every import is kept in
+   IndexedDB (`br-sites`, key `battle:{id}`) and uploaded at once as `autosave/site.bin`
+   (retried after 5, 10, 20, then every 30 s; tried again when the tab is hidden, 3 s before
+   the deadline and in the SHIPPING grace). A reload brings the last import back (IndexedDB,
+   else the remote autosave on another device).
+4. **SHIP** (enabled once a site is imported). "Ship it? You can't import again after." with
+   a build name. Then a client thumbnail of the preview (best effort), the uploads
+   (`site.bin`, `thumb.webp`) and `ship_build` with stats `{files, bundle_bytes, imports}`.
+   Every error code of the RPC contract has a message (`src/lib/solo/errors.ts`).
+5. **T-0.** Without a ship, imports close and the last import (`autosave/site.bin`) is
+   auto-shipped by the server. The client nudges `advance_battle` at each deadline (0–500 ms jitter); a battle
    that does not move is nudged again after 5, 10, 20, then every 30 s, and RESULTS is not
    nudged while the screenshot is pending (T-029); pg_cron is the backstop.
 6. **RESULTS.** The capture worker's screenshot, the completion time, the auto-awards
-   (`speedrun`, `clutch_ship`), the challenge, and the fallback/failed/DNF states. The
-   shipped bundle runs in a **reveal-mode** preview for the 60 s last look.
-7. **DESTROY.** A short destroy animation, then the battle's IndexedDB workspace is deleted
+   (`speedrun`, `clutch_ship`), the challenge, the stats (files, size, imports), and the
+   fallback/failed/DNF states. The shipped site runs in a **reveal-mode** preview for the
+   60 s last look.
+7. **DESTROY.** A short destroy animation, then the battle's site is deleted from IndexedDB
    and the preview iframe is wiped and removed. Links to the permanent page and "Play again".
 
 ## Play in a room locally (2–4 players on one machine)
@@ -252,11 +262,12 @@ player):
 2. **Copy invite link** and open it in window 2 (private). Pick a name, **Join the room**.
    Both lobbies show both players online (Presence) and "2/8 players".
 3. Both click **Ready up**; the host clicks **Start battle**. Everyone sees the same reels,
-   then BUILD with a sidebar of everyone's progress (lines, build status, "✎ active" for an
-   edit in the last 15 s, and "Ada shipped 'Snack Overflow' at 3:12" badges). The activity
-   is Presence, sent only during BUILD, only when it changes in a way that matters and at
-   most every 15 s (T-029), so the sidebar can be up to ~15 s behind.
-4. Ship, or wait for the deadline (5, 10 or 15 min, drawn by the server; force it with
+   then BUILD with a sidebar of everyone's progress ("building…" until a player's first
+   import, then "imported" with the number of imports, and "Ada shipped 'Snack Overflow' at
+   3:12" badges). The activity is Presence (`{imported, imports}`), sent only during BUILD,
+   only when it changes and at most every 15 s (T-029), so the sidebar can be up to ~15 s
+   behind.
+4. Ship, or wait for the deadline (10, 15 or 20 min, drawn by the server; force it with
    psql as in `e2e/multiplayer.spec.ts` if you are impatient).
 5. **REVEAL.** Everyone (spectators too) watches the final builds one at a time, on the
    server's timeline: "Build 2 of 3", the name, the builder, the slot countdown, and the
@@ -270,7 +281,7 @@ player):
    ship) with its votes per category, the category awards, the auto-awards and the winner
    highlighted; your own build for the last look; then DESTROY and everyone is back in the
    lobby. **Start the rematch** for the next battle.
-8. A window that joins during a battle is a spectator (countdown and progress, no editor;
+8. A window that joins during a battle is a spectator (countdown and progress, no import;
    watches the reveal, cannot vote); the host can kick from the lobby; **Leave room**
    leaves (rejoin with the link).
 9. **Host settings** (lobby, host only): max players, **Reveal and vote** on/off, the time
@@ -283,15 +294,16 @@ player):
 ### Phones and tablets (M4: reveal and vote, not build)
 
 A touch-primary device (`(hover: none) and (pointer: coarse)`, `src/lib/device.ts`) can
-join, host, watch and vote; building needs a desktop browser (docs/02 R7):
+join, host, watch and vote; building needs a computer (players build with their own tools
+and import the result, docs/09):
 
 - **Lobby:** a note under "Ready up" says so before the battle.
 - **BUILD:** a roster player on a phone gets the spectator view (countdown, everyone's
-  progress) with a "Building needs a desktop browser" notice and their battle state. The
-  editor never mounts, so nothing is built or autosaved and the build ends **DNF** at the
-  deadline (the server has nothing to auto-ship). The notice explains that opening the room
-  on a computer does not move the seat (each browser is its own anonymous player) and
-  offers "Build on this device anyway" (a tablet with a keyboard can). A phone that joins
+  progress) with a "Building needs a computer" notice and their battle state. Nothing is
+  imported or autosaved there, so the build ends **DNF** at the deadline (the server has
+  nothing to auto-ship). The notice explains that opening the room on a computer does not
+  move the seat (each browser is its own anonymous player) and offers "Import on this device
+  anyway" (a tablet that has the built site can). A phone that joins
   mid-battle is a spectator, as on desktop.
 - **REVEAL:** each build shows its screenshot (or the ship-time thumbnail) first, with a
   big "Tap to run live" (docs/02 R2: mobile browsers do not always isolate cross-site
@@ -323,8 +335,7 @@ runtime settings. The defaults are the local setup above.
 |---|---|---|
 | `NEXT_PUBLIC_SUPABASE_URL` | `http://127.0.0.1:54321` | Supabase project URL |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | the local stack's demo anon key | Public anon key (JWT). `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` (`sb_publishable_…`) works instead. |
-| `NEXT_PUBLIC_SANDBOX_SHELL_URL` | `http://127.0.0.1:4321/v1/` | Sandbox shell |
-| `NEXT_PUBLIC_PKG_CDN_URL` | `http://localhost:4322` | esm.sh-compatible package CDN (the local mock). Production on the free plan: `https://esm.sh`, the same value as the sandbox shell's `BR_PKG_CDN_URL` (DEPLOY.md, T-035) |
+| `NEXT_PUBLIC_SANDBOX_SHELL_URL` | `http://127.0.0.1:4321/v2/` | Sandbox shell (protocol v2) |
 | `NEXT_PUBLIC_SITE_URL` | `http://localhost:3000` | The app's public origin (`metadataBase`: the absolute `og:image` URL of the static card) |
 | `NEXT_PUBLIC_TURNSTILE_SITE_KEY` | unset (no Turnstile) | Cloudflare Turnstile site key for anonymous sign-ups. Set it only together with Turnstile in Supabase Auth (the matching secret), or every sign-up fails. |
 | `NEXT_PUBLIC_SENTRY_DSN` | unset (no error reporting) | Sentry DSN for browser errors (the only errors: there is no server) |
@@ -340,75 +351,73 @@ the moderator's own access token. `pnpm build` fails if any exported file holds 
 key other than the anon key (`scripts/pages-config.ts`).
 
 `scripts/solo-services.ts` reads: `BR_APP_ORIGINS` (app origins the shell accepts, default
-`http://localhost:3000`), `APP_PORT` (3000), `SHELL_PORT` (4321), `CDN_PORT` (4322),
-`STAND_IN_PORT` (4325), `CAPTURE_HMAC_SECRET` (default: random per run), `BR_JOBS=worker`
+`http://localhost:3000`), `APP_PORT` (3000), `SHELL_PORT` (4321), `STAND_IN_PORT` (4325), `CAPTURE_HMAC_SECRET` (default: random per run), `BR_JOBS=worker`
 (like `--worker`), `WORKER_IDLE_MAX_MS` (2000, `--worker` only), and the stack's `API_URL` /
 `ANON_KEY` / `SERVICE_ROLE_KEY` / `DB_URL` (default: `supabase status -o env`).
 
-## `/playground` local setup
+## `/try` local setup
 
-The preview runs on a different site from the app (docs/03 §3.5), so `/playground` needs two
-local servers next to Next.js:
+The preview runs on a different site from the app (docs/03 §3.5), so `/try` (and the BUILD
+stage) needs the sandbox shell next to Next.js:
 
 | Server | Default URL | Configured in the app by |
 |---|---|---|
-| Sandbox shell (`@br/sandbox-shell`) | `http://127.0.0.1:4321/v1/` | `NEXT_PUBLIC_SANDBOX_SHELL_URL` |
-| Package CDN (mock, from `@br/runtime/test-support`) | `http://localhost:4322` | `NEXT_PUBLIC_PKG_CDN_URL` |
+| Sandbox shell (`@br/sandbox-shell`) | `http://127.0.0.1:4321/v2/` | `NEXT_PUBLIC_SANDBOX_SHELL_URL` |
 
 `127.0.0.1` and `localhost` are different sites, which gives the cross-site iframe the
 production setup has.
 
 ```sh
-# terminal 1: shell + mock CDN, allowing the dev app origin
+# terminal 1: the shell, allowing the dev app origin
 pnpm --filter @br/web dev:sandbox
 
 # terminal 2: the app
-pnpm --filter @br/web dev        # http://localhost:3000/playground
+pnpm --filter @br/web dev        # http://localhost:3000/try
 ```
 
 The shell only talks to app origins it was built for: they are baked into `shell.js`
 (postMessage target) and into its CSP `frame-ancestors`. `dev:sandbox` allows
 `http://localhost:3000` by default. For another origin or port, set `BR_APP_ORIGINS`
 (comma-separated), for example `BR_APP_ORIGINS=http://localhost:3100 pnpm --filter @br/web
-dev:sandbox`. Ports: `SHELL_PORT` (4321) and `CDN_PORT` (4322); if you change them, set the two
-`NEXT_PUBLIC_*` variables to match. They are inlined at build time, so rebuild after changing
-them.
+dev:sandbox`. Port: `SHELL_PORT` (4321); if you change it, set `NEXT_PUBLIC_SANDBOX_SHELL_URL`
+to match. It is inlined at build time, so rebuild after changing it.
 
 If the shell is not running, or does not allow the app origin, the preview shows
 "The preview could not start" after 10 s.
 
-The mock CDN serves only the packages installed in `packages/runtime` (`react`,
-`react-dom`, `zustand`, `animate.css`) at their installed versions. The self-hosted package
-CDN (T-006) replaces it.
+Imported sites need no package CDN: what a site loads from the internet (a CDN script, a
+font), it loads itself, as on any static host.
 
-### How the bundler is served
+### How an import runs
 
-- The bundler worker is `src/lib/playground/bundler.worker.ts` (it imports
-  `@br/runtime/worker`). `new Worker(new URL('./bundler.worker.ts', import.meta.url))` in
-  `src/lib/playground/runtime-factory.ts` makes Turbopack bundle it as a separate worker chunk.
-- `esbuild.wasm` is imported from this app's `esbuild-wasm` dependency. A Turbopack rule in
-  `next.config.ts` (`'*.wasm': { type: 'asset' }`) emits it as a content-hashed file under
-  `/_next/static/media/` and the import returns its URL. `next.config.ts` fails the build if
-  this app's `esbuild-wasm` version differs from the one `@br/runtime` pins, because esbuild
-  refuses to start with mismatched JS and wasm versions.
-- A bundler start that stalls (no progress for 15 s during the esbuild.wasm download, or not
-  ready 60 s after it, both in page-awake time; T-041) is retried once with a fresh worker; if
-  that stalls too, or the start fails, the preview says why ("Couldn't start the bundler: …")
-  and has **Retry** (`SandboxController.retryBundler()`). An edit retries too (T-039,
-  [docs/03](../../docs/03-sandbox.md#bundler-start-stall-timeout-and-retry-t-039)).
-- `/playground` and `/play` load their client code with `next/dynamic` (`ssr: false`), so
-  other routes never download CodeMirror, the runtime or the worker.
+- `@br/site` reads what was picked or dropped (`importFiles`, `importDrop`; a .zip is read in
+  the page with `fflate`), finds the site root (`dist/`, `build/`, `out/`, … or the shallowest
+  `index.html`), refuses source code, a Next.js project without a static export and sites over
+  `SITE_LIMITS` with a title and what to do next (`describeImportError`), and packs the site
+  (`site.bin`).
+- `src/lib/site/use-site-import.ts` runs one import (the drop is read inside its `drop`
+  handler), `src/components/site/SiteWorkbench.tsx` is the drop zone, the pickers, the
+  page-wide drop overlay, the "what was imported" bar and the preview, shared by the BUILD
+  stage and `/try`. The words are in `src/components/site/copy.ts` (for T-050), and the drop
+  zone has a `help` slot for the onboarding's "How do I import?" (T-049).
+- `src/lib/preview/preview-controller.ts` (`PreviewController`) attaches the preview iframe at
+  once and loads every pack into it (`PreviewHandle.load({site}, 'live')`); the shell serves it
+  from its site worker (docs/09 §9.3). A site the shell cannot serve at all covers the
+  preview with the reason; a file that fails to load or a runtime error goes to Problems.
+- `/try`, `/play` and `/r/{code}` load their client code with `next/dynamic` (`ssr: false`),
+  so other routes never download the import or the runtime.
 
 ## Code map
 
 | Piece | File |
 |---|---|
-| Editing session shared by `/playground` and BUILD (workspace + sandbox + editor state) | `src/lib/playground/use-workspace-session.ts`, `src/components/playground/WorkspacePanes.tsx` |
-| Bundler worker + preview glue | `src/lib/playground/sandbox.ts` (`SandboxController`) |
+| The import area shared by `/try` and BUILD (drop zone, pickers, page drop, import bar, preview, Problems) | `src/components/site/*`, `src/lib/site/use-site-import.ts` |
+| Preview glue (iframe, loads, crash, console batching) | `src/lib/preview/preview-controller.ts` (`PreviewController`) |
+| The battle's last import on this device (IndexedDB) and the stale cleanup | `src/lib/site/local-sites.ts`, `src/lib/site/site-cleanup.ts` |
 | Solo game loop (plain TS, unit tested with fakes); also runs a room's battle in external mode | `src/lib/solo/controller.ts` (`SoloController`) |
 | Room sync engine: private topics, versions/gaps, heartbeat, resync, clock, presence | `src/lib/room/sync.ts` (`RoomSync`), `src/lib/room/reducer.ts` |
 | Room page logic: join, lobby intents, battles, toasts, leave/kick | `src/lib/room/controller.ts` (`RoomController`), `src/lib/room/api.ts` |
-| REVEAL and VOTING: reveal files (untrusted manifest), prefetch, thumbnails, skip/frozen, host controls, ballot | `src/lib/room/reveal-vote.ts` (`RevealVoteController`), `src/lib/room/reveal-files.ts` |
+| REVEAL and VOTING: the revealed site packs (untrusted, checked), prefetch, thumbnails, skip/frozen/could not load, host controls, ballot | `src/lib/room/reveal-vote.ts` (`RevealVoteController`), `src/lib/room/reveal-files.ts` |
 | Room screens (lobby, progress sidebar, spectator, reveal, vote, ranked results) | `src/components/room/*` |
 | Backend calls (RPCs, storage) | `src/lib/solo/api.ts` (`SupabaseSoloApi`), `src/lib/supabase/*` |
 | Error contract → messages | `src/lib/solo/errors.ts` |
@@ -428,7 +437,7 @@ CDN (T-006) replaces it.
 
 ```sh
 pnpm --filter @br/web test             # unit (Vitest): solo + room controllers, sync engine, reducer, …
-pnpm --filter @br/web test:e2e         # /playground and the static site (Playwright), no Supabase needed
+pnpm --filter @br/web test:e2e         # /try and the static site (Playwright), no Supabase needed
 pnpm --filter @br/web test:e2e:solo    # /play against the REAL local Supabase stack
 pnpm --filter @br/web test:e2e:moderation  # report → /admin takedown → removed on the next load (REAL stack)
 pnpm --filter @br/web test:e2e:multi   # rooms: 3+ browser contexts (and phones), REAL stack WITH Realtime
@@ -444,44 +453,57 @@ pnpm --filter @br/web test:e2e:telemetry      # error reporting + analytics agai
   admin's test error (thrown in the page; no server event exists any more) and the
   `room_created` / `room_joined` events arrive scrubbed (no query, room code, name, email,
   raw user id or admin token; one hashed id); with GPC no analytics and no user; nothing from
-  the sandbox iframe (`e2e/telemetry-on.spec.ts`). Then the plain build: no Sentry chunk is
-  loaded and no request goes to any host but the app, Supabase and the sandbox servers
+  the sandbox iframe, and the `site_import` and `preview_crash` events carry no file names or
+  site code (`e2e/telemetry-on.spec.ts`). Then the plain build: no Sentry chunk is loaded and
+  no request goes to any host but the app, Supabase and the sandbox shell
   (`e2e/telemetry-off.spec.ts`). It leaves the plain build in `out/`.
 
 - **Every suite serves the static export the way Cloudflare does:** `pnpm build`, then
   Playwright starts `wrangler dev` on port 3100 (`e2e/app-server.ts`: the `_redirects`
-  rewrites, the `_headers` CSP, the 404 page, the Worker on `/battles/*`). The playground, solo, moderation, rooms and
-  chaos suites fail on any CSP violation of the app's pages (`e2e/csp.ts`).
+  rewrites, the `_headers` CSP, the 404 page, the Worker on `/battles/*`). The `/try`, solo,
+  moderation, rooms and chaos suites fail on any CSP violation of the app's pages
+  (`e2e/csp.ts`).
+- **Fixture sites** (`e2e/sites.ts`): what a player's tools would produce, built in the test:
+  a Vite-like `dist/` (`index.html`, `/assets/index-<hash>.js` and `.css`, root-relative), a
+  one-file plain HTML site and an unbuilt project. They are imported as a player does:
+  `importFolder` (the folder input with `webkitdirectory`, a real folder on disk), `importZip`
+  (the .zip input) and `dropFiles` (a real `drop` event with a synthetic `DataTransfer`; it
+  cannot carry folders, so it drops a one-file site or a .zip). `importApp(page, title,
+  background)` is what the room suites use.
 - `test:e2e` runs `pnpm build`, then Playwright starts `wrangler dev --port 3100` and
   `scripts/sandbox-servers.ts` (allowing `http://localhost:3100`) and runs `e2e/` except the
   suites that need Supabase. `e2e/static-site.spec.ts` (T-037) checks the host's behaviour:
   every page is a file, the shells keep their URL, unknown paths get the 404 page with a 404,
   the `_headers` values, the CSP blocking an injected script and never blocking anything of
-  the app's own (the playground runs a build), and `/admin` without a session. It uses full Chromium (`channel: 'chromium'`), because the infinite-loop test
-  needs site isolation (see `packages/runtime/README.md`). `@playwright/test` is pinned to
-  1.56.1 to match the preinstalled browser. Not part of `pnpm test`.
-  `e2e/cdn-outage.spec.ts` (T-032) takes the mock package CDN down after the template's
-  first preview (`POST http://127.0.0.1:4323/cdn-outage?mode=refuse|error|hang|off`, served by
-  `sandbox-servers.ts` and `solo-services.ts`): edits, a restart after a crash and a reload
-  keep working, an uncached import shows "Package server unreachable" without a crash, and a
-  CDN that never answers shows "still loading" until it does.
+  the app's own (`/try` runs an imported site), and `/admin` without a session.
+  `e2e/try.spec.ts`: a `dist` folder and a whole project folder picked with "Choose folder",
+  a .zip, Import again, a real drop (a one-file site, then a .zip over the running preview),
+  dropped source code ("This is source code, not the built site") with the zone still usable,
+  Problems and Console, an infinite loop (crashed, Restart, a new import recovers), the
+  keyboard going to the site, the pickers by keyboard, dark mode, and `/playground` → `/try`.
+  It uses full Chromium (`channel: 'chromium'`), because the infinite-loop test needs site
+  isolation (see `packages/runtime/README.md`). `@playwright/test` is pinned to 1.56.1 to
+  match the preinstalled browser. Not part of `pnpm test`. (The package CDN outage suite,
+  `cdn-outage.spec.ts`, went with the package CDN in M6.)
 - `test:e2e:solo` (`playwright.solo.config.ts`) needs the local Supabase stack running. It
-  builds, then starts `scripts/solo-services.ts` (shell with the capture gate, mock CDN,
-  capture worker) and `wrangler dev --port 3100`, and plays two battles
-  (`e2e/solo.spec.ts`):
-  - **ship:** name → spin → edit `App.tsx` → ship → RESULTS with the real 1280×800
-    screenshot and the `speedrun` award → the last-look deadline is forced with psql →
-    the DESTROY moment → the IndexedDB workspace and every ephemeral object of the battle
-    are gone → `/battles/[id]` shows the result with the screenshot, and its `og:image` is
-    the static card (per-battle previews: T-038);
-  - **auto-ship:** edit `styles.css` + `App.tsx`, autosave (tab hidden), force the build
-    deadline and the grace → `auto_shipped`, captured with its CSS (the background colour is
-    checked in the screenshot).
-  - **package CDN down mid-BUILD** (`e2e/solo-outage.spec.ts`, T-032): edit, autosave, ship
-    and the last look still work from the browser's cache; the screenshot is the client
-    thumbnail (`fallback`), because the renderer has no cache. The rooms suite has
-    `e2e/multiplayer-outage.spec.ts`: the CDN goes down in the lobby, and the lobby's
-    warm-up (`TemplateWarmup`) still gives both players a running template in BUILD.
+  builds, then starts `scripts/solo-services.ts` (shell with the capture gate, the jobs
+  function) and `wrangler dev --port 3100`, and plays three battles (`e2e/solo.spec.ts`):
+  - **ship:** name → spin → the drop zone (Ship disabled) → a .zip, then a `dist` folder →
+    autosaved → ship → RESULTS with the real 1280×800 screenshot, the `speedrun` award and
+    the stats (4 files, the size, 2 imports) → the last-look deadline is forced with psql →
+    the DESTROY moment → the battle's site in IndexedDB and every ephemeral object are gone
+    → `/battles/[id]` shows the result with the screenshot and its link preview;
+  - **auto-ship:** a whole project folder (dist/ found in it, the rest skipped), autosaved at
+    once, force the build deadline and the grace → `auto_shipped`, captured with its
+    stylesheet (the background colour is checked in the screenshot);
+  - **reload:** an import comes back after a reload (IndexedDB), and in a browser without
+    that copy (the same session) from the remote autosave.
+  - **Storage down** (`e2e/solo-outage.spec.ts`): an import runs and is kept while Storage
+    refuses connections, the autosave says "Save failed, retrying", a reload restores it from
+    IndexedDB, the retry lands once Storage is back, then ship; and a ship that fails while
+    Storage is down succeeds on "Try again". The rooms suite has
+    `e2e/multiplayer-outage.spec.ts`: one player's Storage goes down, the room still sees the
+    import (Presence), and the retried autosave is what the deadline auto-ships.
 
   The tests commit data (anonymous users, battles), like `supabase/scripts/e2e-solo.mjs`.
   `SOLO_SCREENSHOT_DIR=/dir` saves UI screenshots; `E2E_REUSE_SERVERS=1` reuses servers that
@@ -512,8 +534,9 @@ pnpm --filter @br/web test:e2e:telemetry      # error reporting + analytics agai
   its own browser context, i.e. its own anonymous user (`e2e/multiplayer.spec.ts`):
   - **a 3-player room:** create (landing page), join by link and by a lower-case code,
     everyone online, ready, start, the same challenge for all; a late joiner is a spectator
-    (countdown and progress, no editor); the host ships fast, a player refreshes mid-BUILD
-    and gets the same battle with the work restored, then autosaves; another ships late;
+    (countdown and progress, no import); the host imports and ships fast, a player imports,
+    refreshes mid-BUILD and gets her import back; another imports twice ("imported (2×)" in
+    the others' sidebars) and ships late;
     the deadline is forced → auto-shipped; REVEAL: every page (spectator included) shows the
     same `reveal_index` and runs the same build in a reveal-mode frame, the host's Next and
     Skip to vote, one player skips a build she froze (locally; the others keep watching)
@@ -530,7 +553,7 @@ pnpm --filter @br/web test:e2e:telemetry      # error reporting + analytics agai
 
   - **phones** (`e2e/multiplayer-mobile.spec.ts`, Playwright's iPhone 13 profile in
     Chromium: 390×664, touch): a phone creates and hosts the room, changes the reveal/vote
-    settings and starts; it gets the desktop-needed notice in BUILD and ends DNF with no
+    settings and starts; it gets the "building needs a computer" notice in BUILD and ends DNF with no
     file uploaded; a second phone joins mid-BUILD as a spectator; REVEAL is still-first on
     the phones (no iframe until "Tap to run live") and live at once on the desktops; the
     host bar is fixed and in view; VOTE with taps, including rapid alternating taps on two
@@ -560,19 +583,21 @@ pnpm --filter @br/web test:e2e:telemetry      # error reporting + analytics agai
   state (one event per version, one build per roster player, every hand-shipped build kept,
   no draft after DESTROY, captures settled, ranks 1…n, files destroyed):
   - **6 players under chaos:** clocks at ±5 min (`newPlayer(…, { clockSkewMs })`), a 15 s
-    network drop mid-BUILD with an edit made offline, refreshes mid-BUILD and mid-RESULTS,
-    the host's context closes (host migration, toasts and crown; her autosave ships); in
+    network drop mid-BUILD with an import made offline (autosaved once back), refreshes
+    mid-BUILD and mid-RESULTS, the host's context closes (host migration, toasts and crown;
+    her autosave ships); a player who never imported ends DNF; in
     REVEAL the new host drives Next, then drops offline and the controls move to the next
     host, who skips to the vote; two players vote, the timer ends the rest; that host
     starts the rematch;
-  - **random chaos (seeded):** drops, refreshes, edits and ships picked by a PRNG on skewed
-    clocks; `CHAOS_SEED=n` replays a run (the seed is logged and in the report);
-  - **steady typing:** a new line every ~1.5 s for a minute must not trip Realtime's
-    presence limit (5 messages per 30 s per client, or the server closes the channel); the
-    watcher sees the final line count once the typist stops (T-029: within ~15 s);
+  - **random chaos (seeded):** drops, refreshes, imports and ships picked by a PRNG on skewed
+    clocks (everyone imports once first); `CHAOS_SEED=n` replays a run (the seed is logged and
+    in the report);
+  - **steady imports:** an import every ~3 s for a minute must not trip Realtime's presence
+    limit (5 messages per 30 s per client, or the server closes the channel); the watcher
+    sees the final import count (T-029: within ~15 s);
   - **all clients closed at T-0:** pg_cron alone ends BUILD and SHIPPING, auto-ships the
-    autosaves (including the final one at T-3 s), runs every REVEAL slot and VOTING (their
-    deadlines moved to now), captures, RESULTS;
+    autosaves (including an import made in the last 20 s), runs every REVEAL slot and VOTING
+    (their deadlines moved to now), captures, RESULTS;
   - **abandoned:** a returning player sees the abandoned battle in the lobby;
   - **reveal and vote under chaos** (T-021): a refresh mid-REVEAL lands on the current
     `reveal_index` running the right build, with the countdown in sync; the host votes
@@ -580,7 +605,7 @@ pnpm --filter @br/web test:e2e:telemetry      # error reporting + analytics agai
     counts); a vote cast offline is kept ("Not saved yet"), retried and lands once back
     online; a player offline until VOTING ends early (`all_voted`) is told in RESULTS
     that his pick was not counted;
-  - **8 players** (the largest party): everyone ships, a reveal of 8 builds (38 s slots),
+  - **8 players** (the largest party): everyone imports and ships, a reveal of 8 builds (38 s slots),
     everyone votes in every category, ranked results with the tallies, destroy, lobby;
   - **a full room:** the 9th player spectates; with 20 spectators, `room_full`;
   - **Realtime loses the database feed** (T-023): mid-REVEAL, Realtime stops forwarding the

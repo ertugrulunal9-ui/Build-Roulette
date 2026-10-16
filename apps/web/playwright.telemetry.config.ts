@@ -38,7 +38,7 @@ export default defineConfig({
   webServer: [
     {
       command: 'tsx scripts/sandbox-servers.ts',
-      url: 'http://127.0.0.1:4321/v1/',
+      url: 'http://127.0.0.1:4321/v2/',
       env: { BR_APP_ORIGINS: APP_ORIGIN },
       reuseExistingServer: false,
       stdout: 'pipe',

@@ -1,9 +1,9 @@
 /**
- * Stale battle workspaces in IndexedDB (docs/03 §3.6): each battle keeps its working files
- * under `battle:{id}` until DESTROY deletes them. Copies that a closed tab never got to
- * delete are cleaned up when a battle opens, but only when they are really stale, because
- * another tab of the same browser may be in the middle of its own battle (a solo battle
- * while a room battle opens, two rooms…):
+ * Stale battle sites in IndexedDB (docs/09 §9.5): each battle keeps its latest imported site
+ * pack under `battle:{id}` (local-sites.ts) until DESTROY deletes it. Copies that a closed
+ * tab never got to delete are cleaned up when a battle opens, but only when they are really
+ * stale, because another tab of the same browser may be in the middle of its own battle (a
+ * solo battle while a room battle opens, two rooms…):
  *
  * - the server says the battle is over: RESULTS (the build is final; the last look reads
  *   the shipped files from storage), DESTROYED or ABANDONED;
@@ -13,46 +13,46 @@
  */
 import type { BattlePhase } from '@br/game';
 
-/** Untouched this long, a battle workspace is stale even without asking the server. */
-export const STALE_WORKSPACE_MS = 24 * 60 * 60 * 1000;
+/** Untouched this long, a battle site is stale even without asking the server. */
+export const STALE_SITE_MS = 24 * 60 * 60 * 1000;
 
-export const BATTLE_WORKSPACE_PREFIX = 'battle:';
+export const BATTLE_SITE_PREFIX = 'battle:';
 
 const OVER: readonly BattlePhase[] = ['results', 'destroyed', 'abandoned'];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-export interface StoredBattleWorkspace {
+export interface StoredBattleSite {
   /** `battle:{id}` */
   id: string;
   /** Last local save (epoch ms). */
   updatedAt: number;
 }
 
-export interface WorkspaceCleanupDeps {
-  list(): Promise<StoredBattleWorkspace[]>;
-  delete(workspaceId: string): Promise<void>;
+export interface SiteCleanupDeps {
+  list(): Promise<StoredBattleSite[]>;
+  delete(key: string): Promise<void>;
   /** The phases of the battles the user may see (others are left out). */
   battlePhases(battleIds: string[]): Promise<Record<string, BattlePhase>>;
   now(): number;
 }
 
 /**
- * Deletes the stale battle workspaces except `keepId` (the battle being opened). Returns
- * the deleted workspace ids. Never throws.
+ * Deletes the stale battle sites except `keepId` (the battle being opened). Returns the
+ * deleted keys. Never throws.
  */
-export async function pruneBattleWorkspaces(
-  deps: WorkspaceCleanupDeps,
+export async function pruneBattleSites(
+  deps: SiteCleanupDeps,
   keepId: string | null,
 ): Promise<string[]> {
-  let all: StoredBattleWorkspace[];
+  let all: StoredBattleSite[];
   try {
     all = await deps.list();
   } catch {
     return [];
   }
-  const candidates = all.filter((w) => w.id.startsWith(BATTLE_WORKSPACE_PREFIX) && w.id !== keepId);
-  const cutoff = deps.now() - STALE_WORKSPACE_MS;
-  const battleId = (w: StoredBattleWorkspace) => w.id.slice(BATTLE_WORKSPACE_PREFIX.length);
+  const candidates = all.filter((w) => w.id.startsWith(BATTLE_SITE_PREFIX) && w.id !== keepId);
+  const cutoff = deps.now() - STALE_SITE_MS;
+  const battleId = (w: StoredBattleSite) => w.id.slice(BATTLE_SITE_PREFIX.length);
   // Too old, or not a battle id at all (no server could know it).
   const stale = new Set(
     candidates.filter((w) => w.updatedAt < cutoff || !UUID.test(battleId(w))).map((w) => w.id),

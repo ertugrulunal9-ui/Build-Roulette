@@ -17,11 +17,15 @@ import {
 import { BATTLE_1, BOB, CLEO, ME, battleSnapshot, revealBuilds } from '../../lib/room/test-support';
 import { INITIAL_SOLO_STATE, type SoloController, type SoloState } from '../../lib/solo/controller';
 import { GameError } from '../../lib/solo/errors';
+import { fakeSite } from '../../lib/solo/test-support';
 import type { BattleSnapshot } from '../../lib/solo/types';
 import { TOUCH_PRIMARY_QUERY } from '../../lib/device';
 import { RevealStage, spotlightView } from './RevealStage';
 import { RoomResults, lostVotesText, votedResults } from './RoomResults';
 import { VoteStage, ballotNote, buildImage } from './VoteStage';
+
+/** A site pack for the live spotlight. */
+const PACK = fakeSite('x').pack;
 
 afterEach(cleanup);
 
@@ -96,7 +100,7 @@ describe('RevealStage', () => {
   it('the spotlight: Build k of n, name, builder; the strip hides upcoming builds', () => {
     renderReveal(
       battleSnapshot({ phase: 'reveal', revealIndex: 1 }),
-      showState({ bundles: { 'build-bob': { status: 'loading', build: null } } }),
+      showState({ sites: { 'build-bob': { status: 'loading', build: null } } }),
     );
     const stage = screen.getByTestId('reveal-stage');
     expect(stage.dataset['index']).toBe('1');
@@ -145,7 +149,7 @@ describe('RevealStage', () => {
   it('Skip this build is outside the frame and local; a skipped build shows its thumbnail', () => {
     const show = renderReveal(
       battleSnapshot({ phase: 'reveal', revealIndex: 1 }),
-      showState({ bundles: { 'build-bob': { status: 'loading', build: null } } }),
+      showState({ sites: { 'build-bob': { status: 'loading', build: null } } }),
     );
     fireEvent.click(screen.getByTestId('skip-build'));
     expect(show.skip).toHaveBeenCalledWith('build-bob');
@@ -184,13 +188,13 @@ describe('RevealStage', () => {
     expect(screen.getByTestId('watch-build')).toBeTruthy();
   });
 
-  it('a build whose packages could not load (T-032): its screenshot, the reason, Run it again', () => {
+  it('a build the sandbox could not serve here: its screenshot, the reason, Run it again', () => {
     const show = renderReveal(
       battleSnapshot({ phase: 'reveal', revealIndex: 1 }),
-      showState({ noPackages: ['build-bob'], thumbs: { 'build-bob': 'blob:bob' } }),
+      showState({ noLoad: ['build-bob'], thumbs: { 'build-bob': 'blob:bob' } }),
     );
-    const note = screen.getByTestId('build-no-packages');
-    expect(note.textContent).toContain('package server');
+    const note = screen.getByTestId('build-no-load');
+    expect(note.textContent).toContain('couldn’t load on your screen');
     expect(note.textContent).not.toContain('froze');
     expect(screen.getByTestId('fallback-thumb').getAttribute('src')).toBe('blob:bob');
     expect(screen.queryByTestId('reveal-live')).toBeNull();
@@ -198,12 +202,12 @@ describe('RevealStage', () => {
     expect(show.watch).toHaveBeenCalledWith('build-bob');
   });
 
-  it('spotlightView: local stops first, then the touch still, then the bundle', () => {
+  it('spotlightView: local stops first, then the touch still, then the site pack', () => {
     const ready = {
       status: 'ready' as const,
-      build: { js: 'x', css: '', importMap: { imports: {} } },
+      build: { site: PACK },
     };
-    const base = showState({ bundles: { 'build-bob': ready } });
+    const base = showState({ sites: { 'build-bob': ready } });
     const desktop = { stillFirst: false, tapped: [] };
     const phone = { stillFirst: true, tapped: [] };
     expect(spotlightView(base, 'build-bob', desktop)).toBe('live');
@@ -216,13 +220,11 @@ describe('RevealStage', () => {
     expect(spotlightView({ ...base, failedToStart: ['build-bob'] }, 'build-bob', desktop)).toBe(
       'no_start',
     );
-    expect(spotlightView({ ...base, noPackages: ['build-bob'] }, 'build-bob', phone)).toBe(
-      'no_packages',
-    );
+    expect(spotlightView({ ...base, noLoad: ['build-bob'] }, 'build-bob', phone)).toBe('no_load');
     expect(spotlightView(showState(), 'build-bob', desktop)).toBe('loading');
     expect(
       spotlightView(
-        showState({ bundles: { 'build-bob': { status: 'missing', build: null } } }),
+        showState({ sites: { 'build-bob': { status: 'missing', build: null } } }),
         'build-bob',
         desktop,
       ),
@@ -237,9 +239,9 @@ describe('RevealStage', () => {
     );
     const ready = {
       status: 'ready' as const,
-      build: { js: 'x', css: '', importMap: { imports: {} } },
+      build: { site: PACK },
     };
-    renderReveal(snap, showState({ bundles: { 'build-bob': ready } }));
+    renderReveal(snap, showState({ sites: { 'build-bob': ready } }));
     expect(screen.getByTestId('reveal-stage').dataset['view']).toBe('removed');
     expect(screen.getByTestId('reveal-title').textContent).toBe('Removed by moderators');
     // In the spotlight and in the strip.
@@ -257,7 +259,7 @@ describe('RevealStage', () => {
   it('Report sits next to Skip for other players’ builds (not your own); hiding = Skip', () => {
     const show = renderReveal(
       battleSnapshot({ phase: 'reveal', revealIndex: 1 }),
-      showState({ bundles: { 'build-bob': { status: 'loading', build: null } } }),
+      showState({ sites: { 'build-bob': { status: 'loading', build: null } } }),
     );
     const report = screen.getByTestId('report-build');
     expect(report.dataset['build']).toBe('build-bob');
@@ -276,10 +278,10 @@ describe('RevealStage', () => {
       renderReveal(
         battleSnapshot({ phase: 'reveal', revealIndex: 1 }),
         showState({
-          bundles: {
+          sites: {
             'build-bob': {
               status: 'ready',
-              build: { js: 'x', css: '', importMap: { imports: {} } },
+              build: { site: PACK },
             },
           },
         }),
@@ -308,10 +310,10 @@ describe('RevealStage', () => {
       renderReveal(
         battleSnapshot({ phase: 'reveal' }),
         showState({
-          bundles: {
+          sites: {
             'build-me': {
               status: 'ready',
-              build: { js: 'x', css: '', importMap: { imports: {} } },
+              build: { site: PACK },
             },
           },
         }),
@@ -327,12 +329,12 @@ describe('RevealStage', () => {
     }
   });
 
-  it('a ready bundle runs in one reveal-mode iframe (no popups, modals or clipboard)', () => {
+  it('a ready site pack runs in one reveal-mode iframe (no popups, modals or clipboard)', () => {
     renderReveal(
       battleSnapshot({ phase: 'reveal' }),
       showState({
-        bundles: {
-          'build-me': { status: 'ready', build: { js: 'x', css: '', importMap: { imports: {} } } },
+        sites: {
+          'build-me': { status: 'ready', build: { site: PACK } },
         },
       }),
     );

@@ -796,11 +796,8 @@ describe('presence', () => {
     api.room = roomSnapshot({ battleId: BATTLE_1, version: 3 });
     api.battles.set(BATTLE_1, battleSnapshot({ version: 2, phase: 'building' }));
   };
-  const act = (lines: number, typing = true, last_build: 'ok' | 'error' = 'ok') => ({
-    lines,
-    last_build,
-    typing,
-  });
+  /** The activity after `imports` imports (none: still building). */
+  const act = (imports: number) => ({ imported: imports > 0, imports });
 
   it('claims {user_id, display_name, device, activity} once subscribed, in any phase', async () => {
     const s = engine();
@@ -815,80 +812,36 @@ describe('presence', () => {
         user_id: ME,
         display_name: 'Ada',
         device: 'desktop',
-        activity: { lines: 0, last_build: 'ok', typing: false },
+        activity: { imported: false, imports: 0 },
       },
     ]);
     s.stop();
   });
 
-  it('BUILD activity goes out at most once per 15 s, only when it matters, the latest winning', async () => {
+  it('each import goes out, at most once per 15 s, the latest winning', async () => {
     building();
     const s = await started();
     s.setPresence('Ada');
     const topic = rt.open(ROOM_TOPIC);
     await flush();
     expect(topic.tracked).toHaveLength(1); // the claim
-    // Starts typing: matters, but 15 s after the claim at the earliest; more lines meanwhile.
-    s.setActivity(act(5));
+    // The first import: news, but 15 s after the claim at the earliest; a second one meanwhile.
+    s.setActivity(act(1));
     await vi.advanceTimersByTimeAsync(5_000);
-    s.setActivity(act(12));
+    s.setActivity(act(2));
     await vi.advanceTimersByTimeAsync(9_999);
     expect(topic.tracked).toHaveLength(1);
     await vi.advanceTimersByTimeAsync(1);
     expect(topic.tracked).toHaveLength(2);
-    expect(topic.tracked[1]).toMatchObject({ activity: act(12) });
-    // Small line changes do not matter on their own: nothing for a minute.
-    for (let lines = 13; lines <= 31; lines++) {
-      s.setActivity(act(lines));
-      await vi.advanceTimersByTimeAsync(3_000);
-    }
+    expect(topic.tracked[1]).toMatchObject({ activity: act(2) });
+    // The same activity again is not news.
+    s.setActivity(act(2));
+    await vi.advanceTimersByTimeAsync(60_000);
     expect(topic.tracked).toHaveLength(2);
-    // 20 lines more than the others saw: sent (the gap is long over).
-    s.setActivity(act(32));
+    // Another import long after the last update: at once.
+    s.setActivity(act(3));
     expect(topic.tracked).toHaveLength(3);
-    // The build breaks 1 s later (and stays broken past 10 s): out when the 15 s gap is over.
-    await vi.advanceTimersByTimeAsync(1_000);
-    s.setActivity(act(33, true, 'error'));
-    await vi.advanceTimersByTimeAsync(13_999);
-    expect(topic.tracked).toHaveLength(3);
-    await vi.advanceTimersByTimeAsync(1);
-    expect(topic.tracked.at(-1)).toMatchObject({ activity: act(33, true, 'error') });
-    // A change that stops mattering before its turn is not sent: fixed again within 15 s.
-    s.setActivity(act(33, true, 'ok'));
-    await vi.advanceTimersByTimeAsync(5_000);
-    s.setActivity(act(34, true, 'error'));
-    await vi.advanceTimersByTimeAsync(30_000);
-    expect(topic.tracked).toHaveLength(4);
-    s.stop();
-  });
-
-  it('a build that fails for a moment is not news; one that fails for 10 s is, and so is its fix', async () => {
-    building();
-    const s = await started();
-    s.setPresence('Ada');
-    const topic = rt.open(ROOM_TOPIC);
-    s.setActivity(act(10));
-    await vi.advanceTimersByTimeAsync(20_000);
-    expect(topic.tracked).toHaveLength(2); // the claim, then active
-    // A half-typed line breaks the build for 2 s, again and again: nothing is sent.
-    for (let i = 0; i < 10; i++) {
-      s.setActivity(act(10, true, 'error'));
-      await vi.advanceTimersByTimeAsync(2_000);
-      s.setActivity(act(10, true, 'ok'));
-      await vi.advanceTimersByTimeAsync(4_000);
-    }
-    expect(topic.tracked).toHaveLength(2);
-    // Now it stays broken: reported once it has failed for 10 s.
-    s.setActivity(act(11, true, 'error'));
-    await vi.advanceTimersByTimeAsync(9_999);
-    expect(topic.tracked).toHaveLength(2);
-    await vi.advanceTimersByTimeAsync(1);
-    expect(topic.tracked.at(-1)).toMatchObject({ activity: act(11, true, 'error') });
-    // Fixed: that matters at once (well, after the 15 s gap).
-    s.setActivity(act(12, true, 'ok'));
-    await vi.advanceTimersByTimeAsync(15_000);
-    expect(topic.tracked).toHaveLength(4);
-    expect(topic.tracked.at(-1)).toMatchObject({ activity: act(12, true, 'ok') });
+    expect(topic.tracked.at(-1)).toMatchObject({ activity: act(3) });
     s.stop();
   });
 
@@ -914,14 +867,14 @@ describe('presence', () => {
         phase_ends_at: new Date(Date.now() + 600_000).toISOString(),
       });
     };
-    s.setActivity(act(40));
+    s.setActivity(act(1));
     await vi.advanceTimersByTimeAsync(60_000);
     expect(topic.tracked).toHaveLength(1); // SPINNING: held back
     // BUILDING starts: the held-back activity goes out.
     phase(2, 'building');
     await flush();
     expect(topic.tracked).toHaveLength(2);
-    expect(topic.tracked[1]).toMatchObject({ activity: act(40) });
+    expect(topic.tracked[1]).toMatchObject({ activity: act(1) });
     for (const [v, to] of [
       [3, 'shipping'],
       [4, 'reveal'],
@@ -931,7 +884,7 @@ describe('presence', () => {
     ] as const) {
       phase(v, to);
       await flush();
-      s.setActivity(act(40 + v * 30, v % 2 === 0, v % 2 === 0 ? 'ok' : 'error'));
+      s.setActivity(act(v));
       await vi.advanceTimersByTimeAsync(60_000);
     }
     expect(topic.tracked).toHaveLength(2);
@@ -943,7 +896,7 @@ describe('presence', () => {
     s.stop();
   });
 
-  it('someone typing for two minutes: one update per 15 s at most (Realtime closes channels above 5 per 30 s), and the final count once they stop', async () => {
+  it('someone importing every few seconds for two minutes: one update per 15 s at most (Realtime closes channels above 5 per 30 s), and the final count', async () => {
     building();
     const s = await started();
     s.setPresence('Ada');
@@ -954,20 +907,19 @@ describe('presence', () => {
       times.push(Date.now());
       return track(p);
     };
-    // A new line every 500 ms.
-    for (let i = 1; i <= 240; i++) {
+    // A new import every 2 s.
+    for (let i = 1; i <= 60; i++) {
       s.setActivity(act(i));
-      await vi.advanceTimersByTimeAsync(500);
+      await vi.advanceTimersByTimeAsync(2_000);
     }
     for (const [i, t] of times.entries()) {
       if (i > 0) expect(t - (times[i - 1] ?? 0)).toBeGreaterThanOrEqual(15_000);
     }
     expect(times.length).toBeGreaterThanOrEqual(6);
-    expect(times.length).toBeLessThanOrEqual(9); // was 16 with 4 per 30 s
-    // They stop: no longer active, so the latest count goes out.
-    s.setActivity(act(240, false));
+    expect(times.length).toBeLessThanOrEqual(9);
+    // The latest count goes out once the gap is over.
     await vi.advanceTimersByTimeAsync(15_000);
-    expect(topic.tracked.at(-1)).toMatchObject({ activity: act(240, false) });
+    expect(topic.tracked.at(-1)).toMatchObject({ activity: act(60) });
     s.stop();
   });
 
@@ -980,13 +932,13 @@ describe('presence', () => {
     const before = topic.tracked.length;
     env.fire('offline');
     for (let i = 1; i <= 10; i++) {
-      s.setActivity(act(i * 30));
+      s.setActivity(act(i));
       await vi.advanceTimersByTimeAsync(2_000);
     }
     expect(topic.tracked).toHaveLength(before);
     env.fire('online');
     expect(topic.tracked).toHaveLength(before + 1);
-    expect(topic.tracked.at(-1)).toMatchObject({ activity: { lines: 300 } });
+    expect(topic.tracked.at(-1)).toMatchObject({ activity: { imported: true, imports: 10 } });
     s.stop();
   });
 
@@ -1000,7 +952,7 @@ describe('presence', () => {
     expect(topic.tracked).toHaveLength(1);
     topic.trackResult = true;
     // Unchanged activity, but the claim is owed: it goes out after the 2 s gap.
-    s.setActivity({ lines: 0, last_build: 'ok', typing: false });
+    s.setActivity({ imported: false, imports: 0 });
     await vi.advanceTimersByTimeAsync(2_000);
     expect(topic.tracked).toHaveLength(2);
     s.stop();
@@ -1014,7 +966,7 @@ describe('presence', () => {
           user_id: BOB,
           display_name: 'Bob',
           device: 'mobile',
-          activity: { lines: 12, last_build: 'error', typing: false },
+          activity: { imported: true, imports: 2 },
           presence_ref: 'x',
         },
       ],
@@ -1023,17 +975,23 @@ describe('presence', () => {
       user_id: BOB,
       display_name: 'Bob',
       device: 'mobile',
-      activity: { lines: 12, last_build: 'error', typing: false },
+      activity: { imported: true, imports: 2 },
     });
     s.stop();
   });
 
-  it('normalizePresence merges tabs of one user and drops junk', () => {
+  it('normalizePresence merges tabs of one user and drops junk (client-claimed data)', () => {
     expect(
       normalizePresence({
         [BOB]: [
-          { user_id: BOB, display_name: 'Bob', activity: { lines: 3, typing: false } },
-          { user_id: BOB, display_name: 'Bob', activity: { lines: 9, typing: true } },
+          { user_id: BOB, display_name: 'Bob', activity: { imported: false, imports: 0 } },
+          { user_id: BOB, display_name: 'Bob', activity: { imported: true, imports: 3.7 } },
+        ],
+        [CLEO]: [
+          // An older client (lines, typing) or a hostile one: no import is claimed.
+          { user_id: CLEO, display_name: 'Cleo', activity: { lines: 9, typing: true } },
+          { user_id: CLEO, display_name: 'Cleo', activity: { imported: 'yes', imports: -5 } },
+          { user_id: CLEO, display_name: 'Cleo', activity: { imports: Number.POSITIVE_INFINITY } },
         ],
         junk: [{ nope: true }],
       }),
@@ -1042,9 +1000,21 @@ describe('presence', () => {
         user_id: BOB,
         display_name: 'Bob',
         device: 'desktop',
-        activity: { lines: 9, last_build: 'ok', typing: true },
+        activity: { imported: true, imports: 3 },
+      },
+      [CLEO]: {
+        user_id: CLEO,
+        display_name: 'Cleo',
+        device: 'desktop',
+        activity: { imported: false, imports: 0 },
       },
     });
+    // An absurd count is capped (it only decorates the sidebar).
+    expect(
+      normalizePresence({
+        [BOB]: [{ user_id: BOB, display_name: 'Bob', activity: { imported: true, imports: 1e12 } }],
+      })[BOB]?.activity.imports,
+    ).toBe(10_000);
   });
 });
 

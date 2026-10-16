@@ -6,15 +6,15 @@
  * - **Reveal builds:** `get_reveal_builds` once the battle is in REVEAL or VOTING (the
  *   object names of every final build, in reveal order). Retried while it fails.
  * - **Spotlight:** the snapshot's `reveal_index` (advanced by `phase` events) picks the
- *   build. Its `bundle.js`, `bundle.css` and `manifest.json` are downloaded from Storage and
- *   turned into a validated preview input (reveal-files.ts); the **next** build's files are
- *   prefetched during the current slot, so a switch is instant. The React side runs exactly
+ *   build. Its site pack (`files.site`) is downloaded from Storage and checked
+ *   (reveal-files.ts); the **next** build's pack is prefetched during the current slot, so a
+ *   switch is instant. The React side runs exactly
  *   one live preview (reveal mode, storage wiped first) for the spotlighted build.
  * - **Thumbnails:** `thumb.webp` of each build (shipped by hand only) as an object URL, for
  *   the strip and the VOTE grid. Revoked when the battle ends or the controller goes.
- * - **Skip / frozen / no packages:** a viewer can skip the spotlighted build (or the watchdog
- *   finds it frozen, or its packages cannot load while the package CDN is down, T-032): only
- *   this tab stops running it and shows its thumbnail instead. The room goes
+ * - **Skip / frozen / could not load:** a viewer can skip the spotlighted build (or the
+ *   watchdog finds it frozen, or the sandbox cannot serve its site here, e.g. a browser
+ *   without service workers): only this tab stops running it and shows its thumbnail instead. The room goes
  *   on; nothing is sent to the server. A watchdog crash is also a `preview_crash` analytics
  *   event (T-031, `previewHealth`), sent once the viewer ran the build again or the battle
  *   ended for this controller.
@@ -33,7 +33,7 @@
  *   a pick that cannot reach the server (offline) stays `unsent` and is sent again every
  *   `retryMs` and with every fresh snapshot until it lands; one that never landed before
  *   VOTING ended (or arrived just after) becomes `lost`, which RESULTS shows the player.
- * - **Memory:** bundles are dropped once REVEAL is over; everything at DESTROY.
+ * - **Memory:** site packs are dropped once REVEAL is over; everything at DESTROY.
  *
  * The snapshot comes from the room's sync engine through `receive()`.
  */
@@ -56,8 +56,8 @@ import { revealPreviewBuild } from './reveal-files';
 
 export interface RevealVoteApi {
   getRevealBuilds(battleId: string): Promise<RevealBuild[]>;
-  /** An object of `ephemeral-builds` as text, or null when it does not exist. */
-  downloadText(path: string): Promise<string | null>;
+  /** An object of `ephemeral-builds` as bytes, or null when it does not exist. */
+  downloadBytes(path: string): Promise<Uint8Array<ArrayBuffer> | null>;
   /** An object of `ephemeral-builds` as a Blob, or null when it does not exist. */
   downloadBlob(path: string): Promise<Blob | null>;
   revealNext(battleId: string, expectedVersion: number): Promise<HostRevealResult>;
@@ -81,7 +81,6 @@ export const browserObjectUrls: ObjectUrls = {
 
 export interface RevealVoteDeps {
   api: RevealVoteApi;
-  cdnBaseUrl: string;
   /** Asks the room's sync engine for a fresh battle snapshot. */
   refetch(): Promise<void>;
   objectUrls?: ObjectUrls;
@@ -96,10 +95,10 @@ export interface RevealVoteDeps {
 
 // ─── State ────────────────────────────────────────────────────────────────────────────
 
-export type BundleState =
+export type SitePackState =
   | { status: 'loading'; build: null }
   | { status: 'ready'; build: PreviewBuild }
-  /** The build has no bundle in Storage (it should not happen for a final build). */
+  /** The build has no usable site pack in Storage (it should not happen for a final build). */
   | { status: 'missing'; build: null }
   | { status: 'error'; build: null; error: GameError };
 
@@ -131,8 +130,8 @@ export interface RevealVoteState {
   /** `get_reveal_builds`, in reveal order (null until it answers). */
   builds: readonly RevealBuild[] | null;
   buildsError: GameError | null;
-  /** By build id. Only the spotlighted and the next build are kept during REVEAL. */
-  bundles: Readonly<Record<string, BundleState>>;
+  /** Site packs by build id. Only the spotlighted and the next build are kept during REVEAL. */
+  sites: Readonly<Record<string, SitePackState>>;
   /** By build id: an object URL of `thumb.webp`, or null when the build has none. */
   thumbs: Readonly<Record<string, string | null>>;
   /** Build ids this viewer chose not to run (local only). */
@@ -146,11 +145,11 @@ export interface RevealVoteState {
    */
   failedToStart: readonly string[];
   /**
-   * Build ids whose code or packages could not load in this tab (a `module-load` error from
-   * the shell; with the package CDN down, a package this browser never cached, T-032). Shown
-   * with the screenshot; the build did nothing wrong.
+   * Build ids whose site the sandbox could not serve in this tab (the shell's `module-load`
+   * error for the site itself: a browser without service workers, a pack it could not read).
+   * Shown with the screenshot.
    */
-  noPackages: readonly string[];
+  noLoad: readonly string[];
   host: { pending: 'next' | 'skip' | null; error: GameError | null };
   ballot: BallotState;
 }
@@ -160,12 +159,12 @@ export function initialRevealVoteState(battleId: string): RevealVoteState {
     battleId,
     builds: null,
     buildsError: null,
-    bundles: {},
+    sites: {},
     thumbs: {},
     skipped: [],
     frozen: [],
     failedToStart: [],
-    noPackages: [],
+    noLoad: [],
     host: { pending: null, error: null },
     ballot: {
       votes: {},
@@ -214,10 +213,10 @@ function without<V>(record: Readonly<Record<string, V>>, key: string): Record<st
 // ─── Controller ───────────────────────────────────────────────────────────────────────
 
 /**
- * The bundles REVEAL keeps: the spotlight and the next build that a moderator did not take
+ * The sites REVEAL keeps: the spotlight and the next build that a moderator did not take
  * down (the server skips the slots of taken-down builds; T-024).
  */
-function wantedBundles(snap: BattleSnapshot): string[] {
+function wantedSites(snap: BattleSnapshot): string[] {
   const index = snap.battle.reveal_index ?? 0;
   const order = snap.battle.reveal_order ?? [];
   const removed = (id: string) => snap.builds.some((b) => b.id === id && b.taken_down === true);
@@ -240,8 +239,8 @@ export class RevealVoteController {
   private retryTimer: TimerHandle | null = null;
   /** Sends the picks that are waiting for the connection again. */
   private voteRetryTimer: TimerHandle | null = null;
-  /** Bundle downloads in flight, by build id. */
-  private readonly bundleLoads = new Set<string>();
+  /** Site pack downloads in flight, by build id. */
+  private readonly siteLoads = new Set<string>();
   /** category → the choice to send once the request in flight settles. */
   private readonly queued = new Map<string, string>();
   /**
@@ -291,17 +290,17 @@ export class RevealVoteController {
     }
     if (!SHOW_PHASES.has(phase) || !snapshot.battle.reveal_order?.length) {
       // RESULTS (or a battle without a reveal): no build runs any more.
-      if (Object.keys(this.state.bundles).length > 0) this.patch({ bundles: {} });
+      if (Object.keys(this.state.sites).length > 0) this.patch({ sites: {} });
       return;
     }
 
     if (this.state.builds === null) void this.loadBuilds();
     this.dropRemoved(snapshot);
     if (phase === 'reveal') {
-      this.ensureBundles();
-    } else if (Object.keys(this.state.bundles).length > 0) {
-      // REVEAL is over: no build runs any more, the bundles go.
-      this.patch({ bundles: {} });
+      this.ensureSites();
+    } else if (Object.keys(this.state.sites).length > 0) {
+      // REVEAL is over: no build runs any more, the sites go.
+      this.patch({ sites: {} });
     }
     if (phase === 'voting' && snapshot.me.is_voter && !this.state.ballot.loaded) {
       void this.loadBallot();
@@ -311,18 +310,18 @@ export class RevealVoteController {
   }
 
   /**
-   * A moderator took builds down (T-024, `taken_down` in the snapshot): their bundles go,
+   * A moderator took builds down (T-024, `taken_down` in the snapshot): their sites go,
    * and the votes for them are gone on the server (deleted with the takedown), so they
    * leave the ballot too and the voter picks again in those categories.
    */
   private dropRemoved(snapshot: BattleSnapshot): void {
     const removed = new Set(snapshot.builds.filter((b) => b.taken_down === true).map((b) => b.id));
     if (removed.size === 0) return;
-    const bundles = Object.fromEntries(
-      Object.entries(this.state.bundles).filter(([id]) => !removed.has(id)),
+    const sites = Object.fromEntries(
+      Object.entries(this.state.sites).filter(([id]) => !removed.has(id)),
     );
-    if (Object.keys(bundles).length !== Object.keys(this.state.bundles).length) {
-      this.patch({ bundles });
+    if (Object.keys(sites).length !== Object.keys(this.state.sites).length) {
+      this.patch({ sites });
     }
     const keep = (r: Readonly<Record<string, string>>) =>
       Object.fromEntries(Object.entries(r).filter(([, id]) => !removed.has(id)));
@@ -352,7 +351,7 @@ export class RevealVoteController {
     this.patch({ skipped: [...this.state.skipped, buildId] });
   }
 
-  /** Run it again (after a skip, a freeze, a failed start or missing packages): a fresh preview. */
+  /** Run it again (after a skip, a freeze, a failed start or a failed load): a fresh preview. */
   watch(buildId: string): void {
     if (this.state.frozen.includes(buildId) || this.state.failedToStart.includes(buildId)) {
       this.previewHealth.restarted(buildId);
@@ -361,18 +360,18 @@ export class RevealVoteController {
       skipped: this.state.skipped.filter((id) => id !== buildId),
       frozen: this.state.frozen.filter((id) => id !== buildId),
       failedToStart: this.state.failedToStart.filter((id) => id !== buildId),
-      noPackages: this.state.noPackages.filter((id) => id !== buildId),
+      noLoad: this.state.noLoad.filter((id) => id !== buildId),
     });
   }
 
   /**
-   * The spotlight's code or packages could not load here (T-032: the shell's `module-load`
-   * error, usually the package CDN being unreachable): its screenshot shows instead, in this
-   * tab only. Display only, like every shell message: a build that sends one stops itself.
+   * The sandbox could not serve the spotlight's site here (the shell's `module-load` error
+   * for the site itself, not for one of its files): its screenshot shows instead, in this tab
+   * only. Display only, like every shell message: a build that sends one stops itself.
    */
-  packagesFailed(buildId: string): void {
-    if (this.disposed || this.state.noPackages.includes(buildId)) return;
-    this.patch({ noPackages: [...this.state.noPackages, buildId] });
+  loadFailed(buildId: string): void {
+    if (this.disposed || this.state.noLoad.includes(buildId)) return;
+    this.patch({ noLoad: [...this.state.noLoad, buildId] });
   }
 
   /**
@@ -623,62 +622,57 @@ export class RevealVoteController {
   }
 
   /** The spotlighted build and the next one: downloaded once, older ones dropped. */
-  private ensureBundles(): void {
+  private ensureSites(): void {
     const snap = this.snapshot;
     const builds = this.state.builds;
     if (!snap || !builds) return;
-    const wanted = wantedBundles(snap);
-    const kept: Record<string, BundleState> = {};
+    const wanted = wantedSites(snap);
+    const kept: Record<string, SitePackState> = {};
     for (const id of wanted) {
-      const have = this.state.bundles[id];
+      const have = this.state.sites[id];
       if (have) kept[id] = have;
     }
-    if (Object.keys(kept).length !== Object.keys(this.state.bundles).length) {
-      this.patch({ bundles: kept });
+    if (Object.keys(kept).length !== Object.keys(this.state.sites).length) {
+      this.patch({ sites: kept });
     }
     for (const id of wanted) {
       const build = builds.find((b) => b.build_id === id);
-      if (build && !this.state.bundles[id] && !this.bundleLoads.has(id)) {
-        void this.loadBundle(build);
+      if (build && !this.state.sites[id] && !this.siteLoads.has(id)) {
+        void this.loadSite(build);
       }
     }
   }
 
-  private async loadBundle(build: RevealBuild): Promise<void> {
+  private async loadSite(build: RevealBuild): Promise<void> {
     const id = build.build_id;
-    this.bundleLoads.add(id);
-    this.setBundle(id, { status: 'loading', build: null });
-    const read = (path: string | null) =>
-      path === null ? Promise.resolve(null) : this.api.downloadText(path);
+    this.siteLoads.add(id);
+    this.setSite(id, { status: 'loading', build: null });
+    const path = build.files.site;
     try {
-      const [js, css, manifest] = await Promise.all([
-        read(build.files.js),
-        read(build.files.css),
-        read(build.files.manifest),
-      ]);
+      const pack = path === null ? null : await this.api.downloadBytes(path);
       if (this.disposed) return;
-      const preview = revealPreviewBuild({ js, css, manifest }, this.deps.cdnBaseUrl);
-      this.setBundle(
+      const preview = revealPreviewBuild(pack);
+      this.setSite(
         id,
         preview ? { status: 'ready', build: preview } : { status: 'missing', build: null },
       );
     } catch (e) {
       if (this.disposed) return;
-      this.setBundle(id, { status: 'error', build: null, error: toGameError(e) });
+      this.setSite(id, { status: 'error', build: null, error: toGameError(e) });
     } finally {
-      this.bundleLoads.delete(id);
+      this.siteLoads.delete(id);
     }
   }
 
   /** Keeps a download only while its build is still wanted (the spotlight may have moved). */
-  private setBundle(id: string, bundle: BundleState): void {
+  private setSite(id: string, site: SitePackState): void {
     const snap = this.snapshot;
-    const wanted = snap?.battle.phase === 'reveal' && wantedBundles(snap).includes(id);
+    const wanted = snap?.battle.phase === 'reveal' && wantedSites(snap).includes(id);
     if (!wanted) {
-      if (this.state.bundles[id]) this.patch({ bundles: without(this.state.bundles, id) });
+      if (this.state.sites[id]) this.patch({ sites: without(this.state.sites, id) });
       return;
     }
-    this.patch({ bundles: { ...this.state.bundles, [id]: bundle } });
+    this.patch({ sites: { ...this.state.sites, [id]: site } });
   }
 
   private async loadThumbs(builds: readonly RevealBuild[]): Promise<void> {
@@ -711,11 +705,11 @@ export class RevealVoteController {
 
   // --- Teardown -----------------------------------------------------------------------
 
-  /** DESTROY (or ABANDONED): no bundle and no thumbnail stays in this tab. */
+  /** DESTROY (or ABANDONED): no site pack and no thumbnail stays in this tab. */
   private release(): void {
     for (const url of Object.values(this.state.thumbs)) if (url) this.urls.revoke(url);
-    if (Object.keys(this.state.bundles).length > 0 || Object.keys(this.state.thumbs).length > 0) {
-      this.patch({ bundles: {}, thumbs: {} });
+    if (Object.keys(this.state.sites).length > 0 || Object.keys(this.state.thumbs).length > 0) {
+      this.patch({ sites: {}, thumbs: {} });
     }
   }
 

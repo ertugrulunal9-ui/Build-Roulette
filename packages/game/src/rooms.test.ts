@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-  PRESENCE_LINES_STEP,
   ROOM_CODE_ALPHABET,
   ROOM_CODE_LENGTH,
   battleTopic,
@@ -55,24 +54,23 @@ describe('topics', () => {
   });
 });
 
-describe('activityMatters (T-029: which BUILD activity is worth a presence message)', () => {
-  const sent = { lines: 100, last_build: 'ok' as const, typing: true };
+describe('activityMatters (which BUILD activity is worth a presence message)', () => {
+  const none = { imported: false, imports: 0 };
+  const first = { imported: true, imports: 1 };
 
   it('the first activity always goes out', () => {
-    expect(activityMatters(null, sent)).toBe(true);
+    expect(activityMatters(null, none)).toBe(true);
+    expect(activityMatters(null, first)).toBe(true);
   });
 
-  it('active on/off and a build that starts or stops failing matter', () => {
-    expect(activityMatters(sent, { ...sent, typing: false })).toBe(true);
-    expect(activityMatters(sent, { ...sent, last_build: 'error' })).toBe(true);
-    expect(activityMatters({ ...sent, last_build: 'error' }, sent)).toBe(true);
+  it('the first import and every later one matter', () => {
+    expect(activityMatters(none, first)).toBe(true);
+    expect(activityMatters(first, { imported: true, imports: 2 })).toBe(true);
+    expect(activityMatters(first, none)).toBe(true);
   });
 
-  it(`the line count matters once it moved by ${String(PRESENCE_LINES_STEP)} either way`, () => {
-    expect(activityMatters(sent, { ...sent, lines: 100 + PRESENCE_LINES_STEP - 1 })).toBe(false);
-    expect(activityMatters(sent, { ...sent, lines: 100 + PRESENCE_LINES_STEP })).toBe(true);
-    expect(activityMatters(sent, { ...sent, lines: 100 - PRESENCE_LINES_STEP })).toBe(true);
-    expect(activityMatters(sent, { ...sent, lines: 101 })).toBe(false);
-    expect(activityMatters(sent, { ...sent })).toBe(false);
+  it('the same activity again does not', () => {
+    expect(activityMatters(none, { ...none })).toBe(false);
+    expect(activityMatters(first, { ...first })).toBe(false);
   });
 });

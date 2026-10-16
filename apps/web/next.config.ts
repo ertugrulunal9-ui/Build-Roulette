@@ -1,23 +1,7 @@
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
 import type { NextConfig } from 'next';
 import { PHASE_DEVELOPMENT_SERVER } from 'next/constants';
-import { SHELLS } from './src/lib/hosting/shells';
-
-// The playground serves `esbuild.wasm` from this app's own `esbuild-wasm` dependency, while
-// the bundler worker runs the JS API from @br/runtime's. esbuild refuses to start when the
-// two versions differ, so fail the build early instead of shipping a broken playground.
-const require = createRequire(import.meta.url);
-const webEsbuild = (require('esbuild-wasm/package.json') as { version: string }).version;
-const runtimePkg = JSON.parse(
-  readFileSync(new URL('../../packages/runtime/package.json', import.meta.url), 'utf8'),
-) as { dependencies: Record<string, string> };
-if (runtimePkg.dependencies['esbuild-wasm'] !== webEsbuild) {
-  throw new Error(
-    `esbuild-wasm version mismatch: apps/web has ${webEsbuild}, @br/runtime pins ${String(runtimePkg.dependencies['esbuild-wasm'])}. Keep them identical.`,
-  );
-}
+import { REDIRECTS, SHELLS } from './src/lib/hosting/shells';
 
 /**
  * The release that error reports and analytics events carry (T-030): `BR_RELEASE` when the
@@ -46,13 +30,7 @@ export default function config(phase: string): NextConfig {
   return {
     output: 'export',
     // Workspace packages ship TypeScript source (no build step), so Next compiles them.
-    transpilePackages: [
-      '@br/game',
-      '@br/protocol',
-      '@br/runtime',
-      '@br/telemetry',
-      '@br/workspace',
-    ],
+    transpilePackages: ['@br/game', '@br/protocol', '@br/runtime', '@br/site', '@br/telemetry'],
     // Telemetry settings (src/lib/telemetry/config.ts), inlined like any NEXT_PUBLIC_* value.
     // An unset one becomes '' rather than a runtime `process.env` lookup, so a build without
     // a DSN or key drops the code behind it (the bundler removes `if ('')` branches).
@@ -63,21 +41,25 @@ export default function config(phase: string): NextConfig {
       NEXT_PUBLIC_POSTHOG_KEY: process.env.NEXT_PUBLIC_POSTHOG_KEY ?? '',
       NEXT_PUBLIC_POSTHOG_HOST: process.env.NEXT_PUBLIC_POSTHOG_HOST ?? '',
     },
-    // `next dev` only: the shells' rewrites (`/battles/{id}` → the `/battles` page, …), which
-    // Pages does with `out/_redirects` in production (src/lib/hosting/shells.ts). A static
-    // export applies no rewrites itself, so the build leaves them out.
+    // `next dev` only: the shells' rewrites (`/battles/{id}` → the `/battles` page, …) and
+    // the moved paths' redirects, which the host does with `out/_redirects` in production
+    // (src/lib/hosting/shells.ts). A static export applies neither itself, so the build
+    // leaves them out.
     ...(phase === PHASE_DEVELOPMENT_SERVER
-      ? { rewrites: () => Promise.resolve(SHELLS.map((s) => ({ ...s }))) }
+      ? {
+          rewrites: () => Promise.resolve(SHELLS.map((s) => ({ ...s }))),
+          redirects: () =>
+            Promise.resolve(
+              REDIRECTS.map((r) => ({
+                source: r.source,
+                destination: r.destination,
+                permanent: true,
+              })),
+            ),
+        }
       : {}),
     // `next dev` would otherwise write AGENTS.md and CLAUDE.md into apps/web when it detects
     // an AI coding agent. The repository keeps its agent instructions at the root.
     agentRules: false,
-    turbopack: {
-      rules: {
-        // The playground imports `esbuild-wasm/esbuild.wasm` for its URL: emit it as a
-        // content-hashed static asset (long-lived cache) instead of compiling it as a module.
-        '*.wasm': { type: 'asset' },
-      },
-    },
   };
 }

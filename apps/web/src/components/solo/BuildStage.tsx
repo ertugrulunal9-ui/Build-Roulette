@@ -1,34 +1,23 @@
 'use client';
 
 /**
- * BUILD: the playground's editor and preview (shared WorkspacePanes) under a challenge
- * header with the countdown, autosave state and the Ship button. Mounted already during
- * SPIN, underneath the reels, so CodeMirror, the bundler worker and esbuild.wasm load and
- * the template's first preview is ready when the build starts (docs/03 §3.8 "preloaded").
- *
- * The workspace is a fresh template per battle, stored in IndexedDB under `battle:{id}`
- * (restored from the remote autosave when this device has no copy).
+ * BUILD (docs/09 §9.5): the challenge header (the BUILD / RULE / STYLE cards, the countdown,
+ * the autosave state and **Ship it**) over the import area (SiteWorkbench): a large drop zone
+ * until the player imports the site they built with their own tools, then its live preview.
+ * Every good import goes to the battle's controller, which keeps it on this device, uploads it
+ * as the autosave and ships it. Mounted already during SPIN, underneath the reels, so the
+ * preview's sandbox is connected when the build starts.
  */
-import { ACTIVITY_RECENT_MS } from '@br/game';
-import type { Workspace } from '@br/workspace';
-import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { WorkspacePanes } from '../playground/WorkspacePanes';
+import type { ImportedSite } from '@br/site';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import type { PreviewController } from '../../lib/preview/preview-controller';
 import type { Activity } from '../../lib/room/types';
-import { countLines } from '../../lib/solo/stats';
-import { PasteImportDialog } from '../playground/PasteImportDialog';
-import { BuildStatusText } from '../playground/BuildStatusText';
-import { usePrefersDark } from '../../lib/playground/use-prefers-dark';
-import { buildStatus, useWorkspaceSession } from '../../lib/playground/use-workspace-session';
-import {
-  battleWorkspaceId,
-  myBuild,
-  type SoloController,
-  type SoloState,
-} from '../../lib/solo/controller';
+import { myBuild, type SoloController, type SoloState } from '../../lib/solo/controller';
 import { describeError } from '../../lib/solo/errors';
 import { formatCountdown } from '../../lib/solo/format';
 import { suggestBuildName } from '../../lib/solo/names';
 import { CARD_LABEL, cardClass } from '../results/ResultPieces';
+import { SiteWorkbench } from '../site/SiteWorkbench';
 import { Countdown, LOW_TIME_MS, timeLevel, type TimeLevel } from './Countdown';
 import { ShipDialog } from './ShipDialog';
 
@@ -41,41 +30,37 @@ interface BuildStageProps {
   subtitle?: ReactNode;
   /** Extra header buttons (a room's "Leave room"). */
   headerActions?: ReactNode;
-  /** Shown next to the panes (a room's progress sidebar). */
+  /** Shown next to the import area (a room's progress sidebar). */
   sidebar?: ReactNode;
-  /** The player's activity for the others (rooms): lines, last build, active. */
+  /** The player's activity for the others (rooms): imported, how many imports. */
   onActivity?: (activity: Activity) => void;
   /** After "Shipped … Your build is locked." (a room: waiting for the others). */
   shippedNote?: ReactNode;
+  /** The "How do I import?" help next to the drop zone (T-049). */
+  importHelp?: ReactNode;
 }
-
-/**
- * "Active" (the activity's `typing` flag) lasts this long after the last edit: the others
- * get at most one update per 15 s (T-029), so a shorter window would flicker or lie.
- */
-const ACTIVE_MS = ACTIVITY_RECENT_MS;
-
-const headerButton =
-  'rounded-md border border-zinc-300 px-2.5 py-1 text-xs font-medium hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800';
 
 const TOASTS: Partial<Record<TimeLevel, string>> = {
   low: 'One minute left. Ship soon!',
-  critical: 'Ten seconds! Ship now or your last autosave ships for you.',
+  critical: 'Ten seconds! Ship now or your last import ships for you.',
 };
 
 function autosaveText(state: SoloState): string {
   const a = state.autosave;
+  if (state.site === null && a.status === 'idle') {
+    return state.restoring ? 'Looking for your last import…' : 'Nothing imported yet';
+  }
   switch (a.status) {
     case 'saving':
-      return 'Autosaving…';
+      return 'Saving…';
     case 'saved':
-      return `Autosaved ${a.lastSavedAt ? new Date(a.lastSavedAt).toLocaleTimeString() : ''}`;
+      return `Saved ${a.lastSavedAt ? new Date(a.lastSavedAt).toLocaleTimeString() : ''}`.trim();
     case 'error':
-      return 'Autosave failed (retrying)';
+      return 'Save failed, retrying';
     case 'closed':
-      return 'Autosave closed';
+      return 'Saving closed';
     case 'idle':
-      return 'Autosaves every 30 s';
+      return 'Not saved yet';
   }
 }
 
@@ -88,6 +73,7 @@ export function BuildStage({
   sidebar,
   onActivity,
   shippedNote = 'Wrapping up the battle…',
+  importHelp,
 }: BuildStageProps) {
   const snapshot = state.snapshot;
   if (!snapshot) throw new Error('BuildStage needs a snapshot');
@@ -100,76 +86,35 @@ export function BuildStage({
   const shipInFlight = shipBusy && !shipped;
   const timeUp = phase === 'shipping' || (phase === 'building' && remaining === 0);
   const locked = phase !== 'building' || timeUp || shipBusy || mine?.status !== 'draft';
-
-  const session = useWorkspaceSession(battleWorkspaceId(battleId), {
-    restore: () => controller.restoreWorkspace(),
-    readOnly: locked,
-    battleId,
-  });
-  const {
-    workspace,
-    snapshot: sandbox,
-    controller: sandboxController,
-    apply,
-    replace,
-    notice,
-    getWorkspace,
-    countPaste,
-    pasteCount,
-    setEditError,
-    setActivePath,
-  } = session;
-  const dark = usePrefersDark();
-  const [pasteOpen, setPasteOpen] = useState(false);
   const [shipOpen, setShipOpen] = useState(false);
   const [defaultName] = useState(() => suggestBuildName(snapshot.challenge.build.text));
 
-  // Expose the workspace to the controller (autosave, ship) while mounted.
-  useEffect(() => {
-    const sc = sandboxController;
-    if (!sc) return;
-    return controller.attachWorkspace({
-      workspace: getWorkspace,
-      // The BuildResult itself (same object until the next good build), so an unchanged
-      // build is recognised and not autosaved again.
-      lastGoodBuild: () => sc.lastGoodBuild(),
-      productionBuild: async () => {
-        const r = await sc.productionBuild();
-        return { ...r, errorCount: r.diagnostics.filter((d) => d.severity === 'error').length };
-      },
-      thumbnail: (size) => sc.captureThumbnail(size),
-      counters: () => ({ rebuilds: sc.buildCount, pastes: pasteCount() }),
-    });
-  }, [controller, sandboxController, getWorkspace, pasteCount]);
+  // The live preview makes the ship thumbnail while it is mounted.
+  const detachPreview = useRef<(() => void) | null>(null);
+  const onPreview = useCallback(
+    (preview: PreviewController | null) => {
+      detachPreview.current?.();
+      detachPreview.current = preview
+        ? controller.attachPreview({ thumbnail: (size) => preview.captureThumbnail(size) })
+        : null;
+    },
+    [controller],
+  );
+
+  const onImported = useCallback(
+    (site: ImportedSite) => {
+      controller.importSite(site);
+    },
+    [controller],
+  );
 
   // Rooms: the activity the others see in their progress sidebar (Presence, sent by the sync
-  // engine only when it matters, at most every 15 s). "Active" means an edit in the last 15 s.
-  const editedAt = useRef<number | null>(null);
-  const seenWorkspace = useRef<Workspace | null>(null);
+  // engine only when it changes, at most every 15 s).
+  const imported = state.site !== null;
+  const imports = state.imports;
   useEffect(() => {
-    if (!workspace) return;
-    if (seenWorkspace.current !== null && seenWorkspace.current !== workspace) {
-      editedAt.current = Date.now();
-    }
-    seenWorkspace.current = workspace;
-  }, [workspace]);
-  const buildOk = sandbox.lastBuild?.ok !== false;
-  useEffect(() => {
-    if (!onActivity || !workspace) return;
-    const emit = () => {
-      const typing = editedAt.current !== null && Date.now() - editedAt.current < ACTIVE_MS;
-      onActivity({
-        lines: countLines(workspace.files),
-        last_build: buildOk ? 'ok' : 'error',
-        typing,
-      });
-    };
-    emit();
-    const id = setTimeout(emit, ACTIVE_MS);
-    return () => {
-      clearTimeout(id);
-    };
-  }, [onActivity, workspace, buildOk]);
+    onActivity?.({ imported, imports });
+  }, [onActivity, imported, imports]);
 
   // Low-time warnings: a banner for 4 s after crossing one minute, and for the last 10 s.
   const level = timeLevel(phase === 'building' ? remaining : null);
@@ -184,32 +129,33 @@ export function BuildStage({
 
   const shipOpenNow = (shipOpen || shipInFlight || state.ship.status === 'error') && !shipped;
 
-  const panes = workspace ? (
-    <WorkspacePanes
-      session={session}
-      dark={dark}
-      previewOverlay={
+  const workbench = (
+    <SiteWorkbench
+      site={state.site}
+      onImported={onImported}
+      battleId={battleId}
+      locked={locked}
+      restoring={state.restoring}
+      onPreview={onPreview}
+      help={importHelp}
+      overlay={
         timeUp && mine?.status === 'draft' ? (
           <div
-            className="absolute inset-0 z-10 grid place-items-center bg-zinc-950/95 p-6 text-center text-white"
+            className="absolute inset-0 z-20 grid place-items-center bg-zinc-950/95 p-6 text-center text-white"
             data-testid="times-up"
           >
             <div className="flex flex-col gap-2">
               <p className="text-4xl font-black">Time&apos;s up!</p>
               <p className="text-sm text-zinc-300">
-                {state.autosave.lastSavedAt !== null || state.autosave.status === 'saving'
-                  ? 'Your last autosave is being shipped for you…'
-                  : 'Wrapping up the battle…'}
+                {state.site !== null
+                  ? 'Your last import is being shipped for you…'
+                  : 'Nothing was imported, so there is nothing to ship. Wrapping up the battle…'}
               </p>
             </div>
           </div>
         ) : null
       }
     />
-  ) : (
-    <div className="grid flex-1 place-items-center text-sm text-zinc-500">
-      Loading your workspace…
-    </div>
   );
 
   return (
@@ -220,22 +166,15 @@ export function BuildStage({
             Build Roulette <span className="font-normal text-zinc-500">· {subtitle}</span>
           </h1>
           {headerActions}
-          <button
-            type="button"
-            disabled={locked}
-            onClick={() => {
-              setPasteOpen(true);
-            }}
-            className={headerButton}
-          >
-            Paste import
-          </button>
           <div className="ml-auto flex flex-wrap items-center gap-3 text-xs">
-            <BuildStatusText status={buildStatus(sandbox)} />
             <span
               data-testid="autosave-status"
               data-state={state.autosave.status}
-              className="text-zinc-500"
+              className={
+                state.autosave.status === 'error'
+                  ? 'font-semibold text-red-600 dark:text-red-400'
+                  : 'text-zinc-500'
+              }
               title={state.autosave.error ? describeError(state.autosave.error) : undefined}
             >
               {autosaveText(state)}
@@ -247,7 +186,8 @@ export function BuildStage({
             <button
               type="button"
               data-testid="ship-button"
-              disabled={locked || sandbox.lastBuild === null}
+              disabled={locked || state.site === null}
+              title={state.site === null ? 'Import your built site first' : undefined}
               onClick={() => {
                 setShipOpen(true);
               }}
@@ -285,14 +225,6 @@ export function BuildStage({
           {toast}
         </p>
       )}
-      {notice && (
-        <p
-          role="status"
-          className="border-b border-amber-200 bg-amber-50 px-3 py-1.5 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200"
-        >
-          {notice}
-        </p>
-      )}
       {shipped && (
         <p
           role="status"
@@ -309,37 +241,19 @@ export function BuildStage({
 
       {sidebar ? (
         <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
-          <div className="flex min-h-0 min-w-0 flex-1 flex-col">{panes}</div>
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col">{workbench}</div>
           {sidebar}
         </div>
       ) : (
-        panes
+        workbench
       )}
 
-      {workspace && (
-        <PasteImportDialog
-          open={pasteOpen}
-          workspace={workspace}
-          onClose={() => {
-            setPasteOpen(false);
-          }}
-          onImport={(next, paths, mode) => {
-            const err =
-              mode === 'replace' ? replace(next) : apply(() => ({ ok: true, workspace: next }));
-            if (err === null) countPaste();
-            setPasteOpen(false);
-            setEditError(null);
-            const first = paths[0];
-            if (first !== undefined) setActivePath(first);
-          }}
-        />
-      )}
       <ShipDialog
         open={shipInFlight || (shipOpenNow && !timeUp)}
         defaultName={defaultName}
         ship={state.ship}
-        onShip={(name, opts) => {
-          void controller.ship(name, opts);
+        onShip={(name) => {
+          void controller.ship(name);
         }}
         onClose={() => {
           setShipOpen(false);

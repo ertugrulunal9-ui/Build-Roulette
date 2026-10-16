@@ -3,7 +3,7 @@
 import dynamic from 'next/dynamic';
 
 /**
- * The solo game (Supabase client, CodeMirror, the runtime, IndexedDB) only works in the
+ * The solo game (Supabase client, the site import, the runtime, IndexedDB) only works in the
  * browser and is heavy, so it is a client-only chunk that loads with /play only.
  */
 const SoloGame = dynamic(() => import('./SoloGame'), {

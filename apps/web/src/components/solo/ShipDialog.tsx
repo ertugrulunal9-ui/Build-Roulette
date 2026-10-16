@@ -6,8 +6,7 @@ import { describeError } from '../../lib/solo/errors';
 
 const PROGRESS: Partial<Record<ShipState['status'], string>> = {
   thumbnail: 'Taking a snapshot…',
-  building: 'Building for production…',
-  uploading: 'Uploading your build…',
+  uploading: 'Uploading your site…',
   shipping: 'Shipping…',
   done: 'Shipped!',
 };
@@ -16,11 +15,11 @@ interface ShipDialogProps {
   open: boolean;
   defaultName: string;
   ship: ShipState;
-  onShip: (name: string, opts: { useLastGood?: boolean }) => void;
+  onShip: (name: string) => void;
   onClose: () => void;
 }
 
-/** "Ship it? You can't edit after." with the build name (docs/04 §4.4). */
+/** "Ship it? You can't import again after." with the build name (docs/04 §4.4). */
 export function ShipDialog({ open, defaultName, ship, onShip, onClose }: ShipDialogProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [name, setName] = useState(defaultName);
@@ -48,12 +47,13 @@ export function ShipDialog({ open, defaultName, ship, onShip, onClose }: ShipDia
         className="flex flex-col gap-4 p-6"
         onSubmit={(e) => {
           e.preventDefault();
-          if (!busy && trimmed.length > 0) onShip(trimmed, {});
+          if (!busy && trimmed.length > 0) onShip(trimmed);
         }}
       >
         <h2 className="text-2xl font-black tracking-tight">Ship it?</h2>
         <p className="text-sm text-zinc-600 dark:text-zinc-400">
-          You can&apos;t edit after. Your build is frozen, screenshotted and judged as it is now.
+          You can&apos;t import again after. The site you imported last is frozen, screenshotted and
+          judged as it is now.
         </p>
         <label className="flex flex-col gap-1 text-sm font-semibold">
           Build name
@@ -94,18 +94,6 @@ export function ShipDialog({ open, defaultName, ship, onShip, onClose }: ShipDia
           >
             Keep building
           </button>
-          {ship.status === 'error' && ship.canShipLastGood && (
-            <button
-              type="button"
-              disabled={trimmed.length === 0}
-              onClick={() => {
-                onShip(trimmed, { useLastGood: true });
-              }}
-              className="rounded-lg border border-emerald-600 px-4 py-2 text-sm font-semibold text-emerald-700 dark:text-emerald-300"
-            >
-              Ship the last working preview
-            </button>
-          )}
           <button
             type="submit"
             data-testid="confirm-ship"

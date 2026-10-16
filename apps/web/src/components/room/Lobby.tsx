@@ -3,13 +3,13 @@
 /**
  * The lobby: who is here (Presence + last_seen_at), ready-up, the host's controls
  * (max players, kick with confirmation, Start when at least 2 players are ready), the invite
- * link, and the last battle's podium once a battle has ended (rematch = start again). On a
- * desktop it also warms the template's packages into the browser's cache (T-032).
+ * link, and the last battle's podium once a battle has ended (rematch = start again).
  */
 import {
   DEFAULT_VOTING_SECONDS,
   REVEAL_SLOT_MAX_SECONDS,
   REVEAL_SLOT_MIN_SECONDS,
+  RANDOM_BUILD_TIME_LIMITS_MINUTES,
   ROOM_LIMITS,
   VOTING_MAX_SECONDS,
   VOTING_MIN_SECONDS,
@@ -17,7 +17,6 @@ import {
 } from '@br/game';
 import { useState } from 'react';
 import { useTouchPrimary } from '../../lib/device';
-import { TemplateWarmup } from '../playground/TemplateWarmup';
 import {
   playerCount,
   readyCount,
@@ -139,8 +138,6 @@ export function Lobby({ controller, state, room, lastBattle }: LobbyProps) {
 
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_22rem]" data-testid="lobby">
-      {/* T-032: the template's packages into the browser's cache while everyone waits. */}
-      {!touch && <TemplateWarmup />}
       <section className={panel}>
         <header className="mb-3 flex items-baseline justify-between gap-3">
           <h2 className="text-lg font-black tracking-tight">Players</h2>
@@ -272,7 +269,8 @@ export function Lobby({ controller, state, room, lastBattle }: LobbyProps) {
               data-testid="phone-lobby-note"
             >
               📱 On a phone you watch the battle, then play the reveal and the vote. Building needs
-              a desktop browser: if you play from here, your build ends as DNF.
+              a computer (you build with your own AI tools and import the result): if you play from
+              here, your build ends as DNF.
             </p>
           )}
           <a
@@ -290,8 +288,14 @@ export function Lobby({ controller, state, room, lastBattle }: LobbyProps) {
         <section className={`${panel} text-sm text-zinc-600 dark:text-zinc-400`}>
           <h2 className="mb-2 font-bold text-zinc-900 dark:text-zinc-100">How a battle works</h2>
           <ol className="list-inside list-decimal space-y-1">
-            <li>The reels pick a BUILD, a RULE, a STYLE and a time limit (5, 10 or 15 min).</li>
-            <li>Everyone builds the same challenge in the browser.</li>
+            <li>
+              The reels pick a BUILD, a RULE, a STYLE and a time limit (
+              {RANDOM_BUILD_TIME_LIMITS_MINUTES.join(', ').replace(/, (\d+)$/, ' or $1')} min).
+            </li>
+            <li>
+              Everyone builds the same challenge on their own computer, with their own AI tools, and
+              imports the built site.
+            </li>
             <li>Ship before the clock runs out. Fast ships earn awards.</li>
             <li>The reveal: everyone watches every build, one at a time.</li>
             <li>Everyone votes in four categories (never for their own build).</li>

@@ -1,12 +1,14 @@
 import { expect, test, type Page } from '@playwright/test';
-import { buildFrame, clickRouted, replaceEditorText, startBattle, waitForBuild } from './helpers';
+import { buildFrame, clickRouted, startBattle, waitForBuild } from './helpers';
 import { watchCsp } from './csp';
 import { crawl, one } from './link-preview';
+import { importApp, importFolder, importZip, plainSite, viteSite, writeProject } from './sites';
 import { battleRow, ephemeralObjects, sql } from './stack';
 
 /**
  * The solo game end to end against the real local Supabase stack with the capture worker
- * running (playwright.solo.config.ts). Deadlines are forced with psql as the superuser.
+ * running (playwright.solo.config.ts), in import mode (docs/09): the player imports a built
+ * site (a fixture, sites.ts). Deadlines are forced with psql as the superuser.
  *
  * SOLO_SCREENSHOT_DIR=/some/dir also saves UI screenshots (spin, build, results, battle page).
  */
@@ -17,9 +19,32 @@ async function snap(page: Page, name: string): Promise<void> {
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/t014-${name}.png` });
 }
 
-async function openFile(page: Page, path: string): Promise<void> {
-  await page.locator(`[data-testid=file-item][data-path="${path}"] > button`).first().click();
-  await expect(page.getByTestId('active-file')).toHaveText(path);
+/** The battle's site kept in this page's IndexedDB (`br-sites`), or null. */
+async function storedSite(page: Page, battle: string): Promise<{ imports: number } | null> {
+  return page.evaluate(async (key) => {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const req = indexedDB.open('br-sites');
+      req.onsuccess = () => {
+        resolve(req.result);
+      };
+      req.onerror = () => {
+        reject(new Error('open failed'));
+      };
+    });
+    if (!db.objectStoreNames.contains('sites')) {
+      db.close();
+      return null;
+    }
+    const tx = db.transaction('sites', 'readonly');
+    const value = await new Promise((resolve) => {
+      const r = tx.objectStore('sites').get(key);
+      r.onsuccess = () => {
+        resolve(r.result as unknown);
+      };
+    });
+    db.close();
+    return (value as { imports: number } | undefined) ?? null;
+  }, `battle:${battle}`);
 }
 
 /** The colour at (x, y) of an image URL, decoded by the browser. */
@@ -67,28 +92,25 @@ test('ship: spin → build → ship → results (screenshot, speedrun) → destr
   );
   expect(reelText).toContain(card);
 
-  // BUILD: the challenge header, the countdown, a fresh template.
+  // BUILD: the challenge header, the countdown, the drop zone; Ship it waits for an import.
   await waitForBuild(page);
   await expect(page.getByTestId('challenge')).toContainText(card);
-  await expect(buildFrame(page).locator('h1')).toHaveText('Hello, Build Roulette!');
-  await openFile(page, 'src/App.tsx');
-  await replaceEditorText(
-    page,
-    `export function App() {
-  return (
-    <main style={{ minHeight: '100vh', display: 'grid', placeContent: 'center', background: 'rgb(255, 87, 34)', color: 'white' }}>
-      <h1 className="e2e-title">Rocket Pomodoro</h1>
-    </main>
-  );
-}
-`,
-  );
-  await expect(buildFrame(page).locator('h1.e2e-title')).toHaveText('Rocket Pomodoro');
+  await expect(page.getByTestId('drop-title')).toHaveText('Drop your built site here');
+  await expect(page.getByTestId('ship-button')).toBeDisabled();
+  await expect(page.getByTestId('autosave-status')).toHaveText('Nothing imported yet');
+  // A first try with a .zip, then the real build with "Choose folder": the last one counts.
+  await importZip(page, plainSite('First draft', 'rgb(90, 90, 90)'));
+  await expect(buildFrame(page).locator('h1.e2e-title')).toHaveText('First draft');
+  await importApp(page, 'Rocket Pomodoro', 'rgb(255, 87, 34)');
+  await expect(page.getByTestId('autosave-status')).toHaveAttribute('data-state', 'saved');
+  await expect(page.getByTestId('import-summary')).toContainText('Imported dist · 4 files');
+  await expect.poll(() => storedSite(page, battle)).toMatchObject({ imports: 2 });
   await snap(page, 'build');
 
   // SHIP.
+  await expect(page.getByTestId('ship-button')).toBeEnabled();
   await page.getByTestId('ship-button').click();
-  await expect(page.getByTestId('ship-dialog')).toContainText("You can't edit after");
+  await expect(page.getByTestId('ship-dialog')).toContainText("You can't import again after");
   await page.getByTestId('build-name').fill('E2E Rocket');
   await clickRouted(page.getByTestId('confirm-ship'));
 
@@ -106,25 +128,26 @@ test('ship: spin → build → ship → results (screenshot, speedrun) → destr
   expect(src).toContain(`/storage/v1/object/public/screenshots/${battle}/`);
   const px = await pixel(page, src, 40, 760);
   expect(near(px.r, 255) && near(px.g, 87) && near(px.b, 34)).toBe(true);
-  // The last look runs the shipped bundle in reveal mode.
+  // The stats: files, the pack's size, two imports.
+  await expect(page.getByTestId('build-stats')).toHaveText(
+    /^4 files · \d+ (B|KB) · imported 2 times$/,
+  );
+  const stats = JSON.parse(
+    sql(`select stats::text from public.builds where battle_id = '${battle}'`),
+  ) as Record<string, unknown>;
+  expect(stats).toEqual({ files: 4, bundle_bytes: expect.any(Number) as unknown, imports: 2 });
+  // The last look runs the shipped site in reveal mode.
   const reveal = page.frameLocator('[data-testid=reveal-frame]').frameLocator('iframe');
   await expect(reveal.locator('h1.e2e-title')).toHaveText('Rocket Pomodoro');
   await expect(page.locator('[data-testid=reveal-frame]')).toHaveAttribute(
     'sandbox',
     'allow-scripts allow-same-origin allow-forms allow-pointer-lock',
   );
-  // What was uploaded at ship: the final files and the client thumbnail.
+  // What was uploaded: the autosave of each import, and at ship the site pack and the
+  // client thumbnail.
   const uid = sql(`select builder_id from public.builds where battle_id = '${battle}'`);
   const files = ephemeralObjects(battle).map((n) => n.slice(`${battle}/${uid}/`.length));
-  expect(files).toEqual(
-    expect.arrayContaining([
-      'bundle.css',
-      'bundle.js',
-      'manifest.json',
-      'source.json',
-      'thumb.webp',
-    ]),
-  );
+  expect(files.sort()).toEqual(['autosave/site.bin', 'site.bin', 'thumb.webp']);
   await snap(page, 'results');
 
   // Force the end of the last-look window: DESTROY.
@@ -134,28 +157,8 @@ test('ship: spin → build → ship → results (screenshot, speedrun) → destr
   await expect(page.getByTestId('destroy-moment')).toBeVisible({ timeout: 20_000 });
   await expect(page.getByTestId('build-destroyed')).toBeVisible({ timeout: 10_000 });
   await expect(page.locator('[data-testid=reveal-frame]')).toHaveCount(0, { timeout: 10_000 });
-  // The battle's workspace is gone from IndexedDB.
-  const stored = await page.evaluate(async (key) => {
-    const db = await new Promise<IDBDatabase>((resolve, reject) => {
-      const req = indexedDB.open('br-workspaces');
-      req.onsuccess = () => {
-        resolve(req.result);
-      };
-      req.onerror = () => {
-        reject(new Error('open failed'));
-      };
-    });
-    const tx = db.transaction('workspaces', 'readonly');
-    const value = await new Promise((resolve) => {
-      const r = tx.objectStore('workspaces').get(key);
-      r.onsuccess = () => {
-        resolve(r.result as unknown);
-      };
-    });
-    db.close();
-    return value ?? null;
-  }, `battle:${battle}`);
-  expect(stored).toBeNull();
+  // The battle's site is gone from IndexedDB.
+  await expect.poll(() => storedSite(page, battle)).toBeNull();
   // The destroy worker deletes the ephemeral files on the server.
   await expect(page.getByTestId('source-status')).toContainText('deleted from the server', {
     timeout: 60_000,
@@ -200,44 +203,33 @@ test('ship: spin → build → ship → results (screenshot, speedrun) → destr
   expect(pageErrors).toEqual([]);
 });
 
-test('auto-ship: no ship; at the deadline the autosave (with its CSS) is shipped and captured', async ({
+test('auto-ship: no ship; at the deadline the last import (its CSS too) is shipped and captured', async ({
   page,
 }) => {
   const battle = await startBattle(page, 'E2E Autosaver');
   await waitForBuild(page);
 
-  // The background colour comes only from the CSS file.
-  await openFile(page, 'src/styles.css');
-  await replaceEditorText(page, `body { margin: 0; background: rgb(0, 160, 80); }\n`);
-  // Let that rebuild land before the next edit.
-  await expect(buildFrame(page).locator('body')).toHaveCSS('background-color', 'rgb(0, 160, 80)');
-  await openFile(page, 'src/App.tsx');
-  await replaceEditorText(
-    page,
-    `export function App() {\n  return <h1 className="e2e-auto">Autosaved build</h1>;\n}\n`,
-  );
-  await expect(buildFrame(page).locator('h1.e2e-auto')).toHaveText('Autosaved build');
-
-  // Hiding the tab autosaves (as does the 30 s timer).
-  await setVisibility(page, 'hidden');
+  // The whole project folder: the import finds dist/ in it. The background comes only from
+  // the stylesheet under /assets/.
+  const { project } = writeProject(viteSite('Autosaved build', 'rgb(0, 160, 80)'));
+  await importFolder(page, project);
+  await expect(buildFrame(page).locator('h1.e2e-title')).toHaveText('Autosaved build');
+  await expect(buildFrame(page).locator('main')).toHaveCSS('background-color', 'rgb(0, 160, 80)');
+  await expect(page.getByTestId('import-summary')).toContainText('2 skipped');
+  // Every import is autosaved at once.
   await expect(page.getByTestId('autosave-status')).toHaveAttribute('data-state', 'saved');
-  await setVisibility(page, 'visible');
   const uid = sql(`select builder_id from public.builds where battle_id = '${battle}'`);
-  expect(ephemeralObjects(battle)).toEqual([
-    `${battle}/${uid}/autosave/bundle.css`,
-    `${battle}/${uid}/autosave/bundle.js`,
-    `${battle}/${uid}/autosave/manifest.json`,
-    `${battle}/${uid}/autosave/source.json`,
-  ]);
+  expect(ephemeralObjects(battle)).toEqual([`${battle}/${uid}/autosave/site.bin`]);
 
   // Force the build deadline (and its grace) to the past; the client notices and nudges.
   sql(`update public.battles
-         set building_started_at = now() - interval '320 seconds',
+         set building_started_at = now() - interval '620 seconds',
              building_ends_at = now() - interval '20 seconds',
              phase_ends_at = now() - interval '20 seconds'
        where id = '${battle}'`);
   await setVisibility(page, 'visible'); // resync now instead of at the next poll
   await expect(page.getByTestId('times-up')).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByTestId('times-up')).toContainText('Your last import is being shipped');
   await expect.poll(() => battleRow(battle).phase, { timeout: 20_000 }).toBe('shipping');
   sql(
     `update public.battles set phase_ends_at = now() - interval '1 second' where id = '${battle}'`,
@@ -249,10 +241,45 @@ test('auto-ship: no ship; at the deadline the autosave (with its CSS) is shipped
   const shot = page.getByTestId('screenshot');
   await expect(shot).toHaveAttribute('data-capture', 'captured', { timeout: 90_000 });
   const src = (await shot.getAttribute('src')) ?? '';
-  // Green background: the capture used autosave/bundle.css.
+  // Green background: the capture rendered autosave/site.bin with its stylesheet.
   const px = await pixel(page, src, 1200, 700);
   expect(near(px.r, 0) && near(px.g, 160) && near(px.b, 80)).toBe(true);
-  // The last look shows the autosaved build.
+  // The last look shows the autosaved site.
   const reveal = page.frameLocator('[data-testid=reveal-frame]').frameLocator('iframe');
-  await expect(reveal.locator('h1.e2e-auto')).toHaveText('Autosaved build');
+  await expect(reveal.locator('h1.e2e-title')).toHaveText('Autosaved build');
+});
+
+test('a reload during BUILD brings the last import back (this browser, then the remote autosave)', async ({
+  page,
+  browser,
+}) => {
+  const battle = await startBattle(page, 'E2E Reloader');
+  await waitForBuild(page);
+  await importApp(page, 'Before the reload', 'rgb(120, 20, 160)');
+  await expect(page.getByTestId('autosave-status')).toHaveAttribute('data-state', 'saved');
+
+  // A reload: the import is back at once from IndexedDB, with the import count.
+  await page.reload();
+  await expect(page.getByTestId('build-stage')).toBeVisible({ timeout: 30_000 });
+  await expect(buildFrame(page).locator('h1.e2e-title')).toHaveText('Before the reload', {
+    timeout: 30_000,
+  });
+  await expect(page.getByTestId('ship-button')).toBeEnabled();
+  await expect(page.getByTestId('autosave-status')).toHaveAttribute('data-state', 'saved');
+  await expect.poll(() => storedSite(page, battle)).toMatchObject({ imports: 1 });
+
+  // The same player on a browser without that copy (cleared storage): the remote autosave.
+  const state = await page.context().storageState();
+  const other = await browser.newContext({
+    storageState: { cookies: state.cookies, origins: state.origins.map((o) => ({ ...o })) },
+  });
+  const page2 = await other.newPage();
+  // Only the session (localStorage) travels with storageState; IndexedDB stays behind.
+  await page2.goto(`/play?battle=${battle}`);
+  await expect(page2.getByTestId('build-stage')).toBeVisible({ timeout: 30_000 });
+  await expect(buildFrame(page2).locator('h1.e2e-title')).toHaveText('Before the reload', {
+    timeout: 30_000,
+  });
+  await expect(page2.getByTestId('import-summary')).toContainText('the folder you dropped');
+  await other.close();
 });

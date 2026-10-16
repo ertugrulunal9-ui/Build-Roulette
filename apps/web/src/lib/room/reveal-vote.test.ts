@@ -1,20 +1,18 @@
 /**
- * REVEAL and VOTING on the client: the untrusted manifest, the spotlight's files and the
- * prefetch, thumbnails, local skip / freeze, the host's compare-and-set controls (stale
- * calls are quiet), and the ballot (restore, revotes, one request per category, errors).
+ * REVEAL and VOTING on the client: the untrusted site pack, the spotlight's pack and the
+ * prefetch, thumbnails, local skip / freeze / failed load, the host's compare-and-set
+ * controls (stale calls are quiet), and the ballot (restore, revotes, one request per
+ * category, errors).
  */
 import type { PreviewCrash } from '@br/runtime';
+import { SITE_LIMITS, unpackSite } from '@br/site';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { GameError } from '../solo/errors';
+import { fakeSite } from '../solo/test-support';
 import type { AnalyticsEvents } from '../telemetry/analytics';
 import { SandboxHealthTally } from '../telemetry/sandbox-health';
 import type { BattleSnapshot } from '../solo/types';
-import {
-  MAX_MANIFEST_BYTES,
-  parseRevealManifest,
-  revealImportMap,
-  revealPreviewBuild,
-} from './reveal-files';
+import { revealPreviewBuild } from './reveal-files';
 import { HOST_RETRIES, RevealVoteController, spotlightBuild, type ObjectUrls } from './reveal-vote';
 import {
   BATTLE_1,
@@ -26,50 +24,27 @@ import {
   storeRevealObjects,
 } from './test-support';
 
-const CDN = 'https://pkg.example';
+/** The `index.html` text of a site pack. */
+const indexOf = (pack: Uint8Array | ArrayBuffer | undefined): string => {
+  if (!pack) return '';
+  const index = unpackSite(pack).get('index.html');
+  return index ? new TextDecoder().decode(index.bytes) : '';
+};
 
-describe('reveal files: the manifest is untrusted', () => {
-  it('reads pinned dependencies and ignores everything else', () => {
-    expect(parseRevealManifest('{"dependencies":{"react":"19.2.0","zustand":"4.5.2"}}')).toEqual({
-      react: '19.2.0',
-      zustand: '4.5.2',
-    });
-    expect(parseRevealManifest('{"dependencies":{"react":19,"x":null,"y":"1.0.0"}}')).toEqual({
-      y: '1.0.0',
-    });
-    for (const bad of [
-      null,
-      'not json',
-      '[]',
-      '"str"',
-      '{"dependencies":[]}',
-      '{"dependencies":"react"}',
-      '{}',
-      'x'.repeat(MAX_MANIFEST_BYTES + 1),
-    ]) {
-      expect(parseRevealManifest(bad)).toEqual({});
-    }
+describe('reveal files: the site pack is untrusted', () => {
+  it('a valid pack becomes the preview input as it is', () => {
+    const site = fakeSite('Fine');
+    expect(revealPreviewBuild(site.pack)).toEqual({ site: site.pack });
   });
 
-  it('maps only exact React pins to the CDN; a hostile manifest gives an empty map', () => {
-    const map = revealImportMap('{"dependencies":{"react":"19.2.0","react-dom":"19.2.0"}}', CDN);
-    expect(map.imports['react']).toBe(`${CDN}/react@19.2.0`);
-    expect(map.imports['react-dom/client']).toMatch(/^https:\/\/pkg\.example\/react-dom@19\.2\.0/);
-    // Ranges, URLs, path tricks: nothing.
-    for (const version of ['^19.0.0', 'https://evil.example/react.js', '../../x', 'latest']) {
-      expect(
-        revealImportMap(JSON.stringify({ dependencies: { react: version } }), CDN).imports,
-      ).toEqual({});
-    }
-  });
-
-  it('a build without a bundle has no preview; css and manifest are optional', () => {
-    expect(revealPreviewBuild({ js: null, css: 'a{}', manifest: null }, CDN)).toBeNull();
-    expect(revealPreviewBuild({ js: 'x()', css: null, manifest: null }, CDN)).toEqual({
-      js: 'x()',
-      css: '',
-      importMap: { imports: {} },
-    });
+  it('missing, empty, oversized or unreadable bytes give no preview (never a throw)', () => {
+    expect(revealPreviewBuild(null)).toBeNull();
+    expect(revealPreviewBuild(new Uint8Array(0))).toBeNull();
+    expect(revealPreviewBuild(new TextEncoder().encode('<script>alert(1)</script>'))).toBeNull();
+    expect(revealPreviewBuild(new Uint8Array(SITE_LIMITS.maxPackBytes + 1))).toBeNull();
+    // A pack cut short.
+    const site = fakeSite('Cut');
+    expect(revealPreviewBuild(site.pack.slice(0, site.pack.byteLength - 4))).toBeNull();
   });
 });
 
@@ -84,7 +59,6 @@ function controller(
 ): RevealVoteController {
   return new RevealVoteController(BATTLE_1, {
     api,
-    cdnBaseUrl: CDN,
     refetch: () => {
       refetches++;
       return Promise.resolve();
@@ -130,52 +104,57 @@ describe('REVEAL', () => {
     await flush();
     const s = c.getSnapshot();
     expect(s.builds?.map((b) => b.build_id)).toEqual(['build-me', 'build-bob', 'build-cleo']);
-    expect(Object.keys(s.bundles).sort()).toEqual(['build-bob', 'build-me']);
-    const me = s.bundles['build-me'];
+    expect(Object.keys(s.sites).sort()).toEqual(['build-bob', 'build-me']);
+    const me = s.sites['build-me'];
     expect(me?.status).toBe('ready');
-    expect(me?.build?.js).toBe('console.log("build-me")');
-    expect(me?.build?.css).toBe('.build-me{}');
-    expect(me?.build?.importMap.imports['react']).toBe(`${CDN}/react@19.2.0`);
-    // Only these objects: never source.json.
-    const read = api.calls.filter((x) => x[0] === 'downloadText').map((x) => String(x[1]));
-    expect(read.every((p) => /\/(bundle\.js|bundle\.css|manifest\.json)$/.test(p))).toBe(true);
+    expect(indexOf(me?.build?.site)).toContain('build-me');
+    // One object per build: its site pack (shipped, or the autosave when auto-shipped).
+    const read = api.calls.filter((x) => x[0] === 'downloadBytes').map((x) => String(x[1]));
+    expect(read).toEqual([`${BATTLE_1}/${ME}/site.bin`, `${BATTLE_1}/${BOB}/site.bin`]);
     expect(spotlightBuild(reveal(0), s.builds)?.build_id).toBe('build-me');
     c.dispose();
   });
 
-  it('moving the spotlight keeps the prefetched bundle, drops the old one, fetches the next', async () => {
+  it('moving the spotlight keeps the prefetched site, drops the old one, fetches the next', async () => {
     const c = controller();
     c.receive(reveal(0));
     await flush();
-    const bobBundle = c.getSnapshot().bundles['build-bob'];
+    const bobSite = c.getSnapshot().sites['build-bob'];
     api.clearCalls();
     c.receive(reveal(1));
     await flush();
     const s = c.getSnapshot();
-    expect(Object.keys(s.bundles).sort()).toEqual(['build-bob', 'build-cleo']);
-    expect(s.bundles['build-bob']).toBe(bobBundle); // no second download
-    expect(api.calls.filter((x) => x[0] === 'downloadText').map((x) => x[1])).toEqual([
-      `${BATTLE_1}/${revealBuilds()[2]?.builder_id ?? ''}/bundle.js`,
-      `${BATTLE_1}/${revealBuilds()[2]?.builder_id ?? ''}/bundle.css`,
-      `${BATTLE_1}/${revealBuilds()[2]?.builder_id ?? ''}/manifest.json`,
+    expect(Object.keys(s.sites).sort()).toEqual(['build-bob', 'build-cleo']);
+    expect(s.sites['build-bob']).toBe(bobSite); // no second download
+    expect(api.calls.filter((x) => x[0] === 'downloadBytes').map((x) => x[1])).toEqual([
+      `${BATTLE_1}/${revealBuilds()[2]?.builder_id ?? ''}/autosave/site.bin`,
     ]);
+    expect(indexOf(s.sites['build-cleo']?.build?.site)).toContain('build-cleo');
     expect(api.count('getRevealBuilds')).toBe(0);
     c.dispose();
   });
 
-  it('a missing bundle or a failed download is a state, not a throw', async () => {
-    api.objects.delete(api.revealBuilds[0]?.files.js ?? '');
-    const failing = api.revealBuilds[1]?.files.css ?? '';
-    const download = api.downloadText.bind(api);
-    api.downloadText = (path) =>
+  it('a missing or broken site pack, or a failed download, is a state, not a throw', async () => {
+    api.objects.delete(api.revealBuilds[0]?.files.site ?? '');
+    const failing = api.revealBuilds[1]?.files.site ?? '';
+    const download = api.downloadBytes.bind(api);
+    api.downloadBytes = (path) =>
       path === failing ? Promise.reject(new TypeError('Failed to fetch')) : download(path);
     const c = controller();
     c.receive(reveal(0));
     await flush();
-    expect(c.getSnapshot().bundles['build-me']?.status).toBe('missing');
-    const bob = c.getSnapshot().bundles['build-bob'];
+    expect(c.getSnapshot().sites['build-me']?.status).toBe('missing');
+    const bob = c.getSnapshot().sites['build-bob'];
     expect(bob?.status).toBe('error');
     c.dispose();
+
+    // Bytes that are not a site pack (garbage in storage): nothing to run.
+    api.objects.set(api.revealBuilds[0]?.files.site ?? '', new TextEncoder().encode('garbage'));
+    const again = controller();
+    again.receive(reveal(0));
+    await flush();
+    expect(again.getSnapshot().sites['build-me']?.status).toBe('missing');
+    again.dispose();
   });
 
   it('thumbnails: object URLs for builds that have one, placeholders otherwise; revoked at DESTROY', async () => {
@@ -189,7 +168,7 @@ describe('REVEAL', () => {
     });
     c.receive(battleSnapshot({ phase: 'destroyed', revealOrder: ['build-me'], version: 40 }));
     expect(urls.revoked.sort()).toEqual(['blob:thumb-1', 'blob:thumb-2']);
-    expect(c.getSnapshot()).toMatchObject({ thumbs: {}, bundles: {} });
+    expect(c.getSnapshot()).toMatchObject({ thumbs: {}, sites: {} });
     c.dispose();
   });
 
@@ -210,7 +189,7 @@ describe('REVEAL', () => {
     c.dispose();
   });
 
-  it('skip, freeze and missing packages are local; watching again clears them', async () => {
+  it('skip, freeze and a failed load are local; watching again clears them', async () => {
     const c = controller();
     c.receive(reveal(1));
     await flush();
@@ -222,10 +201,10 @@ describe('REVEAL', () => {
     // A build that never started is not "frozen".
     c.markFrozen('build-me', 'handshake-timeout');
     expect(c.getSnapshot()).toMatchObject({ frozen: ['build-cleo'], failedToStart: ['build-me'] });
-    // T-032: a build whose packages could not load here.
-    c.packagesFailed('build-bob');
-    c.packagesFailed('build-bob');
-    expect(c.getSnapshot().noPackages).toEqual(['build-bob']);
+    // A site the sandbox could not serve in this browser.
+    c.loadFailed('build-bob');
+    c.loadFailed('build-bob');
+    expect(c.getSnapshot().noLoad).toEqual(['build-bob']);
     c.watch('build-bob');
     c.watch('build-cleo');
     c.watch('build-me');
@@ -233,11 +212,11 @@ describe('REVEAL', () => {
       skipped: [],
       frozen: [],
       failedToStart: [],
-      noPackages: [],
+      noLoad: [],
     });
     // Nothing went to the server.
     expect(
-      api.calls.filter((x) => !['getRevealBuilds', 'downloadText', 'downloadBlob'].includes(x[0])),
+      api.calls.filter((x) => !['getRevealBuilds', 'downloadBytes', 'downloadBlob'].includes(x[0])),
     ).toEqual([]);
     c.dispose();
   });
@@ -286,31 +265,31 @@ describe('REVEAL', () => {
     expect(tally.take(BATTLE_1)).toMatchObject({ crashes: 2, restarts: 1 });
   });
 
-  it('a build taken down during REVEAL (T-024) loses its prefetched bundle', async () => {
+  it('a build taken down during REVEAL (T-024) loses its prefetched site', async () => {
     const c = controller();
     c.receive(reveal(0));
     await flush();
-    const ids = Object.keys(c.getSnapshot().bundles);
+    const ids = Object.keys(c.getSnapshot().sites);
     expect(ids.length).toBeGreaterThan(1);
     const removedId = ids.find((id) => id !== reveal(0).battle.reveal_order?.[0]) ?? '';
     const snap = reveal(0, 11);
     snap.builds = snap.builds.map((b) => (b.id === removedId ? { ...b, taken_down: true } : b));
     c.receive(snap);
-    expect(Object.keys(c.getSnapshot().bundles)).not.toContain(removedId);
+    expect(Object.keys(c.getSnapshot().sites)).not.toContain(removedId);
     // The prefetch moves on to the next build that still has a slot.
     await flush();
-    expect(Object.keys(c.getSnapshot().bundles).sort()).toEqual(['build-cleo', 'build-me']);
+    expect(Object.keys(c.getSnapshot().sites).sort()).toEqual(['build-cleo', 'build-me']);
     c.dispose();
   });
 
-  it('VOTING drops the bundles (no build runs any more)', async () => {
+  it('VOTING drops the sites (no build runs any more)', async () => {
     const c = controller();
     c.receive(reveal(2));
     await flush();
-    expect(Object.keys(c.getSnapshot().bundles)).toEqual(['build-cleo']);
+    expect(Object.keys(c.getSnapshot().sites)).toEqual(['build-cleo']);
     c.receive(battleSnapshot({ phase: 'voting', version: 20 }));
     await flush();
-    expect(c.getSnapshot().bundles).toEqual({});
+    expect(c.getSnapshot().sites).toEqual({});
     c.dispose();
   });
 });

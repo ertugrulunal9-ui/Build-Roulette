@@ -13,6 +13,7 @@ import type {
   SnapshotBuild,
 } from '../solo/types';
 import { GameError } from '../solo/errors';
+import { fakeSite } from '../solo/test-support';
 import type { RoomApi } from './api';
 import type {
   ChannelStatus,
@@ -331,7 +332,7 @@ export class FakeRoomApi implements RoomApi {
 
   // --- REVEAL and VOTING ---
   /** Objects of `ephemeral-builds` by path. */
-  readonly objects = new Map<string, string | Blob>();
+  readonly objects = new Map<string, Uint8Array<ArrayBuffer> | Blob>();
   revealBuilds: RevealBuild[] = revealBuilds();
   onRevealBuilds: Handler<[], RevealBuild[]> = () => structuredClone(this.revealBuilds);
   onHost: Handler<['next' | 'skip', number], HostRevealResult> = (_kind, v) => ({
@@ -378,17 +379,17 @@ export class FakeRoomApi implements RoomApi {
     this.calls.push(['getMyVotes', battleId]);
     return this.onMyVotes();
   }
-  downloadText(path: string): Promise<string | null> {
-    this.calls.push(['downloadText', path]);
+  async downloadBytes(path: string): Promise<Uint8Array<ArrayBuffer> | null> {
+    this.calls.push(['downloadBytes', path]);
     const body = this.objects.get(path);
-    if (body === undefined) return Promise.resolve(null);
-    return typeof body === 'string' ? Promise.resolve(body) : body.text();
+    if (body === undefined) return null;
+    return body instanceof Uint8Array ? body : new Uint8Array(await body.arrayBuffer());
   }
   downloadBlob(path: string): Promise<Blob | null> {
     this.calls.push(['downloadBlob', path]);
     const body = this.objects.get(path);
     if (body === undefined) return Promise.resolve(null);
-    return Promise.resolve(typeof body === 'string' ? new Blob([body]) : body);
+    return Promise.resolve(body instanceof Uint8Array ? new Blob([body]) : body);
   }
 
   count(method: string, arg?: unknown): number {
@@ -401,7 +402,8 @@ export class FakeRoomApi implements RoomApi {
 
 /**
  * `get_reveal_builds` for {@link battleSnapshot}'s M4 battle (me, bob, cleo in that order),
- * and the matching objects (bundle, css, manifest; a thumbnail for the first two).
+ * and the matching objects (the site pack; a thumbnail for the first two, cleo's build was
+ * auto-shipped).
  */
 export function revealBuilds(
   order: string[] = ['build-me', 'build-bob', 'build-cleo'],
@@ -422,26 +424,17 @@ export function revealBuilds(
       builder_name: name,
       status: 'shipped',
       files: {
-        js: `${dir}/bundle.js`,
-        css: `${dir}/bundle.css`,
-        manifest: `${dir}/manifest.json`,
+        site: id === 'build-cleo' ? `${dir}/autosave/site.bin` : `${dir}/site.bin`,
         thumb: id === 'build-cleo' ? null : `${dir}/thumb.webp`,
       },
     };
   });
 }
 
-/** Puts the objects of {@link revealBuilds} into the fake storage. */
+/** Puts the objects of {@link revealBuilds} into the fake storage (a site saying its id). */
 export function storeRevealObjects(api: FakeRoomApi): void {
   for (const b of api.revealBuilds) {
-    if (b.files.js) api.objects.set(b.files.js, `console.log(${JSON.stringify(b.build_id)})`);
-    if (b.files.css) api.objects.set(b.files.css, `.${b.build_id}{}`);
-    if (b.files.manifest) {
-      api.objects.set(
-        b.files.manifest,
-        JSON.stringify({ dependencies: { react: '19.2.0', 'react-dom': '19.2.0' } }),
-      );
-    }
+    if (b.files.site) api.objects.set(b.files.site, fakeSite(b.build_id).pack);
     if (b.files.thumb) api.objects.set(b.files.thumb, new Blob(['webp'], { type: 'image/webp' }));
   }
 }

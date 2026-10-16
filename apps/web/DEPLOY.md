@@ -23,13 +23,13 @@ measured on 2026-10-09):
 
 | | |
 |---|---|
-| Pages | `/`, `/play`, `/playground`, `/admin`, `/admin/sign-in`, `404.html`, and three **shells**: `/r` (every room), `/battles` (every battle's results), `/u` (every player's history) |
-| `_redirects` | `/r/:code /r 200`, `/battles/:id /battles 200`, `/u/:id /u 200`: rewrites, so `/battles/{id}` is answered with the shell and keeps its URL; the page reads the id in the browser and loads its data (`src/lib/hosting/shells.ts`) |
+| Pages | `/`, `/play`, `/try`, `/admin`, `/admin/sign-in`, `404.html`, and three **shells**: `/r` (every room), `/battles` (every battle's results), `/u` (every player's history) |
+| `_redirects` | `/playground /try 301` (the editor's old page, M6), then `/r/:code /r 200`, `/battles/:id /battles 200`, `/u/:id /u 200`: rewrites, so `/battles/{id}` is answered with the shell and keeps its URL; the page reads the id in the browser and loads its data (`src/lib/hosting/shells.ts`) |
 | `_headers` | the security headers (a Content-Security-Policy, no framing, `nosniff`, referrer and permissions policies), a year's cache for `/_next/static/*`, `noindex` for `/admin` (`src/lib/hosting/pages-config.ts`) |
 | `dist/worker.js` (outside `out/`) | the link-preview Worker (T-038): 13 KiB (5 KiB gzip), bundled from `src/lib/hosting/preview-worker.ts` with this build's `NEXT_PUBLIC_*` values and the `/*` headers of `_headers`; deployed as is (`main`, `no_bundle`) |
 | `run_worker_first: ["/battles/*"]` (wrangler.jsonc) | the only paths that invoke the Worker; every other request is a static file, and an unknown path gets `404.html` from the assets (`not_found_handling: "404-page"`) |
-| Assets | JS/CSS chunks, the bundler worker chunk, `esbuild.wasm` (13.3 MiB), `og-card.png`, `icon.svg` |
-| Size | 94 files, 15.8 MiB; JS 2.1 MiB (706 KiB gzip) |
+| Assets | JS/CSS chunks, `og-card.png`, `icon.svg` (no bundler or `esbuild.wasm` since M6: players import built sites) |
+| Size | 87 files, 1.7 MiB; JS 1.4 MiB (465 KiB gzip) (measured on 2026-10-16, T-047) |
 
 `pnpm build` runs `next build` and then `scripts/pages-config.ts`, which writes `_headers`,
 `_redirects` and `dist/worker.js` and **fails the build** if `404.html` or a shell is missing,
@@ -49,8 +49,8 @@ pnpm --filter @br/web preview      # wrangler dev: http://localhost:3000
 
 `preview` is `wrangler dev` (Cloudflare's local runtime, workerd, with the static-assets
 router): the same rewrites, headers, 404 handling and link-preview Worker on `/battles/*` as
-production. Every e2e suite runs against it (`e2e/app-server.ts`). `/playground` and `/play`
-also need the sandbox servers
+production. Every e2e suite runs against it (`e2e/app-server.ts`). `/try` and `/play`
+also need the sandbox shell
 (`pnpm --filter @br/web dev:sandbox`, or `dev:solo`'s services), and every page that reads
 data needs the local Supabase stack (`supabase/README.md`).
 
@@ -87,8 +87,7 @@ geo data.
 ```sh
 NEXT_PUBLIC_SUPABASE_URL=https://<project>.supabase.co \
 NEXT_PUBLIC_SUPABASE_ANON_KEY=<anon or publishable key> \
-NEXT_PUBLIC_SANDBOX_SHELL_URL=https://build-roulette-sandbox.<subdomain B>.workers.dev/v1/ \
-NEXT_PUBLIC_PKG_CDN_URL=https://esm.sh \
+NEXT_PUBLIC_SANDBOX_SHELL_URL=https://build-roulette-sandbox.<subdomain B>.workers.dev/v2/ \
 NEXT_PUBLIC_SITE_URL=https://build-roulette-web.<subdomain>.workers.dev \
   pnpm --filter @br/web build
 pnpm --filter @br/web workers:deploy
@@ -98,14 +97,10 @@ pnpm --filter @br/web workers:deploy
   `wrangler.jsonc` says, as a new version, live at once on the Worker's workers.dev address
   and custom domains). `--name <other>` deploys under another name. Per-version preview
   addresses are off (`preview_urls: false`): the sandbox shell would not allow them anyway.
-- **The package CDN is the public esm.sh** on the free plan (T-035; our own `@br/pkg-cdn`
-  needs Cloudflare Containers, a paid feature). Use the same base URL in three places:
-  `NEXT_PUBLIC_PKG_CDN_URL` here, `BR_PKG_CDN_URL` for the sandbox shell (step 4) and
-  `PKG_CDN_URL` for the screenshot jobs (the `jobs` function's secret, below). The app's CSP gets
-  `connect-src https://esm.sh` (the bundler fetches package CSS), the shell's `script-src
-  https://esm.sh`. If they disagree, previews load no package ("The build or one of its
-  packages failed to load", and a CSP error in the browser console). To move to another
-  CDN later, change all three and rebuild the app and the shell (docs/08-free-tier.md §4).
+- **No package CDN since M6** (docs/09): players import built sites, so the app neither
+  bundles code nor fetches packages, and its CSP has no CDN in `connect-src` and no
+  `'wasm-unsafe-eval'`. `NEXT_PUBLIC_PKG_CDN_URL` is ignored. (The deploy scripts and the
+  shell/jobs steps below still mention a package CDN until T-048 removes it.)
 - **Every setting is baked in at build time.** `NEXT_PUBLIC_*` values are inlined into the
   bundles, and the build's `_headers` allows exactly those hosts in its CSP (Supabase, the
   sandbox shell, the package CDN, Sentry, PostHog, Turnstile). The link-preview Worker gets
@@ -189,7 +184,7 @@ sandbox shell and the app:
    JOBS_CRON_SECRET=$(openssl rand -hex 32)
    cat > /tmp/jobs.env <<ENV
    JOBS_CRON_SECRET=$JOBS_CRON_SECRET
-   CAPTURE_SHELL_URL=https://build-roulette-sandbox.<subdomain B>.workers.dev/v1/capture
+   CAPTURE_SHELL_URL=https://build-roulette-sandbox.<subdomain B>.workers.dev/v2/capture
    CAPTURE_HMAC_SECRET=$CAPTURE_HMAC_SECRET
    PKG_CDN_URL=https://esm.sh
    BROWSER_RENDERING_ACCOUNT_ID=<account id>
@@ -200,7 +195,7 @@ sandbox shell and the app:
    ```
    - `CAPTURE_SHELL_URL`: the shell's capture page, i.e. `NEXT_PUBLIC_SANDBOX_SHELL_URL` with
      `capture` instead of the trailing path. With per-build origins it would be
-     `https://{build}.<usercontent>/v1/capture`.
+     `https://{build}.<usercontent>/v2/capture`.
    - `PKG_CDN_URL`: the same as the app's `NEXT_PUBLIC_PKG_CDN_URL`.
    - Supabase sets `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` itself.
    - Optional, with their defaults: `BROWSER_BUDGET_MS_PER_DAY` (570000),
@@ -379,10 +374,10 @@ Cloudflare's docs: docs/08-free-tier.md §2.7.
 | Worker requests | 100,000 a day, shared with every Worker of account A; then Cloudflare's 429 page on `/battles/*` until 00:00 UTC | one per view of `/battles/{id}` (people and crawlers) |
 | CPU per Worker request | 10 ms (Workers Free) | median 1.2–1.7 ms warm, 3.2–4.2 ms in a fresh isolate (docs/08 §3.3) |
 | `run_worker_first` | path patterns in `wrangler.jsonc` | 1 pattern |
-| Files per version | 20,000 | 94 |
-| One file | 25 MiB | `esbuild.wasm` 13.3 MiB |
+| Files per version | 20,000 | 87 |
+| One file | 25 MiB | the largest JS chunk, ~240 KiB |
 | `_headers` | 100 rules, 2,000 characters per header line | 4 rules; the CSP line is ~950 characters (10 script hashes), checked by the build |
-| `_redirects` | 2,000 static + 100 dynamic rules | 3 dynamic |
+| `_redirects` | 2,000 static + 100 dynamic rules | 1 static, 3 dynamic |
 
 Link previews per battle (each battle's own title and screenshot in `og:*`) come from the
 Worker above; the other shells (`/r/{code}`, `/u/{id}`) keep the generic tags and

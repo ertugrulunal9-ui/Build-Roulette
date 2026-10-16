@@ -8,6 +8,7 @@ import {
   isWinner,
 } from '../../lib/solo/format';
 import type { PublicBattle } from '../../lib/solo/types';
+import { statsPhrases } from '../../lib/solo/stats';
 import { screenshotUrl } from '../../lib/supabase/config';
 import { REMOVED_TEXT, RemovedCard } from '../moderation/Removed';
 import { ReportButton } from '../moderation/ReportButton';
@@ -120,10 +121,9 @@ export function BattleResults({ data }: { data: PublicBattle }) {
                 </p>
                 <AwardBadges awards={buildAwards} />
                 {voted && shipped && <VoteTally votes={b.votes} total={b.total_votes} />}
-                {b.stats.deps && b.stats.deps.length > 0 && (
-                  <p className="text-sm text-zinc-500">
-                    {b.stats.files ?? 0} files · {b.stats.lines ?? 0} lines · made with{' '}
-                    {b.stats.deps.join(', ')}
+                {statsPhrases(b.stats).length > 0 && (
+                  <p className="text-sm text-zinc-500" data-testid="public-build-stats">
+                    {statsPhrases(b.stats).join(' · ')}
                   </p>
                 )}
                 {shipped && !removed && (

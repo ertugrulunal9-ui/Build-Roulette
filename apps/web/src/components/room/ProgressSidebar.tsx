@@ -1,11 +1,12 @@
 'use client';
 
 /**
- * Everyone's progress during BUILD: live activity from Presence (lines, last build, active =
- * edited in the last 15 s; at most one update per 15 s per player and only for a change that
- * matters, T-029) and the shipped badges from `build` events, e.g.
- * "Ada shipped 'Snack Overflow' at 3:12". No database writes: Presence is client-claimed
- * and only decorates; the ship badges are server state.
+ * Everyone's progress during BUILD: "building…" until a player's first import, then
+ * "imported" (with how many imports) from Presence (at most one update per 15 s per player,
+ * T-029), and the shipped badges from `build` events, e.g. "Ada shipped 'Snack Overflow' at
+ * 3:12". Players build on their own computers (docs/09), so imports are all the room sees.
+ * No database writes: Presence is client-claimed and only decorates; the ship badges are
+ * server state.
  */
 import type { PresenceMap } from '../../lib/room/types';
 import { formatCountdown } from '../../lib/solo/format';
@@ -15,7 +16,7 @@ import { Avatar, OnlineDot } from './pieces';
 interface ProgressSidebarProps {
   battle: BattleSnapshot;
   presence: PresenceMap;
-  /** `sidebar`: a column next to the editor; `grid`: cards for spectators. */
+  /** `sidebar`: a column next to the import area; `grid`: cards for spectators. */
   layout: 'sidebar' | 'grid';
 }
 
@@ -92,21 +93,17 @@ export function ProgressSidebar({ battle, presence, layout }: ProgressSidebarPro
             <p
               className="flex flex-wrap items-center gap-x-2 text-xs text-zinc-600 dark:text-zinc-400"
               data-testid="activity"
+              data-imported={live.activity.imported ? 'true' : 'false'}
             >
-              <span>{live.activity.lines} lines</span>
-              {live.activity.last_build === 'error' ? (
-                <span className="text-red-600 dark:text-red-400">⚠ build failing</span>
-              ) : (
-                <span className="text-emerald-700 dark:text-emerald-400">✓ builds</span>
-              )}
-              {live.activity.typing && (
-                <span
-                  className="font-semibold"
-                  title="Edited in the last 15 s"
-                  data-testid="active"
-                >
-                  ✎ active
+              {live.activity.imported ? (
+                <span className="font-semibold text-sky-700 dark:text-sky-300">
+                  📦 imported
+                  {live.activity.imports > 1 && (
+                    <span className="font-normal"> ({live.activity.imports}×)</span>
+                  )}
                 </span>
+              ) : (
+                <span>🛠 building…</span>
               )}
               {live.device === 'mobile' && <span title="On a phone">📱</span>}
             </p>

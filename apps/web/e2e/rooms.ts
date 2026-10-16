@@ -1,6 +1,7 @@
 /**
  * Helpers for the rooms e2e (multiplayer.spec.ts) and the chaos e2e (chaos.spec.ts): browser
- * contexts as anonymous players, joining, the BUILD screen, shipping, and IndexedDB reads.
+ * contexts as anonymous players, joining, the BUILD screen (importing a fixture site,
+ * sites.ts), shipping, and IndexedDB reads.
  */
 import {
   devices,
@@ -13,8 +14,10 @@ import {
 } from '@playwright/test';
 import { watchCsp } from './csp';
 import { trackPage } from './diagnostics';
-import { buildFrame, clickRouted, replaceEditorText } from './helpers';
+import { clickRouted } from './helpers';
 import { sql } from './stack';
+
+export { FREEZE_BUTTON, importApp } from './sites';
 
 export interface Player {
   name: string;
@@ -44,7 +47,6 @@ export async function newPlayer(
     viewport: { width: 1440, height: 900 },
   });
   if (opts.clockSkewMs) await context.addInitScript(skewClock, opts.clockSkewMs);
-  await context.addInitScript(recordBundlerStarts);
   // Every page of the context is logged for diagnostics.ts (a failure attaches the logs).
   context.on('page', (pg) => {
     trackPage(info, name, pg);
@@ -66,7 +68,6 @@ export async function newPhone(browser: Browser, info: TestInfo, name: string): 
   // The profile's default browser is WebKit; newContext only takes its device settings.
   const phone = devices['iPhone 13'];
   const context = await browser.newContext({ ...(baseURL ? { baseURL } : {}), ...phone });
-  await context.addInitScript(recordBundlerStarts);
   context.on('page', (pg) => {
     trackPage(info, name, pg);
   });
@@ -123,158 +124,6 @@ function skewClock(offset: number): void {
   });
 }
 
-/** One step of a bundler start or of the BUILD screen, as the app page saw it (T-041). */
-export interface BundlerStartEvent {
-  /** The page's `performance.now()`, rounded. */
-  t: number;
-  /**
-   * `created` … `terminated`: the bundler worker (`worker` counts them in this page; a stall
-   * retry or the next battle makes a new one). `request`: its first message (it runs and sent
-   * the esbuild.wasm request); `last-byte`: the download is complete (`loaded` bytes); `ready`:
-   * esbuild-wasm is ready. `spin`: the SPIN screen appeared; `built`: the build status turned
-   * to "Built in …".
-   */
-  type: 'created' | 'request' | 'last-byte' | 'ready' | 'error' | 'terminated' | 'spin' | 'built';
-  worker?: number;
-  loaded?: number;
-}
-
-/**
- * Runs in every page of a player (an init script, T-041): records the bundler worker's start
- * steps and when SPIN appeared and the first build was done, in `window.__brStarts`, and logs
- * them to the console (so they are in players.md). `waitForBuild` names them when the first
- * build does not come, and `buildStartMetrics` sums them up.
- */
-function recordBundlerStarts(): void {
-  if (window.top !== window) return; // the app page, not the preview frames
-  const events: {
-    t: number;
-    type: string;
-    worker: number | undefined;
-    loaded: number | undefined;
-  }[] = [];
-  (window as unknown as { __brStarts: typeof events }).__brStarts = events;
-  const add = (type: string, worker?: number, loaded?: number) => {
-    events.push({ t: Math.round(performance.now()), type, worker, loaded });
-    if (events.length > 500) events.splice(0, events.length - 500);
-    const what = worker === undefined ? type : `worker ${String(worker)} ${type}`;
-    console.debug(`[e2e bundler] ${what}${loaded ? ` (${String(loaded)} B)` : ''}`);
-  };
-  // SPIN and the first build: a cheap look four times a second, and when a worker starts (the
-  // BUILD screen mounts under SPIN's reels, so SPIN is up by then).
-  let spinning = false;
-  let built = false;
-  const look = () => {
-    const spin = document.querySelector('[data-testid="spin"]') !== null;
-    if (spin && !spinning) {
-      add('spin');
-      built = false;
-    }
-    spinning = spin;
-    const status = document.querySelector('[data-testid="build-status"]')?.textContent ?? '';
-    if (status.startsWith('Built in') && !built) {
-      built = true;
-      add('built');
-    } else if (!status.startsWith('Built in')) {
-      built = false;
-    }
-  };
-  setInterval(look, 250);
-  const Native = window.Worker;
-  let workers = 0;
-  class RecordingWorker extends Native {
-    constructor(url: string | URL, options?: WorkerOptions) {
-      super(url, options);
-      if (options?.name !== 'br-bundler') return; // runtime-factory.ts names it
-      const n = ++workers;
-      let requested = false;
-      look();
-      add('created', n);
-      this.addEventListener('message', (e: MessageEvent<{ type?: unknown; stage?: unknown }>) => {
-        const m = e.data;
-        if (m.type === 'init-progress' && !requested) {
-          requested = true;
-          add('request', n);
-        }
-        if (m.type === 'init-progress' && m.stage === 'compile') {
-          add('last-byte', n, (m as { loaded?: number }).loaded);
-        }
-        if (m.type === 'init-done') add('ready', n);
-        if (m.type === 'init-error') add('error', n);
-      });
-      const terminate = this.terminate.bind(this);
-      this.terminate = () => {
-        add('terminated', n);
-        terminate();
-      };
-    }
-  }
-  window.Worker = RecordingWorker;
-}
-
-/** The page's recorded steps, and its clock now. */
-export async function bundlerStarts(
-  page: Page,
-): Promise<{ events: BundlerStartEvent[]; now: number }> {
-  return page.evaluate(() => ({
-    events: (window as unknown as { __brStarts?: BundlerStartEvent[] }).__brStarts ?? [],
-    now: Math.round(performance.now()),
-  }));
-}
-
-/** The steps since the last SPIN, in ms after it: `spin 0, worker 1 created +40, …`. */
-export function describeBundlerStarts({
-  events,
-  now,
-}: {
-  events: BundlerStartEvent[];
-  now: number;
-}): string {
-  const lastSpin = events.findLastIndex((e) => e.type === 'spin');
-  const since = lastSpin >= 0 ? events.slice(lastSpin) : events;
-  const t0 = since[0]?.t ?? now;
-  const steps = since.map(
-    (e) =>
-      `${e.worker === undefined ? '' : `worker ${String(e.worker)} `}${e.type}${e.loaded ? ` (${(e.loaded / 1e6).toFixed(1)} MB)` : ''} +${String(e.t - t0)}`,
-  );
-  if (!since.some((e) => e.type === 'created')) steps.push('(no bundler worker yet)');
-  return `${steps.join(', ')}; now +${String(now - t0)} ms`;
-}
-
-/**
- * For a battle start (all pages just showed their first build, T-041): per page, ms from SPIN
- * to the bundler worker's creation, to esbuild-wasm ready and to "Built in", and how many
- * workers stopped before they were ready (stall retries).
- */
-export async function buildStartMetrics(pages: Page[]): Promise<string> {
-  const rows = await Promise.all(
-    pages.map(async (page) => {
-      const { events } = await bundlerStarts(page);
-      const lastSpin = events.findLastIndex((e) => e.type === 'spin');
-      const since = events.slice(Math.max(0, lastSpin));
-      const t0 = since[0]?.t ?? 0;
-      const at = (type: BundlerStartEvent['type']) => {
-        const e = since.find((x) => x.type === type);
-        return e ? e.t - t0 : NaN;
-      };
-      const readyWorkers = new Set(since.filter((e) => e.type === 'ready').map((e) => e.worker));
-      const stopped = since.filter(
-        (e) => e.type === 'terminated' && !readyWorkers.has(e.worker),
-      ).length;
-      return { created: at('created'), ready: at('ready'), built: at('built'), stopped };
-    }),
-  );
-  const stat = (key: 'created' | 'ready' | 'built') => {
-    const values = rows.map((r) => r[key]).filter((v) => !Number.isNaN(v));
-    if (values.length === 0) return 'n/a';
-    values.sort((a, b) => a - b);
-    const p50 = values[Math.floor((values.length - 1) / 2)] ?? NaN;
-    return `p50 ${String(p50)} ms, max ${String(values.at(-1))} ms`;
-  };
-  const stopped = rows.reduce((n, r) => n + r.stopped, 0);
-  return `${String(pages.length)} pages, from SPIN: bundler worker created ${stat('created')}; esbuild-wasm ready ${stat('ready')}; first build ${stat('built')}; workers stopped before ready ${String(stopped)}`;
-}
-
 /** Opens the invite link and joins with `name` (no profile yet: the name prompt). */
 export async function joinByLink(p: Player, code: string): Promise<void> {
   await p.page.goto(`/r/${code}`);
@@ -301,62 +150,11 @@ export const member = (page: Page, name: string) =>
 export const progress = (page: Page, name: string) =>
   page.locator(`[data-testid=progress-player][data-name="${name}"]`);
 
-export async function openFile(page: Page, path: string): Promise<void> {
-  await page.locator(`[data-testid=file-item][data-path="${path}"] > button`).first().click();
-  await expect(page.getByTestId('active-file')).toHaveText(path);
-}
-
-/**
- * SPIN is over and the template's first preview is up. If it does not come, the error says
- * how far this page's bundler start got (T-041): CI's artifacts are not always at hand.
- */
+/** SPIN is over and BUILD shows its drop zone (nothing imported yet). */
 export async function waitForBuild(page: Page): Promise<void> {
   await expect(page.getByTestId('spin')).toBeHidden({ timeout: 30_000 });
   await expect(page.getByTestId('build-stage')).toBeVisible();
-  try {
-    await expect(page.getByTestId('build-status')).toHaveText(/^Built in \d+ ms$/, {
-      timeout: 30_000,
-    });
-  } catch (e) {
-    const starts = await bundlerStarts(page).then(describeBundlerStarts, () => '(page gone)');
-    throw new Error(
-      `${e instanceof Error ? e.message : String(e)}\n\nThis page since SPIN (its clock): ${starts}`,
-      { cause: e },
-    );
-  }
-}
-
-/** `extra`: more JSX inside the page (e.g. {@link FREEZE_BUTTON}). */
-export function appSource(title: string, background: string, extra = ''): string {
-  return `export function App() {
-  return (
-    <main style={{ minHeight: '100vh', display: 'grid', placeContent: 'center', background: '${background}', color: 'white' }}>
-      <h1 className="e2e-title">${title}</h1>${extra}
-    </main>
-  );
-}
-`;
-}
-
-/**
- * A button that hangs the build's main thread for good, shortly after the click (so the
- * click itself is acknowledged first and the test driver does not wait on a hung frame).
- */
-export const FREEZE_BUTTON = `
-      <button className="e2e-freeze" onClick={() => { setTimeout(() => { for (;;) {} }, 300); }}>Freeze</button>`;
-
-/** Writes src/App.tsx through the editor; `waitForPreview` waits for the new preview. */
-export async function writeApp(
-  page: Page,
-  title: string,
-  background: string,
-  { waitForPreview = true, extra = '' }: { waitForPreview?: boolean; extra?: string } = {},
-): Promise<void> {
-  await openFile(page, 'src/App.tsx');
-  await replaceEditorText(page, appSource(title, background, extra));
-  if (waitForPreview) {
-    await expect(buildFrame(page).locator('h1.e2e-title')).toHaveText(title);
-  }
+  await expect(page.getByTestId('drop-zone')).toBeVisible({ timeout: 30_000 });
 }
 
 /**
@@ -398,36 +196,42 @@ export async function autosaveNow(page: Page): Promise<void> {
   await setVisibility(page, 'visible');
 }
 
-/** The workspace text of `path` stored in this page's IndexedDB under `battle:{id}`. */
-export async function storedFile(
+/**
+ * The battle's site kept in this page's IndexedDB (`br-sites`, key `battle:{id}`): the
+ * `<title>` of its `index.html` (the pack stores the files uncompressed) and the import
+ * count, or null when there is none.
+ */
+export async function storedSite(
   page: Page,
   battleId: string,
-  path: string,
-): Promise<string | null> {
-  return page.evaluate(
-    async ({ key, path }) => {
-      const db = await new Promise<IDBDatabase>((resolve, reject) => {
-        const req = indexedDB.open('br-workspaces');
-        req.onsuccess = () => {
-          resolve(req.result);
-        };
-        req.onerror = () => {
-          reject(new Error('open failed'));
-        };
-      });
-      const tx = db.transaction('workspaces', 'readonly');
-      const value = await new Promise<unknown>((resolve) => {
-        const r = tx.objectStore('workspaces').get(key);
-        r.onsuccess = () => {
-          resolve(r.result as unknown);
-        };
-      });
+): Promise<{ title: string | null; imports: number } | null> {
+  return page.evaluate(async (key) => {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const req = indexedDB.open('br-sites');
+      req.onsuccess = () => {
+        resolve(req.result);
+      };
+      req.onerror = () => {
+        reject(new Error('open failed'));
+      };
+    });
+    if (!db.objectStoreNames.contains('sites')) {
       db.close();
-      const files = (value as { files?: Record<string, string> } | undefined)?.files;
-      return files?.[path] ?? null;
-    },
-    { key: `battle:${battleId}`, path },
-  );
+      return null;
+    }
+    const tx = db.transaction('sites', 'readonly');
+    const value = await new Promise<unknown>((resolve) => {
+      const r = tx.objectStore('sites').get(key);
+      r.onsuccess = () => {
+        resolve(r.result as unknown);
+      };
+    });
+    db.close();
+    const v = value as { site?: { pack?: Uint8Array }; imports?: number } | undefined;
+    if (!v?.site?.pack) return null;
+    const text = new TextDecoder().decode(v.site.pack);
+    return { title: /<title>([^<]*)<\/title>/.exec(text)?.[1] ?? null, imports: v.imports ?? 0 };
+  }, `battle:${battleId}`);
 }
 
 /** The live REVEAL build in this page: preview iframe → shell → the build's document. */

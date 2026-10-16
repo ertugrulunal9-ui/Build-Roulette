@@ -9,7 +9,7 @@ import { APP_SERVER_ENV, appServerCommand } from './e2e/app-server';
  * up (`supabase start`); the tests insert finished battles with psql, seed an email admin with
  * supabase/scripts/seed-admin.mjs, and commit their data. Same servers as the solo e2e.
  *
- * scripts/solo-services.ts starts the sandbox shell (with the capture gate), the mock CDN and
+ * scripts/solo-services.ts starts the sandbox shell (with the capture gate) and
  * the jobs Edge Function with its Browser Rendering stand-in (T-034; `--worker`: the Node
  * worker); Playwright serves the static export with `wrangler dev` (e2e/app-server.ts),
  * the way Cloudflare serves it. The production build uses the
@@ -42,7 +42,7 @@ export default defineConfig({
   webServer: [
     {
       command: 'tsx scripts/solo-services.ts',
-      url: 'http://127.0.0.1:4321/v1/',
+      url: 'http://127.0.0.1:4321/v2/',
       env: { BR_APP_ORIGINS: APP_ORIGIN },
       // SIGTERM, so solo-services removes its pg_cron schedule and Vault secrets (and a
       // --worker hands its job back) before it exits.

@@ -19,19 +19,16 @@ import {
 
 const SECRET = 'unit-secret-0123456789abcdef0123456789abcdef';
 const CONFIG: CaptureConfig = {
-  shellCaptureUrl: 'https://{build}.usercontent.test/v1/capture',
+  shellCaptureUrl: 'https://{build}.usercontent.test/v2/capture',
   hmacSecret: SECRET,
-  pkgCdnUrl: 'https://pkg.test',
   signedUrlTtlSeconds: 120,
   captureTimeoutMs: 20_000,
   viewport: { width: 1280, height: 800 },
 };
 const PREFIX = `${BATTLE}/${USER}`;
 const SHOT = `${BATTLE}/${BUILD}.webp`;
-const SOURCE = JSON.stringify({
-  files: { 'src/main.tsx': '...' },
-  manifest: { entry: 'src/main.tsx', dependencies: { react: '19.3.0', 'react-dom': '19.3.0' } },
-});
+/** The capture job never looks inside a pack: any bytes stand in for one. */
+const PACK = 'BRSITE1 stand-in';
 
 let backend: FakeBackend;
 let goodPng: Uint8Array;
@@ -67,9 +64,7 @@ function deps(renderer: FakeRenderer): CaptureDeps {
 
 function shippedBuild(files: Record<string, Uint8Array | string> = {}) {
   backend.addBuild({ status: 'shipped' });
-  backend.put(BUCKET_EPHEMERAL, `${PREFIX}/bundle.js`, 'console.log(1)');
-  backend.put(BUCKET_EPHEMERAL, `${PREFIX}/bundle.css`, 'body{}');
-  backend.put(BUCKET_EPHEMERAL, `${PREFIX}/source.json`, SOURCE);
+  backend.put(BUCKET_EPHEMERAL, `${PREFIX}/site.bin`, PACK);
   for (const [k, v] of Object.entries(files)) backend.put(BUCKET_EPHEMERAL, `${PREFIX}/${k}`, v);
   return backend.addJob('capture', BUILD);
 }
@@ -83,7 +78,7 @@ async function claim() {
 const never = new AbortController().signal;
 
 describe('capture job: server render', () => {
-  it('signs a capture URL for the build origin, renders, stores WebP, completes as captured', async () => {
+  it('signs a v2 capture URL (src = site.bin) for the build origin, renders, stores WebP, completes as captured', async () => {
     shippedBuild();
     const renderer = new FakeRenderer(() => Promise.resolve(rendered(goodPng)));
     const out = await processCaptureJob(deps(renderer), await claim(), never);
@@ -94,30 +89,19 @@ describe('capture job: server render', () => {
     expect(req?.timeoutMs).toBe(20_000);
     const url = new URL(req?.url ?? '');
     expect(url.origin).toBe(`https://${BUILD}.usercontent.test`);
-    expect(url.pathname).toBe('/v1/capture');
+    expect(url.pathname).toBe('/v2/capture');
+    expect([...url.searchParams.keys()].sort()).toEqual(['exp', 'sig', 'src']);
     const verified = await verifyCaptureUrl(url, SECRET, 1_800_000_000);
     if (!verified.ok) throw new Error(verified.reason);
-    expect(verified.params.exp).toBe(1_800_000_000 + 120);
-    expect(verified.params.src).toBe(
-      `https://storage.test/sign/${BUCKET_EPHEMERAL}/${PREFIX}/bundle.js?token=t120`,
-    );
-    expect(verified.params.css).toBe(
-      `https://storage.test/sign/${BUCKET_EPHEMERAL}/${PREFIX}/bundle.css?token=t120`,
-    );
-    expect(JSON.parse(verified.params.map ?? '')).toEqual({
-      imports: {
-        react: 'https://pkg.test/react@19.3.0',
-        'react/jsx-runtime': 'https://pkg.test/react@19.3.0/jsx-runtime?external=react,react-dom',
-        'react/jsx-dev-runtime':
-          'https://pkg.test/react@19.3.0/jsx-dev-runtime?external=react,react-dom',
-        'react/': 'https://pkg.test/react@19.3.0&external=react,react-dom/',
-        'react-dom': 'https://pkg.test/react-dom@19.3.0?external=react,react-dom,scheduler',
-        'react-dom/client':
-          'https://pkg.test/react-dom@19.3.0/client?external=react,react-dom,scheduler',
-        'react-dom/': 'https://pkg.test/react-dom@19.3.0&external=react,react-dom,scheduler/',
-        scheduler: 'https://pkg.test/scheduler@0.28.0',
-      },
+    expect(verified.params).toEqual({
+      src: `https://storage.test/sign/${BUCKET_EPHEMERAL}/${PREFIX}/site.bin?token=t120`,
+      exp: 1_800_000_000 + 120,
     });
+    // One signed Storage URL, and nothing downloaded (no manifest, no import map).
+    expect(backend.callsTo('createSignedUrl')).toEqual([
+      [BUCKET_EPHEMERAL, `${PREFIX}/site.bin`, 120],
+    ]);
+    expect(backend.callsTo('download')).toEqual([]);
 
     const stored = backend.get(BUCKET_SCREENSHOTS, SHOT);
     expect((await sharp(stored).metadata()).format).toBe('webp');
@@ -127,60 +111,30 @@ describe('capture job: server render', () => {
     expect(backend.callsTo('failJob')).toEqual([]);
   });
 
-  it('auto_shipped builds render the autosave bundle and its CSS', async () => {
+  it('auto_shipped builds render the autosave pack, never a stale top-level one', async () => {
     backend.addBuild({ status: 'auto_shipped' });
-    backend.put(BUCKET_EPHEMERAL, `${PREFIX}/autosave/bundle.js`, 'x');
-    backend.put(BUCKET_EPHEMERAL, `${PREFIX}/autosave/bundle.css`, 'body{}');
-    backend.put(BUCKET_EPHEMERAL, `${PREFIX}/autosave/source.json`, SOURCE);
-    backend.put(BUCKET_EPHEMERAL, `${PREFIX}/bundle.js`, 'stale, must not be used');
-    backend.put(BUCKET_EPHEMERAL, `${PREFIX}/bundle.css`, 'stale, must not be used');
+    backend.put(BUCKET_EPHEMERAL, `${PREFIX}/autosave/site.bin`, PACK);
+    backend.put(BUCKET_EPHEMERAL, `${PREFIX}/site.bin`, 'stale, must not be used');
     backend.addJob('capture', BUILD);
     const renderer = new FakeRenderer(() => Promise.resolve(rendered(goodPng)));
     const out = await processCaptureJob(deps(renderer), await claim(), never);
     expect(out.result).toBe('captured');
     const verified = await verifyCaptureUrl(renderer.requests[0]?.url ?? '', SECRET, 1_800_000_000);
     if (!verified.ok) throw new Error(verified.reason);
-    expect(verified.params.src).toContain(`${PREFIX}/autosave/bundle.js`);
-    expect(verified.params.css).toBe(
-      `https://storage.test/sign/${BUCKET_EPHEMERAL}/${PREFIX}/autosave/bundle.css?token=t120`,
+    expect(verified.params.src).toBe(
+      `https://storage.test/sign/${BUCKET_EPHEMERAL}/${PREFIX}/autosave/site.bin?token=t120`,
     );
-    expect(backend.callsTo('download')[0]).toEqual([
-      BUCKET_EPHEMERAL,
-      `${PREFIX}/autosave/source.json`,
-    ]);
   });
 
-  it('an autosave without a CSS file renders without one', async () => {
+  it('an auto_shipped build without autosave/site.bin is not rendered from site.bin', async () => {
     backend.addBuild({ status: 'auto_shipped' });
-    backend.put(BUCKET_EPHEMERAL, `${PREFIX}/autosave/bundle.js`, 'x');
-    backend.put(BUCKET_EPHEMERAL, `${PREFIX}/autosave/source.json`, SOURCE);
-    backend.put(BUCKET_EPHEMERAL, `${PREFIX}/bundle.css`, 'stale, must not be used');
+    backend.put(BUCKET_EPHEMERAL, `${PREFIX}/site.bin`, 'stale, must not be used');
+    backend.put(BUCKET_EPHEMERAL, `${PREFIX}/thumb.webp`, thumb);
     backend.addJob('capture', BUILD);
-    const renderer = new FakeRenderer(() => Promise.resolve(rendered(goodPng)));
+    const renderer = new FakeRenderer(() => Promise.reject(new Error('must not render')));
     const out = await processCaptureJob(deps(renderer), await claim(), never);
-    expect(out.result).toBe('captured');
-    const verified = await verifyCaptureUrl(renderer.requests[0]?.url ?? '', SECRET, 1_800_000_000);
-    if (!verified.ok) throw new Error(verified.reason);
-    expect(verified.params.src).toContain(`${PREFIX}/autosave/bundle.js`);
-    expect(verified.params.css).toBeUndefined();
-    expect(backend.callsTo('download')[0]).toEqual([
-      BUCKET_EPHEMERAL,
-      `${PREFIX}/autosave/source.json`,
-    ]);
-  });
-
-  it('an unusable manifest gives an empty import map, and the capture still runs', async () => {
-    shippedBuild({ 'source.json': '{"manifest": {"dependencies": {"react": "^19"}}}' });
-    const renderer = new FakeRenderer(() => Promise.resolve(rendered(goodPng)));
-    expect((await processCaptureJob(deps(renderer), await claim(), never)).result).toBe('captured');
-    const verified = await verifyCaptureUrl(renderer.requests[0]?.url ?? '', SECRET, 1_800_000_000);
-    if (!verified.ok) throw new Error(verified.reason);
-    expect(JSON.parse(verified.params.map ?? '')).toEqual({ imports: {} });
-
-    backend = new FakeBackend();
-    shippedBuild({ 'source.json': 'not json' });
-    const r2 = new FakeRenderer(() => Promise.resolve(rendered(goodPng)));
-    expect((await processCaptureJob(deps(r2), await claim(), never)).result).toBe('captured');
+    expect(out).toMatchObject({ result: 'fallback', reason: 'autosave site.bin is missing' });
+    expect(renderer.requests).toEqual([]);
   });
 
   it('a storage error while storing a good render is retried, not downgraded to the thumbnail', async () => {
@@ -224,13 +178,13 @@ describe('capture job: fallback selection', () => {
   it('render error without a thumbnail → fail_job (retry with backoff)', async () => {
     const job = shippedBuild();
     const renderer = new FakeRenderer(() =>
-      Promise.reject(new RenderError('navigation', 'capture page: failed bundle.js: HTTP 400')),
+      Promise.reject(new RenderError('navigation', 'capture page: failed site.bin: HTTP 400')),
     );
     const out = await processCaptureJob(deps(renderer), await claim(), never);
     expect(out).toEqual({
       result: 'retry',
       attempts: 1,
-      reason: 'navigation: capture page: failed bundle.js: HTTP 400; no client thumbnail',
+      reason: 'navigation: capture page: failed site.bin: HTTP 400; no client thumbnail',
     });
     expect(backend.jobs.find((j) => j.id === job.id)?.status).toBe('queued');
     expect(backend.builds.get(BUILD)?.capture_status).toBe('pending');
@@ -258,17 +212,17 @@ describe('capture job: fallback selection', () => {
     expect(backend.get(BUCKET_SCREENSHOTS, SHOT)).toBeUndefined();
   });
 
-  it('no bundle but a thumbnail → fallback without rendering', async () => {
+  it('no site pack but a thumbnail → fallback without rendering', async () => {
     backend.addBuild({ status: 'shipped' });
     backend.put(BUCKET_EPHEMERAL, `${PREFIX}/thumb.webp`, thumb);
     backend.addJob('capture', BUILD);
     const renderer = new FakeRenderer(() => Promise.reject(new Error('must not render')));
     const out = await processCaptureJob(deps(renderer), await claim(), never);
-    expect(out).toMatchObject({ result: 'fallback', reason: 'shipped bundle.js is missing' });
+    expect(out).toMatchObject({ result: 'fallback', reason: 'shipped site.bin is missing' });
     expect(renderer.requests).toEqual([]);
   });
 
-  it('no bundle and no thumbnail → failed at once (retrying cannot help)', async () => {
+  it('no site pack and no thumbnail → failed at once (retrying cannot help)', async () => {
     backend.addBuild({ status: 'shipped' });
     backend.addJob('capture', BUILD);
     const renderer = new FakeRenderer(() => Promise.reject(new Error('must not render')));

@@ -70,7 +70,7 @@ export function loadConfig(env: Record<string, string | undefined>): WorkerConfi
   if (shellCaptureUrl && URL.canParse(shellCaptureUrl.replaceAll('{build}', 'b'))) {
     const u = new URL(shellCaptureUrl.replaceAll('{build}', 'b'));
     if (!u.pathname.endsWith('/capture') || u.search || u.hash) {
-      problems.push('CAPTURE_SHELL_URL must be the capture page URL (…/v1/capture, no query)');
+      problems.push('CAPTURE_SHELL_URL must be the capture page URL (…/v2/capture, no query)');
     }
   }
   const hmacSecret = str('CAPTURE_HMAC_SECRET');
@@ -79,7 +79,6 @@ export function loadConfig(env: Record<string, string | undefined>): WorkerConfi
       `CAPTURE_HMAC_SECRET must be at least ${String(CAPTURE_MIN_SECRET_LENGTH)} characters`,
     );
   }
-  const pkgCdnUrl = url('PKG_CDN_URL', str('PKG_CDN_URL'));
   const level = env['LOG_LEVEL']?.trim() ?? 'info';
   if (!isLogLevel(level)) problems.push('LOG_LEVEL must be debug, info, warn or error');
 
@@ -92,7 +91,6 @@ export function loadConfig(env: Record<string, string | undefined>): WorkerConfi
   const capture: CaptureConfig = {
     shellCaptureUrl,
     hmacSecret,
-    pkgCdnUrl: pkgCdnUrl.replace(/\/+$/, ''),
     signedUrlTtlSeconds: int('CAPTURE_SIGNED_URL_TTL_S', 120, 30, 600),
     captureTimeoutMs: int('CAPTURE_TIMEOUT_MS', 20_000, 8000, 60_000),
     viewport: { ...CAPTURE_VIEWPORT },
@@ -136,7 +134,6 @@ export function describeConfig(c: WorkerConfig): Record<string, unknown> {
   return {
     supabaseUrl: c.supabaseUrl,
     shellCaptureUrl: c.capture.shellCaptureUrl,
-    pkgCdnUrl: c.capture.pkgCdnUrl,
     signedUrlTtlSeconds: c.capture.signedUrlTtlSeconds,
     captureTimeoutMs: c.capture.captureTimeoutMs,
     ...c.runner,

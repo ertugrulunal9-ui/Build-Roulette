@@ -20,9 +20,6 @@ importers:
 
   apps/capture-worker:
     dependencies:
-      '@br/runtime':
-        specifier: workspace:*
-        version: link:../../packages/runtime
       '@br/sandbox-shell':
         specifier: workspace:*
         version: link:../sandbox-shell
@@ -42,6 +39,12 @@ importers:
       '@br/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
+      '@br/runtime':
+        specifier: workspace:*
+        version: link:../../packages/runtime
+      '@br/site':
+        specifier: workspace:*
+        version: link:../../packages/site
       '@types/node':
         specifier: 22.20.5
         version: 22.20.5

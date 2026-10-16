@@ -18,7 +18,7 @@ function seed(): void {
   // folder (cannot happen, but the prefix is the battle), and the ephemeral files.
   backend.put(BUCKET_SCREENSHOTS, `${BATTLE}/${OTHER_BUILD}.webp`, 'keep');
   backend.put(BUCKET_SCREENSHOTS, `${OTHER_BATTLE}/${BUILD}.webp`, 'keep');
-  backend.put(BUCKET_EPHEMERAL, `${BATTLE}/${USER}/bundle.js`, 'keep');
+  backend.put(BUCKET_EPHEMERAL, `${BATTLE}/${USER}/site.bin`, 'keep');
 }
 
 async function claim() {
@@ -54,7 +54,7 @@ describe('takedown job', () => {
     expect(backend.get(BUCKET_SCREENSHOTS, `${BATTLE}/${BUILD}.png`)).toBeUndefined();
     expect(backend.get(BUCKET_SCREENSHOTS, `${BATTLE}/${OTHER_BUILD}.webp`)).toBeDefined();
     expect(backend.get(BUCKET_SCREENSHOTS, `${OTHER_BATTLE}/${BUILD}.webp`)).toBeDefined();
-    expect(backend.get(BUCKET_EPHEMERAL, `${BATTLE}/${USER}/bundle.js`)).toBeDefined();
+    expect(backend.get(BUCKET_EPHEMERAL, `${BATTLE}/${USER}/site.bin`)).toBeDefined();
     expect(backend.callsTo('list')[0]).toEqual([BUCKET_SCREENSHOTS, `${BATTLE}/`]);
     expect(backend.callsTo('completeTakedown')).toEqual([[BUILD]]);
     expect(backend.jobs[0]?.status).toBe('done');

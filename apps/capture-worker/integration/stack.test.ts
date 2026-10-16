@@ -2,11 +2,13 @@
  * The capture and destroy workers against the REAL local Supabase stack (Auth, PostgREST,
  * Storage, pg_cron), the real shell capture page and real Chromium.
  *
- * Players (anonymous users) play solo battles through the HTTP APIs:
- *   alice  ships a React build (bundle.js + bundle.css)           → captured
- *   bob    ships a bundle that throws on load + a client thumb   → fallback
- *   carol  only autosaves (js + css); the deadline auto-ships it  → captured (autosave paths)
- *   dave   ships a throwing bundle without a thumb                → retry, then failed on the
+ * Players (anonymous users) play solo battles through the HTTP APIs, each build one site
+ * pack (`@br/site`, docs/09):
+ *   alice  ships a built site (site.bin)                         → captured
+ *   bob    ships a site that throws on load + a client thumb     → fallback
+ *   carol  only imports (autosave/site.bin); the deadline
+ *          auto-ships it                                         → captured (autosave path)
+ *   dave   ships a throwing site without a thumb                 → retry, then failed on the
  *                                                                    last attempt
  * Then every battle goes to DESTROYED and the destroy worker deletes the files. Finally a
  * moderator takes alice's build down (T-024) and the takedown worker deletes its screenshot.
@@ -28,9 +30,11 @@ import { PlaywrightRenderer } from '../src/playwright-renderer';
 import { WorkerRunner, type JobOutcome } from '../src/runner';
 import {
   SECRET,
-  buildReactBundle,
+  SITE_PACK_TYPE,
+  builtSite,
   colorClose,
-  reactApp,
+  scriptSite,
+  sitePack,
   startFixtures,
   type Fixtures,
 } from './support';
@@ -39,7 +43,7 @@ import { OwnJobsBackend, Stack, loadStackEnv, sleep, type User } from './supabas
 const ORANGE = { r: 255, g: 87, b: 34 };
 const GREEN = { r: 0, g: 160, b: 80 };
 const BLUE = { r: 33, g: 150, b: 243 };
-const THROWING = `throw new Error('boom on load');\n`;
+const THROWING = sitePack(scriptSite(`throw new Error('boom on load');\n`));
 
 let stack: Stack;
 let fx: Fixtures;
@@ -82,7 +86,6 @@ beforeAll(async () => {
       capture: {
         shellCaptureUrl: fx.shell.captureUrl,
         hmacSecret: SECRET,
-        pkgCdnUrl: fx.cdn.url,
         signedUrlTtlSeconds: 120,
         captureTimeoutMs: 20_000,
         viewport: { width: 1280, height: 800 },
@@ -156,18 +159,13 @@ async function ship(
 }
 
 describe('capture + destroy workers on the local Supabase stack', () => {
-  it('captures a shipped React build: WebP in screenshots, captured, colour and text visible', async () => {
+  it('captures a shipped site: WebP in screenshots, captured, colour and text visible', async () => {
     const user = await stack.signUp();
     const battle = await user.startBuilding();
-    const react = await buildReactBundle(
-      fx.cdn.url,
-      reactApp({ title: 'Snack Overflow', background: 'rgb(255, 87, 34)', signalReady: true }),
+    const site = sitePack(
+      builtSite({ title: 'Snack Overflow', background: 'rgb(255, 87, 34)', signalReady: true }),
     );
-    const build = await ship(user, battle, {
-      'source.json': [react.source, 'application/json'],
-      'bundle.js': [react.js, 'text/javascript'],
-      'bundle.css': [react.css, 'text/css'],
-    });
+    const build = await ship(user, battle, { 'site.bin': [site, SITE_PACK_TYPE] });
     players.alice = { user, battle, build };
 
     const outcome = await captureOnce(build);
@@ -192,7 +190,7 @@ describe('capture + destroy workers on the local Supabase stack', () => {
     if (out) writeFileSync(out, bytes);
   });
 
-  it('falls back to the client thumbnail when the bundle throws on load', async () => {
+  it('falls back to the client thumbnail when the site throws on load', async () => {
     const user = await stack.signUp();
     const battle = await user.startBuilding();
     const thumb = await sharp({
@@ -212,11 +210,7 @@ describe('capture + destroy workers on the local Supabase stack', () => {
       .webp()
       .toBuffer();
     const build = await ship(user, battle, {
-      'source.json': [
-        JSON.stringify({ files: {}, manifest: { entry: 'x', dependencies: {} } }),
-        'application/json',
-      ],
-      'bundle.js': [THROWING, 'text/javascript'],
+      'site.bin': [THROWING, SITE_PACK_TYPE],
       'thumb.webp': [new Uint8Array(thumb), 'image/webp'],
     });
     players.bob = { user, battle, build };
@@ -230,22 +224,13 @@ describe('capture + destroy workers on the local Supabase stack', () => {
     expect(colorClose(pixelStats(img).dominant, GREEN, 16)).toBe(true);
   });
 
-  it('captures an auto_shipped build from its autosave, with its CSS', async () => {
+  it('captures an auto_shipped build from its autosave (autosave/site.bin)', async () => {
     const user = await stack.signUp();
     const battle = await user.startBuilding();
-    // The blue background comes only from the CSS file (autosave/bundle.css, T-014).
-    const react = await buildReactBundle(
-      fx.cdn.url,
-      reactApp({ title: 'Autosaved', background: 'rgb(33, 150, 243)', signalReady: true }),
+    const site = sitePack(
+      builtSite({ title: 'Autosaved', background: 'rgb(33, 150, 243)', signalReady: true }),
     );
-    expect(react.css).toContain('background:#2196f3');
-    await user.upload(
-      `${battle}/${user.id}/autosave/source.json`,
-      react.source,
-      'application/json',
-    );
-    await user.upload(`${battle}/${user.id}/autosave/bundle.js`, react.js, 'text/javascript');
-    await user.upload(`${battle}/${user.id}/autosave/bundle.css`, react.css, 'text/css');
+    await user.upload(`${battle}/${user.id}/autosave/site.bin`, site, SITE_PACK_TYPE);
     // BUILDING → SHIPPING (deadline passed) → RESULTS (grace passed): the autosave is shipped.
     stack.sql(`update public.battles set building_ends_at = now() - interval '20 seconds',
                  phase_ends_at = now() - interval '20 seconds' where id = '${battle}'`);
@@ -269,10 +254,7 @@ describe('capture + destroy workers on the local Supabase stack', () => {
   it('without a thumbnail: retried with backoff, then failed on the last attempt', async () => {
     const user = await stack.signUp();
     const battle = await user.startBuilding();
-    const build = await ship(user, battle, {
-      'source.json': ['{}', 'application/json'],
-      'bundle.js': [THROWING, 'text/javascript'],
-    });
+    const build = await ship(user, battle, { 'site.bin': [THROWING, SITE_PACK_TYPE] });
     players.dave = { user, battle, build };
 
     const first = await captureOnce(build);

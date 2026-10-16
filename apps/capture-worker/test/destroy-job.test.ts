@@ -11,14 +11,15 @@ const never = new AbortController().signal;
 let backend: FakeBackend;
 
 function seed(): void {
-  for (const f of ['source.json', 'bundle.js', 'bundle.css', 'thumb.webp']) {
+  for (const f of ['site.bin', 'thumb.webp']) {
     backend.put(BUCKET_EPHEMERAL, `${BATTLE}/${USER}/${f}`, f);
   }
-  backend.put(BUCKET_EPHEMERAL, `${BATTLE}/${USER}/autosave/bundle.js`, 'a');
-  backend.put(BUCKET_EPHEMERAL, `${BATTLE}/${USER}/autosave/source.json`, 'a');
-  backend.put(BUCKET_EPHEMERAL, `${BATTLE}/${OTHER_USER}/autosave/bundle.js`, 'a');
+  backend.put(BUCKET_EPHEMERAL, `${BATTLE}/${USER}/autosave/site.bin`, 'a');
+  backend.put(BUCKET_EPHEMERAL, `${BATTLE}/${OTHER_USER}/autosave/site.bin`, 'a');
+  // Any other name under the prefix goes too (e.g. an editor-era file from before T-046).
+  backend.put(BUCKET_EPHEMERAL, `${BATTLE}/${OTHER_USER}/bundle.js`, 'old');
   // Must survive: another battle, and the permanent screenshot.
-  backend.put(BUCKET_EPHEMERAL, `${OTHER_BATTLE}/${USER}/bundle.js`, 'keep');
+  backend.put(BUCKET_EPHEMERAL, `${OTHER_BATTLE}/${USER}/site.bin`, 'keep');
   backend.put(BUCKET_SCREENSHOTS, `${BATTLE}/x.webp`, 'keep');
 }
 
@@ -37,12 +38,10 @@ describe('listRecursive', () => {
     seed();
     expect((await listRecursive(backend, BUCKET_EPHEMERAL, `${BATTLE}/`)).sort()).toEqual(
       [
-        `${BATTLE}/${OTHER_USER}/autosave/bundle.js`,
-        `${BATTLE}/${USER}/autosave/bundle.js`,
-        `${BATTLE}/${USER}/autosave/source.json`,
-        `${BATTLE}/${USER}/bundle.css`,
-        `${BATTLE}/${USER}/bundle.js`,
-        `${BATTLE}/${USER}/source.json`,
+        `${BATTLE}/${OTHER_USER}/autosave/site.bin`,
+        `${BATTLE}/${OTHER_USER}/bundle.js`,
+        `${BATTLE}/${USER}/autosave/site.bin`,
+        `${BATTLE}/${USER}/site.bin`,
         `${BATTLE}/${USER}/thumb.webp`,
       ].sort(),
     );
@@ -66,12 +65,12 @@ describe('destroy job', () => {
     backend.phases.set(BATTLE, 'destroyed');
     backend.addJob('destroy', BATTLE);
     const out = await processDestroyJob({ backend, log: silentLogger }, await claim(), never);
-    expect(out).toEqual({ result: 'destroyed', deleted: 7 });
+    expect(out).toEqual({ result: 'destroyed', deleted: 5 });
     const left = [...backend.objects.keys()].filter((k) =>
       k.startsWith(`${BUCKET_EPHEMERAL}/${BATTLE}/`),
     );
     expect(left).toEqual([]);
-    expect(backend.get(BUCKET_EPHEMERAL, `${OTHER_BATTLE}/${USER}/bundle.js`)).toBeDefined();
+    expect(backend.get(BUCKET_EPHEMERAL, `${OTHER_BATTLE}/${USER}/site.bin`)).toBeDefined();
     expect(backend.get(BUCKET_SCREENSHOTS, `${BATTLE}/x.webp`)).toBeDefined();
     expect(backend.callsTo('completeDestroy')).toEqual([[BATTLE]]);
     expect(backend.jobs[0]?.status).toBe('done');
@@ -91,7 +90,7 @@ describe('destroy job', () => {
     backend.remove = () => Promise.resolve([]);
     backend.addJob('destroy', BATTLE);
     const out = await processDestroyJob({ backend, log: silentLogger }, await claim(), never);
-    expect(out).toMatchObject({ result: 'retry', reason: '7 objects left after delete' });
+    expect(out).toMatchObject({ result: 'retry', reason: '5 objects left after delete' });
     expect(backend.callsTo('completeDestroy')).toEqual([]);
   });
 

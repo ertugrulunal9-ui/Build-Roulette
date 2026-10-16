@@ -1,6 +1,6 @@
 /**
  * Bundles the `jobs` Edge Function's code (src/edge/entry.ts and what it imports from this
- * package, @br/sandbox-shell and @br/runtime) into one ES module for Deno:
+ * package and @br/sandbox-shell) into one ES module for Deno:
  * supabase/functions/jobs/core.js. Platform-neutral: a Node built-in in the graph fails the
  * build. Paths in the output are relative to this package, so the output is the same on
  * every machine (test/function-bundle.test.ts compares it with the committed file).

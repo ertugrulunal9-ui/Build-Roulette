@@ -6,9 +6,8 @@ import { ConfigError, describeConfig, loadConfig } from '../src/config';
 const ENV = {
   SUPABASE_URL: 'http://127.0.0.1:54321/',
   SUPABASE_SERVICE_ROLE_KEY: 'eyJ.service.key',
-  CAPTURE_SHELL_URL: 'https://{build}.usercontent.example/v1/capture',
+  CAPTURE_SHELL_URL: 'https://{build}.usercontent.example/v2/capture',
   CAPTURE_HMAC_SECRET: 'config-secret-0123456789abcdef0123456789abcdef',
-  PKG_CDN_URL: 'https://pkg.example.net/',
 };
 
 describe('loadConfig', () => {
@@ -17,7 +16,6 @@ describe('loadConfig', () => {
     expect(c.capture).toEqual({
       shellCaptureUrl: ENV.CAPTURE_SHELL_URL,
       hmacSecret: ENV.CAPTURE_HMAC_SECRET,
-      pkgCdnUrl: 'https://pkg.example.net',
       signedUrlTtlSeconds: 120,
       captureTimeoutMs: 20_000,
       viewport: { width: 1280, height: 800 },
@@ -32,17 +30,17 @@ describe('loadConfig', () => {
     expect(c.logLevel).toBe('info');
   });
 
-  it('takes the public esm.sh as the package CDN (T-035, the free plan)', () => {
-    const c = loadConfig({ ...ENV, PKG_CDN_URL: 'https://esm.sh/' });
-    expect(c.capture.pkgCdnUrl).toBe('https://esm.sh');
+  it('ignores a PKG_CDN_URL left from before import mode (T-046: no import map any more)', () => {
+    const c = loadConfig({ ...ENV, PKG_CDN_URL: 'ftp://not even a url' });
+    expect(c.capture).not.toHaveProperty('pkgCdnUrl');
+    expect(JSON.stringify(describeConfig(c))).not.toContain('PKG_CDN');
   });
 
   it('lists every problem at once', () => {
     try {
       loadConfig({
-        CAPTURE_SHELL_URL: 'https://shell.example/v1/',
+        CAPTURE_SHELL_URL: 'https://shell.example/v2/',
         CAPTURE_HMAC_SECRET: 'short',
-        PKG_CDN_URL: 'ftp://x',
         CAPTURE_CONCURRENCY: '0',
         LOG_LEVEL: 'loud',
       });
@@ -52,9 +50,8 @@ describe('loadConfig', () => {
       expect((e as ConfigError).problems).toEqual([
         'SUPABASE_URL is required',
         'SUPABASE_SERVICE_ROLE_KEY is required',
-        'CAPTURE_SHELL_URL must be the capture page URL (…/v1/capture, no query)',
+        'CAPTURE_SHELL_URL must be the capture page URL (…/v2/capture, no query)',
         'CAPTURE_HMAC_SECRET must be at least 32 characters',
-        'PKG_CDN_URL must be an http(s) URL',
         'LOG_LEVEL must be debug, info, warn or error',
         'CAPTURE_CONCURRENCY must be an integer between 1 and 8',
       ]);

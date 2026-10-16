@@ -936,3 +936,12 @@ Start M5.
   - the secrets-digest idempotency (proven by the next run);
   - CAPTCHA (no Turnstile yet);
   - the Browser Run token (the first screenshot).
+- **First played battle in production** (2026-10-16, solo, by the user over a VPN):
+  - the bundler and preview worked (built in 256 ms);
+  - Ship, then RESULTS with the Speedrun badge, then the screenshot, then DESTROY;
+  - `/admin` → Health was **all clear**: 2 screenshots rendered by Browser Run (100 % rendered, 0 client thumbnails), capture and destroy jobs 2/2 done, 0 failed, every sweep ran;
+  - the Browser Run token is confirmed.
+- **Blocker found: `*.pages.dev` is blocked in Turkey** (the TFF decision of 2025-11-25 over illegal match streams, reported blocked again in 2026-08). The site only opens over a VPN. The user is Turkish and chose to look for a free alternative.
+  - The Public Suffix List (the `psl` npm package's copy) lists `workers.dev` (not `*.workers.dev`), `netlify.app` and `deno.dev`. So two Workers in one Cloudflare account are the **same site**, and a sandbox on `workers.dev` needs a second Cloudflare account.
+  - No report was found of `workers.dev` being blocked in Turkey. The user's test without a VPN is pending.
+- UI nit: the DESTROY stamp covers the start of the line below it on the results page.

@@ -2,7 +2,8 @@
 
 > **The step-by-step deploy of the whole free setup** (accounts, Supabase, the jobs function,
 > both Pages projects, the keep-alive, smoke checks, the runbook rehearsal) is
-> [`DEPLOY.md`](../../DEPLOY.md) at the repository root (T-036). This file is the web app's
+> [`DEPLOY.md`](../../DEPLOY.md) at the repository root (T-036); its section "Deploy with
+> GitHub Actions" does all of it from a browser (T-042). This file is the web app's
 > reference: what the build produces, its settings, the link-preview Function, observability
 > and caching.
 
@@ -61,9 +62,9 @@ geo data.
    ```sh
    pnpm --filter @br/web exec wrangler login
    ```
-   For CI, create an API token instead (My Profile → API Tokens → Create Token → "Edit
-   Cloudflare Workers" template, which includes Pages) and set `CLOUDFLARE_API_TOKEN` and
-   `CLOUDFLARE_ACCOUNT_ID` as CI secrets. The account id is on the Workers & Pages overview.
+   For CI, use an API token instead: the Deploy workflow's (`DEPLOY.md` → "Deploy with GitHub
+   Actions", a custom token with Account → Cloudflare Pages → Edit) with
+   `CLOUDFLARE_ACCOUNT_ID`. The account id is on the Workers & Pages overview.
 3. **Create the Pages project** (Direct Upload: you build, wrangler uploads):
    ```sh
    pnpm --filter @br/web exec wrangler pages project create build-roulette-web --production-branch main

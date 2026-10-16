@@ -22,6 +22,173 @@ Dashboard labels move from time to time. Where a menu path below does not match,
 dashboard for the setting's name. Steps that could not be tried here (no accounts are
 reachable from the development container) are written from the vendors' documentation.
 
+There are two ways to do it:
+
+- **From a browser, with GitHub Actions** (recommended, next section): you create the
+  accounts and tokens, paste them into GitHub, and click **Run workflow**. The workflow runs
+  §2.2, §3.2–§3.8, §4 and §6.1 for you.
+- **From your own machine** (§0–§4): the same steps, command by command.
+
+§5–§8 (keep-alive, smoke checks, runbooks, later) apply to both.
+
+## Deploy with GitHub Actions (recommended)
+
+The workflow **Deploy** (`.github/workflows/deploy.yml`; the logic is `scripts/deploy/deploy.mjs`)
+runs on GitHub's servers. One run does, in this order:
+
+1. it checks every setting, and both clouds' access;
+2. it creates the two Pages projects (§2.2) and reads back their real addresses;
+3. it pushes the schema and checks it (§3.2, §3.3);
+4. it generates the two secrets (§3.8) and keeps them in Supabase Vault;
+5. it sets the Auth settings (§3.6);
+6. it deploys the `jobs` function with its secrets (§3.8);
+7. it builds and deploys the sandbox shell and the web app (§4);
+8. it turns on CAPTCHA when Turnstile is set (§3.6);
+9. it lists the moderator (§3.5);
+10. it runs `scripts/deploy-check.mjs` (§6.1).
+
+Running it again with nothing changed changes nothing that matters: no new projects, no new
+secrets.
+
+### A. Accounts and the Supabase project
+
+1. **GitHub**: this repository, with Actions allowed (Settings → Actions → General). The
+   workflow appears under **Actions** once `deploy.yml` is on the repository's default branch.
+2. **Cloudflare**, Free plan: <https://dash.cloudflare.com/sign-up>.
+3. **Supabase**, Free plan: <https://supabase.com/dashboard>. Then create **the project**
+   (§3.1): a name (`build-roulette`), a generated **database password** (keep it in your
+   password manager), the region closest to most players.
+4. Optional:
+   - a **Turnstile** widget (§2.4). Its hostname is the app's address, which the first run's
+     summary shows; you can add the widget after the first run;
+   - **Sentry** and **PostHog** (`apps/web/DEPLOY.md` → "Observability" → "Accounts").
+
+### B. Tokens and keys
+
+| Value | Where to get it |
+|---|---|
+| Cloudflare **account id** | Cloudflare dashboard → Workers & Pages → Overview, right column, "Account ID" (32 characters). |
+| Cloudflare **deploy token** | My Profile → API Tokens → **Create Token** → **Create Custom Token**. Name: `Build Roulette deploy`. Permissions: **Account → Cloudflare Pages → Edit**. Account Resources: Include → your account. Continue to summary → Create Token, and copy it (it is shown once). |
+| Cloudflare **screenshot token** | The same again, a **second** token. Name: `Build Roulette screenshots`. Permissions: **Account → Browser Run → Edit** (named Browser Rendering before April 2026). It is a separate token on purpose: it is stored in Supabase as a function secret, and a leak there must not let anyone deploy the site. |
+| Supabase **access token** | supabase.com → your avatar → **Account** → **Access Tokens** → Generate new token (name: `Build Roulette deploy`). A token scoped to this project works when it has **full access to the project**: the run reads the project and its API keys, runs SQL, and changes the Auth settings, the Edge Functions and their secrets. A legacy token (all projects of the account) works too. |
+| **Database password** | The one from §3.1. Forgotten: Project Settings → Database → Reset database password. |
+| **Project URL** | `https://<ref>.supabase.co`; the ref is Project Settings → General → **Project ID** (20 letters). |
+| **Anon key** | Project Settings → **API Keys**: the publishable key (`sb_publishable_…`) or the legacy anon key (§3.4). Never the secret or `service_role` key: the run refuses them. |
+| Optional: Turnstile **site key** and **secret key** | Turnstile → your widget (§2.4). |
+
+**What the tokens can do:**
+
+- A legacy Supabase access token acts as you on **every project** of your Supabase account,
+  not only this one; a token scoped to this project reaches only this project. You can revoke
+  either at any time: Account → Access Tokens → Revoke. The workflow then fails until you save
+  a new one.
+- The deploy token can change any Pages project of your Cloudflare account. Revoke it the
+  same way: My Profile → API Tokens.
+- Only people with **write access** to the repository can start the workflow. GitHub never
+  shows a saved secret again, and does not give secrets to workflows started from forks.
+
+### C. GitHub secrets and variables
+
+Repository → Settings → **Secrets and variables** → **Actions**: secrets on the **Secrets**
+tab, variables on the **Variables** tab (New repository secret / New repository variable).
+Use the names exactly as written.
+
+| Name | Kind | Needed | Value |
+|---|---|---|---|
+| `CLOUDFLARE_ACCOUNT_ID` | variable | yes | the account id (B) |
+| `SUPABASE_URL` | variable | yes | `https://<ref>.supabase.co` (the keep-alive uses it too, §5) |
+| `CLOUDFLARE_API_TOKEN` | secret | yes | the deploy token (B) |
+| `BROWSER_RENDERING_API_TOKEN` | secret | yes | the screenshot token (B) |
+| `SUPABASE_ACCESS_TOKEN` | secret | yes | the access token (B) |
+| `SUPABASE_DB_PASSWORD` | secret | yes | the database password (B) |
+| `SUPABASE_ANON_KEY` | secret | yes | the publishable or anon key (the keep-alive uses it too, §5) |
+| `TURNSTILE_SITE_KEY` | variable | no | Turnstile's site key: the app shows the challenge |
+| `TURNSTILE_SECRET_KEY` | secret | no | Turnstile's secret key: with the site key, the run turns CAPTCHA on in Supabase |
+| `APP_URL` | variable | no | a custom domain, like `https://play.example.com` (default: the web project's own `https://<name>.pages.dev`) |
+| `PKG_CDN_URL` | variable | no | the package CDN (default `https://esm.sh`) |
+| `CF_PAGES_WEB_PROJECT`, `CF_PAGES_SHELL_PROJECT` | variables | no | other Pages project names (defaults `build-roulette-web` and `build-roulette-sandbox`; they must differ) |
+| `NEXT_PUBLIC_SENTRY_DSN` | variable | no | Sentry's DSN (browser error reports) |
+| `NEXT_PUBLIC_POSTHOG_KEY`, `NEXT_PUBLIC_POSTHOG_HOST` | variables | no | PostHog (analytics; the host defaults to `https://eu.i.posthog.com`) |
+
+Nothing else is needed. The run reads the shell's address from Cloudflare, generates the cron
+and capture secrets, and sets the function's settings itself.
+
+### D. Run it
+
+1. Actions → **Deploy** → **Run workflow**, target **check** → Run workflow. This run changes
+   nothing. It checks:
+   - every setting above (missing or malformed ones are all named at once);
+   - that both Cloudflare tokens are active, and that the deploy token can use Pages on the
+     account;
+   - that the Supabase project exists and is **healthy** (a paused project is named as such);
+   - that the access token can read what the run needs (the project, SQL, the Auth settings,
+     the functions' secrets), and that the Supabase CLI accepts it (`supabase link`, which
+     only writes files on GitHub's runner). A failure says which part: the token's format or
+     permissions, access to the project, or the database password;
+   - that the anon key belongs to the project, and that the database password works.
+
+   The run's **summary** (on the run's page, below the job) lists each check.
+2. Run it again with target **all**. The first time takes about 10–15 minutes (estimated).
+   Its summary shows:
+   - the app's address, the sandbox shell's address and the Supabase project;
+   - each step's outcome: created, unchanged, updated, deployed or skipped;
+   - deploy-check's results (one WARN remains until a battle has been played, §6.3);
+   - the next steps.
+3. Open the app's address: players can play.
+
+If a run fails, its summary names the step and what to fix. Fix it and run again: every step
+is safe to repeat. When a project name is taken on `pages.dev`, Cloudflare adds a suffix
+(`build-roulette-web-3xk.pages.dev`): the run reads the real address and uses it everywhere.
+No secret value appears in the log or the summary: the script masks each one before it can be
+printed.
+
+### E. What stays manual
+
+- The accounts, the project, the tokens and the settings (A–C).
+- **The moderator** (§3.5):
+  1. Supabase → Authentication → **Users** → **Add user** → **Create new user**: an email
+     address, a long password, **Auto Confirm User** checked → Create.
+  2. Actions → Deploy → Run workflow, target **supabase**, **admin_email** = that address.
+     The run lists the user in `private.admins` (running it again changes nothing). If the
+     user does not exist, the run says so and changes nothing.
+
+  The moderator signs in at `<app address>/admin/sign-in`.
+- **The keep-alive** (§5) uses the same `SUPABASE_URL` and `SUPABASE_ANON_KEY`. Run **Keep
+  Supabase awake** once by hand, and read §5.3 (private repositories and Actions minutes).
+- Optional: Realtime's pool size (§3.7). A custom domain (`apps/web/DEPLOY.md` → "Custom
+  domain"): then set `APP_URL`, run **all** again, and add the domain to the Turnstile widget.
+- The checks that need a person: §6.2–§6.6, then the runbook rehearsal (§7).
+
+### F. After a code change
+
+Bring the change to the branch you deploy from. Then Actions → Deploy → Run workflow, pick
+that branch in "Use workflow from", target **all**:
+
+- new migrations are applied, in order;
+- the function, the shell and the app are rebuilt and deployed again;
+- the projects and the secrets stay as they are.
+
+One part only: target **supabase** (migrations, Auth, the function), **shell** or **web**;
+each still runs the checks first. A second deploy waits until the first one has finished.
+Rollback: §8.
+
+### Running the script on your own machine
+
+The same script runs locally, with the settings of C in `.env.deploy` (§0):
+
+```sh
+node --env-file=.env.deploy scripts/deploy/deploy.mjs --target check
+```
+
+It needs Node 22, pnpm and the installed dependencies (§0), but no `wrangler login` or
+`supabase login`: the tokens are enough. It ignores `SHELL_URL`, `JOBS_CRON_SECRET` and
+`CAPTURE_HMAC_SECRET` from that file: it reads the shell's address from Cloudflare and the
+secrets from Supabase Vault.
+
+## Deploy from your own machine
+
+§0–§4 are the same deploy by hand, command by command. §5–§8 apply to both ways.
+
 ## 0. On your machine
 
 - Node.js 22 and pnpm 10 (`corepack enable` gives the pnpm version in `package.json`), git,
@@ -101,7 +268,7 @@ other project names: also change `name` in `apps/web/wrangler.jsonc`.
 
 Dashboard → My Profile → API Tokens → **Create Token** → **Create Custom Token**:
 
-- Permissions: **Account → Browser Rendering → Edit**;
+- Permissions: **Account → Browser Run → Edit** (named Browser Rendering before April 2026);
 - Account Resources: Include → your account;
 - Continue → Create Token. Copy it once into `.env.deploy` as `BROWSER_RENDERING_API_TOKEN`.
 
@@ -309,7 +476,8 @@ Supabase pauses a Free project after 7 days without user activity; the game's ow
 jobs do not count (docs/08 §6.2). The workflow **Keep Supabase awake** calls the database once a
 day and fails (GitHub emails you) when the project is paused, restricted or read-only.
 
-1. Repository → Settings → **Secrets and variables** → **Actions**:
+1. Repository → Settings → **Secrets and variables** → **Actions** (already done if you set up
+   the Deploy workflow: same names):
    - **Variables** tab → New repository variable: `SUPABASE_URL` = `https://<ref>.supabase.co`;
    - **Secrets** tab → New repository secret: `SUPABASE_ANON_KEY` = the key of §3.4.
 
@@ -329,8 +497,9 @@ day and fails (GitHub emails you) when the project is paused, restricted or read
      after 60 days without a commit. The workflow re-enables itself on each run (assumed to
      reset that clock; GitHub does not document it). If it is disabled anyway, Actions →
      Keep Supabase awake → Enable workflow; Supabase also emails a week before it pauses.
-4. **CI** needs no secrets or variables: it tests against a local stack in each job. Deploys are
-   not automated (no Cloudflare token in GitHub); they are the commands of §4.
+4. **CI** needs no secrets or variables: it tests against a local stack in each job. Nothing
+   deploys on a push: a deploy runs only when someone starts the **Deploy** workflow ("Deploy
+   with GitHub Actions"), the only workflow that reads the Cloudflare and Supabase tokens.
 
 ## 6. Smoke checks
 
@@ -387,8 +556,9 @@ situation you create, and note what was unclear.
 
 ## 8. Later
 
-- **Redeploying** after a code change: `npx -y supabase@2.119.0 db push` (new migrations,
-  always first), `functions deploy jobs --no-verify-jwt --use-api` when
+- **Redeploying** after a code change: with the workflow, Actions → Deploy → Run workflow,
+  target **all** ("Deploy with GitHub Actions" → F). By hand: `npx -y supabase@2.119.0 db push`
+  (new migrations, always first), `functions deploy jobs --no-verify-jwt --use-api` when
   `supabase/functions/jobs` changed, then the shell (§4.1) if `apps/sandbox-shell` changed,
   then the app (§4.2). Re-run `scripts/deploy-check.mjs`.
 - **Rollback** of a Pages deployment: Workers & Pages → the project → Deployments → an older
@@ -398,12 +568,17 @@ situation you create, and note what was unclear.
   upgrade; `docs/runbooks/free-plan-quotas.md` what to do near a limit.
 - **Rotating secrets:** the cron secret (`supabase/README.md` → "Jobs"), the capture secret
   (Pages secret + function secret, then redeploy the shell), the Browser Rendering token
-  (function secret), the anon key (rebuild the app and update the GitHub secret).
+  (function secret), the anon key (rebuild the app and update the GitHub secret). With the
+  workflow: update the GitHub secret and run **all**. For the two generated secrets, first
+  delete the Vault entry in the SQL Editor
+  (`delete from vault.secrets where name = 'br_jobs_cron_secret';`, or
+  `'br_capture_hmac_secret'`), then run **all**: it generates a new one and sets it everywhere.
 
 ## Every setting, and where it goes
 
 Checked against the code (`grep` of every environment read in `apps/web`, `apps/sandbox-shell`,
-`apps/capture-worker/src/edge` and the workflows).
+`apps/capture-worker/src/edge`, `scripts/deploy` and the workflows). With the Deploy workflow,
+you set only the GitHub variables and secrets (the last rows); it sets everything above them.
 
 | Setting | Set where | Value |
 |---|---|---|
@@ -418,15 +593,19 @@ Checked against the code (`grep` of every environment read in `apps/web`, `apps/
 | `BR_RELEASE` | web build, optional | release name (default: the commit) |
 | `BR_APP_ORIGINS` | shell build (§4.1) | the app's origin(s), comma-separated |
 | `BR_PKG_CDN_URL` | shell build | `https://esm.sh` (the default) |
-| `CAPTURE_HMAC_SECRET` | Pages secret of `build-roulette-sandbox` **and** function secret | 64 hex characters, the same in both |
+| `CAPTURE_HMAC_SECRET` | Pages secret of `build-roulette-sandbox` **and** function secret (the Deploy workflow keeps it in Vault `br_capture_hmac_secret` too) | 64 hex characters, the same in all |
 | `JOBS_CRON_SECRET` | function secret **and** Vault `br_jobs_cron_secret` | 64 hex characters, the same in both |
 | `CAPTURE_SHELL_URL` | function secret | `https://build-roulette-sandbox.pages.dev/v1/capture` |
 | `PKG_CDN_URL` | function secret | `https://esm.sh` |
 | `BROWSER_RENDERING_ACCOUNT_ID`, `BROWSER_RENDERING_API_TOKEN` | function secrets | Cloudflare account id; the token of §2.3 |
 | `BROWSER_BUDGET_MS_PER_DAY`, `BROWSER_RENDERING_MIN_INTERVAL_MS`, `BROWSER_RESERVE_MS`, `CAPTURE_TIMEOUT_MS`, `CAPTURE_SIGNED_URL_TTL_S`, `JOBS_RUN_WINDOW_MS`, `JOBS_RUN_HARD_STOP_MS`, `JOBS_PUBLIC_SUPABASE_URL`, `BROWSER_RENDERING_API_URL`, `LOG_LEVEL` | function secrets, optional | defaults fit the free plans (`apps/capture-worker/src/edge/config.ts`) |
 | `br_jobs_function_url` | Vault | `https://<ref>.supabase.co/functions/v1/jobs` |
-| `SUPABASE_URL` | GitHub variable (keep-alive) | `https://<ref>.supabase.co` |
-| `SUPABASE_ANON_KEY` | GitHub secret (keep-alive) | the publishable or anon key |
+| `SUPABASE_URL` | GitHub variable (keep-alive and Deploy) | `https://<ref>.supabase.co` |
+| `SUPABASE_ANON_KEY` | GitHub secret (keep-alive and Deploy) | the publishable or anon key |
+| `CLOUDFLARE_ACCOUNT_ID` | GitHub variable (Deploy) | the Cloudflare account id |
+| `CLOUDFLARE_API_TOKEN`, `BROWSER_RENDERING_API_TOKEN`, `SUPABASE_ACCESS_TOKEN`, `SUPABASE_DB_PASSWORD` | GitHub secrets (Deploy) | "Deploy with GitHub Actions" → B, C |
+| `TURNSTILE_SECRET_KEY` | GitHub secret (Deploy), optional | the Turnstile secret key; the run puts it in Supabase's CAPTCHA settings |
+| `TURNSTILE_SITE_KEY`, `APP_URL`, `PKG_CDN_URL`, `CF_PAGES_WEB_PROJECT`, `CF_PAGES_SHELL_PROJECT`, `NEXT_PUBLIC_SENTRY_DSN`, `NEXT_PUBLIC_POSTHOG_KEY`, `NEXT_PUBLIC_POSTHOG_HOST` | GitHub variables (Deploy), optional | the run turns them into the build settings and function secrets above ("Deploy with GitHub Actions" → C) |
 | `private.ops_settings` | SQL, optional | the plan limits behind Health's meters (Free's by default) |
 
 Not used by the free setup: `SENTRY_DSN` and the other settings of the self-hosted capture

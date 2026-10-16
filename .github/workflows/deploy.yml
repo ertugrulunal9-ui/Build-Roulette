@@ -1,0 +1,107 @@
+# One-click deploy of the free setup (T-042; DEPLOY.md, "Deploy with GitHub Actions").
+#
+# Actions → Deploy → Run workflow. The run does on GitHub's servers what DEPLOY.md §2.2,
+# §3.2–§3.8, §4 and §6.1 do by hand: the two Cloudflare Pages projects, the Supabase schema,
+# the generated secrets (kept in Supabase Vault), the Auth settings, the jobs Edge Function and
+# its secrets, the sandbox shell, the web app, CAPTCHA (with Turnstile), the first moderator
+# (input admin_email), and scripts/deploy-check.mjs. Running it again with nothing changed
+# creates nothing and keeps every secret. All the logic is scripts/deploy/deploy.mjs.
+#
+# Targets: `check` verifies the settings and the tokens and changes nothing (the first, safe
+# try); `all` does everything; `supabase`, `shell` and `web` redeploy one part.
+#
+# Settings (repository → Settings → Secrets and variables → Actions; DEPLOY.md lists where each
+# value comes from):
+#   variables  CLOUDFLARE_ACCOUNT_ID, SUPABASE_URL; optional APP_URL, PKG_CDN_URL,
+#              TURNSTILE_SITE_KEY, CF_PAGES_WEB_PROJECT, CF_PAGES_SHELL_PROJECT,
+#              NEXT_PUBLIC_SENTRY_DSN, NEXT_PUBLIC_POSTHOG_KEY, NEXT_PUBLIC_POSTHOG_HOST
+#   secrets    CLOUDFLARE_API_TOKEN, BROWSER_RENDERING_API_TOKEN, SUPABASE_ACCESS_TOKEN,
+#              SUPABASE_DB_PASSWORD, SUPABASE_ANON_KEY; optional TURNSTILE_SECRET_KEY
+# The script masks every secret (and the secrets it reads or generates) before printing
+# anything, and writes the run's summary: the app's address, each step's outcome,
+# deploy-check's results and the next manual steps.
+#
+# Only people with write access to the repository can start it (workflow_dispatch), and the
+# inputs reach the script as environment variables, never pasted into a command line.
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'What to do: check (verify the settings, change nothing), all, or one part'
+        type: choice
+        options:
+          - all
+          - check
+          - supabase
+          - shell
+          - web
+        default: all
+      admin_email:
+        description: 'Optional: the email of a user you created in Supabase (Authentication → Users), to make them a moderator'
+        type: string
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+# One deploy at a time; a second one waits instead of cancelling a deploy halfway.
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+env:
+  NEXT_TELEMETRY_DISABLED: 1
+  TURBO_TELEMETRY_DISABLED: 1
+  WRANGLER_SEND_METRICS: false
+
+jobs:
+  deploy:
+    name: Deploy (${{ inputs.target }})
+    runs-on: ubuntu-latest
+    # A first `all`: install ~2 min, the schema and the function ~3 min, two builds ~5 min,
+    # deploy-check up to ~3 min (estimated).
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      # Reads the pnpm version from the "packageManager" field in package.json.
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Deploy
+        id: deploy
+        env:
+          DEPLOY_TARGET: ${{ inputs.target }}
+          ADMIN_EMAIL: ${{ inputs.admin_email }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          APP_URL: ${{ vars.APP_URL }}
+          PKG_CDN_URL: ${{ vars.PKG_CDN_URL }}
+          TURNSTILE_SITE_KEY: ${{ vars.TURNSTILE_SITE_KEY }}
+          CF_PAGES_WEB_PROJECT: ${{ vars.CF_PAGES_WEB_PROJECT }}
+          CF_PAGES_SHELL_PROJECT: ${{ vars.CF_PAGES_SHELL_PROJECT }}
+          NEXT_PUBLIC_SENTRY_DSN: ${{ vars.NEXT_PUBLIC_SENTRY_DSN }}
+          NEXT_PUBLIC_POSTHOG_KEY: ${{ vars.NEXT_PUBLIC_POSTHOG_KEY }}
+          NEXT_PUBLIC_POSTHOG_HOST: ${{ vars.NEXT_PUBLIC_POSTHOG_HOST }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          BROWSER_RENDERING_API_TOKEN: ${{ secrets.BROWSER_RENDERING_API_TOKEN }}
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          TURNSTILE_SECRET_KEY: ${{ secrets.TURNSTILE_SECRET_KEY }}
+        run: node scripts/deploy/deploy.mjs --target "$DEPLOY_TARGET"

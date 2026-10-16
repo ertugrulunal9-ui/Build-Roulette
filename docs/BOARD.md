@@ -945,7 +945,7 @@ Start M5.
 - **Blocker found: `*.pages.dev` is blocked in Turkey** (the TFF decision of 2025-11-25 over illegal match streams, reported blocked again in 2026-08). The site only opens over a VPN. The user is Turkish and chose to look for a free alternative.
   - The Public Suffix List (the `psl` npm package's copy) lists `workers.dev` (not `*.workers.dev`), `netlify.app` and `deno.dev`. So two Workers in one Cloudflare account are the **same site**, and a sandbox on `workers.dev` needs a second Cloudflare account.
   - No report was found of `workers.dev` being blocked in Turkey. The user's test without a VPN is pending.
-- UI nit: the DESTROY stamp covers the start of the line below it on the results page.
+- UI nit: the DESTROY stamp covers the start of the line below it on the results page. **Fixed by the hub** (RevealPane gap-10; measured in Chromium).
 
 ### T-043: accepted (pages.dev blocked in Turkey; the user confirmed workers.dev opens without a VPN)
 - **What:** both sites are Cloudflare Workers with static assets on `workers.dev`.
@@ -983,3 +983,4 @@ Start M5.
   - app at `https://build-roulette-web.build-roulette.workers.dev`, shell at `https://build-roulette-sandbox.ertugrulunal9-2b8.workers.dev/v1/`;
   - **idempotency confirmed:** migrations, Vault secrets and the moderator were unchanged; only the `CAPTURE_SHELL_URL` function secret was updated (so the secrets-digest match works) and Auth moved to the new site URL;
   - deploy-check passed 31, with 1 WARN (no battle).
+- **The user confirmed** that the app opens **without a VPN** from Turkey and that a solo battle works.

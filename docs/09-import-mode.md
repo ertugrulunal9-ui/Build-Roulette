@@ -50,7 +50,7 @@ files, or a `.zip` (unzipped in the browser with `fflate`).
      AI tool to build it) and drop the `dist` folder.";
    - a `package.json` and no `index.html` in an output folder → the same message;
    - `.next/` without `out/` → "Next.js needs a static export: set `output: 'export'`…".
-5. **Limits** (from `@br/game` constants so the server and the client agree): pack ≤ **5 MB**
+5. **Limits** (`SITE_LIMITS` in `@br/site`): pack ≤ **5 MB**
    (the bucket's file limit), ≤ **300** files, path ≤ 200 characters.
 6. **Pack:** `BRSITE1\n` magic, a little-endian u32 header length, a UTF-8 JSON header
    `{v: 1, files: [{p, t, s}]}` (path, content type, size; sorted by path), then the bytes of

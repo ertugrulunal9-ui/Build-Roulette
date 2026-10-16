@@ -8,7 +8,7 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 
 | ID | Task | Scope | Status | Notes |
 |---|---|---|---|---|
-| T-044 | `@br/site`: site pack format (pack/unpack), folder/zip import, site-root detection, "this is source, build it first" detection, limits, content types; unit tests | `packages/site/` (new), `packages/game/` (limits) | todo | |
+| T-044 | `@br/site`: site pack format (pack/unpack), folder/zip import, site-root detection, "this is source, build it first" detection, limits, content types; unit tests | `packages/site/` (new) | done | Hub-built; 29 unit tests |
 | T-045 | Shell v2 + runtime: Service Worker serves the imported site (live, reveal, capture), protocol v2 `load {site}`, v2 capture page, CSP; runtime `PreviewHandle.load({site})`; bundler and package warm-up removed from the shell/runtime; runtime e2e on fixture sites | `apps/sandbox-shell/`, `packages/protocol/`, `packages/runtime/` | todo | |
 | T-046 | Storage, DB and capture: `site.bin` / `autosave/site.bin` allowlist and mime, ship / auto-ship / reveal paths, `imports` stat; jobs function and capture worker on the v2 capture URL; tests | `supabase/`, `apps/capture-worker/` | todo | |
 | T-047 | The app: import-first BUILD stage (solo and rooms), autosave of the pack, ship, reveal and last look from `site.bin`, `/try` replaces `/playground`; editor, paste-import, templates, bundler worker removed; e2e on fixture sites | `apps/web/` | todo | |

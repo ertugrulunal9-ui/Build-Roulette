@@ -1,0 +1,27 @@
+{
+  "name": "@br/site",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Imported sites (docs/09): the site pack format shared by the app, the sandbox shell and the capture page, and the import of a built site from a folder or a .zip.",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts",
+    "./browser": "./src/browser.ts"
+  },
+  "scripts": {
+    "lint": "eslint . --max-warnings=0",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "fflate": "0.8.2"
+  },
+  "devDependencies": {
+    "@br/config": "workspace:*",
+    "eslint": "9.39.5",
+    "typescript": "6.0.3",
+    "vite": "8.3.2",
+    "vitest": "5.0.3"
+  }
+}

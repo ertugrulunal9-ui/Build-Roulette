@@ -418,10 +418,11 @@ longer protects anything (the page is a public file); the Auth endpoint is what 
 
 ### 2.4 The Content-Security-Policy
 
-Next's static export puts two inline scripts in every page (its flight data). They differ per
-page but are fixed per build, so `scripts/pages-config.ts` hashes them: 10 distinct hashes
-for the 10 HTML files, one policy for every path (a rewritten shell and the 404 page get the
-same one). The header line is ~950 characters against the 2,000 per line that Pages and
+Next's static export puts two inline scripts in every page (its flight data), and since T-050
+the root layout adds a third, constant one that applies the stored language before the first
+paint. They differ per page but are fixed per build, so `scripts/pages-config.ts` hashes them:
+12 distinct hashes, one policy for every path (a rewritten shell and the 404 page get the
+same one). The header line is ~1,000 characters against the 2,000 per line that Pages and
 Workers static assets both allow (one shared parser, §2.7); the build fails if it ever grows
 past that. The hosts come from the build's own `NEXT_PUBLIC_*` values, so the
 policy always matches the bundles. There is no `'unsafe-eval'`, and since M6 no

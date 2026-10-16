@@ -2,7 +2,7 @@
 
 Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 
-## Current milestone: M6 Import mode: bring your own build ([docs/09](09-import-mode.md))
+## Current milestone: M6 Import mode: bring your own build ([docs/09](09-import-mode.md)) — all tasks merged; needs a deploy (DEPLOY.md "Deploying M6") and a check that Browser Rendering runs the capture page's service worker
 
 **User decision (2026-10-16):** players build locally with their own AI tools and import the built static site (`dist/` folder or `.zip`, option B). The in-browser editor is removed. After the import path works: a welcome screen that explains how the game works.
 
@@ -14,7 +14,7 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 | T-047 | The app: import-first BUILD stage (solo and rooms), autosave of the pack, ship, reveal and last look from `site.bin`, `/try` replaces `/playground`; editor, paste-import, templates, bundler worker removed; e2e on fixture sites | `apps/web/` | done | Merged (worker interrupted by a container restart after its last commit; hub ran the verification): web 445 unit, /try + static 15, solo 5, moderation 8, multi 5, telemetry 7, chaos 3+2+4 |
 | T-048 | Removals and docs: `@br/workspace`, `apps/pkg-cdn`, esm.sh/CDN settings, compat CI, deploy script; README, docs/01, 03, 05, 06, 07, 08, DEPLOY | repo-wide | done | Merged; root format/lint/typecheck/test/build green, check-runbooks 51/51. To re-measure: reveal egress, storage, Presence (docs/07, 08) |
 | T-049 | Onboarding: welcome screen / How it works, per-tool tips, in-BUILD import help, `/try` as practice | `apps/web/` | done | Merged; web 467 unit, default e2e 20 (5 onboarding), solo 5, multi 5 |
-| T-050 | English / Turkish: English default, a language picker (remembered per browser), every app string translated; server text (cards, names) stays as is | `apps/web/` | todo | User decision 2026-10-16 |
+| T-050 | English / Turkish: English default, a language picker (remembered per browser), every app string translated; server text (cards, names) stays as is | `apps/web/` | done | Merged; web 495 unit, default e2e 25, solo 6, multi 6, moderation 8, telemetry 7, chaos 3+2+4; glossary in apps/web/README |
 
 **User decisions (2026-10-16):** build time limits 10/15/20/30/45 minutes; UI in English with Turkish selectable; importing from a GitHub repo or a published URL comes later (not in M6).
 

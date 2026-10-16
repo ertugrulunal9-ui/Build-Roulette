@@ -88,6 +88,8 @@ export interface PreviewControllerDeps {
   frames?: FrameScheduler;
   /** Watchdog telemetry (T-031): crashes, restarts and the preview's stall counters. */
   health?: PreviewHealth;
+  /** The iframe's title for screen readers, in the page's language (T-050). */
+  frameTitle?: string;
 }
 
 export class PreviewController {
@@ -105,11 +107,15 @@ export class PreviewController {
   private pendingErrors: RuntimeErrorMessage[] = [];
   private readonly batcher: FrameBatcher;
   private readonly health: PreviewHealth | null;
+  private frameTitle: string;
+  /** The preview's current iframe. */
+  private frame: HTMLIFrameElement | null = null;
 
   constructor(host: HTMLElement, config: PreviewConfig, deps: PreviewControllerDeps = {}) {
     this.host = host;
     this.config = config;
     this.health = deps.health ?? null;
+    this.frameTitle = deps.frameTitle ?? 'Preview of your site';
     this.attach = deps.attach ?? ((iframe, opts) => new PreviewHandle(iframe, opts));
     this.batcher = new FrameBatcher(this.flushOutput, deps.frames);
     this.createPreview();
@@ -123,6 +129,12 @@ export class PreviewController {
   };
 
   readonly getSnapshot = (): PreviewSnapshot => this.snapshot;
+
+  /** A new title for the iframe (a language switch): the iframe itself stays as it is. */
+  setFrameTitle(title: string): void {
+    this.frameTitle = title;
+    if (this.frame) this.frame.title = title;
+  }
 
   static readonly initialSnapshot = INITIAL;
 
@@ -251,7 +263,8 @@ export class PreviewController {
     this.batcher.cancel();
     this.pendingErrors = [];
     const iframe = this.host.ownerDocument.createElement('iframe');
-    iframe.title = 'Preview of your site';
+    iframe.title = this.frameTitle;
+    this.frame = iframe;
     iframe.dataset['testid'] = 'preview-frame';
     iframe.style.cssText =
       'position:absolute;inset:0;width:100%;height:100%;border:0;background:#fff';

@@ -215,6 +215,47 @@ describe('PreviewController loads', () => {
   });
 });
 
+describe('PreviewController frame title (T-050)', () => {
+  it('a language switch renames the same iframe; a new iframe gets the new title', () => {
+    const frames: { title: string }[] = [];
+    const host = {
+      ownerDocument: {
+        createElement: () => {
+          const f = { title: '', dataset: {}, style: { cssText: '' } };
+          frames.push(f);
+          return f;
+        },
+      },
+      replaceChildren: () => undefined,
+    } as unknown as HTMLElement;
+    const previews: FakePreview[] = [];
+    const controller = new PreviewController(
+      host,
+      { shellUrl: 'https://b1.usercontent.example/v2/' },
+      {
+        attach: () => {
+          const p = new FakePreview();
+          previews.push(p);
+          return p as unknown as PreviewLike;
+        },
+        frames: new Frames(),
+        frameTitle: 'Sitenin önizlemesi',
+      },
+    );
+    expect(frames.map((f) => f.title)).toEqual(['Sitenin önizlemesi']);
+    controller.load(A);
+    controller.setFrameTitle('Preview of your site');
+    // Renamed in place: no new iframe, nothing reloaded.
+    expect(frames.map((f) => f.title)).toEqual(['Preview of your site']);
+    expect(previews[0]?.loads).toHaveLength(1);
+    // A crash replaces the iframe: the new one has the current title.
+    previews[0]?.emit('crash', CRASH);
+    controller.restartPreview();
+    expect(frames.at(-1)?.title).toBe('Preview of your site');
+    controller.dispose();
+  });
+});
+
 describe('PreviewController output batching', () => {
   it('10,000 console messages in one frame cause one store update', () => {
     const { controller, preview, frames, renders } = setup();

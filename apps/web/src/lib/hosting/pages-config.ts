@@ -12,7 +12,8 @@
  *   with.
  *
  * The Content-Security-Policy has no `'unsafe-inline'` for scripts: each exported page has
- * two inline scripts (Next's flight data), and their SHA-256 hashes are listed instead. One
+ * a few inline scripts (Next's flight data, and the root layout's language script, T-050:
+ * lib/i18n/locale.ts), and their SHA-256 hashes are listed instead. One
  * policy covers every page (about ten hashes in all), so the 404 page and the shells that a
  * rewrite serves under any path get the same one. Cloudflare limits one header line to 2,000
  * characters and a file to 100 rules: `checkHeaders` fails the build before that.

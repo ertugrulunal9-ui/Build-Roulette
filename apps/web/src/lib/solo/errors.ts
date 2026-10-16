@@ -14,6 +14,7 @@ import {
   type CastVoteError,
   type RpcErrorCode,
 } from '@br/game';
+import { en, type Messages } from '../i18n/messages/en';
 
 /** Codes raised by the client RPCs (SQL, solo and rooms). */
 export const RPC_ERROR_CODES = GAME_RPC_ERROR_CODES;
@@ -88,58 +89,11 @@ export function toGameError(e: unknown): GameError {
   return new GameError('unknown', text, e);
 }
 
-const MESSAGES: Record<ErrorCode, string> = {
-  not_authenticated: 'Your session has expired. Reload the page to sign in again.',
-  not_on_roster: 'You are not a player in this battle.',
-  not_a_member: 'You are not in this room anymore. Join it again first.',
-  not_a_player: 'Spectators cannot do that. Wait for a free player slot.',
-  not_host: 'Only the host can do that.',
-  kicked: 'The host removed you from this room. You cannot rejoin it.',
-  battle_not_found: 'This battle does not exist, or it is not yours.',
-  room_not_found: 'No room has this code. Check it, or create a new room.',
-  member_not_found: 'That player is no longer in the room.',
-  invalid_time_limit: 'That time limit is not allowed.',
-  invalid_display_name: 'Your name must be 1 to 24 characters.',
-  invalid_name: 'The build name must be 1 to 48 characters.',
-  invalid_stats: 'The server rejected the build stats. This is a bug; shipping without them.',
-  stats_too_large: 'The server rejected the build stats. This is a bug; shipping without them.',
-  invalid_version: 'The game got out of sync. Reload the page.',
-  invalid_ready: 'Ready must be on or off.',
-  invalid_settings: 'Those room settings are not allowed.',
-  wrong_phase: 'Too late: the battle has already moved on.',
-  wrong_room_state: 'Not now: a battle is running in this room.',
-  deadline_passed: 'Time is up: the deadline and its grace period are over.',
-  already_shipped: 'Already shipped. Ship is final.',
-  disqualified: 'Your build was disqualified.',
-  files_missing: 'The upload did not finish. Try shipping again.',
-  battle_in_progress: 'You already have a battle running.',
-  deck_empty: 'No challenge cards are available right now. Try again in a moment.',
-  room_closed: 'This room is closed. Create a new one to play again.',
-  room_full: 'This room is full: every player and spectator slot is taken.',
-  room_busy: 'The room is busy right now. Try again in a moment.',
-  too_many_rooms: 'You already host 3 open rooms. Leave one of them first.',
-  not_enough_players: 'At least 2 players must be ready (and online) to start.',
-  cannot_kick_self: 'You cannot kick yourself. Leave the room instead.',
-  not_implemented: 'That is not available yet.',
-  not_a_voter: 'You cannot vote in this battle.',
-  build_not_found: 'That build is not part of this battle.',
-  invalid_category: 'That vote category does not exist.',
-  self_vote: 'You cannot vote for your own build.',
-  not_votable: 'That build cannot get votes: it was not shipped.',
-  name_not_allowed: 'That name is not allowed here. Pick another one.',
-  invalid_reason: 'Pick a reason for the report.',
-  invalid_details: 'The details are too long (500 characters at most).',
-  own_build: 'You cannot report your own build.',
-  already_reported: 'You already reported this build. Thanks, a moderator will look at it.',
-  upload_refused: 'The server refused the upload: the deadline may have passed.',
-  file_too_large: 'Your site is over the 5 MB limit. Shrink big images, videos or fonts.',
-  nothing_built: 'Import your built site first, then ship it.',
-  network: 'Cannot reach the server. Check your connection and try again.',
-  rate_limited: 'Too many requests right now. Wait a few minutes and try again.',
-  unknown: 'Something went wrong. Try again.',
-};
-
-export function describeError(e: GameError | ErrorCode): string {
+/**
+ * The player-facing sentence of an error, in the page's language (T-050: the catalogs'
+ * `errors`; English by default, e.g. for tests and logs). Every code has one in each language.
+ */
+export function describeError(e: GameError | ErrorCode, m: Messages = en): string {
   // The server's rate-limit details say how long to wait ("… Try again in 9 minutes.").
   if (
     typeof e !== 'string' &&
@@ -147,33 +101,19 @@ export function describeError(e: GameError | ErrorCode): string {
     e.details &&
     /try again in/i.test(e.details)
   ) {
-    return e.details;
+    return m.rateLimitedDetails(e.details);
   }
-  return MESSAGES[typeof e === 'string' ? e : e.code];
+  return m.errors[typeof e === 'string' ? e : e.code];
 }
 
 /**
  * What the VOTE stage says when `cast_vote` refuses (every code it can raise, typed against
- * `@br/game`'s list so a new one cannot be forgotten). Other failures (network…) use
- * {@link describeError}.
+ * `@br/game`'s list in the catalogs' `voteErrors`, so a new one cannot be forgotten). Other
+ * failures (network…) use {@link describeError}.
  */
-const VOTE_MESSAGES: Record<CastVoteError, string> = {
-  battle_not_found: 'This battle is gone. Reload the page.',
-  not_on_roster: 'Only the players of this battle vote. Spectators watch the results.',
-  kicked: 'The host removed you from this room, so you cannot vote.',
-  not_a_member: 'You left the room. Join it again to vote before the time is up.',
-  not_a_voter: 'You cannot vote in this battle.',
-  wrong_phase: 'Voting is over: the results are in.',
-  deadline_passed: 'Too late: voting just closed.',
-  invalid_category: 'That vote category does not exist any more. Reload the page.',
-  build_not_found: 'That build is not part of this battle.',
-  self_vote: 'Nice try: you cannot vote for your own build.',
-  not_votable: 'That build cannot get votes: it was not shipped.',
-};
-
-export function describeVoteError(e: GameError | ErrorCode): string {
+export function describeVoteError(e: GameError | ErrorCode, m: Messages = en): string {
   const code = typeof e === 'string' ? e : e.code;
   return (CAST_VOTE_ERRORS as readonly string[]).includes(code)
-    ? VOTE_MESSAGES[code as CastVoteError]
-    : describeError(code);
+    ? m.voteErrors[code as CastVoteError]
+    : describeError(code, m);
 }

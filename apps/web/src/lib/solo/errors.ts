@@ -28,9 +28,7 @@ export const CLIENT_ERROR_CODES = [
   'upload_refused',
   /** Over the 5 MB bucket limit. */
   'file_too_large',
-  /** The production build of the workspace failed. */
-  'build_failed',
-  /** No build has succeeded yet, so there is nothing to ship or autosave. */
+  /** Nothing was imported yet, so there is nothing to ship. */
   'nothing_built',
   /** The server could not be reached. */
   'network',
@@ -134,9 +132,8 @@ const MESSAGES: Record<ErrorCode, string> = {
   own_build: 'You cannot report your own build.',
   already_reported: 'You already reported this build. Thanks, a moderator will look at it.',
   upload_refused: 'The server refused the upload: the deadline may have passed.',
-  file_too_large: 'Your build is over the 5 MB limit. Remove large files or images.',
-  build_failed: 'Your code does not build. Fix the errors under Problems first.',
-  nothing_built: 'Nothing has built successfully yet, so there is nothing to ship.',
+  file_too_large: 'Your site is over the 5 MB limit. Shrink big images, videos or fonts.',
+  nothing_built: 'Import your built site first, then ship it.',
   network: 'Cannot reach the server. Check your connection and try again.',
   rate_limited: 'Too many requests right now. Wait a few minutes and try again.',
   unknown: 'Something went wrong. Try again.',

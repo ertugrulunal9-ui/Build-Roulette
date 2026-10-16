@@ -1,11 +1,12 @@
 /**
- * Fakes for the solo controller tests: an in-memory SoloApi whose battle the test drives,
- * a workspace bridge, and an in-memory LocalWorkspaces. Times use Date.now(), which
- * vitest's fake timers control.
+ * Fakes for the solo controller tests: an in-memory SoloApi whose battle the test drives, the
+ * BUILD screen's preview bridge, an in-memory LocalSites, and real site packs. Times use
+ * Date.now(), which vitest's fake timers control.
  */
-import { createWorkspace, type Workspace } from '@br/workspace';
+import { contentTypeOf, packSite, type ImportedSite } from '@br/site';
+import type { LocalSites, StoredSite } from '../site/local-sites';
 import type { BuildFile, SoloApi } from './api';
-import type { BuildArtifacts, LocalWorkspaces, WorkspaceBridge } from './controller';
+import type { PreviewBridge } from './controller';
 import { GameError } from './errors';
 import type { AdvanceResult, BattleSnapshot, BuildStats, ShipResult } from './types';
 
@@ -83,7 +84,7 @@ type Handler<A extends unknown[], R> = (...args: A) => R | Promise<R>;
 export class FakeApi implements SoloApi {
   /** Every call, in order: [method, ...args]. */
   readonly calls: [string, ...unknown[]][] = [];
-  readonly files = new Map<string, Blob | string>();
+  readonly files = new Map<string, Blob | Uint8Array<ArrayBuffer>>();
   serverOffsetMs = 0;
   snapshot: BattleSnapshot = snapshotAt('spinning');
   onStart: Handler<[string], string> = () => BATTLE;
@@ -141,16 +142,25 @@ export class FakeApi implements SoloApi {
     }
     return Promise.resolve(structuredClone(this.snapshot));
   }
-  async upload(battleId: string, userId: string, file: BuildFile, body: Blob | string) {
+  async upload(
+    battleId: string,
+    userId: string,
+    file: BuildFile,
+    body: Blob | Uint8Array<ArrayBuffer>,
+  ) {
     this.calls.push(['upload', file]);
     await this.onUpload(file);
     this.files.set(`${battleId}/${userId}/${file}`, body);
   }
-  download(battleId: string, userId: string, file: BuildFile): Promise<string | null> {
+  async download(
+    battleId: string,
+    userId: string,
+    file: BuildFile,
+  ): Promise<Uint8Array<ArrayBuffer> | null> {
     this.calls.push(['download', file]);
     const body = this.files.get(`${battleId}/${userId}/${file}`);
-    if (body === undefined) return Promise.resolve(null);
-    return typeof body === 'string' ? Promise.resolve(body) : body.text();
+    if (body === undefined) return null;
+    return body instanceof Uint8Array ? body : new Uint8Array(await body.arrayBuffer());
   }
 
   /** Phases the server reports for `battlePhases` (battles not listed are not visible). */
@@ -173,54 +183,62 @@ export class FakeApi implements SoloApi {
   }
 }
 
-export class FakeBridge implements WorkspaceBridge {
-  ws: Workspace = createWorkspace();
-  last: BuildArtifacts | null = { js: 'dev-js', css: 'dev-css', importMap: { imports: {} } };
-  prod: (BuildArtifacts & { ok: boolean; errorCount: number }) | Error = {
-    ok: true,
-    errorCount: 0,
-    js: 'prod-js',
-    css: 'prod-css',
-    importMap: { imports: {} },
+/** A real site pack with an `index.html` that says `label` (and `extra` files). */
+export function fakeSite(label = 'Site', extra: Record<string, string> = {}): ImportedSite {
+  const enc = new TextEncoder();
+  const files = Object.entries({
+    'index.html': `<!doctype html><title>${label}</title><h1>${label}</h1>`,
+    ...extra,
+  }).map(([path, text]) => ({ path, type: contentTypeOf(path), bytes: enc.encode(text) }));
+  const pack = packSite(files);
+  return {
+    pack,
+    root: 'dist/',
+    files: files.length,
+    bytes: files.reduce((n, f) => n + f.bytes.byteLength, 0),
+    skipped: 2,
   };
+}
+
+/** The BUILD screen's live preview: the ship thumbnail. */
+export class FakePreviewBridge implements PreviewBridge {
   thumb: Blob | null = new Blob(['webp'], { type: 'image/webp' });
-  rebuilds = 7;
-  pastes = 1;
   thumbnailCalls = 0;
 
-  workspace() {
-    return this.ws;
-  }
-  lastGoodBuild() {
-    return this.last;
-  }
-  productionBuild() {
-    return this.prod instanceof Error ? Promise.reject(this.prod) : Promise.resolve(this.prod);
-  }
   thumbnail() {
     this.thumbnailCalls++;
     return Promise.resolve(this.thumb);
   }
-  counters() {
-    return { rebuilds: this.rebuilds, pastes: this.pastes };
-  }
-  /** A new edit + successful rebuild (new identities, like the real session). */
-  edit(js: string): void {
-    this.ws = { ...this.ws, files: { ...this.ws.files, 'src/App.tsx': js } };
-    this.last = { js, css: 'dev-css', importMap: { imports: {} } };
-  }
 }
 
-export class FakeLocalWorkspaces implements LocalWorkspaces {
+export class FakeLocalSites implements LocalSites {
   readonly deleted: string[] = [];
-  /** Stored battle workspaces (id → last save). */
-  readonly stored = new Map<string, number>();
-  delete(id: string): Promise<void> {
-    this.deleted.push(id);
-    this.stored.delete(id);
+  readonly puts: string[] = [];
+  /** Stored battle sites (key → value and last save). */
+  readonly stored = new Map<string, StoredSite>();
+  /** When set, every call fails (blocked storage). */
+  broken = false;
+
+  get(key: string): Promise<StoredSite | null> {
+    if (this.broken) return Promise.reject(new Error('blocked'));
+    return Promise.resolve(this.stored.get(key) ?? null);
+  }
+  put(key: string, value: Omit<StoredSite, 'updatedAt'>): Promise<void> {
+    if (this.broken) return Promise.reject(new Error('blocked'));
+    this.puts.push(key);
+    this.stored.set(key, { ...value, updatedAt: Date.now() });
     return Promise.resolve();
   }
-  listBattleWorkspaces(): Promise<{ id: string; updatedAt: number }[]> {
-    return Promise.resolve([...this.stored].map(([id, updatedAt]) => ({ id, updatedAt })));
+  delete(key: string): Promise<void> {
+    this.deleted.push(key);
+    this.stored.delete(key);
+    return Promise.resolve();
+  }
+  listBattleSites(): Promise<{ id: string; updatedAt: number }[]> {
+    return Promise.resolve([...this.stored].map(([id, v]) => ({ id, updatedAt: v.updatedAt })));
+  }
+  /** A stored entry that only has a last-save time (another battle's, for the cleanup). */
+  storeAt(key: string, updatedAt: number): void {
+    this.stored.set(key, { ...{ site: fakeSite(key), imports: 1 }, updatedAt });
   }
 }

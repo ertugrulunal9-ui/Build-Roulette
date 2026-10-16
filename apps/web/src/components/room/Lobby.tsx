@@ -3,8 +3,7 @@
 /**
  * The lobby: who is here (Presence + last_seen_at), ready-up, the host's controls
  * (max players, kick with confirmation, Start when at least 2 players are ready), the invite
- * link, and the last battle's podium once a battle has ended (rematch = start again). On a
- * desktop it also warms the template's packages into the browser's cache (T-032).
+ * link, and the last battle's podium once a battle has ended (rematch = start again).
  */
 import {
   DEFAULT_VOTING_SECONDS,
@@ -17,7 +16,6 @@ import {
 } from '@br/game';
 import { useState } from 'react';
 import { useTouchPrimary } from '../../lib/device';
-import { TemplateWarmup } from '../playground/TemplateWarmup';
 import {
   playerCount,
   readyCount,
@@ -139,8 +137,6 @@ export function Lobby({ controller, state, room, lastBattle }: LobbyProps) {
 
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_22rem]" data-testid="lobby">
-      {/* T-032: the template's packages into the browser's cache while everyone waits. */}
-      {!touch && <TemplateWarmup />}
       <section className={panel}>
         <header className="mb-3 flex items-baseline justify-between gap-3">
           <h2 className="text-lg font-black tracking-tight">Players</h2>
@@ -272,7 +268,8 @@ export function Lobby({ controller, state, room, lastBattle }: LobbyProps) {
               data-testid="phone-lobby-note"
             >
               📱 On a phone you watch the battle, then play the reveal and the vote. Building needs
-              a desktop browser: if you play from here, your build ends as DNF.
+              a computer (you build with your own AI tools and import the result): if you play from
+              here, your build ends as DNF.
             </p>
           )}
           <a

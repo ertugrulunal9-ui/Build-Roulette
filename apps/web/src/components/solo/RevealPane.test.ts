@@ -10,6 +10,7 @@ import { PreviewHandle, type PreviewCrash } from '@br/runtime';
 import { act, cleanup, render, screen } from '@testing-library/react';
 import { createElement } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { fakeSite } from '../../lib/solo/test-support';
 import type * as Analytics from '../../lib/telemetry/analytics';
 import { RevealPane } from './RevealPane';
 
@@ -26,7 +27,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-const BUILD = { js: 'console.log(1)', css: '', importMap: { imports: {} } };
+const BUILD = { site: fakeSite('Last look').pack };
 const BATTLE = '00000000-0000-4000-8000-0000000000b1';
 
 function spyPreview() {
@@ -114,8 +115,8 @@ describe('RevealPane', () => {
   });
 });
 
-describe('RevealPane package errors (T-032)', () => {
-  it('says so when the build packages cannot load; other errors and stall notes do not', () => {
+describe('RevealPane load errors', () => {
+  it('says so when the sandbox cannot serve the site here; a missing file or a runtime error does not', () => {
     const { errorListeners } = spyPreview();
     render(
       createElement(RevealPane, {
@@ -132,19 +133,15 @@ describe('RevealPane package errors (T-032)', () => {
       });
     };
     emit({ type: 'runtime-error', kind: 'error', message: 'TypeError: x is undefined' });
-    // Not yet a failure: the build may still start.
+    // One file of the site that did not load: the site itself still runs.
+    emit({ type: 'runtime-error', kind: 'module-load', message: 'Failed to load /assets/x.js' });
+    expect(screen.queryByTestId('reveal-no-load')).toBeNull();
     emit({
       type: 'runtime-error',
       kind: 'module-load',
-      message: 'Still waiting for the package server after 8 s: zustand@5.0.15',
+      message: 'This browser cannot run imported sites here: service workers are not available.',
     });
-    expect(screen.queryByTestId('reveal-no-packages')).toBeNull();
-    emit({
-      type: 'runtime-error',
-      kind: 'module-load',
-      message: 'Package server unreachable: zustand@5.0.15',
-    });
-    expect(screen.getByTestId('reveal-no-packages').textContent).toContain('package server');
+    expect(screen.getByTestId('reveal-no-load').textContent).toContain('couldn’t load');
     cleanup();
   });
 });

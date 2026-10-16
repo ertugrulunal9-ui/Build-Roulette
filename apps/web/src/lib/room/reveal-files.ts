@@ -1,62 +1,23 @@
 /**
- * What the REVEAL reads of another player's build (supabase/README.md "Reveal and voting"):
- * `bundle.js`, `bundle.css` and `manifest.json` from `ephemeral-builds`. Everything in them
- * was produced by another player's browser, so it is untrusted: the manifest is parsed
- * defensively (size cap, shape, string values only), only exact pins of valid package names
- * become import map entries (`buildImportMap`: every one is a URL on the configured CDN, which
- * the bundle could import directly anyway, T-040), and the result is validated against the
- * bridge's own schema before it reaches a preview. Anything unusable degrades to an empty
- * import map (the build then shows its own load error in the sandbox), never to a throw.
+ * What the REVEAL reads of another player's build (supabase/README.md "Reveal and voting",
+ * docs/09 §9.4): one site pack (`site.bin`, or `autosave/site.bin` when it was auto-shipped)
+ * from `ephemeral-builds`. It was produced by another player's browser, so it is untrusted:
+ * it only becomes a preview input when it fits the size limit and reads as a valid pack
+ * (`unpackSite`, the same check the shell makes again before it serves anything). Anything
+ * else counts as a build without files (its screenshot shows instead), never as a throw.
  */
-import { ImportMapSchema, type ImportMap } from '@br/protocol';
-import { buildImportMap, type PreviewBuild } from '@br/runtime';
+import type { PreviewBuild } from '@br/runtime';
+import { SITE_LIMITS, unpackSite } from '@br/site';
 
-/** A real manifest is ~100 bytes; anything this big is not one. */
-export const MAX_MANIFEST_BYTES = 64 * 1024;
-const MAX_DEPENDENCIES = 200;
-
-/**
- * The pinned dependencies of an uploaded `manifest.json` (`{dependencies: {name: version}}`),
- * or `{}` when it is missing, too large, not JSON or not that shape. Non-string values are
- * dropped.
- */
-export function parseRevealManifest(text: string | null): Record<string, string> {
-  if (text === null || text.length > MAX_MANIFEST_BYTES) return {};
-  let parsed: unknown;
+/** The preview input for a revealed build's pack, or null when it is missing or unusable. */
+export function revealPreviewBuild(pack: Uint8Array | null): PreviewBuild | null {
+  if (pack === null || pack.byteLength === 0 || pack.byteLength > SITE_LIMITS.maxPackBytes) {
+    return null;
+  }
   try {
-    parsed = JSON.parse(text);
+    unpackSite(pack);
   } catch {
-    return {};
+    return null;
   }
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return {};
-  const deps = (parsed as { dependencies?: unknown }).dependencies;
-  if (typeof deps !== 'object' || deps === null || Array.isArray(deps)) return {};
-  const out: Record<string, string> = {};
-  let n = 0;
-  for (const [name, version] of Object.entries(deps)) {
-    if (typeof version !== 'string') continue;
-    if (++n > MAX_DEPENDENCIES) break;
-    out[name] = version;
-  }
-  return out;
-}
-
-/** The import map for a revealed build, validated like any bridge message (or empty). */
-export function revealImportMap(manifestText: string | null, cdnBaseUrl: string): ImportMap {
-  const map = buildImportMap(parseRevealManifest(manifestText), cdnBaseUrl);
-  const checked = ImportMapSchema.safeParse(map);
-  return checked.success ? checked.data : { imports: {} };
-}
-
-/** The preview input for a revealed build, or null when it has no bundle. */
-export function revealPreviewBuild(
-  files: { js: string | null; css: string | null; manifest: string | null },
-  cdnBaseUrl: string,
-): PreviewBuild | null {
-  if (files.js === null) return null;
-  return {
-    js: files.js,
-    css: files.css ?? '',
-    importMap: revealImportMap(files.manifest, cdnBaseUrl),
-  };
+  return { site: pack };
 }

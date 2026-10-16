@@ -13,6 +13,7 @@ import {
   formatCompletion,
   formatCountdown,
 } from '../../lib/solo/format';
+import { statsPhrases } from '../../lib/solo/stats';
 import { screenshotUrl } from '../../lib/supabase/config';
 import { AwardBadges, ChallengeCards } from '../results/ResultPieces';
 import { RevealPane } from './RevealPane';
@@ -107,10 +108,9 @@ export function ResultsStage({ controller, state, remaining }: ResultsStageProps
             </figcaption>
           </figure>
           <ChallengeCards challenge={snapshot.challenge} />
-          {mine?.stats.deps && mine.stats.deps.length > 0 && (
-            <p className="text-sm text-zinc-500">
-              {mine.stats.files ?? 0} files · {mine.stats.lines ?? 0} lines · made with{' '}
-              {mine.stats.deps.join(', ')}
+          {statsPhrases(mine?.stats).length > 0 && (
+            <p className="text-sm text-zinc-500" data-testid="build-stats">
+              {statsPhrases(mine?.stats).join(' · ')}
             </p>
           )}
         </section>
@@ -127,8 +127,8 @@ export function ResultsStage({ controller, state, remaining }: ResultsStageProps
             <div className="flex flex-col gap-3 rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
               <p className="text-sm text-zinc-600 dark:text-zinc-400" data-testid="source-status">
                 {state.sourceDestroyed
-                  ? '✓ Source and bundle deleted from the server.'
-                  : 'Deleting the source and bundle from the server…'}
+                  ? '✓ The imported site was deleted from the server.'
+                  : 'Deleting the imported site from the server…'}
               </p>
               <div className="flex flex-wrap gap-3">
                 <a

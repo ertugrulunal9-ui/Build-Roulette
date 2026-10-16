@@ -3,9 +3,9 @@
  * what the Cloudflare Worker with static assets deploys (apps/web/wrangler.jsonc), and checks
  * it. (The name is from T-037, when the host was Cloudflare Pages; the files are the same.)
  *
- * - Writes `out/_redirects` (the shells' rewrites) and `out/_headers` (security headers with
- *   a CSP built from this build's `NEXT_PUBLIC_*` values and the hashes of its inline
- *   scripts; a year's cache for `/_next/static/*`): src/lib/hosting/pages-config.ts.
+ * - Writes `out/_redirects` (moved paths, the shells' rewrites) and `out/_headers` (security
+ *   headers with a CSP built from this build's `NEXT_PUBLIC_*` values and the hashes of its
+ *   inline scripts; a year's cache for `/_next/static/*`): src/lib/hosting/pages-config.ts.
  * - Writes the link-preview Worker (T-038): `dist/worker.js`, bundled with this build's
  *   `NEXT_PUBLIC_*` values and the `/*` headers (scripts/preview-worker.ts). It stays outside
  *   `out/`, so it is never uploaded as a static file; wrangler.jsonc's `run_worker_first`
@@ -33,8 +33,8 @@ import {
   inlineScriptHashes,
   secretKeysIn,
 } from '../src/lib/hosting/pages-config';
-import { SHELLS, pagesRedirects } from '../src/lib/hosting/shells';
-import { playgroundConfig } from '../src/lib/playground/config';
+import { REDIRECTS, SHELLS, pagesRedirects } from '../src/lib/hosting/shells';
+import { previewConfig } from '../src/lib/preview/config';
 import { supabaseConfig } from '../src/lib/supabase/config';
 import { turnstileSiteKey } from '../src/lib/supabase/turnstile';
 import { errorReportingEnabled, telemetryConfig } from '../src/lib/telemetry/config';
@@ -60,8 +60,7 @@ const scriptHashes = exported
   .flatMap((f) => inlineScriptHashes(readFileSync(f, 'utf8')));
 const csp = contentSecurityPolicy({
   supabaseUrl: supabaseConfig.url,
-  shellUrl: playgroundConfig.shellUrl,
-  cdnUrl: playgroundConfig.cdnBaseUrl,
+  shellUrl: previewConfig.shellUrl,
   sentryDsn: errorReportingEnabled() ? telemetryConfig.sentryDsn : null,
   posthogHost: telemetryConfig.posthogKey ? telemetryConfig.posthogHost : null,
   turnstile: turnstileSiteKey() !== null,
@@ -72,6 +71,7 @@ problems.push(...checkHeaders(rules));
 writeFileSync(join(outDir, '_headers'), headersFile(rules));
 writeFileSync(join(outDir, '_redirects'), pagesRedirects());
 if (SHELLS.length > PAGES_LIMITS.dynamicRedirects) problems.push('too many dynamic redirects');
+if (REDIRECTS.length > PAGES_LIMITS.staticRedirects) problems.push('too many static redirects');
 
 // ─── The link-preview Worker (T-038, T-043) ──────────────────────────────────────
 const everyPath = rules.find((r) => r.path === '/*');

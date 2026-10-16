@@ -1,7 +1,7 @@
 /**
- * Coalesces many `schedule()` calls into one `flush()` per animation frame. The playground
- * uses it so a flood of console or error messages from a build causes at most one store
- * update (one React render) per frame.
+ * Coalesces many `schedule()` calls into one `flush()` per animation frame. The preview
+ * controller uses it so a flood of console or error messages from a site causes at most one
+ * store update (one React render) per frame.
  */
 export interface FrameScheduler {
   request(cb: () => void): number;

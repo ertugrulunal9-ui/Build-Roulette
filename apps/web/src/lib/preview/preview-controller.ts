@@ -1,69 +1,50 @@
 /**
- * Glue between the playground UI and @br/runtime: owns the bundler worker
- * (EsmBrowserRuntime) and the preview iframe (PreviewHandle), mirrors workspace edits into
- * the runtime, and exposes a snapshot for React (useSyncExternalStore).
+ * Glue between the app and @br/runtime for a live preview of an imported site (docs/09
+ * §9.3, §9.5): owns the preview iframe (PreviewHandle), loads site packs into it, and exposes
+ * a snapshot for React (useSyncExternalStore). Used by the BUILD stage and `/try`.
  *
- * Plain TypeScript on purpose: the runtime and preview have their own lifecycles (worker,
- * iframe, watchdog) that should not depend on React renders.
+ * Plain TypeScript on purpose: the preview has its own lifecycle (iframe, handshake,
+ * watchdog) that should not depend on React renders.
  *
- * Console output and runtime errors come from the build, so they are untrusted and can
- * arrive in floods. The PreviewHandle rate-limits them and keeps a size-capped console; this
- * controller copies that into the snapshot at most once per animation frame, so a flood costs
- * at most one React render per frame.
- *
- * Watchdog crashes go to the optional `PreviewHealth` (T-031): one `preview_crash` event per
- * crash, sent once the user restarted the preview or the controller went away, and the
- * preview's watchdog stats for the battle's `sync_health`. Bundler starts that stall or fail
- * go there too (`bundler_start`, T-039).
- *
- * A bundler that cannot start never hangs (T-039): the runtime gives up on a start with no
- * progress for 15 s during the download, or not ready 60 s after it (T-041; both in
- * page-awake time), and retries it once, then `boot()` rejects. The snapshot then reads
- * `bundler: 'failed'` with the reason, and `retryBundler()` (the Retry button) or the next
- * edit starts it again. The workspace is not touched: it stays in IndexedDB either way.
+ * - The iframe is attached at once, before anything is imported, so the shell's handshake is
+ *   done by the time the first site arrives.
+ * - `load(pack)` runs a site pack (the shell serves it from its site worker, in a fresh child
+ *   frame per load). Importing again is just another `load`. The latest pack is kept for
+ *   `restartPreview()`.
+ * - Console output and runtime errors come from the site, so they are untrusted and can
+ *   arrive in floods. The PreviewHandle rate-limits them and keeps a size-capped console;
+ *   this controller copies that into the snapshot at most once per animation frame, so a
+ *   flood costs at most one React render per frame.
+ * - Watchdog crashes go to the optional `PreviewHealth` (T-031): one `preview_crash` event per
+ *   crash, sent once the user restarted the preview or the controller went away, and the
+ *   preview's watchdog stats for the battle's `sync_health`.
  */
-import { isPackageStall, type RuntimeErrorMessage } from '@br/protocol';
+import type { RuntimeErrorMessage } from '@br/protocol';
 import {
-  bundlerStartFailureText,
-  type BuildResult,
+  PreviewHandle,
   type ConsoleEntry,
-  type Diagnostic,
   type PreviewCrash,
-  type PreviewHandle,
-  type SandboxRuntime,
+  type PreviewOptions,
 } from '@br/runtime';
-import type { Workspace } from '@br/workspace';
 import type { PreviewHealth } from '../telemetry/sandbox-health';
-import type { PlaygroundConfig } from './config';
+import type { PreviewConfig } from './config';
 import { FrameBatcher, type FrameScheduler } from './frame-batcher';
-import { createPlaygroundRuntime } from './runtime-factory';
 
 export type { ConsoleEntry } from '@br/runtime';
 
-/** Runtime errors kept for the overlay. */
+/** Runtime errors kept for the Problems list. */
 export const MAX_RUNTIME_ERRORS = 20;
-
-export interface BuildSummary {
-  ok: boolean;
-  durationMs: number;
-  diagnostics: Diagnostic[];
-}
 
 /**
  * - `connecting`: waiting for the shell handshake
- * - `loading`: a build was sent, waiting for `ready`
- * - `running`: the latest build is running
- * - `crashed`: watchdog fired (frozen build) or the shell never answered
+ * - `idle`: connected, nothing loaded yet
+ * - `loading`: a site was sent, waiting for `ready`
+ * - `running`: the latest site is running
+ * - `crashed`: watchdog fired (a frozen site) or the shell never answered
  */
-export type PreviewStatus = 'connecting' | 'loading' | 'running' | 'crashed';
+export type PreviewStatus = 'connecting' | 'idle' | 'loading' | 'running' | 'crashed';
 
-export interface SandboxSnapshot {
-  bundler: 'booting' | 'ready' | 'failed';
-  /** Why the bundler could not start, for the player ("Couldn't start the bundler: …"). */
-  bundlerError: string | null;
-  /** Edits were sent to the bundler and no build result has come back since. */
-  building: boolean;
-  lastBuild: BuildSummary | null;
+export interface PreviewSnapshot {
   preview: PreviewStatus;
   /**
    * Why the watchdog stopped the preview, whether the latest load had finished (`phase`), and
@@ -78,11 +59,7 @@ export interface SandboxSnapshot {
   readyCount: number;
 }
 
-const INITIAL: SandboxSnapshot = {
-  bundler: 'booting',
-  bundlerError: null,
-  building: true,
-  lastBuild: null,
+const INITIAL: PreviewSnapshot = {
   preview: 'connecting',
   crash: null,
   runtimeErrors: [],
@@ -90,73 +67,52 @@ const INITIAL: SandboxSnapshot = {
   readyCount: 0,
 };
 
-/** The part of SandboxRuntime the controller uses. */
-export type PlaygroundRuntime = Pick<
-  SandboxRuntime,
-  | 'boot'
-  | 'writeFile'
-  | 'deleteFile'
-  | 'setManifest'
-  | 'build'
-  | 'onBuild'
-  | 'attachPreview'
-  | 'destroy'
+/** The part of PreviewHandle the controller uses (tests pass a fake). */
+export type PreviewLike = Pick<
+  PreviewHandle,
+  | 'state'
+  | 'stats'
+  | 'on'
+  | 'load'
+  | 'restart'
+  | 'dispose'
+  | 'consoleEntries'
+  | 'clearConsole'
+  | 'captureThumbnail'
 >;
 
-export interface SandboxControllerDeps {
-  /** Defaults to the real esbuild-wasm runtime. */
-  runtime?: PlaygroundRuntime;
+export interface PreviewControllerDeps {
+  /** Defaults to a real PreviewHandle on the iframe. */
+  attach?: (iframe: HTMLIFrameElement, opts: PreviewOptions) => PreviewLike;
   /** Defaults to requestAnimationFrame. */
   frames?: FrameScheduler;
-  /**
-   * Watchdog telemetry (T-031): crashes, restarts and the preview's stall counters; and the
-   * bundler starts that stalled or failed (T-039, reported by the default runtime).
-   */
+  /** Watchdog telemetry (T-031): crashes, restarts and the preview's stall counters. */
   health?: PreviewHealth;
 }
 
-function sameDependencies(a: Record<string, string>, b: Record<string, string>): boolean {
-  const ka = Object.keys(a);
-  return ka.length === Object.keys(b).length && ka.every((k) => a[k] === b[k]);
-}
-
-export class SandboxController {
-  private readonly runtime: PlaygroundRuntime;
+export class PreviewController {
   private readonly host: HTMLElement;
-  private readonly config: PlaygroundConfig;
-  private preview: PreviewHandle | null = null;
+  private readonly config: PreviewConfig;
+  private readonly attach: (iframe: HTMLIFrameElement, opts: PreviewOptions) => PreviewLike;
+  private preview: PreviewLike | null = null;
   private previewOff: (() => void)[] = [];
-  private synced: Workspace | null = null;
-  private lastOk: BuildResult | null = null;
-  private snapshot: SandboxSnapshot = INITIAL;
+  /** The latest pack loaded (what `restartPreview()` loads again). */
+  private site: Uint8Array | null = null;
+  private snapshot: PreviewSnapshot = INITIAL;
   private readonly listeners = new Set<() => void>();
-  private readonly offBuild: () => void;
   private disposed = false;
   /** Errors received since the last frame flush. */
   private pendingErrors: RuntimeErrorMessage[] = [];
   private readonly batcher: FrameBatcher;
   private readonly health: PreviewHealth | null;
-  /** Build results received so far (the `rebuilds` stat). */
-  private builds = 0;
-  /**
-   * Set while the build of a `replace()` runs: results are held (newest wins) instead of
-   * loaded, so a build of the old project that finishes meanwhile never reaches the preview.
-   */
-  private replacing: { latest: BuildResult | null } | null = null;
 
-  constructor(host: HTMLElement, config: PlaygroundConfig, deps: SandboxControllerDeps = {}) {
+  constructor(host: HTMLElement, config: PreviewConfig, deps: PreviewControllerDeps = {}) {
     this.host = host;
     this.config = config;
     this.health = deps.health ?? null;
-    this.runtime =
-      deps.runtime ??
-      createPlaygroundRuntime(config, {
-        onInitAttempt: (report) => {
-          if (!this.disposed) this.health?.bundlerStart(report);
-        },
-      });
+    this.attach = deps.attach ?? ((iframe, opts) => new PreviewHandle(iframe, opts));
     this.batcher = new FrameBatcher(this.flushOutput, deps.frames);
-    this.offBuild = this.runtime.onBuild(this.onBuild);
+    this.createPreview();
   }
 
   // --- React store contract -------------------------------------------------------------
@@ -166,132 +122,36 @@ export class SandboxController {
     return () => this.listeners.delete(listener);
   };
 
-  readonly getSnapshot = (): SandboxSnapshot => this.snapshot;
+  readonly getSnapshot = (): PreviewSnapshot => this.snapshot;
 
   static readonly initialSnapshot = INITIAL;
 
-  // --- lifecycle --------------------------------------------------------------------------
+  // --- intents ----------------------------------------------------------------------------
 
-  /** Boots esbuild-wasm, attaches the preview and runs the first build. */
-  async start(workspace: Workspace): Promise<void> {
-    this.synced = workspace;
-    this.createPreview();
-    try {
-      // boot() takes the files synchronously, so sync() calls made while it awaits apply.
-      await this.runtime.boot({ files: workspace.files, manifest: workspace.manifest });
-    } catch (e) {
-      // The same text as the `bundler-init-failed` diagnostic of a build that waited for it.
-      if (!this.disposed) {
-        this.update({
-          bundler: 'failed',
-          building: false,
-          bundlerError: bundlerStartFailureText(e),
-        });
-      }
-      return;
-    }
+  /**
+   * Runs a site pack (a new import, or the restored one). A crashed preview is replaced by a
+   * fresh one first. The pack is kept for `restartPreview()`.
+   */
+  load(site: Uint8Array): void {
     if (this.disposed) return;
-    this.update({ bundler: 'ready' });
-    await this.rebuild();
+    this.site = site;
+    if (this.snapshot.preview === 'crashed' || !this.preview) this.freshPreview();
+    this.loadInto(site);
   }
 
-  /** Mirrors a new workspace state into the runtime (debounced rebuild). */
-  sync(workspace: Workspace): void {
-    const prev = this.synced;
-    this.synced = workspace;
-    if (this.disposed || prev === null || prev === workspace) return;
-    // If the bundler failed to start, the debounced build retries starting it and reports
-    // the outcome through onBuild like any other build.
-    if (this.mirror(prev, workspace) && !this.snapshot.building) this.update({ building: true });
+  /** The pack the preview runs (or last ran), or null before the first load. */
+  current(): Uint8Array | null {
+    return this.site;
   }
 
   /**
-   * Replaces the whole project (reset to a template, paste-import in replace mode). An edit
-   * keeps the running preview until its debounced rebuild loads, but here that preview is a
-   * different project: anything the user does in it is thrown away by the next load. So the
-   * preview frame is replaced at once (no document of the old project is left to click) and
-   * the new files build right away, as one build and one load. Results of builds that were
-   * still running for the old files are not loaded.
-   */
-  replace(workspace: Workspace): void {
-    const prev = this.synced;
-    this.synced = workspace;
-    if (this.disposed || prev === null) return;
-    if (prev !== workspace) this.mirror(prev, workspace);
-    if (this.snapshot.bundler !== 'ready') {
-      // Booting: start() builds the mirrored files. Failed: like an edit, the debounced
-      // build retries starting the bundler.
-      if (prev !== workspace && !this.snapshot.building) this.update({ building: true });
-      return;
-    }
-    const replacing: { latest: BuildResult | null } = { latest: null };
-    this.replacing = replacing;
-    this.freshPreview();
-    this.update({ building: true });
-    // build() cancels the debounced build the mirrored edits scheduled.
-    this.runtime.build().then(
-      (own) => {
-        if (this.disposed || this.replacing !== replacing) return; // a newer replace() runs
-        this.replacing = null;
-        // The runtime delivers results in order, so a held result is this build's or newer.
-        this.applyBuild(replacing.latest ?? own);
-      },
-      () => undefined, // only after dispose()
-    );
-  }
-
-  /**
-   * Starts the bundler again after it failed to start (the Retry button): a fresh worker, then
-   * a build of the current files. The outcome arrives like any build result: `ready` and a
-   * preview, or `failed` again with the new reason. Only the bundler restarts; the workspace
-   * (IndexedDB, autosave) is not touched.
-   */
-  retryBundler(): void {
-    if (this.disposed || this.snapshot.bundler !== 'failed') return;
-    this.update({ bundler: 'booting', bundlerError: null, building: true });
-    // A start that fails again resolves with a `bundler-init-failed` diagnostic (applyBuild).
-    this.runtime.build().catch(() => undefined); // only rejects after dispose()
-  }
-
-  /** Builds now (the result is loaded by `onBuild`). */
-  async rebuild(): Promise<void> {
-    if (this.disposed || this.snapshot.bundler !== 'ready') return;
-    try {
-      await this.runtime.build();
-    } catch {
-      // Only throws after destroy().
-    }
-  }
-
-  /**
-   * Restarts a crashed (or stuck) preview: a new iframe and a new shell, then the latest good
-   * build is loaded into it.
+   * Restarts a crashed (or stuck) preview: a new iframe and a new shell, then the latest site
+   * is loaded into it again.
    */
   restartPreview(): void {
     if (this.disposed) return;
     this.freshPreview();
-    // During a replace() the last good build is the old project: its own build loads next.
-    if (this.lastOk && !this.replacing) this.load(this.lastOk);
-  }
-
-  /** The latest successful build (what the preview runs), or null before the first one. */
-  lastGoodBuild(): BuildResult | null {
-    return this.lastOk;
-  }
-
-  /** Number of build results so far (debounced rebuilds and explicit builds). */
-  get buildCount(): number {
-    return this.builds;
-  }
-
-  /**
-   * A production build (minified, `NODE_ENV=production`) of the current files. Like every
-   * build it goes to `onBuild`, so a successful one also becomes the preview and the last
-   * good build. Rejects only after dispose().
-   */
-  productionBuild(): Promise<BuildResult> {
-    if (this.disposed) return Promise.reject(new Error('sandbox disposed'));
-    return this.runtime.build('production');
+    if (this.site) this.loadInto(this.site);
   }
 
   /**
@@ -319,76 +179,16 @@ export class SandboxController {
     if (this.disposed) return;
     this.disposed = true;
     this.batcher.cancel();
-    this.offBuild();
     this.detachPreview();
     this.health?.close();
-    void this.runtime.destroy();
     this.listeners.clear();
   }
 
   // --- internals --------------------------------------------------------------------------
 
-  private update(patch: Partial<SandboxSnapshot>): void {
+  private update(patch: Partial<PreviewSnapshot>): void {
     this.snapshot = { ...this.snapshot, ...patch };
     for (const l of this.listeners) l();
-  }
-
-  private readonly onBuild = (result: BuildResult): void => {
-    if (this.disposed) return;
-    this.builds++;
-    if (this.replacing) {
-      this.replacing.latest = result;
-      return;
-    }
-    this.applyBuild(result);
-  };
-
-  /** Shows a build result: status, Problems, and (when it is good) the preview. */
-  private applyBuild(result: BuildResult): void {
-    const initFailure = result.diagnostics.find((d) => d.code === 'bundler-init-failed');
-    this.update({
-      // A build after a failed start retried starting the bundler: reflect the outcome.
-      ...(initFailure
-        ? { bundler: 'failed' as const, bundlerError: initFailure.text }
-        : { bundler: 'ready' as const, bundlerError: null }),
-      building: false,
-      lastBuild: { ok: result.ok, durationMs: result.durationMs, diagnostics: result.diagnostics },
-    });
-    if (!result.ok) return; // keep the last good preview running
-    this.lastOk = result;
-    if (this.snapshot.preview !== 'crashed') this.load(result);
-  }
-
-  /**
-   * Writes the difference between two workspace states into the runtime (each write
-   * schedules the debounced rebuild). Files and manifest go in together, before any build
-   * can start. Returns whether anything changed.
-   */
-  private mirror(prev: Workspace, workspace: Workspace): boolean {
-    let changed = false;
-    for (const [path, contents] of Object.entries(workspace.files)) {
-      if (prev.files[path] !== contents) {
-        this.runtime.writeFile(path, contents);
-        changed = true;
-      }
-    }
-    for (const path of Object.keys(prev.files)) {
-      if (!Object.prototype.hasOwnProperty.call(workspace.files, path)) {
-        this.runtime.deleteFile(path);
-        changed = true;
-      }
-    }
-    const a = prev.manifest;
-    const b = workspace.manifest;
-    if (
-      a.entry !== b.entry ||
-      a.template !== b.template ||
-      !sameDependencies(a.dependencies, b.dependencies)
-    ) {
-      this.runtime.setManifest(b);
-      changed = true;
-    }
-    return changed;
   }
 
   /**
@@ -397,7 +197,7 @@ export class SandboxController {
    */
   private freshPreview(): void {
     const preview = this.preview;
-    // A crashed preview brought back by the user (Restart, or a new project replacing it).
+    // A crashed preview brought back by the user (Restart, or a new import replacing it).
     if (this.snapshot.preview === 'crashed') this.health?.restarted();
     if (preview && preview.state !== 'disposed') {
       this.batcher.cancel();
@@ -415,10 +215,24 @@ export class SandboxController {
     }
   }
 
-  private load(result: BuildResult): void {
+  private loadInto(site: Uint8Array): void {
     const preview = this.preview;
     if (!preview || preview.state === 'crashed' || preview.state === 'disposed') return;
-    preview.load(result);
+    try {
+      preview.load({ site });
+    } catch (e) {
+      // A pack over the limit (RangeError): the import refuses those, so only a bug gets here.
+      this.update({
+        runtimeErrors: [
+          {
+            type: 'runtime-error',
+            kind: 'module-load',
+            message: `The site could not be loaded: ${e instanceof Error ? e.message : String(e)}`,
+          },
+        ],
+      });
+      return;
+    }
     preview.clearConsole();
     this.batcher.cancel();
     this.pendingErrors = [];
@@ -437,29 +251,23 @@ export class SandboxController {
     this.batcher.cancel();
     this.pendingErrors = [];
     const iframe = this.host.ownerDocument.createElement('iframe');
-    iframe.title = 'Preview of your build';
+    iframe.title = 'Preview of your site';
     iframe.dataset['testid'] = 'preview-frame';
     iframe.style.cssText =
       'position:absolute;inset:0;width:100%;height:100%;border:0;background:#fff';
     this.host.replaceChildren(iframe);
-    const preview = this.runtime.attachPreview(iframe, { shellUrl: this.config.shellUrl });
+    const preview = this.attach(iframe, { shellUrl: this.config.shellUrl });
     this.preview = preview;
     this.health?.follow(preview);
     this.update({ preview: 'connecting', crash: null, runtimeErrors: [], console: [] });
     this.previewOff = [
+      preview.on('connected', () => {
+        if (this.snapshot.preview === 'connecting' && this.site === null) {
+          this.update({ preview: 'idle' });
+        }
+      }),
       preview.on('ready', () => {
-        // A "still waiting for the package server" note (T-032) is moot once the build runs.
-        const waiting = (e: RuntimeErrorMessage) =>
-          e.kind === 'module-load' && isPackageStall(e.message);
-        this.pendingErrors = this.pendingErrors.filter((e) => !waiting(e));
-        const runtimeErrors = this.snapshot.runtimeErrors.some(waiting)
-          ? this.snapshot.runtimeErrors.filter((e) => !waiting(e))
-          : this.snapshot.runtimeErrors;
-        this.update({
-          preview: 'running',
-          readyCount: this.snapshot.readyCount + 1,
-          runtimeErrors,
-        });
+        this.update({ preview: 'running', readyCount: this.snapshot.readyCount + 1 });
       }),
       // Console, errors and drop notices: batched, one snapshot update per frame.
       preview.on('console', () => {

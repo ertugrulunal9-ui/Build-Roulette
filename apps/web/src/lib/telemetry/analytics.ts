@@ -77,7 +77,7 @@ export interface SyncHealthProps extends PreviewHealthProps {
  * tab's own timers did not run during the silence (starvation evidence, not counted).
  */
 export interface PreviewCrashProps {
-  /** The battle the preview belongs to; null outside a battle (the playground). */
+  /** The battle the preview belongs to; null outside a battle (`/try`). */
   battle_id: string | null;
   /** `live`: the player's own build while building; `reveal`: a REVEAL spotlight or the last look. */
   mode: 'live' | 'reveal';
@@ -96,31 +96,17 @@ export interface PreviewCrashProps {
 }
 
 /**
- * A bundler worker start that stalled or failed, or that worked only on the automatic retry
- * after a stall (T-039, sandbox-health.ts). One per worker start; a clean first start sends
- * nothing.
+ * One import of a built site (docs/09 §9.5): how it went, never what was imported (no file
+ * or folder names, no sizes that could fingerprint a project).
  */
-export interface BundlerStartProps {
-  /** The battle being built; null outside a battle (the playground). */
+export interface SiteImportProps {
+  /** The battle being built; null outside a battle (`/try`). */
   battle_id: string | null;
-  /**
-   * `stalled`: no progress for 15 s during the download, or not ready 60 s after it (T-041);
-   * retried once. `error`: a load or init error.
-   */
-  outcome: 'ready' | 'stalled' | 'error';
-  /** How far it got: the worker script never ran, esbuild.wasm was downloading, or compiling. */
-  stage: 'worker' | 'download' | 'compile';
-  /** 1, or 2 for the automatic retry after a stall. */
-  attempt: number;
-  /** From this worker's start to the outcome. */
-  elapsed_ms: number;
-  /**
-   * The page-awake part of `elapsed_ms`, which the limits count (T-041): the rest is time the
-   * page itself did not run (a starved or stopped renderer).
-   */
-  awake_ms: number;
-  /** Bytes of esbuild.wasm received. */
-  loaded_bytes: number;
+  /** `drop`: dragged onto the page; `folder` / `zip`: one of the two pickers. */
+  via: 'drop' | 'folder' | 'zip';
+  outcome: 'ok' | 'error';
+  /** The import error (`@br/site`'s code, `-` as `_`: `not_built`), null on success. */
+  error: string | null;
 }
 
 export interface AnalyticsEvents {
@@ -154,7 +140,7 @@ export interface AnalyticsEvents {
   report_filed: { reason: ReportReason; surface: 'results' | 'reveal' };
   sync_health: SyncHealthProps;
   preview_crash: PreviewCrashProps;
-  bundler_start: BundlerStartProps;
+  site_import: SiteImportProps;
 }
 
 export type AnalyticsEventName = keyof AnalyticsEvents;

@@ -15,17 +15,20 @@
  *   nothing a client does makes a screenshot faster, and the 5 s sweep ends RESULTS as soon
  *   as the last one lands or the capture deadline passes (docs/07 §7.5.7: every client
  *   nudging every 5 s was 41 % of all requests under a capture backlog).
- * - **Autosave:** every 30 s and when the tab is hidden, the last good build and the
- *   workspace go to `autosave/{source.json,bundle.js,bundle.css,manifest.json}` (upsert). A final
- *   autosave runs 3 s before the deadline and once more during the SHIPPING grace, so a
- *   player who does not ship is auto-shipped with their latest work.
- * - **Ship:** thumbnail (best effort) → production build → upload `source.json`,
- *   `bundle.js`, `bundle.css`, `manifest.json` (the pinned dependencies, read by the others
- *   during REVEAL), `thumb.webp` → `ship_build` with stats.
- * - **Results:** the shipped bundle is fetched back from storage for the "last look"
+ * - **Import (docs/09):** the player builds locally and imports the built site; the BUILD
+ *   screen hands every good import to `importSite()`. The latest import is the build: it is
+ *   kept in IndexedDB on the app origin (`battle:{id}`, local-sites.ts) and uploaded as
+ *   `autosave/site.bin` (upsert) at once, so the deadline auto-ships it. A failed upload is
+ *   retried after 5, 10, 20, then every 30 s; it is tried again 3 s before the deadline,
+ *   during the SHIPPING grace and when the tab is hidden.
+ * - **Restore:** a battle opened during BUILD (a reload, another device) gets its last import
+ *   back: from IndexedDB, else from the remote `autosave/site.bin`.
+ * - **Ship:** thumbnail of the live preview (best effort) → upload `site.bin` (the imported
+ *   pack) and `thumb.webp` → `ship_build` with stats `{files, bundle_bytes, imports}`.
+ * - **Results:** the shipped site pack is fetched back from storage for the "last look"
  *   preview (reveal mode) until DESTROY.
  * - **Destroy:** when the phase becomes `destroyed`, a short animation, then the battle's
- *   IndexedDB workspace is deleted and the reveal preview is dropped.
+ *   IndexedDB site is deleted and the reveal preview is dropped.
  *
  * Plain TypeScript with injected API, clock and storage, like SandboxController, so it can
  * be unit tested with fakes and fake timers. React reads it with useSyncExternalStore.
@@ -43,17 +46,17 @@
  * is off.
  */
 import { isTerminalPhase, remainingMs } from '@br/game';
-import type { ImportMap } from '@br/protocol';
-import { buildImportMap, type PreviewBuild } from '@br/runtime';
-import type { Workspace } from '@br/workspace';
+import type { PreviewBuild } from '@br/runtime';
+import { battleSiteKey, type LocalSites } from '../site/local-sites';
+import { siteFromPack, type ImportedSite } from '../site/site';
+import { pruneBattleSites } from '../site/site-cleanup';
 import { track as defaultTrack, type BattleMode, type Track } from '../telemetry/analytics';
 import { setTelemetryContext } from '../telemetry/context';
-import type { BuildFile, SoloApi } from './api';
+import type { SoloApi } from './api';
 import { ServerClock } from './clock-sync';
 import { GameError, toGameError } from './errors';
-import { buildStats, manifestJson, parseSourceJson, sourceJson } from './stats';
+import { siteStats } from './stats';
 import type { BattleSnapshot, BuildStats, ShipResult, SnapshotBuild } from './types';
-import { pruneBattleWorkspaces, type StoredBattleWorkspace } from './workspace-cleanup';
 
 // ─── Dependencies ─────────────────────────────────────────────────────────────────────
 
@@ -75,34 +78,20 @@ export const realClock: SoloClock = {
   random: () => Math.random(),
 };
 
-/** The battle workspaces in IndexedDB (key `battle:{id}`). */
-export interface LocalWorkspaces {
-  delete(workspaceId: string): Promise<void>;
-  /** Every battle workspace with its last local save (for the stale cleanup). */
-  listBattleWorkspaces(): Promise<StoredBattleWorkspace[]>;
-}
+export type { LocalSites } from '../site/local-sites';
 
-export interface BuildArtifacts {
-  js: string;
-  css: string;
-  importMap: ImportMap;
-}
-
-/** What the BUILD screen exposes while it is mounted. */
-export interface WorkspaceBridge {
-  /** The workspace as edited now (files + manifest). */
-  workspace(): Workspace | null;
-  /** The last successful build shown in the live preview (dev mode). */
-  lastGoodBuild(): BuildArtifacts | null;
-  /** A production build of the current workspace. */
-  productionBuild(): Promise<BuildArtifacts & { ok: boolean; errorCount: number }>;
+/** What the BUILD screen's live preview offers while it is mounted. */
+export interface PreviewBridge {
   /** Best-effort thumbnail of the live preview (WebP), or null. */
   thumbnail(size: { width: number; height: number }): Promise<Blob | null>;
-  counters(): { rebuilds: number; pastes: number };
 }
 
 export interface SoloTimings {
-  autosaveIntervalMs: number;
+  /**
+   * A failed autosave upload is tried again after these delays (the last one repeats), until
+   * it lands or the build is final.
+   */
+  autosaveRetryMs: readonly number[];
   /** The final autosave runs this long before the build deadline. */
   finalAutosaveLeadMs: number;
   nudgeJitterMs: number;
@@ -122,7 +111,7 @@ export interface SoloTimings {
 }
 
 export const DEFAULT_TIMINGS: SoloTimings = {
-  autosaveIntervalMs: 30_000,
+  autosaveRetryMs: [5_000, 10_000, 20_000, 30_000],
   finalAutosaveLeadMs: 3_000,
   nudgeJitterMs: 500,
   nudgeBackoffMs: [5_000, 10_000, 20_000, 30_000],
@@ -151,8 +140,8 @@ export interface SoloControllerDeps {
   api: SoloApi;
   /** Multiplayer: the room sync engine drives snapshots and the clock (no polling). */
   external?: ExternalBattleSync;
-  cdnBaseUrl: string;
-  localWorkspaces: LocalWorkspaces;
+  /** The latest import of each battle on this device (IndexedDB). */
+  localSites: LocalSites;
   clock?: SoloClock;
   timings?: Partial<SoloTimings>;
   /** Called when the open battle changes (to keep `?battle=` in the URL). */
@@ -165,14 +154,11 @@ export interface SoloControllerDeps {
 
 export type Stage = 'name' | 'starting' | 'resume' | 'loading' | 'battle';
 
-export type ShipStatus =
-  'idle' | 'thumbnail' | 'building' | 'uploading' | 'shipping' | 'done' | 'error';
+export type ShipStatus = 'idle' | 'thumbnail' | 'uploading' | 'shipping' | 'done' | 'error';
 
 export interface ShipState {
   status: ShipStatus;
   error: GameError | null;
-  /** After `build_failed`: the last working preview can be shipped instead. */
-  canShipLastGood: boolean;
 }
 
 export interface AutosaveState {
@@ -205,6 +191,12 @@ export interface SoloState {
   destroy: DestroyStage;
   /** The server deleted the battle's ephemeral files (`destroyed_at`). */
   sourceDestroyed: boolean;
+  /** The site the player imported last in this battle (what ships), or null. */
+  site: ImportedSite | null;
+  /** Successful imports in this battle (the `imports` stat). */
+  imports: number;
+  /** Looking for an earlier import to bring back (IndexedDB, then the remote autosave). */
+  restoring: boolean;
 }
 
 export const INITIAL_SOLO_STATE: SoloState = {
@@ -215,17 +207,15 @@ export const INITIAL_SOLO_STATE: SoloState = {
   snapshot: null,
   clockOffsetMs: 0,
   error: null,
-  ship: { status: 'idle', error: null, canShipLastGood: false },
+  ship: { status: 'idle', error: null },
   autosave: { status: 'idle', lastSavedAt: null, error: null },
   reveal: { status: 'none', build: null },
   destroy: 'none',
   sourceDestroyed: false,
+  site: null,
+  imports: 0,
+  restoring: false,
 };
-
-/** IndexedDB key of a battle's workspace. */
-export function battleWorkspaceId(battleId: string): string {
-  return `battle:${battleId}`;
-}
 
 /** The caller's build in a snapshot. */
 export function myBuild(snapshot: BattleSnapshot | null): SnapshotBuild | null {
@@ -244,6 +234,9 @@ const COMPLETED_PHASES = new Set(['results', 'destroyed', 'abandoned']);
 
 type TimerName = 'deadline' | 'final' | 'poll' | 'autosave' | 'clock' | 'destroy';
 
+/** The battle phases in which a player's build can still change or be saved. */
+const OPEN_PHASES = new Set(['building', 'shipping']);
+
 export class SoloController {
   private state: SoloState = INITIAL_SOLO_STATE;
   private readonly listeners = new Set<() => void>();
@@ -253,7 +246,7 @@ export class SoloController {
   private readonly deps: SoloControllerDeps;
   private readonly track: Track;
   private readonly timers = new Map<TimerName, TimerHandle>();
-  private bridge: WorkspaceBridge | null = null;
+  private bridge: PreviewBridge | null = null;
   private disposed = false;
   /** Bumped whenever the open battle changes; async work from an older epoch is dropped. */
   private epoch = 0;
@@ -265,11 +258,14 @@ export class SoloController {
   private finalAutosaveDone = false;
   private shippingAutosaveDone = false;
   private autosaving: Promise<void> | null = null;
-  private lastAutosaved: { build: BuildArtifacts; workspace: Workspace } | null = null;
-  /** The `autosave/manifest.json` on the server (it only changes with the dependencies). */
-  private autosavedManifest: string | null = null;
+  /** The import that is in `autosave/site.bin` on the server (by identity). */
+  private lastAutosaved: ImportedSite | null = null;
+  /** Failed autosave uploads in a row (the retry backoff). */
+  private autosaveFailures = 0;
+  /** The battle's earlier import was looked for (once per battle). */
+  private restoreAttempted = false;
   private destroyedSeenAt: number | null = null;
-  /** The last-look bundle was requested (it is fetched once per battle). */
+  /** The last-look site was requested (it is fetched once per battle). */
   private revealAttempted = false;
 
   constructor(deps: SoloControllerDeps) {
@@ -372,16 +368,15 @@ export class SoloController {
     setTelemetryContext({ battleId: null, phase: null, mode: null });
   }
 
-  /** The BUILD screen attaches its workspace while mounted. */
-  attachWorkspace(bridge: WorkspaceBridge): () => void {
+  /** The BUILD screen attaches its live preview while mounted (the ship thumbnail). */
+  attachPreview(bridge: PreviewBridge): () => void {
     this.bridge = bridge;
-    this.ensureAutosaveLoop();
     return () => {
       if (this.bridge === bridge) this.bridge = null;
     };
   }
 
-  /** The tab was hidden: save now (docs/03 §3.6). */
+  /** The tab was hidden: make sure the latest import is saved (docs/03 §3.6). */
   onHidden(): void {
     if (this.canAutosave()) void this.autosave();
   }
@@ -393,74 +388,79 @@ export class SoloController {
     void this.syncClock('measure').then(() => this.refresh());
   }
 
-  /** Autosaves now (the "Save" button and tests). */
+  /** Uploads the latest import now, even if it was saved already (tests). */
   autosaveNow(): Promise<void> {
     return this.autosave({ force: true });
   }
 
   /**
-   * Ships the build. `useLastGood` ships the last working preview instead of a fresh
-   * production build (offered after `build_failed`).
+   * Whether an import is taken now: BUILDING before the deadline, a draft, and no ship in
+   * flight. (The BUILD screen locks its drop zone on the same rule.)
    */
-  async ship(name: string, opts: { useLastGood?: boolean } = {}): Promise<void> {
+  canImport(): boolean {
     const snap = this.state.snapshot;
-    const bridge = this.bridge;
+    const ship = this.state.ship.status;
+    const rem = this.remainingMs();
+    return (
+      snap?.battle.phase === 'building' &&
+      myBuild(snap)?.status === 'draft' &&
+      (rem === null || rem > 0) &&
+      (ship === 'idle' || ship === 'error')
+    );
+  }
+
+  /**
+   * A good import (docs/09 §9.5): it becomes the build. It is kept on this device and
+   * uploaded as `autosave/site.bin` at once (retried until it lands). Returns false when
+   * imports are closed (see `canImport`).
+   */
+  importSite(site: ImportedSite): boolean {
+    const snap = this.state.snapshot;
+    if (!snap || this.disposed || !this.canImport()) return false;
+    const imports = this.state.imports + 1;
+    this.patch({ site, imports, restoring: false });
+    void this.deps.localSites
+      .put(battleSiteKey(snap.battle.id), { site, imports })
+      .catch(() => undefined); // blocked storage: the remote autosave still has it
+    this.autosaveFailures = 0;
+    this.clearTimer('autosave');
+    void this.autosave();
+    return true;
+  }
+
+  /**
+   * Ships the latest import: a thumbnail of the live preview (best effort), then `site.bin`
+   * and `thumb.webp` are uploaded and `ship_build` is called with the stats.
+   */
+  async ship(name: string): Promise<void> {
+    const snap = this.state.snapshot;
     const status = this.state.ship.status;
-    if (!snap || !bridge || (status !== 'idle' && status !== 'error')) return;
+    if (!snap || (status !== 'idle' && status !== 'error')) return;
     const battleId = snap.battle.id;
     const userId = snap.me.user_id;
     const epoch = this.epoch;
-    const fail = (e: unknown, canShipLastGood = false) => {
+    const fail = (e: unknown) => {
       if (epoch !== this.epoch) return;
-      this.patch({ ship: { status: 'error', error: toGameError(e), canShipLastGood } });
+      this.patch({ ship: { status: 'error', error: toGameError(e) } });
     };
-
-    // 1. Thumbnail of what the live preview shows now (before a production build reloads it).
-    this.patch({ ship: { status: 'thumbnail', error: null, canShipLastGood: false } });
-    const thumb = await bridge.thumbnail(this.timings.thumbnailSize).catch(() => null);
-    if (epoch !== this.epoch) return;
-
-    // 2. The bundle.
-    this.patch({ ship: { status: 'building', error: null, canShipLastGood: false } });
-    let bundle: BuildArtifacts;
-    if (opts.useLastGood) {
-      const last = bridge.lastGoodBuild();
-      if (!last) {
-        fail(new GameError('nothing_built'));
-        return;
-      }
-      bundle = last;
-    } else {
-      let built;
-      try {
-        built = await bridge.productionBuild();
-      } catch (e) {
-        fail(e);
-        return;
-      }
-      if (epoch !== this.epoch) return;
-      if (!built.ok) {
-        fail(new GameError('build_failed'), bridge.lastGoodBuild() !== null);
-        return;
-      }
-      bundle = built;
-    }
-    const workspace = bridge.workspace();
-    if (!workspace) {
+    const site = this.state.site;
+    if (!site) {
       fail(new GameError('nothing_built'));
       return;
     }
+    const imports = this.state.imports;
 
-    // 3. Uploads (upsert, so a retry after a partial failure works).
-    this.patch({ ship: { status: 'uploading', error: null, canShipLastGood: false } });
+    // 1. Thumbnail of what the live preview shows now.
+    this.patch({ ship: { status: 'thumbnail', error: null } });
+    const thumb = this.bridge
+      ? await this.bridge.thumbnail(this.timings.thumbnailSize).catch(() => null)
+      : null;
+    if (epoch !== this.epoch) return;
+
+    // 2. Uploads (upsert, so a retry after a partial failure works).
+    this.patch({ ship: { status: 'uploading', error: null } });
     try {
-      const uploads: Promise<void>[] = [
-        this.api.upload(battleId, userId, 'source.json', sourceJson(workspace)),
-        this.api.upload(battleId, userId, 'bundle.js', bundle.js),
-        this.api.upload(battleId, userId, 'bundle.css', bundle.css),
-        // What the others read during REVEAL for the import map (never the source).
-        this.api.upload(battleId, userId, 'manifest.json', manifestJson(workspace)),
-      ];
+      const uploads: Promise<void>[] = [this.api.upload(battleId, userId, 'site.bin', site.pack)];
       if (thumb) uploads.push(this.api.upload(battleId, userId, 'thumb.webp', thumb));
       await Promise.all(uploads);
     } catch (e) {
@@ -469,11 +469,10 @@ export class SoloController {
     }
     if (epoch !== this.epoch) return;
 
-    // 4. ship_build.
-    this.patch({ ship: { status: 'shipping', error: null, canShipLastGood: false } });
-    const stats = buildStats(workspace, bundle, bridge.counters());
+    // 3. ship_build.
+    this.patch({ ship: { status: 'shipping', error: null } });
     try {
-      const shipped = await this.shipWithStats(battleId, name.trim(), stats);
+      const shipped = await this.shipWithStats(battleId, name.trim(), siteStats(site, imports));
       this.track('build_shipped', {
         battle_id: battleId,
         mode: battleMode(snap),
@@ -490,23 +489,8 @@ export class SoloController {
       }
     }
     if (epoch !== this.epoch) return;
-    this.patch({ ship: { status: 'done', error: null, canShipLastGood: false } });
+    this.patch({ ship: { status: 'done', error: null } });
     await this.refresh();
-  }
-
-  /**
-   * The workspace from the remote autosave (`autosave/source.json`), for a player who opens
-   * the battle where IndexedDB has no copy (another device, cleared storage; docs/04 §4.8).
-   */
-  async restoreWorkspace(): Promise<Workspace | null> {
-    const snap = this.state.snapshot;
-    // Nothing can have been autosaved before BUILDING (and the BUILD screen first mounts
-    // during SPIN, so this skips a pointless request for every new battle).
-    if (!snap || snap.battle.phase === 'spinning') return null;
-    const text = await this.api
-      .download(snap.battle.id, snap.me.user_id, 'autosave/source.json')
-      .catch(() => null);
-    return text === null ? null : parseSourceJson(text);
   }
 
   // --- External mode (multiplayer) ----------------------------------------------------
@@ -525,7 +509,7 @@ export class SoloController {
     };
     this.emit();
     this.apply(snapshot);
-    void this.pruneLocalWorkspaces(snapshot);
+    void this.pruneLocalSites(snapshot);
   }
 
   /** A newer snapshot of the open battle (stale or foreign ones are ignored). */
@@ -568,6 +552,9 @@ export class SoloController {
       reveal: INITIAL_SOLO_STATE.reveal,
       destroy: 'none',
       sourceDestroyed: false,
+      site: null,
+      imports: 0,
+      restoring: false,
     });
     try {
       const userId = await this.api.ensureSession();
@@ -579,7 +566,7 @@ export class SoloController {
       this.patch({ stage: 'battle' });
       this.deps.onBattleChange?.(battleId);
       this.apply(snapshot);
-      void this.pruneLocalWorkspaces(snapshot);
+      void this.pruneLocalSites(snapshot);
     } catch (e) {
       if (epoch !== this.epoch) return;
       this.patch({ stage: 'name', battleId: null, error: toGameError(e) });
@@ -588,19 +575,19 @@ export class SoloController {
   }
 
   /**
-   * Deletes the stale copies of other battles (workspace-cleanup.ts): only battles that are
-   * over or untouched for 24 h, never one that another tab is still playing.
+   * Deletes the stale copies of other battles (site-cleanup.ts): only battles that are over
+   * or untouched for 24 h, never one that another tab is still playing.
    */
-  private pruneLocalWorkspaces(snapshot: BattleSnapshot): Promise<string[]> {
-    const local = this.deps.localWorkspaces;
-    return pruneBattleWorkspaces(
+  private pruneLocalSites(snapshot: BattleSnapshot): Promise<string[]> {
+    const local = this.deps.localSites;
+    return pruneBattleSites(
       {
-        list: () => local.listBattleWorkspaces(),
+        list: () => local.listBattleSites(),
         delete: (id) => local.delete(id),
         battlePhases: (ids) => this.api.battlePhases(ids),
         now: () => this.clock.now(),
       },
-      isTerminalPhase(snapshot.battle.phase) ? null : battleWorkspaceId(snapshot.battle.id),
+      isTerminalPhase(snapshot.battle.phase) ? null : battleSiteKey(snapshot.battle.id),
     );
   }
 
@@ -610,7 +597,8 @@ export class SoloController {
     this.finalAutosaveDone = false;
     this.shippingAutosaveDone = false;
     this.lastAutosaved = null;
-    this.autosavedManifest = null;
+    this.autosaveFailures = 0;
+    this.restoreAttempted = false;
     this.destroyedSeenAt = null;
     this.revealAttempted = false;
   }
@@ -685,20 +673,30 @@ export class SoloController {
 
     const mine = myBuild(snapshot);
     const draft = mine?.status === 'draft';
-    if (!draft || phase !== 'building') this.clearTimer('autosave');
-    const autosaveOpen = draft && (phase === 'building' || phase === 'shipping');
+    const autosaveOpen = draft && OPEN_PHASES.has(phase);
+    if (!autosaveOpen) this.clearTimer('autosave');
     const saveStatus = this.state.autosave.status;
     // Once the build is final, autosaves are over (an in-flight one settles on its own).
     if (!autosaveOpen && (saveStatus === 'saved' || saveStatus === 'error')) {
       this.patch({ autosave: { ...this.state.autosave, status: 'closed', error: null } });
     }
 
-    // SHIPPING grace with an unshipped build: one last autosave (uploads are still open).
+    // A battle opened during BUILD (a reload, another device): bring the last import back.
+    if (
+      !this.restoreAttempted &&
+      OPEN_PHASES.has(phase) &&
+      (mine?.status === 'draft' || mine?.status === 'shipped')
+    ) {
+      this.restoreAttempted = true;
+      void this.restoreSite(snapshot);
+    }
+
+    // SHIPPING grace with an unshipped build: one last try if the import is not saved yet
+    // (uploads are still open).
     if (phase === 'shipping' && draft && !this.shippingAutosaveDone) {
       this.shippingAutosaveDone = true;
       void this.autosave({ force: false });
     }
-    if (phase === 'building') this.ensureAutosaveLoop();
 
     // The last look: once per battle, as soon as a snapshot shows the build shipped.
     if (phase === 'results' && !this.revealAttempted && this.state.destroy === 'none') {
@@ -810,65 +808,42 @@ export class SoloController {
     await this.refresh();
   }
 
-  // --- Autosave -----------------------------------------------------------------------
+  // --- Autosave and restore -----------------------------------------------------------
 
   private canAutosave(): boolean {
     const snap = this.state.snapshot;
     const mine = myBuild(snap);
     return (
-      this.bridge !== null &&
       mine?.status === 'draft' &&
       (snap?.battle.phase === 'building' || snap?.battle.phase === 'shipping')
     );
   }
 
-  private ensureAutosaveLoop(): void {
-    if (this.timers.has('autosave') || !this.canAutosave()) return;
-    if (this.state.snapshot?.battle.phase !== 'building') return;
-    this.setTimer('autosave', this.timings.autosaveIntervalMs, () => {
-      void this.autosave().finally(() => {
-        this.ensureAutosaveLoop();
-      });
-    });
-  }
-
   /**
-   * Uploads `autosave/source.json`, `autosave/bundle.js` and `autosave/bundle.css` from the
-   * last good build, plus `autosave/manifest.json` when the dependencies changed since it was
-   * last uploaded (one write less per autosave, which matters for the final one just before
-   * the deadline). Skipped when nothing changed since the last autosave (unless `force`).
+   * Uploads the latest import as `autosave/site.bin` (upsert), unless it is there already
+   * (`force` uploads anyway). A failure is retried after `autosaveRetryMs` (5, 10, 20, then
+   * every 30 s) while the build is open; one refused after the deadline closes autosave.
    */
   private autosave(opts: { force?: boolean } = {}): Promise<void> {
     if (this.autosaving) {
       return this.autosaving.then(() => this.autosave(opts));
     }
     const snap = this.state.snapshot;
-    const bridge = this.bridge;
-    if (!snap || !bridge || !this.canAutosave()) return Promise.resolve();
-    const build = bridge.lastGoodBuild();
-    const workspace = bridge.workspace();
-    if (!build || !workspace) return Promise.resolve();
-    const last = this.lastAutosaved;
-    if (!opts.force && last?.build === build && last.workspace === workspace) {
-      return Promise.resolve();
-    }
+    const site = this.state.site;
+    if (!snap || !site || !this.canAutosave()) return Promise.resolve();
+    if (!opts.force && this.lastAutosaved === site) return Promise.resolve();
     const battleId = snap.battle.id;
     const userId = snap.me.user_id;
     const epoch = this.epoch;
+    this.clearTimer('autosave');
     this.patch({ autosave: { ...this.state.autosave, status: 'saving', error: null } });
-    const manifest = manifestJson(workspace);
-    const files: [BuildFile, string][] = [
-      ['autosave/bundle.js', build.js],
-      ['autosave/bundle.css', build.css],
-      ['autosave/source.json', sourceJson(workspace)],
-    ];
-    if (manifest !== this.autosavedManifest) files.push(['autosave/manifest.json', manifest]);
     this.autosaving = (async () => {
       try {
-        await Promise.all(files.map(([f, body]) => this.api.upload(battleId, userId, f, body)));
+        await this.api.upload(battleId, userId, 'autosave/site.bin', site.pack);
         if (epoch !== this.epoch) return;
-        this.lastAutosaved = { build, workspace };
-        this.autosavedManifest = manifest;
+        this.lastAutosaved = site;
+        this.autosaveFailures = 0;
+        // A newer import that arrived meanwhile is uploaded by the chained call.
         this.patch({
           autosave: { status: 'saved', lastSavedAt: this.clock.now(), error: null },
         });
@@ -886,11 +861,64 @@ export class SoloController {
             error: closed ? null : err,
           },
         });
+        if (!closed) this.scheduleAutosaveRetry();
       } finally {
         this.autosaving = null;
       }
     })();
     return this.autosaving;
+  }
+
+  private scheduleAutosaveRetry(): void {
+    if (!this.canAutosave()) return;
+    const steps = this.timings.autosaveRetryMs;
+    const wait = steps[Math.min(this.autosaveFailures, steps.length - 1)] ?? 30_000;
+    this.autosaveFailures++;
+    this.setTimer('autosave', wait, () => {
+      void this.autosave();
+    });
+  }
+
+  /**
+   * The battle's last import on this device (IndexedDB), else the remote autosave
+   * (`autosave/site.bin`, or the shipped `site.bin`). One from this device is uploaded again,
+   * as nothing says it reached the server. An import made meanwhile wins.
+   */
+  private async restoreSite(snapshot: BattleSnapshot): Promise<void> {
+    const battleId = snapshot.battle.id;
+    const userId = snapshot.me.user_id;
+    const shipped = myBuild(snapshot)?.status === 'shipped';
+    const epoch = this.epoch;
+    const stillWanted = () => epoch === this.epoch && !this.disposed && this.state.site === null;
+    this.patch({ restoring: true });
+    try {
+      const local = await this.deps.localSites.get(battleSiteKey(battleId)).catch(() => null);
+      if (!stillWanted()) return;
+      if (local) {
+        this.patch({ site: local.site, imports: Math.max(this.state.imports, local.imports) });
+        if (!shipped) void this.autosave();
+        return;
+      }
+      const file = shipped ? 'site.bin' : 'autosave/site.bin';
+      const pack = await this.api.download(battleId, userId, file).catch(() => null);
+      if (!stillWanted() || !pack) return;
+      const site = siteFromPack(pack);
+      if (!site) return;
+      // It is on the server already. How many imports made it is not known: at least one.
+      if (!shipped) this.lastAutosaved = site;
+      const imports = Math.max(this.state.imports, 1);
+      this.patch({ site, imports });
+      if (!shipped) {
+        this.patch({
+          autosave: { status: 'saved', lastSavedAt: this.state.autosave.lastSavedAt, error: null },
+        });
+      }
+      void this.deps.localSites
+        .put(battleSiteKey(battleId), { site, imports })
+        .catch(() => undefined);
+    } finally {
+      if (epoch === this.epoch) this.patch({ restoring: false });
+    }
   }
 
   // --- Ship helpers -------------------------------------------------------------------
@@ -954,7 +982,7 @@ export class SoloController {
 
   // --- Results and destroy ------------------------------------------------------------
 
-  /** Fetches the shipped (or auto-shipped) bundle back for the last-look preview. */
+  /** Fetches the shipped (or auto-shipped) site pack back for the last-look preview. */
   private async loadReveal(): Promise<void> {
     const snap = this.state.snapshot;
     const mine = myBuild(snap);
@@ -969,34 +997,14 @@ export class SoloController {
     this.revealAttempted = true;
     const epoch = this.epoch;
     this.patch({ reveal: { status: 'loading', build: null } });
-    const prefix = mine.status === 'shipped' ? '' : 'autosave/';
-    const file = (name: 'bundle.js' | 'bundle.css' | 'source.json') =>
-      this.api.download(snap.battle.id, snap.me.user_id, `${prefix}${name}` as BuildFile);
+    const file = mine.status === 'shipped' ? 'site.bin' : 'autosave/site.bin';
     try {
-      const [js, css, source] = await Promise.all([
-        file('bundle.js'),
-        file('bundle.css'),
-        file('source.json'),
-      ]);
+      const pack = await this.api.download(snap.battle.id, snap.me.user_id, file);
       if (epoch !== this.epoch || this.state.destroy !== 'none') return;
-      if (!js) {
-        this.patch({ reveal: { status: 'unavailable', build: null } });
-        return;
-      }
-      let deps: Record<string, string> = {};
-      try {
-        const parsed = JSON.parse(source ?? '{}') as {
-          manifest?: { dependencies?: Record<string, string> };
-        };
-        deps = parsed.manifest?.dependencies ?? {};
-      } catch {
-        // An unreadable manifest: React from nowhere; the preview shows the load error.
-      }
       this.patch({
-        reveal: {
-          status: 'ready',
-          build: { js, css: css ?? '', importMap: buildImportMap(deps, this.deps.cdnBaseUrl) },
-        },
+        reveal: pack
+          ? { status: 'ready', build: { site: pack } }
+          : { status: 'unavailable', build: null },
       });
     } catch {
       if (epoch !== this.epoch) return;
@@ -1013,9 +1021,9 @@ export class SoloController {
     this.clearTimer('final');
     const battleId = this.state.battleId;
     const wipe = () => {
-      this.patch({ destroy: 'done', reveal: { status: 'destroyed', build: null } });
+      this.patch({ destroy: 'done', reveal: { status: 'destroyed', build: null }, site: null });
       if (battleId) {
-        void this.deps.localWorkspaces.delete(battleWorkspaceId(battleId)).catch(() => undefined);
+        void this.deps.localSites.delete(battleSiteKey(battleId)).catch(() => undefined);
       }
     };
     if (!live) {

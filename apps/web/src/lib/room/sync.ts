@@ -43,9 +43,8 @@
  * - **Presence:** `{user_id, display_name, device, activity}` tracked on the room topic.
  *   It is claimed after every (re)subscribe (the lobby's online dots and the sidebar need
  *   it). Activity updates (T-029) go out only during BUILDING, only for a change that
- *   matters (`activityMatters`: active on/off, the build failing for 10 s or fixed, ±20
- *   lines), at most once per 15 s, the latest activity winning. Any two tracks are 2 s apart and at
- *   most 4 fall in 30 s (Realtime closes the channel of a client that sends more than 5
+ *   matters (`activityMatters`: the first import, then each new one), at most once per 15 s,
+ *   the latest activity winning. Any two tracks are 2 s apart and at most 4 fall in 30 s (Realtime closes the channel of a client that sends more than 5
  *   presence messages in 30 s); none while offline (they would arrive as one burst).
  * - **Closed channels:** a topic the server closes (CLOSED, e.g. a rate limit or an
  *   expired token; supabase-js does not rejoin those) is subscribed again after 5 s, 10 s,
@@ -65,7 +64,6 @@
  * fakes (sync.test.ts). React reads it through the RoomController.
  */
 import {
-  ACTIVITY_BUILD_ERROR_MS,
   HEARTBEAT_INTERVAL_MS,
   PRESENCE_ACTIVITY_INTERVAL_MS,
   PRESENCE_MAX_PER_WINDOW,
@@ -181,8 +179,6 @@ export interface SyncTimings {
   presenceThrottleMs: number;
   /** BUILD activity updates at most this often (and only during BUILDING). */
   presenceActivityMs: number;
-  /** A failing build is reported once it has failed this long (or was already reported). */
-  buildErrorMs: number;
   /** At most `presenceMaxPerWindow` tracks per `presenceWindowMs` (Realtime's limit is 5/30 s). */
   presenceMaxPerWindow: number;
   presenceWindowMs: number;
@@ -207,7 +203,6 @@ export const DEFAULT_SYNC_TIMINGS: SyncTimings = {
   clockResyncMs: 60_000,
   presenceThrottleMs: PRESENCE_THROTTLE_MS,
   presenceActivityMs: PRESENCE_ACTIVITY_INTERVAL_MS,
-  buildErrorMs: ACTIVITY_BUILD_ERROR_MS,
   presenceMaxPerWindow: PRESENCE_MAX_PER_WINDOW,
   presenceWindowMs: PRESENCE_WINDOW_MS,
   fallbackPollMs: 5_000,
@@ -498,7 +493,10 @@ function deviceKind(): 'desktop' | 'mobile' {
   }
 }
 
-export const IDLE_ACTIVITY: Activity = { lines: 0, last_build: 'ok', typing: false };
+export const IDLE_ACTIVITY: Activity = { imported: false, imports: 0 };
+
+/** Most imports a presence payload may claim (it is client data; only the sidebar shows it). */
+const MAX_CLAIMED_IMPORTS = 10_000;
 
 /** The presence state from Realtime (key → metas) as one payload per user. */
 export function normalizePresence(state: Record<string, unknown[]>): PresenceMap {
@@ -507,7 +505,7 @@ export function normalizePresence(state: Record<string, unknown[]>): PresenceMap
     user_id?: unknown;
     display_name?: unknown;
     device?: unknown;
-    activity?: { lines?: unknown; last_build?: unknown; typing?: unknown } | null;
+    activity?: { imported?: unknown; imports?: unknown } | null;
   }
   const out: PresenceMap = {};
   for (const metas of Object.values(state)) {
@@ -520,16 +518,18 @@ export function normalizePresence(state: Record<string, unknown[]>): PresenceMap
     );
     const first = valid[0];
     if (!first) continue;
-    // Several tabs of one user: typing if any tab types, the largest line count.
+    // Several tabs of one user: imported if any tab has a site, the most imports.
     const activity = valid.reduce<Activity>(
       (acc, m) => {
         const a = m.activity;
         if (typeof a !== 'object' || a === null) return acc;
-        const lines = typeof a.lines === 'number' && Number.isFinite(a.lines) ? a.lines : 0;
+        const imports =
+          typeof a.imports === 'number' && Number.isFinite(a.imports) && a.imports > 0
+            ? Math.min(Math.floor(a.imports), MAX_CLAIMED_IMPORTS)
+            : 0;
         return {
-          lines: Math.max(acc.lines, lines),
-          last_build: a.last_build === 'error' ? 'error' : acc.last_build,
-          typing: acc.typing || a.typing === true,
+          imported: acc.imported || a.imported === true,
+          imports: Math.max(acc.imports, imports),
         };
       },
       { ...IDLE_ACTIVITY },
@@ -587,8 +587,6 @@ export class RoomSync {
   private activity: Activity = IDLE_ACTIVITY;
   /** The activity in the last track (what the others see), or null before the first. */
   private sentActivity: Activity | null = null;
-  /** Since when the build has been failing (the activity's own `last_build`), or null. */
-  private buildErrorSince: number | null = null;
   /** A track is owed regardless of the activity: a (re)subscribe, a new name, a refusal. */
   private claimOwed = true;
   private lastTrackAt = Number.NEGATIVE_INFINITY;
@@ -733,12 +731,10 @@ export class RoomSync {
   }
 
   /**
-   * The player's BUILD activity (lines, last build, active); sent only during BUILDING, when
-   * it matters, at most every 15 s (see flushPresence).
+   * The player's BUILD activity (imported, how many imports); sent only during BUILDING,
+   * when it matters, at most every 15 s (see flushPresence).
    */
   setActivity(activity: Activity): void {
-    if (activity.last_build !== 'error') this.buildErrorSince = null;
-    else this.buildErrorSince ??= this.clock.now();
     this.activity = activity;
     this.flushPresence();
   }
@@ -1048,18 +1044,6 @@ export class RoomSync {
   }
 
   /**
-   * The activity as the others should see it: a failing build only once it has failed for
-   * `buildErrorMs` (a half-typed line breaks the 150 ms rebuild for a moment; that is not
-   * news), or when they were already told it fails.
-   */
-  private reportedActivity(now: number): Activity {
-    const a = this.activity;
-    if (a.last_build !== 'error' || this.sentActivity?.last_build === 'error') return a;
-    const since = this.buildErrorSince ?? now;
-    return now - since >= this.timings.buildErrorMs ? a : { ...a, last_build: 'ok' };
-  }
-
-  /**
    * Tracks this client's presence when something is owed (T-029):
    * - a **claim** (after a (re)subscribe or a new name) always goes out, as soon as the 2 s
    *   gap and the 4-per-30-s budget allow;
@@ -1067,14 +1051,13 @@ export class RoomSync {
    *   (`activityMatters` against what the others last received), and at most once per
    *   `presenceActivityMs` (15 s) after the previous track. A held-back change is sent when
    *   the gap is over, as the latest activity; one that stops mattering meanwhile is not.
-   *   A failing build counts once it has failed for 10 s (`reportedActivity`).
    * Nothing is sent while offline (it would arrive as a burst).
    */
   private flushPresence(): void {
     if (this.stopped || !this.presence || !this.roomSub || !this.roomSubscribed) return;
     if (this.offline) return; // sent when the network is back
     const now = this.clock.now();
-    const activity = this.reportedActivity(now);
+    const activity = this.activity;
     const payload: PresencePayload = { ...this.presence, activity };
     const json = JSON.stringify(payload);
     const claim = this.claimOwed;
@@ -1083,15 +1066,7 @@ export class RoomSync {
       claim ||
       (json !== this.lastTracked && building && activityMatters(this.sentActivity, activity));
     if (!wanted) {
-      const since = this.buildErrorSince;
-      if (building && since !== null && activity.last_build === 'ok') {
-        // Failing, not long enough to tell: look again when it is.
-        this.setTimer('presence', since + this.timings.buildErrorMs - now, () => {
-          this.flushPresence();
-        });
-      } else {
-        this.clearTimer('presence');
-      }
+      this.clearTimer('presence');
       return;
     }
     const { presenceThrottleMs, presenceActivityMs, presenceMaxPerWindow, presenceWindowMs } =

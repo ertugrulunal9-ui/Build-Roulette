@@ -8,7 +8,7 @@
 import { ROOM_LIMITS, isTerminalPhase, type JoinRoomError } from '@br/game';
 import Link from 'next/link';
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
-import { playgroundConfig } from '../../lib/playground/config';
+import { indexedDbSites } from '../../lib/site/local-sites';
 import { SupabaseRealtime, SupabaseRoomApi } from '../../lib/room/api';
 import {
   browserNameStore,
@@ -23,7 +23,6 @@ import { useBattleState, useRoom, useShowState } from '../../lib/room/use-room';
 import { SupabaseSoloApi } from '../../lib/solo/api';
 import type { SoloController, SoloState } from '../../lib/solo/controller';
 import { describeError, type GameError } from '../../lib/solo/errors';
-import { indexedDbWorkspaces } from '../../lib/solo/local-workspaces';
 import { randomDisplayName } from '../../lib/solo/names';
 import { useTicker } from '../../lib/solo/use-ticker';
 import { ensureSignedIn, getSupabase } from '../../lib/supabase/browser';
@@ -53,8 +52,7 @@ export default function RoomApp({ code }: { code: string }) {
       api: new SupabaseRoomApi(supabase, ensureSignedIn),
       soloApi: new SupabaseSoloApi(supabase, ensureSignedIn),
       realtime: new SupabaseRealtime(supabase),
-      cdnBaseUrl: playgroundConfig.cdnBaseUrl,
-      localWorkspaces: indexedDbWorkspaces,
+      localSites: indexedDbSites,
       nameStore: browserNameStore,
       env: browserEnvironment,
     };

@@ -1,14 +1,14 @@
 // @vitest-environment happy-dom
 /**
- * The crashed notice of the playground preview: the watchdog's reason and phase read
- * differently (could not start / froze while loading / froze while running), and the
- * notice carries them as data attributes for the e2e failure diagnostics. Also the
- * bundler's failed state and its Retry (T-039).
+ * The live preview of an imported site: the crashed notice (the watchdog's reason and phase
+ * read differently, carried as data attributes for the e2e failure diagnostics), the overlay
+ * for a site the sandbox could not serve, and the collapsible Problems / Console panel.
  */
+import type { RuntimeErrorMessage } from '@br/protocol';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { createElement, createRef } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { SandboxSnapshot } from '../../lib/playground/sandbox';
+import type { PreviewSnapshot } from '../../lib/preview/preview-controller';
 import { PreviewPane } from './PreviewPane';
 
 afterEach(() => {
@@ -17,30 +17,30 @@ afterEach(() => {
 
 const noop = () => undefined;
 
-function renderCrashed(crash: NonNullable<SandboxSnapshot['crash']>) {
-  const snapshot: SandboxSnapshot = {
-    bundler: 'ready',
-    bundlerError: null,
-    building: false,
-    lastBuild: null,
-    preview: 'crashed',
-    crash,
-    runtimeErrors: [],
-    console: [],
-    readyCount: 1,
-  };
+const RUNNING: PreviewSnapshot = {
+  preview: 'running',
+  crash: null,
+  runtimeErrors: [],
+  console: [],
+  readyCount: 1,
+};
+
+function renderPane(snapshot: Partial<PreviewSnapshot>, handlers: Record<string, () => void> = {}) {
   render(
     createElement(PreviewPane, {
       hostRef: createRef<HTMLDivElement>(),
-      snapshot,
-      shellUrl: 'http://127.0.0.1:4311/v1/',
+      snapshot: { ...RUNNING, ...snapshot },
+      shellUrl: 'http://127.0.0.1:4311/v2/',
       onRestart: noop,
-      onRetryBundler: noop,
       onDismissErrors: noop,
       onClearConsole: noop,
-      onOpenDiagnostic: noop,
+      ...handlers,
     }),
   );
+}
+
+function renderCrashed(crash: NonNullable<PreviewSnapshot['crash']>) {
+  renderPane({ preview: 'crashed', crash });
   return screen.getByTestId('preview-crashed');
 }
 
@@ -63,7 +63,7 @@ describe('PreviewPane crashed notice', () => {
     });
   });
 
-  it('a freeze during the load: the build did not finish starting (after the 15 s grace)', () => {
+  it('a freeze during the load: the site did not finish starting (after the 15 s grace)', () => {
     const note = renderCrashed({
       reason: 'heartbeat-timeout',
       silentForMs: 15_140,
@@ -78,113 +78,90 @@ describe('PreviewPane crashed notice', () => {
     expect(note.dataset['phase']).toBe('loading');
   });
 
-  it('a handshake timeout: the preview could not start', () => {
-    const note = renderCrashed({
-      reason: 'handshake-timeout',
-      silentForMs: 10_100,
-      phase: 'connecting',
-      wallSilentForMs: 10_100,
-      stalledMs: 0,
-      longestStallMs: 0,
-    });
+  it('a handshake timeout: the preview could not start; Restart restarts it', () => {
+    const onRestart = vi.fn();
+    renderPane(
+      {
+        preview: 'crashed',
+        crash: {
+          reason: 'handshake-timeout',
+          silentForMs: 10_100,
+          phase: 'connecting',
+          wallSilentForMs: 10_100,
+          stalledMs: 0,
+          longestStallMs: 0,
+        },
+      },
+      { onRestart },
+    );
+    const note = screen.getByTestId('preview-crashed');
     expect(note.textContent).toContain('The preview could not start');
     expect(note.textContent).toContain('did not answer');
+    fireEvent.click(screen.getByRole('button', { name: 'Restart preview' }));
+    expect(onRestart).toHaveBeenCalledTimes(1);
   });
 });
 
-describe('PreviewPane package errors (T-032)', () => {
-  function renderError(message: string) {
-    const snapshot: SandboxSnapshot = {
-      bundler: 'ready',
-      bundlerError: null,
-      building: false,
-      lastBuild: null,
-      preview: 'running',
-      crash: null,
-      runtimeErrors: [{ type: 'runtime-error', kind: 'module-load', message }],
-      console: [],
-      readyCount: 1,
-    };
+describe('PreviewPane errors of the site', () => {
+  const err = (message: string, kind: RuntimeErrorMessage['kind'] = 'error') =>
+    ({ type: 'runtime-error', kind, message }) as RuntimeErrorMessage;
+
+  it('a site the sandbox could not serve: an overlay with the reason', () => {
+    const onDismissErrors = vi.fn();
+    renderPane(
+      {
+        runtimeErrors: [
+          err(
+            'The imported site could not be read: bad header length. Import it again.',
+            'module-load',
+          ),
+        ],
+      },
+      { onDismissErrors },
+    );
+    expect(screen.getByTestId('error-overlay').textContent).toContain(
+      'Your site could not be loaded',
+    );
+    expect(screen.getByTestId('error-message').textContent).toContain('could not be read');
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
+    expect(onDismissErrors).toHaveBeenCalledTimes(1);
+  });
+
+  it('a file that failed to load or a runtime error only counts under Problems', () => {
+    renderPane({
+      runtimeErrors: [
+        err('Failed to load /assets/missing.js', 'module-load'),
+        err('TypeError: x is undefined'),
+      ],
+      console: [{ id: 1, level: 'log', text: 'hello from the site', source: 'sandbox' }],
+    });
+    expect(screen.queryByTestId('error-overlay')).toBeNull();
+    const panel = screen.getByTestId('problems-panel');
+    expect(panel.dataset['open']).toBe('false');
+    expect(screen.getByTestId('problem-count').textContent).toBe('(2)');
+    expect(screen.queryByTestId('problems')).toBeNull();
+    // Opens on a click (a keyboard button), Problems first.
+    fireEvent.click(screen.getByTestId('problems-toggle'));
+    expect(panel.dataset['open']).toBe('true');
+    const problems = screen.getByTestId('problems');
+    expect(problems.textContent).toContain('Failed to load /assets/missing.js');
+    expect(problems.textContent).toContain('TypeError: x is undefined');
+    fireEvent.click(screen.getByRole('tab', { name: /Console/ }));
+    expect(screen.getByTestId('console').textContent).toContain('hello from the site');
+  });
+
+  it('before anything is imported there is no panel', () => {
     render(
       createElement(PreviewPane, {
         hostRef: createRef<HTMLDivElement>(),
-        snapshot,
-        shellUrl: 'http://127.0.0.1:4311/v1/',
+        snapshot: { ...RUNNING, preview: 'idle', readyCount: 0 },
+        shellUrl: 'http://127.0.0.1:4311/v2/',
         onRestart: noop,
-        onRetryBundler: noop,
         onDismissErrors: noop,
         onClearConsole: noop,
-        onOpenDiagnostic: noop,
+        hidePanel: true,
       }),
     );
-    return screen.getByTestId('error-overlay');
-  }
-
-  it('shows which package could not load', () => {
-    const overlay = renderError('Package server unreachable: zustand@5.0.15');
-    expect(overlay.textContent).toContain('The build failed to load');
-    expect(screen.getByTestId('error-message').textContent).toBe(
-      'Package server unreachable: zustand@5.0.15',
-    );
-  });
-
-  it('a "still waiting" note is not a failure', () => {
-    const overlay = renderError(
-      'Still waiting for the package server after 8 s: zustand@5.0.15\nThe preview starts as soon as it answers.',
-    );
-    expect(overlay.textContent).toContain('The build is still loading');
-    expect(overlay.textContent).not.toContain('failed');
-  });
-});
-
-describe('PreviewPane bundler states (T-039)', () => {
-  function renderBundler(bundler: SandboxSnapshot['bundler'], bundlerError: string | null) {
-    const onRetryBundler = vi.fn();
-    const snapshot: SandboxSnapshot = {
-      bundler,
-      bundlerError,
-      building: bundler === 'booting',
-      lastBuild: null,
-      preview: 'connecting',
-      crash: null,
-      runtimeErrors: [],
-      console: [],
-      readyCount: 0,
-    };
-    render(
-      createElement(PreviewPane, {
-        hostRef: createRef<HTMLDivElement>(),
-        snapshot,
-        shellUrl: 'http://127.0.0.1:4311/v1/',
-        onRestart: noop,
-        onRetryBundler,
-        onDismissErrors: noop,
-        onClearConsole: noop,
-        onOpenDiagnostic: noop,
-      }),
-    );
-    return onRetryBundler;
-  }
-
-  it('a bundler that could not start shows why and a Retry button that restarts it', () => {
-    const onRetry = renderBundler(
-      'failed',
-      "Couldn't start the bundler: the download stalled (no progress for 15 s, 2 attempts)",
-    );
-    const panel = screen.getByTestId('bundler-failed');
-    expect(panel.getAttribute('role')).toBe('alert');
-    expect(screen.getByTestId('bundler-error').textContent).toBe(
-      "Couldn't start the bundler: the download stalled (no progress for 15 s, 2 attempts)",
-    );
-    expect(panel.textContent).toContain('Your code is saved');
-    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
-    expect(onRetry).toHaveBeenCalledTimes(1);
-  });
-
-  it('while the bundler starts there is no failure and no Retry', () => {
-    renderBundler('booting', null);
-    expect(screen.getByText('Starting the bundler…')).toBeTruthy();
-    expect(screen.queryByTestId('bundler-failed')).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
+    expect(screen.queryByTestId('problems-panel')).toBeNull();
   });
 });

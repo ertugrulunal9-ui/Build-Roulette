@@ -12,21 +12,20 @@
  *   engine feeds it snapshots and the clock, and the solo stages (spin, build, ship, results,
  *   destroy) render it. REVEAL and VOTING run in a RevealVoteController fed the same
  *   snapshots. A rematch is a new battle, so new controllers.
- * - **Leave / kicked:** `leave_room` (and the battle's local workspace is deleted if a battle
- *   was running), or the kicked / closed / gone end states.
+ * - **Leave / kicked:** `leave_room` (and the battle's imported site is deleted from this
+ *   browser if a battle was running), or the kicked / closed / gone end states.
  * - **Telemetry (T-030):** `room_joined`, `battle_started` and `rematch` (the host's start),
  *   and one `sync_health` event per battle from the sync engine's counters (analytics.ts),
  *   plus this tab's preview watchdog counters for the battle (T-031, sandbox-health.ts);
  *   the room id is the error reports' `room_id` tag. All no-ops while telemetry is off.
  */
 import { isTerminalPhase, normalizeRoomCode } from '@br/game';
+import { battleSiteKey, type LocalSites } from '../site/local-sites';
 import type { SoloApi } from '../solo/api';
 import {
   SoloController,
-  battleWorkspaceId,
   realClock,
   type DestroyStage,
-  type LocalWorkspaces,
   type SoloClock,
   type TimerHandle,
 } from '../solo/controller';
@@ -87,8 +86,8 @@ export interface RoomControllerDeps {
   /** The battle RPCs and storage (ship, autosave, last look). */
   soloApi: SoloApi;
   realtime: RealtimePort;
-  cdnBaseUrl: string;
-  localWorkspaces: LocalWorkspaces;
+  /** The latest import of each battle on this device (IndexedDB). */
+  localSites: LocalSites;
   nameStore?: NameStore;
   clock?: SoloClock;
   env?: SyncEnvironment;
@@ -481,15 +480,13 @@ export class RoomController {
       const refetch = () => this.sync?.refetchBattle() ?? Promise.resolve();
       const c = new SoloController({
         api: this.deps.soloApi,
-        cdnBaseUrl: this.deps.cdnBaseUrl,
-        localWorkspaces: this.deps.localWorkspaces,
+        localSites: this.deps.localSites,
         clock: this.clock,
         external: { refetch },
         track: this.track,
       });
       const show = new RevealVoteController(snap.battle.id, {
         api: this.deps.api,
-        cdnBaseUrl: this.deps.cdnBaseUrl,
         refetch,
         clock: this.clock,
         track: this.track,
@@ -598,9 +595,7 @@ export class RoomController {
     const battle = this.state.sync.battle;
     // Nothing of a running battle stays in this browser (the server keeps the autosave).
     if (battle?.me.is_player && !isTerminalPhase(battle.battle.phase)) {
-      void this.deps.localWorkspaces
-        .delete(battleWorkspaceId(battle.battle.id))
-        .catch(() => undefined);
+      void this.deps.localSites.delete(battleSiteKey(battle.battle.id)).catch(() => undefined);
     }
     this.teardownSync();
     this.dropBattle();

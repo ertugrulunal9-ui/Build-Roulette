@@ -2,7 +2,7 @@
 
 Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 
-## Current milestone: M5 Hardening + free-tier deploy (all tasks merged; sign-off waits on the user's accounts and the runbook drills in DEPLOY.md)
+## Current milestone: M5 Hardening + free-tier deploy (all tasks merged; the user is setting up the accounts for the GitHub Actions deploy, T-042; sign-off waits on the first deploy and the runbook drills in DEPLOY.md)
 
 | ID | Task | Scope | Status | Notes |
 |---|---|---|---|---|
@@ -23,7 +23,7 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 | T-039 | **Bundler start can hang forever.** `BundlerClient.init()` has no timeout: a stalled `esbuild.wasm` or worker-script fetch leaves "Starting bundler…" on screen with no error and no retry. Seen once in CI run 52 (chaos shard 1, a page stuck for 30 s at the battle start; not reproduced in CI run 53 or in 3 local runs; the artifact can't be downloaded from this environment). Fix: an init timeout, one automatic retry with a fresh worker, then the failed state with a visible Retry; e2e that stalls the wasm response. | `packages/runtime/`, `apps/web/` | done | Merged |
 | T-040 | **esm.sh: one instance per package and a fully pinned template** (from CI run 60, compat against esm.sh: 52/57, React contract 1 problem). esm.sh resolves a package's own dependencies by **range** (`/scheduler@^0.28.0?target=es2022`, `/three@…`, `/chart.js@…`), cached 10 min only, and a range can resolve to a second copy. Seen as: react-dom → scheduler cached only 600 s (the template outage window); `@react-three/fiber (one three)` ok:false; `react-chartjs-2` "category is not a registered scale" (two chart.js). Fix the esm.sh way: externalize every manifest package in every other package's URL (`?external=react,react-dom,three,…`) and map each in the import map to its exact pinned URL. Pin react-dom's `scheduler` in the template map. Also look at `p5` (a dependency's missing export on esm.sh) and `pixi.js` (ready timeout; the unsafe-eval variant passes). Re-run CI compat with `compat_cdn=https://esm.sh`. | `packages/runtime/`, `apps/sandbox-shell/`, `apps/pkg-cdn/` (compat) | done | Merged; **esm.sh CI 56/58, 0 unexpected, React contract ok** |
 | T-041 | **Bundler start: the stall timer can kill a slow compile.** T-039's 15 s no-progress timer gets no messages after the last wasm byte (`compileStreaming` + esbuild `initialize`), so a compile slowed by CPU contention can be killed and retried, and the retry adds load. Seen as CI run 63, chaos shard 3 (8 players on a 4-vCPU runner): a page at "Starting bundler…" for 30 s at battle start, the same symptom as run 52. Fix: a separate, generous compile-stage bound (or worker heartbeats while compiling); keep the stall retry for real network stalls. Reproduce with CPU contention and 8 concurrent boots. | `packages/runtime/`, `apps/web/` (e2e) | done | Merged |
-| T-042 | **One-click deploy from GitHub Actions** (user decision 2026-10-16: the development container cannot reach Cloudflare or Supabase, and the user prefers a browser-only setup to running DEPLOY.md's commands locally). A `workflow_dispatch` workflow plus a tested Node script that does DEPLOY.md §2–§6 from GitHub secrets and variables: Pages projects (real `pages.dev` addresses read back), `db push`, Auth settings, Vault and function secrets (generated once, kept in Vault), the `jobs` function, shell and app deploys, the first admin, optional Turnstile CAPTCHA, `deploy-check`. | `.github/workflows/deploy.yml`, `scripts/deploy/`, `DEPLOY.md`, root `package.json` (test wiring) | in-progress | |
+| T-042 | **One-click deploy from GitHub Actions** (user decision 2026-10-16: the development container cannot reach Cloudflare or Supabase, and the user prefers a browser-only setup to running DEPLOY.md's commands locally). A `workflow_dispatch` workflow plus a tested Node script that does DEPLOY.md §2–§6 from GitHub secrets and variables: Pages projects (real `pages.dev` addresses read back), `db push`, Auth settings, Vault and function secrets (generated once, kept in Vault), the `jobs` function, shell and app deploys, the first admin, optional Turnstile CAPTCHA, `deploy-check`. | `.github/workflows/deploy.yml`, `scripts/deploy/`, `DEPLOY.md`, root `package.json` (test wiring) | done | Merged; first real run pending |
 | T-034 | Free tier: capture + destroy/takedown jobs without an always-on server. Preferred: a Supabase Edge Function (free: 2 s CPU, 500k invocations) run by pg_cron + pg_net, calling Cloudflare Browser Rendering's REST API (free: 10 browser-min/day). A Cloudflare cron Worker would face the same 10 ms CPU limit as T-033. The client thumbnail is the fallback when the budget is spent. | `supabase/` (function, cron), `apps/capture-worker/` (shared code, local stand-in) | done | Merged |
 | T-035 | Free tier: public esm.sh as the package CDN (config, CSP, import-map URL shapes); compat suite against esm.sh in GitHub CI (this container cannot reach esm.sh) | `packages/runtime/`, `apps/sandbox-shell/`, `apps/web/`, `apps/pkg-cdn/` (compat), `ci.yml` | done | Merged; CI compat on esm.sh 52/57 → follow-up T-040 |
 | T-036 | Free tier: Supabase Free adjustments (keep-alive against the 7-day pause, screenshot size/retention for the 1 GB storage, quotas in docs/07), deploy checklist rewritten for the free setup | `supabase/`, `docs/`, `DEPLOY.md` | done | Merged |
@@ -885,3 +885,32 @@ Start M5.
   - playground 24/24, solo 3/3, multiplayer 5/5;
   - **chaos shard 3 three times 4/4** (8-player start: esbuild ready p50 4.8–5.1 s, max 6.3–7.3 s), shards 1 3/3 and 2 2/2.
 - **Push CI after the merge** (run 68 at 3148476): every job green, chaos shards 1–3 included (loadtest and compat are manual-only).
+
+### T-042: accepted (deploy from GitHub Actions; user decision 2026-10-16)
+- **Why:** the development container cannot reach `api.cloudflare.com` or `api.supabase.com`, and the user chose a browser-only setup over running DEPLOY.md's commands locally.
+- **What:**
+  - `.github/workflows/deploy.yml` (manual run only; inputs `target` = check/all/supabase/shell/web and `admin_email`, passed through `env:`);
+  - `scripts/deploy/` (Node 22, no dependencies) does DEPLOY.md §2.2, §3.2–§3.8, §4 and §6.1 idempotently;
+  - the Pages projects' real `pages.dev` addresses are read back (suffixes handled);
+  - the cron and capture secrets are generated once and kept in Vault (`br_capture_hmac_secret` is new);
+  - SQL goes through the Management API's `database/query` with strictly validated, dollar-quoted values;
+  - the child processes get only the secrets they need, and every secret is masked before anything prints.
+- **Preflight (`check`, changes nothing):**
+  - settings, both Cloudflare tokens, the project's status (paused is named as such);
+  - the token's reads, `supabase link` + `migration list` (the CLI 2.119.0 token-format regex `^sbp_(oauth_|v0_)?[a-f0-9]{40}$` is checked first);
+  - the anon key against the project, and that the moderator's account exists;
+  - CAPTCHA on without a site key.
+- **Docs:** DEPLOY.md has a new primary section, "Deploy with GitHub Actions (recommended)". The manual steps stay as "Deploy from your own machine".
+- **Hub re-ran:**
+  - 55/55 unit tests (emulated Cloudflare and Supabase, recorded commands, no secret in any output);
+  - the SQL test against a fresh local stack, 5/5 (Vault create/update, the §3.3 checks, the moderator);
+  - the CLI flags from `--help` (`db push --linked --yes --skip-vault`, `migration list --output-format json`, `functions deploy --use-api --no-verify-jwt --project-ref`);
+  - prettier.
+- **Read the code:** order, idempotency, the CAPTCHA ordering, `childEnv` stripping secrets, quoting.
+- **Watch on the first real run** (marked *assumed* in the code):
+  - whether a project-scoped Supabase token passes the CLI's format check (if not: a legacy token);
+  - the `database/query` row shape;
+  - the secrets list holding SHA-256 digests;
+  - GET auth config returning the CAPTCHA secret;
+  - Cloudflare's `status: active`;
+  - the Browser Run token, which only the first screenshot proves.

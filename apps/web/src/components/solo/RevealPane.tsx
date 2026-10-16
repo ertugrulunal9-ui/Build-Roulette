@@ -147,7 +147,9 @@ export function RevealPane({ battleId, build, status, destroy, caption }: Reveal
             className="absolute inset-0 grid place-items-center bg-zinc-950 p-6 text-center text-white"
             data-testid="build-destroyed"
           >
-            <div className="flex flex-col items-center gap-2">
+            {/* The gap clears the stamp's corners: rotated -8deg, a ~450 px wide stamp reaches
+                ~31 px below its box, onto the line under it. */}
+            <div className="flex flex-col items-center gap-10">
               <p className="br-stamp rounded-lg border-8 border-red-600 px-6 py-3 text-3xl font-black tracking-widest text-red-500 sm:text-4xl">
                 BUILD DESTROYED
               </p>

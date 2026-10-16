@@ -2,7 +2,7 @@
 
 Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 
-## Current milestone: M5 Hardening + free-tier deploy (all tasks merged; the user is setting up the accounts for the GitHub Actions deploy, T-042; sign-off waits on the first deploy and the runbook drills in DEPLOY.md)
+## Current milestone: M5 Hardening + free-tier deploy (all tasks merged; **deployed** 2026-10-16 at https://build-roulette-web.pages.dev; sign-off waits on the first played battle, DEPLOY.md §6.2–§6.6, and the runbook drills, §7)
 
 | ID | Task | Scope | Status | Notes |
 |---|---|---|---|---|
@@ -23,7 +23,7 @@ Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 | T-039 | **Bundler start can hang forever.** `BundlerClient.init()` has no timeout: a stalled `esbuild.wasm` or worker-script fetch leaves "Starting bundler…" on screen with no error and no retry. Seen once in CI run 52 (chaos shard 1, a page stuck for 30 s at the battle start; not reproduced in CI run 53 or in 3 local runs; the artifact can't be downloaded from this environment). Fix: an init timeout, one automatic retry with a fresh worker, then the failed state with a visible Retry; e2e that stalls the wasm response. | `packages/runtime/`, `apps/web/` | done | Merged |
 | T-040 | **esm.sh: one instance per package and a fully pinned template** (from CI run 60, compat against esm.sh: 52/57, React contract 1 problem). esm.sh resolves a package's own dependencies by **range** (`/scheduler@^0.28.0?target=es2022`, `/three@…`, `/chart.js@…`), cached 10 min only, and a range can resolve to a second copy. Seen as: react-dom → scheduler cached only 600 s (the template outage window); `@react-three/fiber (one three)` ok:false; `react-chartjs-2` "category is not a registered scale" (two chart.js). Fix the esm.sh way: externalize every manifest package in every other package's URL (`?external=react,react-dom,three,…`) and map each in the import map to its exact pinned URL. Pin react-dom's `scheduler` in the template map. Also look at `p5` (a dependency's missing export on esm.sh) and `pixi.js` (ready timeout; the unsafe-eval variant passes). Re-run CI compat with `compat_cdn=https://esm.sh`. | `packages/runtime/`, `apps/sandbox-shell/`, `apps/pkg-cdn/` (compat) | done | Merged; **esm.sh CI 56/58, 0 unexpected, React contract ok** |
 | T-041 | **Bundler start: the stall timer can kill a slow compile.** T-039's 15 s no-progress timer gets no messages after the last wasm byte (`compileStreaming` + esbuild `initialize`), so a compile slowed by CPU contention can be killed and retried, and the retry adds load. Seen as CI run 63, chaos shard 3 (8 players on a 4-vCPU runner): a page at "Starting bundler…" for 30 s at battle start, the same symptom as run 52. Fix: a separate, generous compile-stage bound (or worker heartbeats while compiling); keep the stall retry for real network stalls. Reproduce with CPU contention and 8 concurrent boots. | `packages/runtime/`, `apps/web/` (e2e) | done | Merged |
-| T-042 | **One-click deploy from GitHub Actions** (user decision 2026-10-16: the development container cannot reach Cloudflare or Supabase, and the user prefers a browser-only setup to running DEPLOY.md's commands locally). A `workflow_dispatch` workflow plus a tested Node script that does DEPLOY.md §2–§6 from GitHub secrets and variables: Pages projects (real `pages.dev` addresses read back), `db push`, Auth settings, Vault and function secrets (generated once, kept in Vault), the `jobs` function, shell and app deploys, the first admin, optional Turnstile CAPTCHA, `deploy-check`. | `.github/workflows/deploy.yml`, `scripts/deploy/`, `DEPLOY.md`, root `package.json` (test wiring) | done | Merged; first real run pending |
+| T-042 | **One-click deploy from GitHub Actions** (user decision 2026-10-16: the development container cannot reach Cloudflare or Supabase, and the user prefers a browser-only setup to running DEPLOY.md's commands locally). A `workflow_dispatch` workflow plus a tested Node script that does DEPLOY.md §2–§6 from GitHub secrets and variables: Pages projects (real `pages.dev` addresses read back), `db push`, Auth settings, Vault and function secrets (generated once, kept in Vault), the `jobs` function, shell and app deploys, the first admin, optional Turnstile CAPTCHA, `deploy-check`. | `.github/workflows/deploy.yml`, `scripts/deploy/`, `DEPLOY.md`, root `package.json` (test wiring) | done | Merged; deployed 2026-10-16 (Deploy run 2) |
 | T-034 | Free tier: capture + destroy/takedown jobs without an always-on server. Preferred: a Supabase Edge Function (free: 2 s CPU, 500k invocations) run by pg_cron + pg_net, calling Cloudflare Browser Rendering's REST API (free: 10 browser-min/day). A Cloudflare cron Worker would face the same 10 ms CPU limit as T-033. The client thumbnail is the fallback when the budget is spent. | `supabase/` (function, cron), `apps/capture-worker/` (shared code, local stand-in) | done | Merged |
 | T-035 | Free tier: public esm.sh as the package CDN (config, CSP, import-map URL shapes); compat suite against esm.sh in GitHub CI (this container cannot reach esm.sh) | `packages/runtime/`, `apps/sandbox-shell/`, `apps/web/`, `apps/pkg-cdn/` (compat), `ci.yml` | done | Merged; CI compat on esm.sh 52/57 → follow-up T-040 |
 | T-036 | Free tier: Supabase Free adjustments (keep-alive against the 7-day pause, screenshot size/retention for the 1 GB storage, quotas in docs/07), deploy checklist rewritten for the free setup | `supabase/`, `docs/`, `DEPLOY.md` | done | Merged |
@@ -914,3 +914,25 @@ Start M5.
   - GET auth config returning the CAPTCHA secret;
   - Cloudflare's `status: active`;
   - the Browser Run token, which only the first screenshot proves.
+- **First real runs:**
+  - **Deploy run 1** (target `all`): stopped at the settings check, because `CLOUDFLARE_API_TOKEN` was missing. Nothing was changed.
+  - **Deploy run 2** (target `all`, `admin_email` set): **succeeded in 2.5 min**.
+    - Preflight 10/10.
+    - Both Pages projects were created without a suffix: `build-roulette-web.pages.dev` and `build-roulette-sandbox.pages.dev`.
+    - 28 migrations applied; the §3.3 checks passed.
+    - Both Vault secrets and the function URL were created.
+    - Auth was updated: anonymous sign-ins, site URL, redirect URLs.
+    - 6 function secrets were set and the `jobs` function deployed.
+    - The shell's Pages secret was set; the shell and the app were deployed.
+    - The moderator was listed.
+    - deploy-check passed 30 with 1 WARN (no battle yet); its first try failed 7 checks while Pages propagated and passed after 10 s.
+  - Supabase project `wjwcyqokjbgfvnkwcchp`, region eu-west-1.
+- **Now confirmed:**
+  - the project-scoped Supabase token passes the CLI's format check and every read and write the run makes;
+  - the `database/query` row shape;
+  - the auth config field names;
+  - Cloudflare's `status: active`.
+- **Still open:**
+  - the secrets-digest idempotency (proven by the next run);
+  - CAPTCHA (no Turnstile yet);
+  - the Browser Run token (the first screenshot).

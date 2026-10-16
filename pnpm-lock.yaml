@@ -358,6 +358,12 @@ importers:
 
   tools/loadtest:
     dependencies:
+      '@br/game':
+        specifier: workspace:*
+        version: link:../../packages/game
+      '@br/site':
+        specifier: workspace:*
+        version: link:../../packages/site
       '@supabase/supabase-js':
         specifier: 2.117.2
         version: 2.117.2

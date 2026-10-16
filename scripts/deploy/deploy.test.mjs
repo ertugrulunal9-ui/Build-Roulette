@@ -573,10 +573,7 @@ describe('settings', () => {
   });
 
   it('derives the ref and the defaults; empty variables count as unset', () => {
-    const { settings: s, problems } = readSettings(
-      baseEnv({ APP_URL: '' }),
-      'all',
-    );
+    const { settings: s, problems } = readSettings(baseEnv({ APP_URL: '' }), 'all');
     assert.deepEqual(problems, []);
     assert.equal(s.ref, REF);
     assert.equal(s.supabaseUrl, `https://${REF}.supabase.co`);
@@ -688,7 +685,11 @@ describe('settings', () => {
   });
 
   it('warns about the old Pages project names, the old package CDN and one token for both accounts', () => {
-    const { settings: s, warnings, problems } = readSettings(
+    const {
+      settings: s,
+      warnings,
+      problems,
+    } = readSettings(
       baseEnv({
         CF_PAGES_WEB_PROJECT: 'build-roulette-web',
         CF_PAGES_SHELL_PROJECT: 'x',
@@ -701,7 +702,10 @@ describe('settings', () => {
     const text = warnings.join('\n');
     assert.match(text, /CF_PAGES_WEB_PROJECT is not used any more .*CF_WEB_WORKER now/);
     assert.match(text, /CF_PAGES_SHELL_PROJECT is not used any more .*CF_SANDBOX_WORKER now/);
-    assert.match(text, /PKG_CDN_URL is not used any more .*no package CDN.*Delete the PKG_CDN_URL variable/);
+    assert.match(
+      text,
+      /PKG_CDN_URL is not used any more .*no package CDN.*Delete the PKG_CDN_URL variable/,
+    );
     assert.equal(s.pkgCdnUrl, undefined);
     assert.match(text, /CLOUDFLARE_SANDBOX_API_TOKEN is the same token as CLOUDFLARE_API_TOKEN/);
     assert.ok(!text.includes(T.cf));

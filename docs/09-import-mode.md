@@ -168,8 +168,19 @@ the site** as if it were a static host.
   messages that link to it.
 - **Practice:** the welcome screen points at `/try` before the first battle.
 
-## 9.7 Tasks
+## 9.7 More user decisions (2026-10-16)
+
+- **Build time limits** become **10, 15, 20, 30 and 45 minutes** (were 3–30). Building with a
+  local tool, running the build and importing needs more than 3–5 minutes. The random solo
+  default draws from 10, 15 and 20.
+- **Language:** the UI stays English by default, and players can switch it to **Turkish**
+  (a language picker, remembered per browser). Dynamic text from the server (cards, names)
+  is not translated.
+- **Later, not in M6:** importing from a GitHub repository or a published URL (useful for
+  web builders such as Lovable, Bolt and v0, which give source code, not a build).
+
+## 9.8 Tasks
 
 See the M6 section of the [board](BOARD.md): T-044 (`@br/site`), T-045 (shell v2 and
 runtime), T-046 (storage, database and capture), T-047 (the app), T-048 (removals and docs),
-T-049 (onboarding).
+T-049 (onboarding), T-050 (English / Turkish).

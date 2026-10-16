@@ -208,7 +208,7 @@ select public.advance_battle(:'v', 1);
 reset role;
 insert into storage.objects (bucket_id, name)
 select 'ephemeral-builds', :'v' || '/' || u || '/' || f
-from unnest(array[:'ana_id', :'ben_id', :'cy_id']) u, unnest(array['source.json', 'bundle.js']) f;
+from unnest(array[:'ana_id', :'ben_id', :'cy_id']) u, unnest(array['site.bin']) f;
 set local role authenticated;
 select set_config('request.jwt.claims', :'ana', true);
 select public.ship_build(:'v', 'A', '{}');

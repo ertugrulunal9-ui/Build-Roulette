@@ -101,9 +101,9 @@ select is((select settings from public.battles where id = :'b1'),
   '{"mode": "multiplayer", "reveal_vote": false, "spinning_s": 6, "shipping_s": 15, "voting_s": 60,
     "results_s": 60, "capture_deadline_s": 600}'::jsonb,
   'settings: multiplayer, no reveal/vote (the room opted out), default durations');
-select ok((select c.time_limit_seconds in (300, 600, 900) from public.battles b
+select ok((select c.time_limit_seconds in (600, 900, 1200) from public.battles b
            join public.challenges c on c.id = b.challenge_id where b.id = :'b1'),
-  'the time limit is drawn by the server (5, 10 or 15 min)');
+  'the time limit is drawn by the server (10, 15 or 20 min)');
 select set_eq(
   format($$ select user_id from public.battle_players where battle_id = %L $$, :'b1'),
   array[:'ana_id', :'ben_id', :'cy_id']::uuid[],
@@ -209,10 +209,8 @@ select results_eq(
 
 -- ─── ana ships ────────────────────────────────────────────────────────
 insert into storage.objects (bucket_id, name) values
-  ('ephemeral-builds', :'b1' || '/' || :'ana_id' || '/source.json'),
-  ('ephemeral-builds', :'b1' || '/' || :'ana_id' || '/bundle.js'),
-  ('ephemeral-builds', :'b1' || '/' || :'ben_id' || '/autosave/source.json'),
-  ('ephemeral-builds', :'b1' || '/' || :'ben_id' || '/autosave/bundle.js');
+  ('ephemeral-builds', :'b1' || '/' || :'ana_id' || '/site.bin'),
+  ('ephemeral-builds', :'b1' || '/' || :'ben_id' || '/autosave/site.bin');
 set local role authenticated;
 select set_config('request.jwt.claims', :'ana', true);
 select public.ship_build(:'b1', 'Pomodoro Pro', '{"files": 2}') as a_ship \gset
@@ -225,7 +223,7 @@ select results_eq(
          :'b1', :'ana_id'),
   $$ values ('shipped', 100000) $$,
   'ana shipped after 100 s');
-select is(public.can_write_build_object(:'b1' || '/' || :'ana_id' || '/bundle.js'), false,
+select is(public.can_write_build_object(:'b1' || '/' || :'ana_id' || '/site.bin'), false,
   'storage: nothing more can be written after ship');
 
 -- ─── Deadline: SHIPPING, then RESULTS ────────────────────────────────
@@ -301,7 +299,7 @@ select is((:'snap1'::jsonb) -> 'players',
   'snapshot players carry their room state');
 select ok((:'snap1'::jsonb) -> 'battle' ->> 'mode' = 'multiplayer'
           and jsonb_array_length((:'snap1'::jsonb) -> 'builds') = 3
-          and (:'snap1'::jsonb)::text not like '%source.json%'
+          and (:'snap1'::jsonb)::text not like '%site.bin%'
           and (:'snap1'::jsonb)::text not like '%autosave%'
           and not ((:'snap1'::jsonb) ? 'votes'),
   'snapshot: multiplayer, 3 builds, no ephemeral paths, no votes');
@@ -376,14 +374,10 @@ update public.battles
        phase_ends_at       = now() + interval '500 seconds'
  where id = :'b2';
 insert into storage.objects (bucket_id, name) values
-  ('ephemeral-builds', :'b2' || '/' || :'dee_id' || '/autosave/source.json'),
-  ('ephemeral-builds', :'b2' || '/' || :'dee_id' || '/autosave/bundle.js'),
-  ('ephemeral-builds', :'b2' || '/' || :'ana_id' || '/source.json'),
-  ('ephemeral-builds', :'b2' || '/' || :'ana_id' || '/bundle.js'),
-  ('ephemeral-builds', :'b2' || '/' || :'ben_id' || '/source.json'),
-  ('ephemeral-builds', :'b2' || '/' || :'ben_id' || '/bundle.js'),
-  ('ephemeral-builds', :'b2' || '/' || :'cy_id' || '/source.json'),
-  ('ephemeral-builds', :'b2' || '/' || :'cy_id' || '/bundle.js');
+  ('ephemeral-builds', :'b2' || '/' || :'dee_id' || '/autosave/site.bin'),
+  ('ephemeral-builds', :'b2' || '/' || :'ana_id' || '/site.bin'),
+  ('ephemeral-builds', :'b2' || '/' || :'ben_id' || '/site.bin'),
+  ('ephemeral-builds', :'b2' || '/' || :'cy_id' || '/site.bin');
 
 -- ─── dee leaves, cy is kicked ────────────────────────────────────────
 set local role authenticated;
@@ -416,7 +410,7 @@ select throws_ok(format($$ select public.get_battle_snapshot(%L) $$, :'b2'), 'P0
 select throws_ok(format($$ select public.advance_battle(%L, 1) $$, :'b2'), 'P0002', 'battle_not_found',
   'a kicked roster player cannot nudge it');
 select is(public.is_battle_member(:'b2'), false, 'is_battle_member: false after the kick');
-select is(public.can_write_build_object(:'b2' || '/' || :'cy_id' || '/bundle.js'), false,
+select is(public.can_write_build_object(:'b2' || '/' || :'cy_id' || '/site.bin'), false,
   'storage: a kicked player cannot write');
 select ok(public.get_battle_snapshot(:'b1') ->> 'battle' is not null,
   'a kicked player still reads the earlier, public battle');

@@ -117,8 +117,7 @@ update public.battles
        building_ends_at = now() + interval '4 minutes', phase_ends_at = now() + interval '4 minutes'
  where id = :'solo';
 insert into storage.objects (bucket_id, name) values
-  ('ephemeral-builds', :'solo' || '/' || :'ben_id' || '/source.json'),
-  ('ephemeral-builds', :'solo' || '/' || :'ben_id' || '/bundle.js');
+  ('ephemeral-builds', :'solo' || '/' || :'ben_id' || '/site.bin');
 set local role authenticated;
 select set_config('request.jwt.claims', :'ben', true);
 select throws_ok(format($$ select public.ship_build(%L, 'Pussy Timer', '{}') $$, :'solo'), '22023',

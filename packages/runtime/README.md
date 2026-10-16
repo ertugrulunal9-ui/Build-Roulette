@@ -328,7 +328,7 @@ grace").
 - **A service worker serves the site** (docs/09 §9.3): built sites use root-relative URLs
   (`/assets/index-abc.js`), lazy chunks, `fetch('/data.json')`, workers and client-side
   routers that expect `/`, which a blob URL or a `document.write` document cannot serve.
-  Details, routing and the threat model: `apps/sandbox-shell/README.md`.
+  Details and routing: `apps/sandbox-shell/README.md`; the threat model: docs/03 §3.9.
 - **Protocol v2** (shell path `/v2/`): `load {loadId, mode, site}`; `js`, `css`, `importMap`
   and `packages` are gone with the import-map schemas. The handshake (`hello`, `connect
   {protocol, nonce}`, `connected {nonce}`), `ready {loadId}`, `ping {seq}`/`pong {seq}`,

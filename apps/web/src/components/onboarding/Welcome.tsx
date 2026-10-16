@@ -24,8 +24,11 @@ import {
   welcomeStatus,
   type WelcomeStatus,
 } from '../../lib/onboarding/welcome';
+import { useT } from '../../lib/i18n/context';
+import { LanguagePicker } from '../i18n/LanguagePicker';
+import { Rich } from '../i18n/Rich';
 import { CodeText } from '../site/CodeText';
-import { GUIDE_PATH, HOW_IT_WORKS, NEW_TAB, STEPS, TRY_PATH, WELCOME_COPY } from './copy';
+import { GUIDE_PATH, STEP_EMOJI, STEP_IDS, TRY_PATH } from './copy';
 import { PILL, StepArt } from './Steps';
 
 /** Whether the welcome shows now (false on the server: the page HTML never has it). */
@@ -72,12 +75,14 @@ export function WelcomeDialog({
   /** `finished`: closed on the last step. */
   onClose: (finished: boolean) => void;
 }) {
+  const t = useT();
   const ref = useRef<HTMLDialogElement>(null);
   const primaryRef = useRef<HTMLButtonElement>(null);
   const [index, setIndex] = useState(0);
-  const step = STEPS[index] ?? STEPS[0];
-  const last = index === STEPS.length - 1;
-  const total = STEPS.length;
+  const step = STEP_IDS[index] ?? STEP_IDS[0];
+  const words = t.steps[step];
+  const last = index === STEP_IDS.length - 1;
+  const total = STEP_IDS.length;
 
   // Open as a modal (the page behind is inert) and give focus back when it goes.
   useEffect(() => {
@@ -143,7 +148,7 @@ export function WelcomeDialog({
     <dialog
       ref={ref}
       data-testid="welcome"
-      data-step={step.id}
+      data-step={step}
       aria-labelledby="welcome-title welcome-step-title"
       aria-describedby="welcome-step-text"
       onCancel={(e) => {
@@ -159,18 +164,23 @@ export function WelcomeDialog({
             id="welcome-title"
             className="text-xs font-black tracking-widest text-zinc-500 uppercase"
           >
-            {WELCOME_COPY.title}
+            {/* The name stays English, also in capitals: `lang` keeps "BUILD" from becoming "BUİLD". */}
+            <Rich text={t.welcome.title} slots={{ brand: <span lang="en">Build Roulette</span> }} />
           </p>
-          <button
-            type="button"
-            data-testid="welcome-skip"
-            onClick={() => {
-              close(false);
-            }}
-            className="min-h-11 rounded-lg px-3 text-sm font-semibold text-zinc-600 hover:bg-zinc-200 focus-visible:outline-2 focus-visible:outline-sky-500 dark:text-zinc-400 dark:hover:bg-zinc-800"
-          >
-            {WELCOME_COPY.skip}
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              data-testid="welcome-skip"
+              onClick={() => {
+                close(false);
+              }}
+              className="min-h-11 rounded-lg px-3 text-sm font-semibold text-zinc-600 hover:bg-zinc-200 focus-visible:outline-2 focus-visible:outline-sky-500 dark:text-zinc-400 dark:hover:bg-zinc-800"
+            >
+              {t.welcome.skip}
+            </button>
+            {/* A first visit opens the welcome by itself: the language is one tap away. */}
+            <LanguagePicker />
+          </div>
         </div>
 
         <section
@@ -178,36 +188,36 @@ export function WelcomeDialog({
           aria-live="polite"
         >
           <div className="w-full rounded-3xl border border-zinc-200 bg-white px-4 py-8 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-            <StepArt id={step.id} />
+            <StepArt id={step} />
           </div>
           <div className="flex flex-col gap-2">
             <p className="text-sm font-bold text-zinc-500" data-testid="welcome-step-count">
-              {WELCOME_COPY.stepOf(index + 1, total)}
+              {t.welcome.stepOf(index + 1, total)}
             </p>
             <h2
               id="welcome-step-title"
               className="text-3xl font-black tracking-tight sm:text-4xl"
               data-testid="welcome-step-title"
             >
-              <span aria-hidden="true">{step.emoji} </span>
-              {step.title}
+              <span aria-hidden="true">{STEP_EMOJI[step]} </span>
+              {words.title}
             </h2>
             <p
               id="welcome-step-text"
               className="mx-auto max-w-md text-base text-zinc-600 sm:text-lg dark:text-zinc-300"
             >
-              <CodeText text={step.text} />
+              <CodeText text={words.text} />
             </p>
           </div>
         </section>
 
         <div className="flex flex-col gap-4">
-          <ol className="flex justify-center gap-1" aria-label={WELCOME_COPY.steps}>
-            {STEPS.map((s, i) => (
-              <li key={s.id}>
+          <ol className="flex justify-center gap-1" aria-label={t.welcome.steps}>
+            {STEP_IDS.map((s, i) => (
+              <li key={s}>
                 <button
                   type="button"
-                  aria-label={WELCOME_COPY.goToStep(i + 1)}
+                  aria-label={t.welcome.goToStep(i + 1)}
                   aria-current={i === index ? 'step' : undefined}
                   data-testid="welcome-dot"
                   onClick={() => {
@@ -237,7 +247,7 @@ export function WelcomeDialog({
                 }}
                 className={`${button} border border-zinc-300 hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800`}
               >
-                {WELCOME_COPY.back}
+                {t.welcome.back}
               </button>
               <Link
                 href={TRY_PATH}
@@ -248,8 +258,8 @@ export function WelcomeDialog({
                 {...linkProps}
                 className={`${button} border-2 border-zinc-900 text-center hover:bg-zinc-100 dark:border-zinc-100 dark:hover:bg-zinc-800`}
               >
-                {WELCOME_COPY.practice}
-                {newTab && <span className="sr-only"> {NEW_TAB}</span>}
+                {t.welcome.practice}
+                {newTab && <span className="sr-only"> {t.common.newTab}</span>}
               </Link>
               <button
                 type="button"
@@ -260,7 +270,7 @@ export function WelcomeDialog({
                 }}
                 className={`${button} bg-emerald-600 text-white hover:bg-emerald-700`}
               >
-                {WELCOME_COPY.play}
+                {t.welcome.play}
               </button>
             </div>
           ) : (
@@ -274,7 +284,7 @@ export function WelcomeDialog({
                 }}
                 className={`${button} flex-1 border border-zinc-300 hover:bg-zinc-100 disabled:invisible sm:flex-none dark:border-zinc-700 dark:hover:bg-zinc-800`}
               >
-                {WELCOME_COPY.back}
+                {t.welcome.back}
               </button>
               <button
                 type="button"
@@ -285,7 +295,7 @@ export function WelcomeDialog({
                 }}
                 className={`${button} flex-1 bg-zinc-900 text-white hover:bg-zinc-700 sm:ml-auto sm:flex-none dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-white`}
               >
-                {WELCOME_COPY.next} →
+                {t.welcome.next} →
               </button>
             </div>
           )}
@@ -300,8 +310,8 @@ export function WelcomeDialog({
               {...linkProps}
               className="text-sm font-semibold text-zinc-600 underline underline-offset-2 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
             >
-              {WELCOME_COPY.guide}
-              {newTab && <span className="sr-only"> {NEW_TAB}</span>}
+              {t.welcome.guide}
+              {newTab && <span className="sr-only"> {t.common.newTab}</span>}
             </Link>
           </p>
         </div>
@@ -312,6 +322,7 @@ export function WelcomeDialog({
 
 /** "How it works" where the welcome is mounted: opens it again. */
 export function HowItWorksButton({ className = PILL }: { className?: string }) {
+  const t = useT();
   return (
     <button
       type="button"
@@ -320,7 +331,7 @@ export function HowItWorksButton({ className = PILL }: { className?: string }) {
       onClick={openWelcome}
       className={className}
     >
-      <span aria-hidden="true">💡</span> {HOW_IT_WORKS}
+      <span aria-hidden="true">💡</span> {t.common.howItWorks}
     </button>
   );
 }
@@ -336,6 +347,7 @@ export function HowItWorksLink({
   newTab?: boolean;
   className?: string;
 }) {
+  const t = useT();
   return (
     <a
       href={GUIDE_PATH}
@@ -343,11 +355,11 @@ export function HowItWorksLink({
       {...(newTab ? { target: '_blank', rel: 'noopener' } : {})}
       className={className}
     >
-      <span aria-hidden="true">💡</span> {HOW_IT_WORKS}
+      <span aria-hidden="true">💡</span> {t.common.howItWorks}
       {newTab && (
         <>
           <span aria-hidden="true"> ↗</span>
-          <span className="sr-only"> {NEW_TAB}</span>
+          <span className="sr-only"> {t.common.newTab}</span>
         </>
       )}
     </a>

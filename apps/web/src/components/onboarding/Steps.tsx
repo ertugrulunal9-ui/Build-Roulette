@@ -1,11 +1,15 @@
+'use client';
+
 /**
  * The four steps of a battle (spin, build your way, build & drop, ship / reveal / vote), each
  * with a small picture made of markup: the welcome screen shows one at a time, the home page
- * and the guide show all four as cards. No hooks, so they render on the server too.
+ * and the guide show all four as cards. Their words are the page language's (T-050).
  */
-import { CARD_LABEL, cardClass } from '../results/ResultPieces';
+import { useT } from '../../lib/i18n/context';
+import { formatTimeLimit } from '../../lib/solo/format';
+import { cardClass } from '../results/ResultPieces';
 import { CodeText } from '../site/CodeText';
-import { STEPS, STEP_ART, type StepCopy, type StepId } from './copy';
+import { STEP_IDS, STEP_SAMPLES, type StepId } from './copy';
 
 /** A small rounded link or button ("How it works", "Try an import"). */
 export const PILL =
@@ -29,6 +33,7 @@ export function StepArt({ id, size = 'large' }: { id: StepId; size?: 'large' | '
 }
 
 function SpinArt({ large }: { large: boolean }) {
+  const t = useT();
   const cards = (['build', 'rule', 'style'] as const).map((k, i) => (
     <div
       key={k}
@@ -39,10 +44,10 @@ function SpinArt({ large }: { large: boolean }) {
       <span
         className={`font-black tracking-widest opacity-70 ${large ? 'text-[10px]' : 'text-[8px]'}`}
       >
-        {CARD_LABEL[k]}
+        {t.cards[k]}
       </span>
       <span className={`leading-tight font-semibold ${large ? 'text-xs' : 'text-[10px]'}`}>
-        {STEP_ART.exampleCards[k]}
+        {STEP_SAMPLES.exampleCards[k]}
       </span>
     </div>
   ));
@@ -54,14 +59,14 @@ function SpinArt({ large }: { large: boolean }) {
           large ? 'text-xs' : 'text-[10px]'
         }`}
       >
-        ⏱ {STEP_ART.timeLabel} · {STEP_ART.exampleTime}
+        ⏱ {t.stepArt.timeLabel} · {formatTimeLimit(STEP_SAMPLES.exampleMinutes * 60, t)}
       </span>
     </div>
   );
 }
 
 function BuildArt({ large }: { large: boolean }) {
-  const tools = STEP_ART.tools;
+  const tools = STEP_SAMPLES.tools;
   return (
     <div className="flex flex-col items-center gap-3">
       <p className={large ? 'text-6xl' : 'text-4xl'}>🧑‍💻</p>
@@ -82,6 +87,7 @@ function BuildArt({ large }: { large: boolean }) {
 }
 
 function DropArt({ large }: { large: boolean }) {
+  const t = useT();
   return (
     <div className={`flex w-full flex-col items-center gap-2 ${large ? 'max-w-64' : 'max-w-44'}`}>
       <div
@@ -90,9 +96,9 @@ function DropArt({ large }: { large: boolean }) {
         }`}
       >
         <p>
-          <span className="text-emerald-400">$</span> {STEP_ART.terminalCommand}
+          <span className="text-emerald-400">$</span> {STEP_SAMPLES.terminalCommand}
         </p>
-        <p className="text-emerald-300">{STEP_ART.terminalResult}</p>
+        <p className="text-emerald-300">{t.stepArt.terminalResult}</p>
       </div>
       <span className="text-zinc-400 dark:text-zinc-600">↓</span>
       <div
@@ -100,18 +106,19 @@ function DropArt({ large }: { large: boolean }) {
           large ? 'px-3 py-3 text-sm' : 'px-2 py-2 text-[11px]'
         }`}
       >
-        📦 <CodeText text={STEP_ART.dropTarget} />
+        📦 <CodeText text={t.stepArt.dropTarget} />
       </div>
     </div>
   );
 }
 
 function ShipArt({ large }: { large: boolean }) {
+  const t = useT();
   return (
     <div className="flex flex-col items-center gap-3">
       <ol className="flex items-center gap-1">
-        {STEP_ART.endFlow.map((s, i) => (
-          <li key={s.label} className="flex items-center gap-1">
+        {STEP_SAMPLES.endFlow.map((s, i) => (
+          <li key={s.key} className="flex items-center gap-1">
             {i > 0 && <span className="text-zinc-400 dark:text-zinc-600">→</span>}
             <span className="flex flex-col items-center gap-0.5">
               <span
@@ -124,7 +131,7 @@ function ShipArt({ large }: { large: boolean }) {
               <span
                 className={`font-bold text-zinc-600 dark:text-zinc-400 ${large ? 'text-[11px]' : 'text-[9px]'}`}
               >
-                {s.label}
+                {t.stepArt[s.key]}
               </span>
             </span>
           </li>
@@ -135,31 +142,32 @@ function ShipArt({ large }: { large: boolean }) {
           large ? 'text-xs' : 'text-[10px]'
         }`}
       >
-        {STEP_ART.endNote}
+        {t.stepArt.endNote}
       </span>
     </div>
   );
 }
 
 /** One step as a card (home, guide). */
-export function StepCard({ step, index }: { step: StepCopy; index: number }) {
+export function StepCard({ step, index }: { step: StepId; index: number }) {
+  const words = useT().steps[step];
   return (
     <li
       className="flex flex-col gap-3 rounded-2xl border border-zinc-200 bg-white p-4 text-left shadow-sm dark:border-zinc-800 dark:bg-zinc-900"
       data-testid="step-card"
-      data-step={step.id}
+      data-step={step}
     >
       <div className="rounded-xl bg-zinc-50 py-3 dark:bg-zinc-950/60">
-        <StepArt id={step.id} size="small" />
+        <StepArt id={step} size="small" />
       </div>
       <h3 className="flex items-center gap-2 text-lg font-black tracking-tight">
         <span className="grid size-7 shrink-0 place-items-center rounded-full bg-zinc-900 text-sm text-white dark:bg-zinc-100 dark:text-zinc-900">
           {index + 1}
         </span>
-        {step.title}
+        {words.title}
       </h3>
       <p className="text-sm text-zinc-600 dark:text-zinc-400">
-        <CodeText text={step.text} />
+        <CodeText text={words.text} />
       </p>
     </li>
   );
@@ -173,8 +181,8 @@ export function StepCards({ label }: { label: string }) {
       className="grid w-full max-w-4xl grid-cols-1 gap-4 sm:grid-cols-2"
       data-testid="step-cards"
     >
-      {STEPS.map((step, i) => (
-        <StepCard key={step.id} step={step} index={i} />
+      {STEP_IDS.map((step, i) => (
+        <StepCard key={step} step={step} index={i} />
       ))}
     </ol>
   );

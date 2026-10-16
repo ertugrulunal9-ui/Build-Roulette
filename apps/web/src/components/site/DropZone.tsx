@@ -8,13 +8,22 @@
  *
  * The drop itself is handled for the whole page (usePageDrop); this box only shows it.
  */
-import { describeImportError } from '@br/site';
+import type { ImportError } from '@br/site';
 import type { ReactNode } from 'react';
+import { useT } from '../../lib/i18n/context';
+import type { Messages } from '../../lib/i18n/messages/en';
 import type { ImportState } from '../../lib/site/use-site-import';
-import { GUIDE_PATH, IMPORT_HELP_COPY, NEW_TAB } from '../onboarding/copy';
+import { GUIDE_PATH } from '../onboarding/copy';
 import { IMPORT_HELP_ID, openImportHelp } from '../onboarding/ImportHelp';
 import { CodeText } from './CodeText';
-import { IMPORT_COPY } from './copy';
+
+/**
+ * Why an import failed and what to do, in the page's language: the catalogs' `importErrors`
+ * (T-050; the English is `describeImportError` from `@br/site`).
+ */
+export function importErrorText(e: ImportError, m: Messages): { title: string; hint: string } {
+  return m.importErrors[e.code](e.detail);
+}
 
 export interface DropZoneProps {
   state: ImportState;
@@ -46,15 +55,17 @@ export function DropZone({
   restoring = false,
   help,
 }: DropZoneProps) {
+  const t = useT();
+  const words = t.importUi;
   const reading = state.status === 'reading';
-  const error = state.status === 'error' ? describeImportError(state.error) : null;
+  const error = state.status === 'error' ? importErrorText(state.error, t) : null;
   return (
     <div
       className="flex h-full min-h-0 flex-col items-center justify-center-safe gap-6 overflow-y-auto p-4 sm:p-8"
       data-testid="import-panel"
     >
       <section
-        aria-label="Import your built site"
+        aria-label={words.panelLabel}
         aria-busy={reading}
         data-testid="drop-zone"
         data-state={
@@ -73,10 +84,10 @@ export function DropZone({
         </p>
         <div className="flex flex-col gap-1">
           <h2 className="text-2xl font-black tracking-tight sm:text-3xl" data-testid="drop-title">
-            {restoring && !reading ? IMPORT_COPY.restoring : IMPORT_COPY.dropTitle}
+            {restoring && !reading ? words.restoring : words.dropTitle}
           </h2>
           <p className="text-sm text-zinc-600 dark:text-zinc-400">
-            <CodeText text={IMPORT_COPY.dropSub} />
+            <CodeText text={words.dropSub} />
           </p>
         </div>
 
@@ -86,11 +97,11 @@ export function DropZone({
             className="text-sm font-semibold text-sky-700 dark:text-sky-300"
             data-testid="import-reading"
           >
-            {IMPORT_COPY.reading}
+            {words.reading}
           </p>
         ) : disabled ? (
           <p className="text-sm font-semibold text-zinc-500" data-testid="import-locked">
-            {IMPORT_COPY.locked}
+            {words.locked}
           </p>
         ) : (
           <div className="flex flex-wrap justify-center gap-3">
@@ -100,7 +111,7 @@ export function DropZone({
               data-testid="choose-folder"
               className={`${button} bg-zinc-900 text-white hover:bg-zinc-700 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-white`}
             >
-              📁 {IMPORT_COPY.chooseFolder}
+              📁 {words.chooseFolder}
             </button>
             <button
               type="button"
@@ -108,7 +119,7 @@ export function DropZone({
               data-testid="choose-zip"
               className={`${button} border border-zinc-300 bg-white text-zinc-900 hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-zinc-800`}
             >
-              🗜 {IMPORT_COPY.chooseZip}
+              🗜 {words.chooseZip}
             </button>
           </div>
         )}
@@ -124,13 +135,13 @@ export function DropZone({
       </section>
 
       <div className="flex w-full max-w-2xl flex-col gap-4 sm:flex-row sm:items-start">
-        <section className="flex-1" aria-label={IMPORT_COPY.stepsTitle}>
+        <section className="flex-1" aria-label={words.stepsTitle}>
           <h3 className="mb-2 text-xs font-black tracking-widest text-zinc-500 uppercase">
-            {IMPORT_COPY.stepsTitle}
+            {words.stepsTitle}
           </h3>
           <ol className="flex flex-col gap-1.5 text-sm text-zinc-700 dark:text-zinc-300">
-            {IMPORT_COPY.steps.map((step, i) => (
-              <li key={step} className="flex gap-2">
+            {words.steps.map((step, i) => (
+              <li key={i} className="flex gap-2">
                 <span className="grid size-5 shrink-0 place-items-center rounded-full bg-zinc-200 text-xs font-black dark:bg-zinc-800">
                   {i + 1}
                 </span>
@@ -168,6 +179,7 @@ export function ImportErrorNote({
   /** The page shows the "How do I import?" help (`ImportHelp`) next to this note. */
   inPageHelp?: boolean;
 }) {
+  const t = useT();
   return (
     <div
       role="alert"
@@ -190,7 +202,7 @@ export function ImportErrorNote({
             }}
             className={fixLink}
           >
-            {IMPORT_HELP_COPY.howToFix}
+            {t.importHelp.howToFix}
           </a>
         ) : (
           <a
@@ -200,8 +212,8 @@ export function ImportErrorNote({
             data-testid="import-error-fix"
             className={fixLink}
           >
-            {IMPORT_HELP_COPY.howToFix} <span aria-hidden="true">↗</span>
-            <span className="sr-only"> {NEW_TAB}</span>
+            {t.importHelp.howToFix} <span aria-hidden="true">↗</span>
+            <span className="sr-only"> {t.common.newTab}</span>
           </a>
         )}
       </div>
@@ -210,7 +222,7 @@ export function ImportErrorNote({
         onClick={onDismiss}
         className="shrink-0 rounded px-2 py-1 text-xs font-semibold hover:bg-red-100 dark:hover:bg-red-900"
       >
-        {IMPORT_COPY.dismiss}
+        {t.common.dismiss}
       </button>
     </div>
   );

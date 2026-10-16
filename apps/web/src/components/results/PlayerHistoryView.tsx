@@ -16,22 +16,21 @@ import {
   parseCursor,
   type HistoryCursor,
 } from '../../lib/history/player-history';
-import { PLAYER_NOT_FOUND_TITLE, playerMeta } from '../../lib/history/player-meta';
 import { shellParam } from '../../lib/hosting/shells';
 import { useBrowserUrl } from '../../lib/hosting/use-browser-url';
 import { useRemote } from '../../lib/hosting/use-remote';
+import { useT } from '../../lib/i18n/context';
 import { DocumentTitle } from '../DocumentTitle';
 import { LoadErrorView, LoadingView } from './LoadStates';
 import { PlayerHistory, PlayerNotFound } from './PlayerHistory';
-
-/** The shell's title until the player is known (also the exported HTML's). */
-export const PLAYER_SHELL_TITLE = 'Player history';
 
 function cursorOf(search: URLSearchParams): HistoryCursor | null {
   return parseCursor({ before: search.get('before'), before_battle: search.get('before_battle') });
 }
 
 export function PlayerHistoryView() {
+  const t = useT();
+  const h = t.history;
   const url = useBrowserUrl();
   const id = url ? shellParam('/u', url.pathname).toLowerCase() : null;
   const cursor = url ? cursorOf(url.searchParams) : null;
@@ -44,22 +43,18 @@ export function PlayerHistoryView() {
   const found = state.status === 'ready' && state.value?.player ? state.value : null;
   const title =
     state.status !== 'ready'
-      ? PLAYER_SHELL_TITLE
+      ? h.shellTitle
       : found?.player
-        ? playerMeta({ ...found, player: found.player }).title
-        : PLAYER_NOT_FOUND_TITLE;
+        ? h.title(found.player.display_name)
+        : h.notFoundTitle;
 
   return (
     <>
       <DocumentTitle title={title} />
       {state.status === 'loading' ? (
-        <LoadingView text="Loading the battles…" testId="player-loading" />
+        <LoadingView text={h.loading} testId="player-loading" />
       ) : state.status === 'error' ? (
-        <LoadErrorView
-          testId="player-load-error"
-          text="The battles could not be loaded. Check your connection, then try again."
-          onRetry={retry}
-        />
+        <LoadErrorView testId="player-load-error" text={h.loadError} onRetry={retry} />
       ) : !found?.player || !id ? (
         <PlayerNotFound />
       ) : (

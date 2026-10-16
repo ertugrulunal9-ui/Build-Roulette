@@ -17,17 +17,17 @@
 import { shellParam } from '../../lib/hosting/shells';
 import { useBrowserUrl } from '../../lib/hosting/use-browser-url';
 import { useRemote } from '../../lib/hosting/use-remote';
-import { BATTLE_NOT_FOUND_TITLE, battleMeta } from '../../lib/solo/battle-meta';
+import { useT } from '../../lib/i18n/context';
+import { battleTitle } from '../../lib/solo/battle-meta';
 import { fetchPublicBattle } from '../../lib/solo/public-battle';
 import { DocumentTitle } from '../DocumentTitle';
 import { NotFoundView } from '../NotFoundView';
 import { BattleResults } from './BattleResults';
 import { LoadErrorView, LoadingView } from './LoadStates';
 
-/** The shell's title until the battle is known (also the exported HTML's). */
-export const BATTLE_SHELL_TITLE = 'Battle results';
-
 export function BattleView() {
+  const t = useT();
+  const page = t.battlePage;
   const url = useBrowserUrl();
   const id = url ? shellParam('/battles', url.pathname) : null;
   const { state, retry } = useRemote(id, () => fetchPublicBattle(id ?? ''));
@@ -35,38 +35,32 @@ export function BattleView() {
   if (state.status === 'loading') {
     return (
       <>
-        <DocumentTitle title={BATTLE_SHELL_TITLE} />
-        <LoadingView text="Loading the results…" testId="battle-loading" />
+        <DocumentTitle title={page.shellTitle} />
+        <LoadingView text={page.loading} testId="battle-loading" />
       </>
     );
   }
   if (state.status === 'error') {
     return (
       <>
-        <DocumentTitle title={BATTLE_SHELL_TITLE} />
-        <LoadErrorView
-          testId="battle-load-error"
-          text="The results could not be loaded. Check your connection, then try again."
-          onRetry={retry}
-        />
+        <DocumentTitle title={page.shellTitle} />
+        <LoadErrorView testId="battle-load-error" text={page.loadError} onRetry={retry} />
       </>
     );
   }
   if (!state.value) {
     return (
       <>
-        <DocumentTitle title={BATTLE_NOT_FOUND_TITLE} />
+        <DocumentTitle title={page.notFoundTitle} />
         <NotFoundView testId="battle-not-found">
-          <p className="max-w-sm text-sm text-zinc-600 dark:text-zinc-400">
-            No battle has this link, or its results are not in yet.
-          </p>
+          <p className="max-w-sm text-sm text-zinc-600 dark:text-zinc-400">{page.notFound}</p>
         </NotFoundView>
       </>
     );
   }
   return (
     <>
-      <DocumentTitle title={battleMeta(state.value).title} />
+      <DocumentTitle title={battleTitle(state.value, page)} />
       <BattleResults data={state.value} />
     </>
   );

@@ -4,12 +4,16 @@ import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useSyncExternalStore } from 'react';
+import { useT } from '../../lib/i18n/context';
 import { roomCodeFromPath } from '../../lib/room/path';
 import { DocumentTitle } from '../DocumentTitle';
+import { LanguagePicker } from '../i18n/LanguagePicker';
 
 function Loading() {
   return (
-    <main className="grid h-dvh place-items-center text-sm text-zinc-500">Loading the room…</main>
+    <main className="grid h-dvh place-items-center text-sm text-zinc-500">
+      {useT().room.loading}
+    </main>
   );
 }
 
@@ -28,6 +32,7 @@ const noSubscription = () => () => undefined;
  * page runs in the browser (T-033, T-037).
  */
 export function RoomLoader() {
+  const t = useT();
   const pathname = usePathname();
   const hydrated = useSyncExternalStore(
     noSubscription,
@@ -37,7 +42,11 @@ export function RoomLoader() {
   const code = hydrated ? roomCodeFromPath(pathname) : null;
 
   // The tab title (the page's metadata has none: components/DocumentTitle.tsx).
-  const title = <DocumentTitle title={code ? `Room ${code.toUpperCase().slice(0, 12)}` : 'Room'} />;
+  const title = (
+    <DocumentTitle
+      title={code ? t.common.roomCode(code.toUpperCase().slice(0, 12)) : t.room.title}
+    />
+  );
 
   if (code === null) {
     return (
@@ -52,12 +61,15 @@ export function RoomLoader() {
       <>
         {title}
         <main className="grid h-dvh place-items-center p-6 text-center">
-          <p className="flex flex-col gap-3 text-sm text-zinc-500">
-            This link has no room code.
-            <Link href="/" className="font-semibold text-zinc-900 underline dark:text-zinc-100">
-              Create or join a room
-            </Link>
-          </p>
+          <div className="flex flex-col items-center gap-4">
+            <p className="flex flex-col gap-3 text-sm text-zinc-500">
+              {t.room.noCode}
+              <Link href="/" className="font-semibold text-zinc-900 underline dark:text-zinc-100">
+                {t.room.createOrJoin}
+              </Link>
+            </p>
+            <LanguagePicker />
+          </div>
         </main>
       </>
     );

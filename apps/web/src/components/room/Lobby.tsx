@@ -21,6 +21,9 @@ import {
 } from '@br/game';
 import { useState } from 'react';
 import { useTouchPrimary } from '../../lib/device';
+import { useI18n } from '../../lib/i18n/context';
+import { formatAgo } from '../../lib/i18n/format';
+import { en, type Messages } from '../../lib/i18n/messages/en';
 import {
   playerCount,
   readyCount,
@@ -37,9 +40,10 @@ import { formatCompletion } from '../../lib/solo/format';
 import type { BattleSnapshot } from '../../lib/solo/types';
 import { useTicker } from '../../lib/solo/use-ticker';
 import { openWelcome } from '../../lib/onboarding/welcome';
-import { GUIDE_PATH, LOBBY_COPY, NEW_TAB, PHONE_COPY, TRY_PATH } from '../onboarding/copy';
+import { Rich } from '../i18n/Rich';
+import { GUIDE_PATH, TRY_PATH } from '../onboarding/copy';
 import { Welcome, useWelcomeStatus } from '../onboarding/Welcome';
-import { Avatar, ConfirmDialog, OnlineDot, ago } from './pieces';
+import { Avatar, ConfirmDialog, OnlineDot } from './pieces';
 
 interface LobbyProps {
   controller: RoomController;
@@ -53,6 +57,8 @@ const panel =
   'rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900';
 
 export function Lobby({ controller, state, room, lastBattle }: LobbyProps) {
+  const { locale, t } = useI18n();
+  const words = t.lobby;
   useTicker(5_000); // "last seen" texts
   const [kickTarget, setKickTarget] = useState<RoomMember | null>(null);
   const me = room.me;
@@ -70,9 +76,11 @@ export function Lobby({ controller, state, room, lastBattle }: LobbyProps) {
 
   const onlineOf = (m: RoomMember) => m.user_id in presence;
   const statusOf = (m: RoomMember): string => {
-    if (m.state === 'left') return 'left';
-    if (onlineOf(m)) return 'online';
-    return m.last_seen_at ? `last seen ${ago(serverNow - Date.parse(m.last_seen_at))}` : 'offline';
+    if (m.state === 'left') return words.left;
+    if (onlineOf(m)) return words.online;
+    return m.last_seen_at
+      ? words.lastSeen(formatAgo(serverNow - Date.parse(m.last_seen_at), locale))
+      : words.offline;
   };
 
   const memberRow = (m: RoomMember) => {
@@ -93,12 +101,12 @@ export function Lobby({ controller, state, room, lastBattle }: LobbyProps) {
         <div className="min-w-0 flex-1">
           <p className="flex items-center gap-1.5 truncate font-semibold">
             {m.is_host && (
-              <span title="Host" aria-label="Host" data-testid="host-crown">
+              <span title={t.common.host} aria-label={t.common.host} data-testid="host-crown">
                 👑
               </span>
             )}
             <span className="truncate">{m.display_name}</span>
-            {isMe && <span className="text-xs font-normal text-zinc-500">(you)</span>}
+            {isMe && <span className="text-xs font-normal text-zinc-500">{t.common.you}</span>}
           </p>
           <p className="flex items-center gap-1.5 text-xs text-zinc-500">
             <OnlineDot online={onlineOf(m)} />
@@ -113,7 +121,7 @@ export function Lobby({ controller, state, room, lastBattle }: LobbyProps) {
               : 'bg-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300'
           }`}
         >
-          {m.role === 'player' ? 'Player' : 'Spectator'}
+          {m.role === 'player' ? words.player : words.spectator}
         </span>
         {m.role === 'player' && m.state === 'active' && (
           <span
@@ -121,7 +129,7 @@ export function Lobby({ controller, state, room, lastBattle }: LobbyProps) {
               m.is_ready ? 'text-emerald-600 dark:text-emerald-400' : 'text-zinc-400'
             }`}
           >
-            {m.is_ready ? '✓ Ready' : 'Not ready'}
+            {m.is_ready ? words.ready : words.notReady}
           </span>
         )}
         {me.is_host &&
@@ -131,13 +139,13 @@ export function Lobby({ controller, state, room, lastBattle }: LobbyProps) {
             <button
               type="button"
               data-testid="kick"
-              title={`Remove ${m.display_name}`}
+              title={words.remove(m.display_name)}
               onClick={() => {
                 setKickTarget(m);
               }}
               className="w-12 rounded-md border border-zinc-300 py-1 text-xs font-semibold text-red-700 hover:bg-red-50 dark:border-zinc-700 dark:text-red-300 dark:hover:bg-red-950"
             >
-              Kick
+              {words.kick}
             </button>
           ))}
       </li>
@@ -148,20 +156,20 @@ export function Lobby({ controller, state, room, lastBattle }: LobbyProps) {
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_22rem]" data-testid="lobby">
       <section className={panel}>
         <header className="mb-3 flex items-baseline justify-between gap-3">
-          <h2 className="text-lg font-black tracking-tight">Players</h2>
+          <h2 className="text-lg font-black tracking-tight">{words.players}</h2>
           <p className="text-sm font-semibold text-zinc-500" data-testid="player-count">
-            {players.length}/{room.room.max_players} players
+            {words.playerCount(players.length, room.room.max_players)}
           </p>
         </header>
-        <ul className="flex flex-col gap-1" aria-label="Players">
+        <ul className="flex flex-col gap-1" aria-label={words.players}>
           {players.map(memberRow)}
         </ul>
         {spectators.length > 0 && (
           <>
             <h3 className="mt-5 mb-2 text-sm font-bold tracking-wide text-zinc-500 uppercase">
-              Spectators ({spectators.length}/{room.room.max_spectators})
+              {words.spectators(spectators.length, room.room.max_spectators)}
             </h3>
-            <ul className="flex flex-col gap-1" aria-label="Spectators">
+            <ul className="flex flex-col gap-1" aria-label={words.spectatorsLabel}>
               {spectators.map(memberRow)}
             </ul>
           </>
@@ -169,9 +177,9 @@ export function Lobby({ controller, state, room, lastBattle }: LobbyProps) {
         {away.length > 0 && (
           <>
             <h3 className="mt-5 mb-2 text-sm font-bold tracking-wide text-zinc-500 uppercase">
-              Left the room
+              {words.leftRoom}
             </h3>
-            <ul className="flex flex-col gap-1 opacity-60" aria-label="Left the room">
+            <ul className="flex flex-col gap-1 opacity-60" aria-label={words.leftRoom}>
               {away.map(memberRow)}
             </ul>
           </>
@@ -187,9 +195,9 @@ export function Lobby({ controller, state, room, lastBattle }: LobbyProps) {
           >
             <h2 id="new-here-title" className="text-lg font-black tracking-tight">
               <span aria-hidden="true">👋 </span>
-              {LOBBY_COPY.newHereTitle}
+              {t.lobbyHints.newHereTitle}
             </h2>
-            <p className="text-sm">{LOBBY_COPY.newHereText}</p>
+            <p className="text-sm">{t.lobbyHints.newHereText}</p>
             <div className="flex flex-wrap gap-2">
               <button
                 type="button"
@@ -198,7 +206,7 @@ export function Lobby({ controller, state, room, lastBattle }: LobbyProps) {
                 onClick={openWelcome}
                 className="min-h-10 rounded-lg bg-sky-700 px-4 py-2 text-sm font-bold text-white hover:bg-sky-800 dark:bg-sky-300 dark:text-sky-950 dark:hover:bg-sky-200"
               >
-                {LOBBY_COPY.newHereShow}
+                {t.lobbyHints.newHereShow}
               </button>
               <a
                 href={TRY_PATH}
@@ -206,8 +214,8 @@ export function Lobby({ controller, state, room, lastBattle }: LobbyProps) {
                 rel="noopener"
                 className="inline-flex min-h-10 items-center rounded-lg border border-sky-300 px-4 py-2 text-sm font-semibold hover:bg-sky-100 dark:border-sky-800 dark:hover:bg-sky-900"
               >
-                {LOBBY_COPY.newHerePractice} <span aria-hidden="true">&nbsp;↗</span>
-                <span className="sr-only"> {NEW_TAB}</span>
+                {t.lobbyHints.newHerePractice} <span aria-hidden="true">&nbsp;↗</span>
+                <span className="sr-only"> {t.common.newTab}</span>
               </a>
             </div>
           </section>
@@ -228,11 +236,11 @@ export function Lobby({ controller, state, room, lastBattle }: LobbyProps) {
                   : 'border-2 border-emerald-600 text-emerald-700 hover:bg-emerald-50 dark:text-emerald-300 dark:hover:bg-emerald-950'
               }`}
             >
-              {me.is_ready ? '✓ Ready!' : 'Ready up'}
+              {me.is_ready ? words.readyDone : words.readyUp}
             </button>
           ) : (
             <p className="text-sm text-zinc-600 dark:text-zinc-400" data-testid="spectator-note">
-              You are <strong>spectating</strong>. When a player slot frees up, you get it.
+              <Rich text={words.spectatingNote} />
             </p>
           )}
           {me.role === 'player' && !touch && (
@@ -241,7 +249,7 @@ export function Lobby({ controller, state, room, lastBattle }: LobbyProps) {
               data-testid="build-reminder"
             >
               <span aria-hidden="true">💻 </span>
-              {LOBBY_COPY.reminder}
+              {t.lobbyHints.reminder}
             </p>
           )}
 
@@ -249,7 +257,7 @@ export function Lobby({ controller, state, room, lastBattle }: LobbyProps) {
             {me.is_host ? (
               <div className="flex flex-col gap-3" data-testid="host-controls">
                 <label className="flex items-center justify-between gap-3 text-sm font-semibold">
-                  Max players
+                  {words.maxPlayers}
                   <select
                     data-testid="max-players"
                     value={room.room.max_players}
@@ -286,16 +294,17 @@ export function Lobby({ controller, state, room, lastBattle }: LobbyProps) {
                   className="rounded-xl bg-zinc-900 px-5 py-4 text-lg font-black tracking-wide text-white disabled:cursor-not-allowed disabled:opacity-40 dark:bg-zinc-100 dark:text-zinc-900"
                 >
                   {state.pending.start
-                    ? 'Spinning up…'
+                    ? words.spinningUp
                     : hadBattle
-                      ? 'Start the rematch'
-                      : 'Start battle'}
+                      ? words.startRematch
+                      : words.startBattle}
                 </button>
                 <p className="text-xs text-zinc-500" data-testid="ready-summary">
-                  {ready} ready ·{' '}
-                  {ready >= ROOM_LIMITS.min_players
-                    ? 'everyone who is ready and online plays'
-                    : `at least ${String(ROOM_LIMITS.min_players)} ready players are needed`}
+                  {words.readySummary(
+                    ready,
+                    ready >= ROOM_LIMITS.min_players,
+                    ROOM_LIMITS.min_players,
+                  )}
                 </p>
               </div>
             ) : (
@@ -304,11 +313,16 @@ export function Lobby({ controller, state, room, lastBattle }: LobbyProps) {
                   className="text-sm text-zinc-600 dark:text-zinc-400"
                   data-testid="waiting-for-host"
                 >
-                  Waiting for <strong>{host?.display_name ?? 'the host'}</strong> to start
-                  {hadBattle ? ' the rematch' : ' the battle'}… ({ready} ready)
+                  <Rich
+                    text={hadBattle ? words.waitingRematch : words.waitingBattle}
+                    slots={{
+                      host: <strong>{host?.display_name ?? words.theHost}</strong>,
+                      ready: String(ready),
+                    }}
+                  />
                 </p>
                 <p className="text-xs text-zinc-500" data-testid="settings-summary">
-                  {settingsSummary(room.room.settings)}
+                  {settingsSummary(room.room.settings, t)}
                 </p>
               </div>
             )}
@@ -318,17 +332,15 @@ export function Lobby({ controller, state, room, lastBattle }: LobbyProps) {
               className="mt-4 rounded-xl bg-sky-50 px-3 py-2 text-xs text-sky-900 dark:bg-sky-950/60 dark:text-sky-100"
               data-testid="phone-lobby-note"
             >
-              📱 On a phone you watch the battle, then play the reveal and the vote. Building needs
-              a computer (you build with your own AI tools and import the result): if you play from
-              here, your build ends as DNF.{' '}
+              {words.phoneNote}{' '}
               <a
                 href={GUIDE_PATH}
                 target="_blank"
                 rel="noopener"
                 className="font-semibold underline underline-offset-2"
               >
-                {PHONE_COPY.guideLink}
-                <span className="sr-only"> {NEW_TAB}</span>
+                {t.phone.guideLink}
+                <span className="sr-only"> {t.common.newTab}</span>
               </a>
             </p>
           )}
@@ -338,27 +350,20 @@ export function Lobby({ controller, state, room, lastBattle }: LobbyProps) {
             className="mt-4 inline-block text-sm font-semibold underline"
             data-testid="my-history-link"
           >
-            Your battle history ↗
+            {words.historyLink}
           </a>
         </section>
 
         {hadBattle && <LastBattle battle={lastBattle} />}
 
         <section className={`${panel} text-sm text-zinc-600 dark:text-zinc-400`}>
-          <h2 className="mb-2 font-bold text-zinc-900 dark:text-zinc-100">How a battle works</h2>
+          <h2 className="mb-2 font-bold text-zinc-900 dark:text-zinc-100">{words.howTitle}</h2>
           <ol className="list-inside list-decimal space-y-1">
-            <li>
-              The reels pick a BUILD, a RULE, a STYLE and a time limit (
-              {RANDOM_BUILD_TIME_LIMITS_MINUTES.join(', ').replace(/, (\d+)$/, ' or $1')} min).
-            </li>
-            <li>
-              Everyone builds the same challenge on their own computer, with their own AI tools, and
-              imports the built site.
-            </li>
-            <li>Ship before the clock runs out. Fast ships earn awards.</li>
-            <li>The reveal: everyone watches every build, one at a time.</li>
-            <li>Everyone votes in four categories (never for their own build).</li>
-            <li>Results by votes, a last look, and then every build is destroyed.</li>
+            {words
+              .how(t.units.orList(RANDOM_BUILD_TIME_LIMITS_MINUTES.map(String)))
+              .map((line, i) => (
+                <li key={i}>{line}</li>
+              ))}
           </ol>
         </section>
       </aside>
@@ -369,9 +374,9 @@ export function Lobby({ controller, state, room, lastBattle }: LobbyProps) {
       <ConfirmDialog
         open={kickTarget !== null}
         testId="kick-confirm"
-        title={`Kick ${kickTarget?.display_name ?? ''}?`}
-        body="They leave the room at once and cannot come back with this code."
-        confirm="Kick"
+        title={words.kickTitle(kickTarget?.display_name ?? '')}
+        body={words.kickBody}
+        confirm={words.kick}
         busy={state.pending.kick !== null}
         onCancel={() => {
           setKickTarget(null);
@@ -387,6 +392,7 @@ export function Lobby({ controller, state, room, lastBattle }: LobbyProps) {
 }
 
 function LastBattle({ battle }: { battle: BattleSnapshot }) {
+  const { t } = useI18n();
   const abandoned = battle.battle.phase === 'abandoned';
   // An abandoned battle has no ranks: its shipped builds are listed in shipping order.
   const shown = abandoned
@@ -401,10 +407,10 @@ function LastBattle({ battle }: { battle: BattleSnapshot }) {
   const medals = ['🥇', '🥈', '🥉'];
   return (
     <section className={panel} data-testid="last-battle" data-phase={battle.battle.phase}>
-      <h2 className="font-bold">Last battle</h2>
+      <h2 className="font-bold">{t.lobby.lastBattle}</h2>
       <p className="mb-3 text-sm text-zinc-500">{battle.challenge.build.text}</p>
       {shown.length === 0 ? (
-        <p className="text-sm text-zinc-500">Nobody shipped.</p>
+        <p className="text-sm text-zinc-500">{t.lobby.nobodyShipped}</p>
       ) : (
         <ol className="flex flex-col gap-1.5 text-sm">
           {shown.map((b) => (
@@ -413,7 +419,8 @@ function LastBattle({ battle }: { battle: BattleSnapshot }) {
                 {abandoned ? '🚀' : (medals[(b.final_rank ?? 1) - 1] ?? '🏅')}
               </span>
               <span className="min-w-0 flex-1 truncate">
-                <strong>{b.name ?? `${name(b.builder_id)}'s build`}</strong> · {name(b.builder_id)}
+                <strong>{b.name ?? t.common.buildOf(name(b.builder_id))}</strong> ·{' '}
+                {name(b.builder_id)}
               </span>
               {b.completion_ms !== null && (
                 <span className="font-mono text-xs text-zinc-500">
@@ -430,12 +437,10 @@ function LastBattle({ battle }: { battle: BattleSnapshot }) {
           className="mt-3 inline-block text-sm font-semibold underline"
           data-testid="last-battle-link"
         >
-          Full results →
+          {t.common.fullResults}
         </a>
       ) : (
-        <p className="mt-3 text-sm text-zinc-500">
-          It was abandoned (nobody was left), so it has no results page.
-        </p>
+        <p className="mt-3 text-sm text-zinc-500">{t.lobby.abandoned}</p>
       )}
     </section>
   );
@@ -451,19 +456,21 @@ export const VOTING_CHOICES = [30, 45, 60, 90, 120, 180].filter(
   (s) => s >= VOTING_MIN_SECONDS && s <= VOTING_MAX_SECONDS,
 );
 
-const AUTO_SLOT = `${String(REVEAL_SLOT_MIN_SECONDS)}–${String(REVEAL_SLOT_MAX_SECONDS)} s`;
+/** `30–60 s`. */
+const autoSlot = (m: Messages) =>
+  `${String(REVEAL_SLOT_MIN_SECONDS)}–${m.units.seconds(REVEAL_SLOT_MAX_SECONDS)}`;
 
-/** "Reveal and vote on · 45 s per build · 90 s to vote", for everyone in the lobby. */
-export function settingsSummary(settings: RoomSettings): string {
-  if (settings.reveal_vote === false) {
-    return 'Reveal and vote off: results by completion time.';
-  }
+/**
+ * "Reveal and vote on · 45 s per build · 90 s to vote", for everyone in the lobby, in the
+ * catalog's language (default English).
+ */
+export function settingsSummary(settings: RoomSettings, m: Messages = en): string {
+  if (settings.reveal_vote === false) return m.lobby.settingsOff;
   const slot =
     typeof settings.reveal_slot_s === 'number'
-      ? `${String(settings.reveal_slot_s)} s per build`
-      : `${AUTO_SLOT} per build (by the number of builds)`;
-  const voting = settings.voting_s ?? DEFAULT_VOTING_SECONDS;
-  return `Reveal and vote on · ${slot} · ${String(voting)} s to vote.`;
+      ? m.lobby.slotFixed(settings.reveal_slot_s)
+      : m.lobby.slotAuto(autoSlot(m));
+  return m.lobby.settingsOn(slot, settings.voting_s ?? DEFAULT_VOTING_SECONDS);
 }
 
 const settingSelect =
@@ -479,6 +486,8 @@ export function RevealVoteSettings({
   disabled: boolean;
   onChange: (patch: RoomSettingsPatch) => void;
 }) {
+  const { t } = useI18n();
+  const words = t.lobby;
   const on = settings.reveal_vote !== false;
   return (
     <fieldset
@@ -487,13 +496,13 @@ export function RevealVoteSettings({
       disabled={disabled}
     >
       <legend className="px-1 text-xs font-bold tracking-wide text-zinc-500 uppercase">
-        After the build
+        {words.afterBuild}
       </legend>
       <label className="flex items-center justify-between gap-3 text-sm font-semibold">
         <span>
-          Reveal and vote
+          {words.revealVote}
           <span className="block text-xs font-normal text-zinc-500">
-            {on ? 'Everyone watches every build, then votes.' : 'Results by completion time.'}
+            {on ? words.revealVoteOn : words.revealVoteOff}
           </span>
         </span>
         <input
@@ -508,7 +517,7 @@ export function RevealVoteSettings({
         />
       </label>
       <label className="flex items-center justify-between gap-3 text-sm font-semibold">
-        Time per build
+        {words.timePerBuild}
         <select
           data-testid="setting-reveal-slot"
           value={
@@ -522,16 +531,16 @@ export function RevealVoteSettings({
           }}
           className={settingSelect}
         >
-          <option value="auto">Auto ({AUTO_SLOT})</option>
+          <option value="auto">{words.auto(autoSlot(t))}</option>
           {REVEAL_SLOT_CHOICES.map((s) => (
             <option key={s} value={s}>
-              {s} s
+              {t.units.seconds(s)}
             </option>
           ))}
         </select>
       </label>
       <label className="flex items-center justify-between gap-3 text-sm font-semibold">
-        Voting time
+        {words.votingTime}
         <select
           data-testid="setting-voting"
           value={String(settings.voting_s ?? DEFAULT_VOTING_SECONDS)}
@@ -543,7 +552,7 @@ export function RevealVoteSettings({
         >
           {VOTING_CHOICES.map((s) => (
             <option key={s} value={s}>
-              {s % 60 === 0 ? `${String(s / 60)} min` : `${String(s)} s`}
+              {s % 60 === 0 ? t.units.minutes(s / 60) : t.units.seconds(s)}
             </option>
           ))}
         </select>

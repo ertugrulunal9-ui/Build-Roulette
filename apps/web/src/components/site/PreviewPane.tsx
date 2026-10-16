@@ -9,8 +9,9 @@
  */
 import { useState, type ReactNode, type RefObject } from 'react';
 import type { ConsoleEntry, PreviewSnapshot } from '../../lib/preview/preview-controller';
+import { useT } from '../../lib/i18n/context';
 import { isSiteLoadFailure } from '../../lib/preview/site-errors';
-import { IMPORT_COPY } from './copy';
+import { Rich } from '../i18n/Rich';
 
 interface PreviewPaneProps {
   hostRef: RefObject<HTMLDivElement | null>;
@@ -43,6 +44,8 @@ export function PreviewPane({
   children,
   hidePanel = false,
 }: PreviewPaneProps) {
+  const t = useT();
+  const words = t.importUi;
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState<'problems' | 'console'>('problems');
   const crashed = snapshot.preview === 'crashed';
@@ -70,9 +73,7 @@ export function PreviewPane({
           >
             <div className="flex items-start justify-between gap-4">
               <div className="min-w-0">
-                <p className="text-xs font-semibold tracking-wide uppercase">
-                  Your site could not be loaded
-                </p>
+                <p className="text-xs font-semibold tracking-wide uppercase">{words.loadFailed}</p>
                 <p
                   className="mt-1 font-mono text-sm break-words whitespace-pre-wrap"
                   data-testid="error-message"
@@ -85,7 +86,7 @@ export function PreviewPane({
                 onClick={onDismissErrors}
                 className="shrink-0 rounded px-2 py-1 text-xs hover:bg-red-100 dark:hover:bg-red-900"
               >
-                {IMPORT_COPY.dismiss}
+                {t.common.dismiss}
               </button>
             </div>
           </div>
@@ -103,29 +104,20 @@ export function PreviewPane({
             <div className="flex max-w-sm flex-col items-center gap-3">
               <p className="text-base font-semibold">
                 {snapshot.crash?.reason === 'handshake-timeout'
-                  ? 'The preview could not start'
-                  : 'The preview crashed'}
+                  ? words.couldNotStart
+                  : words.crashed}
               </p>
               <p className="text-sm text-zinc-600 dark:text-zinc-400">
                 {snapshot.crash?.reason === 'handshake-timeout' ? (
-                  <>
-                    The sandbox shell at <code className="break-all">{shellUrl}</code> did not
-                    answer. Check your connection, then restart the preview.
-                  </>
+                  <Rich
+                    text={words.noAnswer}
+                    slots={{ url: <code className="break-all">{shellUrl}</code> }}
+                  />
                 ) : snapshot.crash?.phase === 'loading' ? (
                   // The watchdog allows a slow start (up to 15 s, T-027) before it gives up.
-                  <>
-                    Your site didn’t finish starting: it stopped responding for{' '}
-                    {Math.round(snapshot.crash.silentForMs / 1000)} s while it loaded, probably an
-                    infinite loop in code that runs at startup. Fix it, build again and import it,
-                    or restart the preview.
-                  </>
+                  words.frozeLoading(Math.round(snapshot.crash.silentForMs / 1000))
                 ) : (
-                  <>
-                    Your site stopped responding for{' '}
-                    {Math.round((snapshot.crash?.silentForMs ?? 0) / 1000)} s, probably an infinite
-                    loop. Fix it, build again and import it, or restart the preview.
-                  </>
+                  words.froze(Math.round((snapshot.crash?.silentForMs ?? 0) / 1000))
                 )}
               </p>
               <button
@@ -133,7 +125,7 @@ export function PreviewPane({
                 onClick={onRestart}
                 className="rounded-lg bg-zinc-900 px-4 py-2 text-sm font-semibold text-white dark:bg-zinc-100 dark:text-zinc-900"
               >
-                Restart preview
+                {words.restart}
               </button>
             </div>
           </div>
@@ -160,7 +152,7 @@ export function PreviewPane({
             >
               <span aria-hidden="true">{open ? '▾' : '▸'}</span>
               <span>
-                {IMPORT_COPY.problems}
+                {words.problems}
                 {errors.length > 0 && (
                   <span className="ml-1 text-red-600 dark:text-red-400" data-testid="problem-count">
                     ({errors.length})
@@ -169,7 +161,7 @@ export function PreviewPane({
               </span>
               <span className="text-zinc-400">·</span>
               <span>
-                {IMPORT_COPY.console}
+                {words.console}
                 {snapshot.console.length > 0 && ` (${String(snapshot.console.length)})`}
               </span>
             </button>
@@ -189,7 +181,7 @@ export function PreviewPane({
                   }}
                   className={tabClass(tab === 'problems')}
                 >
-                  {IMPORT_COPY.problems}
+                  {words.problems}
                   {errors.length > 0 && ` (${String(errors.length)})`}
                 </button>
                 <button
@@ -201,7 +193,7 @@ export function PreviewPane({
                   }}
                   className={tabClass(tab === 'console')}
                 >
-                  {IMPORT_COPY.console}
+                  {words.console}
                   {snapshot.console.length > 0 && ` (${String(snapshot.console.length)})`}
                 </button>
                 <button
@@ -209,18 +201,18 @@ export function PreviewPane({
                   onClick={tab === 'console' ? onClearConsole : onDismissErrors}
                   className="ml-auto px-3 text-xs text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100"
                 >
-                  {IMPORT_COPY.clear}
+                  {words.clear}
                 </button>
               </div>
               {tab === 'problems' ? (
                 <ol
                   role="tabpanel"
-                  aria-label={IMPORT_COPY.problems}
+                  aria-label={words.problems}
                   data-testid="problems"
                   className="min-h-0 flex-1 overflow-y-auto font-mono text-xs"
                 >
                   {errors.length === 0 && (
-                    <li className="px-3 py-2 font-sans text-zinc-500">{IMPORT_COPY.noProblems}</li>
+                    <li className="px-3 py-2 font-sans text-zinc-500">{words.noProblems}</li>
                   )}
                   {errors.map((e, i) => (
                     <li
@@ -235,14 +227,12 @@ export function PreviewPane({
               ) : (
                 <ol
                   role="tabpanel"
-                  aria-label={IMPORT_COPY.console}
+                  aria-label={words.console}
                   data-testid="console"
                   className="min-h-0 flex-1 overflow-y-auto font-mono text-xs"
                 >
                   {snapshot.console.length === 0 && (
-                    <li className="px-3 py-2 font-sans text-zinc-500">
-                      {IMPORT_COPY.consoleEmpty}
-                    </li>
+                    <li className="px-3 py-2 font-sans text-zinc-500">{words.consoleEmpty}</li>
                   )}
                   {snapshot.console.map((entry) => (
                     <li

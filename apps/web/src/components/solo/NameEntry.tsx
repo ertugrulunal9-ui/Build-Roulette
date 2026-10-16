@@ -2,7 +2,9 @@
 
 import Link from 'next/link';
 import { useState } from 'react';
+import { useT } from '../../lib/i18n/context';
 import { describeError, type GameError } from '../../lib/solo/errors';
+import { LanguagePicker } from '../i18n/LanguagePicker';
 import { randomDisplayName } from '../../lib/solo/names';
 import { HowItWorksButton, Welcome } from '../onboarding/Welcome';
 
@@ -29,6 +31,7 @@ interface NameEntryProps {
  * welcome screen (T-049) may show here on the first visit, and "How it works" reopens it.
  */
 export function NameEntry({ busy, error, onSpin }: NameEntryProps) {
+  const t = useT();
   const [name, setName] = useState(initialName);
   const trimmed = name.trim();
 
@@ -38,12 +41,11 @@ export function NameEntry({ busy, error, onSpin }: NameEntryProps) {
         <Link href="/" className="text-sm font-semibold text-zinc-500 hover:underline">
           Build Roulette
         </Link>
-        <h1 className="text-4xl font-black tracking-tight sm:text-5xl">Solo battle</h1>
-        <p className="text-zinc-600 dark:text-zinc-400">
-          Spin a random BUILD, RULE and STYLE, then race the clock. Ship before time runs out.
-        </p>
-        <div>
+        <h1 className="text-4xl font-black tracking-tight sm:text-5xl">{t.solo.title}</h1>
+        <p className="text-zinc-600 dark:text-zinc-400">{t.solo.intro}</p>
+        <div className="flex flex-wrap items-center justify-center gap-2">
           <HowItWorksButton />
+          <LanguagePicker />
         </div>
       </header>
 
@@ -61,7 +63,7 @@ export function NameEntry({ busy, error, onSpin }: NameEntryProps) {
         }}
       >
         <label htmlFor="display-name" className="text-left text-sm font-semibold">
-          Your name
+          {t.common.yourName}
         </label>
         <div className="flex gap-2">
           <input
@@ -78,8 +80,8 @@ export function NameEntry({ busy, error, onSpin }: NameEntryProps) {
           />
           <button
             type="button"
-            title="Another random name"
-            aria-label="Another random name"
+            title={t.common.anotherName}
+            aria-label={t.common.anotherName}
             onClick={() => {
               setName(randomDisplayName());
             }}
@@ -93,11 +95,11 @@ export function NameEntry({ busy, error, onSpin }: NameEntryProps) {
           disabled={busy || trimmed.length === 0}
           className="rounded-lg bg-zinc-900 px-5 py-4 text-lg font-black tracking-wide text-white disabled:cursor-not-allowed disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900"
         >
-          {busy ? 'Spinning up…' : 'Spin'}
+          {busy ? t.solo.spinningUp : t.solo.spin}
         </button>
         {error && (
           <p role="alert" className="text-sm text-red-700 dark:text-red-300">
-            {describeError(error)}
+            {describeError(error, t)}
             {error.details &&
               !['battle_in_progress', 'name_not_allowed', 'rate_limited'].includes(error.code) && (
                 <span className="block text-xs opacity-75">{error.details}</span>
@@ -105,9 +107,7 @@ export function NameEntry({ busy, error, onSpin }: NameEntryProps) {
           </p>
         )}
       </form>
-      <p className="text-xs text-zinc-500">
-        No account needed. Your build is deleted when the battle ends; the results stay.
-      </p>
+      <p className="text-xs text-zinc-500">{t.solo.footer}</p>
       <Welcome />
     </main>
   );
@@ -120,28 +120,28 @@ export function ResumeOffer({
   onResume: () => void;
   onCancel: () => void;
 }) {
+  const t = useT();
   return (
     <main className="mx-auto flex min-h-dvh max-w-md flex-col items-center justify-center gap-6 px-6 text-center">
-      <h1 className="text-3xl font-black tracking-tight">You have a battle running</h1>
-      <p className="text-zinc-600 dark:text-zinc-400">
-        Only one solo battle can run at a time. Jump back in before the clock runs out.
-      </p>
+      <h1 className="text-3xl font-black tracking-tight">{t.solo.resumeTitle}</h1>
+      <p className="text-zinc-600 dark:text-zinc-400">{t.solo.resumeText}</p>
       <div className="flex gap-3">
         <button
           type="button"
           onClick={onResume}
           className="rounded-lg bg-zinc-900 px-5 py-3 font-bold text-white dark:bg-zinc-100 dark:text-zinc-900"
         >
-          Resume battle
+          {t.solo.resume}
         </button>
         <button
           type="button"
           onClick={onCancel}
           className="rounded-lg border border-zinc-300 px-5 py-3 font-semibold dark:border-zinc-700"
         >
-          Back
+          {t.solo.back}
         </button>
       </div>
+      <LanguagePicker />
     </main>
   );
 }

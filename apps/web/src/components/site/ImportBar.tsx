@@ -6,12 +6,11 @@
  * "Import again" with the same two choices as the drop zone (a drop anywhere works too).
  * While an import is read, or after one failed, the bar says so; the running site stays.
  */
-import { describeImportError } from '@br/site';
 import { useEffect, useRef, useState } from 'react';
+import { useI18n, useT } from '../../lib/i18n/context';
 import { formatBytes, rootLabel, type ImportedSite } from '../../lib/site/site';
 import type { ImportState } from '../../lib/site/use-site-import';
-import { IMPORT_COPY, filesText, skippedText } from './copy';
-import { ImportErrorNote } from './DropZone';
+import { ImportErrorNote, importErrorText } from './DropZone';
 
 export interface ImportBarProps {
   site: ImportedSite;
@@ -34,8 +33,10 @@ export function ImportBar({
   onDismissError,
   disabled = false,
 }: ImportBarProps) {
+  const { locale, t } = useI18n();
+  const words = t.importUi;
   const root = rootLabel(site.root);
-  const error = state.status === 'error' ? describeImportError(state.error) : null;
+  const error = state.status === 'error' ? importErrorText(state.error, t) : null;
   return (
     <div className="flex flex-col gap-2 border-b border-zinc-200 bg-white px-3 py-1.5 dark:border-zinc-800 dark:bg-zinc-900">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
@@ -46,17 +47,17 @@ export function ImportBar({
           data-root={site.root}
         >
           <span aria-hidden="true">📦 </span>
-          <span className="font-semibold">{IMPORT_COPY.importedFrom}</span>{' '}
+          <span className="font-semibold">{words.importedFrom}</span>{' '}
           {root ? (
             <code className="rounded bg-zinc-100 px-1 font-mono break-all dark:bg-zinc-800">
               {root}
             </code>
           ) : (
-            <span>{IMPORT_COPY.droppedFolder}</span>
+            <span>{words.droppedFolder}</span>
           )}{' '}
           <span className="text-zinc-500">
-            · {filesText(site.files)} · {formatBytes(site.bytes)}
-            {site.skipped > 0 && ` · ${skippedText(site.skipped)}`}
+            · {t.units.files(site.files)} · {formatBytes(site.bytes, locale)}
+            {site.skipped > 0 && ` · ${words.skipped(site.skipped)}`}
           </span>
         </p>
         {state.status === 'reading' && (
@@ -65,7 +66,7 @@ export function ImportBar({
             className="font-semibold text-sky-700 dark:text-sky-300"
             data-testid="import-reading"
           >
-            {IMPORT_COPY.reading}
+            {words.reading}
           </span>
         )}
         {!disabled && (
@@ -93,6 +94,7 @@ function ImportAgain({
   openZip: () => void;
   busy: boolean;
 }) {
+  const words = useT().importUi;
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -127,7 +129,7 @@ function ImportAgain({
         }}
         className={smallButton}
       >
-        {IMPORT_COPY.importAgain} ▾
+        {words.importAgain} ▾
       </button>
       {open && (
         <div
@@ -142,7 +144,7 @@ function ImportAgain({
             onClick={choose(openFolder)}
             className="rounded px-3 py-2 text-left text-sm hover:bg-zinc-100 dark:hover:bg-zinc-800"
           >
-            📁 {IMPORT_COPY.chooseFolder}
+            📁 {words.chooseFolder}
           </button>
           <button
             type="button"
@@ -151,7 +153,7 @@ function ImportAgain({
             onClick={choose(openZip)}
             className="rounded px-3 py-2 text-left text-sm hover:bg-zinc-100 dark:hover:bg-zinc-800"
           >
-            🗜 {IMPORT_COPY.chooseZip}
+            🗜 {words.chooseZip}
           </button>
         </div>
       )}

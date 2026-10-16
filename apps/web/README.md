@@ -7,10 +7,11 @@ and data loads in the browser from Supabase. Routes:
 
 | Route | What |
 |---|---|
-| `/` | Landing page: "Play solo" (`/play`), "Create room" (a name → `create_room` → `/r/{code}`) and "Join with code" (any case, trimmed, or a pasted invite link). |
+| `/` | Landing page: the pitch, "Play solo" (`/play`), "Create room" (a name → `create_room` → `/r/{code}`) and "Join with code" (any case, trimmed, or a pasted invite link), "How it works" and "Try an import", then the four steps of a battle as cards. |
 | `/play` | The solo game: name → SPIN → BUILD → SHIP → RESULTS → DESTROY. `?battle={id}` resumes a battle after a refresh. |
 | `/battles/[id]` | The permanent, shareable results page. One static shell for every battle (`src/app/battles/page.tsx`, "Static site" below): the browser reads the id from the URL and calls `get_public_battle` on every load, so a takedown shows on the next load. The Worker's code (a Pages Function until T-043) serves the shell with each battle's own link preview, and a real 404 for an unknown battle ("Link previews" below). |
 | `/try` | "Try an import" (M6, docs/09 §9.5): the BUILD stage's drop zone and live preview without a battle, an account or an upload. The practice page the onboarding links to. `/playground` (the editor's old page) redirects here with a 301 (`REDIRECTS` in `src/lib/hosting/shells.ts`, written to `_redirects`). |
+| `/how-it-works` | The guide (T-049, docs/09 §9.6): the game in one minute, the rules for a site (`SITE_LIMITS`), a checklist, tool guides (tabs), a line to add to the prompt (Copy), where each framework writes its build, troubleshooting and a FAQ. A plain static page. |
 | `/r/[code]` | A room (M3): join → lobby → SPIN → BUILD → SHIP → REVEAL → VOTE → RESULTS → DESTROY → lobby (rematch). One static shell (`src/app/r/page.tsx`) serves every room: the host rewrites `/r/{code}` to it and the code is read in the browser (T-033, T-037). |
 | `/u/[id]` | A player's history (M4): their finished battles, newest first, from `get_player_history` with the anon key, paginated (`?before=…&before_battle=…`). One static shell (`src/app/u/page.tsx`); the browser reads the id and the cursor from the URL and the data on every load. |
 | `/admin` | Moderation (M5, T-024), in the browser with the moderator's own session ("Moderation" below): the report queue (dismiss, take down), the battle / room event logs (`?q={battle id or room code}`), the admin log, and **Health** (T-030: `admin_ops_health`, the signals of docs/runbooks/). **The plain "not found" screen for everyone who is not a signed-in admin.** |
@@ -407,6 +408,32 @@ font), it loads itself, as on any static host.
 - `/try`, `/play` and `/r/{code}` load their client code with `next/dynamic` (`ssr: false`),
   so other routes never download the import or the runtime.
 
+## Onboarding (T-049)
+
+New players are told how the game works where they arrive (docs/09 §9.6). Every word is in
+`src/components/onboarding/copy.ts` (for T-050), with the numbers from `@br/game` and
+`@br/site`.
+
+- **Welcome screen** (`components/onboarding/Welcome.tsx`): a full-screen modal `<dialog>`
+  with the four steps (spin, build it your way, build & drop, ship / reveal / vote), each with
+  a small picture made of markup (`Steps.tsx`); Next / Back, step dots, Esc and "Skip", focus
+  kept inside; the last step has "Practice first" (`/try`) and "Let's play", and every step
+  "Read the full guide". It opens by itself on a first visit, and again from "How it works",
+  only where it is mounted: the home page, `/play` before a battle (the name entry) and a
+  room's lobby (its links open new tabs there). Never during a battle (the lobby unmounts, and
+  a pending "How it works" with it), and never on `/battles/*`, `/u/*`, `/admin`, `/try` or the
+  guide. Its status is `br:welcome` in localStorage (`new`, `skipped`, `done`;
+  `src/lib/onboarding/welcome.ts`), kept in memory when storage is blocked.
+- **"How it works"** on the home page, `/play` and the lobby reopens the welcome; on `/try` it
+  is a link to the guide, and in the BUILD header a link in a new tab.
+- **Lobby:** a "New here?" card until the welcome was seen to the end, a reminder to have the
+  AI tool open before the spin, and the guide for phones (the lobby note and `DesktopNeeded`).
+- **"How do I import?"** (`ImportHelp.tsx`): a closed `<details>` in the drop zone's `help` slot
+  on BUILD and `/try`. An import error's "How do I fix this?" opens it, or the guide's
+  troubleshooting in a new tab where the page has none (the bar over a running preview).
+- **The e2e** starts every browser context with the welcome already seen (`e2e/welcome.ts`,
+  `use.storageState` in each Playwright config); `e2e/onboarding.spec.ts` clears it.
+
 ## Code map
 
 | Piece | File |
@@ -426,6 +453,7 @@ font), it loads itself, as on any static host.
 | Results page (shell, loader, page) + its title and social image | `src/app/battles/page.tsx`, `src/components/results/BattleView.tsx`, `BattleResults.tsx`, `src/lib/solo/public-battle.ts`, `battle-meta.ts`, `og-image.ts`, `public/og-card.png` (`scripts/og-card.ts`) |
 | Static hosting: shells and rewrites, `_headers` and the CSP, the export checks, page loads | `src/lib/hosting/*`, `scripts/pages-config.ts`, `wrangler.jsonc` (the Worker with static assets) |
 | Player history page | `src/app/u/page.tsx`, `src/components/results/PlayerHistoryView.tsx`, `PlayerHistory.tsx`, `src/lib/history/*`, `src/components/results/MyHistoryLink.tsx` |
+| Onboarding: the welcome screen, the steps, the guide, "How do I import?", their words | `src/components/onboarding/*`, `src/lib/onboarding/welcome.ts`, `src/app/how-it-works/page.tsx` |
 | Phones and tablets (touch-primary check) | `src/lib/device.ts`, `src/components/room/DesktopNeeded.tsx` |
 | Moderation: report dialog, "Removed by moderators" | `src/components/moderation/*`, `src/lib/moderation/report.ts` |
 | Admin page, sign-in, the moderator's session (its own client, sessionStorage) | `src/app/admin/*`, `src/components/admin/*`, `src/lib/admin/*` |
@@ -437,7 +465,7 @@ font), it loads itself, as on any static host.
 
 ```sh
 pnpm --filter @br/web test             # unit (Vitest): solo + room controllers, sync engine, reducer, …
-pnpm --filter @br/web test:e2e         # /try and the static site (Playwright), no Supabase needed
+pnpm --filter @br/web test:e2e         # /try, the onboarding and the static site (Playwright), no Supabase needed
 pnpm --filter @br/web test:e2e:solo    # /play against the REAL local Supabase stack
 pnpm --filter @br/web test:e2e:moderation  # report → /admin takedown → removed on the next load (REAL stack)
 pnpm --filter @br/web test:e2e:multi   # rooms: 3+ browser contexts (and phones), REAL stack WITH Realtime

@@ -346,7 +346,7 @@ export function HowItWorksLink({
       <span aria-hidden="true">💡</span> {HOW_IT_WORKS}
       {newTab && (
         <>
-          <span aria-hidden="true">↗</span>
+          <span aria-hidden="true"> ↗</span>
           <span className="sr-only"> {NEW_TAB}</span>
         </>
       )}

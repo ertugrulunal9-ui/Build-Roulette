@@ -2,7 +2,20 @@
 
 Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 
-## Current milestone: M5 Hardening + free-tier deploy (all tasks merged; **deployed** 2026-10-16 at https://build-roulette-web.build-roulette.workers.dev, reachable from Turkey; sign-off waits on the runbook drills, DEPLOY.md §7)
+## Current milestone: M6 Import mode: bring your own build ([docs/09](09-import-mode.md))
+
+**User decision (2026-10-16):** players build locally with their own AI tools and import the built static site (`dist/` folder or `.zip`, option B). The in-browser editor is removed. After the import path works: a welcome screen that explains how the game works.
+
+| ID | Task | Scope | Status | Notes |
+|---|---|---|---|---|
+| T-044 | `@br/site`: site pack format (pack/unpack), folder/zip import, site-root detection, "this is source, build it first" detection, limits, content types; unit tests | `packages/site/` (new), `packages/game/` (limits) | todo | |
+| T-045 | Shell v2 + runtime: Service Worker serves the imported site (live, reveal, capture), protocol v2 `load {site}`, v2 capture page, CSP; runtime `PreviewHandle.load({site})`; bundler and package warm-up removed from the shell/runtime; runtime e2e on fixture sites | `apps/sandbox-shell/`, `packages/protocol/`, `packages/runtime/` | todo | |
+| T-046 | Storage, DB and capture: `site.bin` / `autosave/site.bin` allowlist and mime, ship / auto-ship / reveal paths, `imports` stat; jobs function and capture worker on the v2 capture URL; tests | `supabase/`, `apps/capture-worker/` | todo | |
+| T-047 | The app: import-first BUILD stage (solo and rooms), autosave of the pack, ship, reveal and last look from `site.bin`, `/try` replaces `/playground`; editor, paste-import, templates, bundler worker removed; e2e on fixture sites | `apps/web/` | todo | |
+| T-048 | Removals and docs: `@br/workspace`, `apps/pkg-cdn`, esm.sh/CDN settings, compat CI, deploy script; README, docs/01, 03, 05, 06, 07, 08, DEPLOY | repo-wide | todo | |
+| T-049 | Onboarding: welcome screen / How it works, per-tool tips, in-BUILD import help, `/try` as practice | `apps/web/` | todo | |
+
+## Previous milestone: M5 Hardening + free-tier deploy (all tasks merged; **deployed** 2026-10-16 at https://build-roulette-web.build-roulette.workers.dev, reachable from Turkey; sign-off waits on the runbook drills, DEPLOY.md §7)
 
 | ID | Task | Scope | Status | Notes |
 |---|---|---|---|---|

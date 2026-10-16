@@ -87,7 +87,7 @@ const passResults = () => [
 
 /** The default addresses of a first run (the subdomains it registers). */
 const APP = 'https://build-roulette-web.buildroulette.workers.dev';
-const SHELL = 'https://build-roulette-sandbox.buildroulette-sandbox.workers.dev/v1/';
+const SHELL = 'https://build-roulette-sandbox.buildroulette-sandbox.workers.dev/v2/';
 
 function world(over = {}) {
   const st = {
@@ -269,6 +269,10 @@ function world(over = {}) {
       if (sub === '/secrets' && method === 'POST') {
         for (const { name, value } of body) st.fnSecrets.set(name, value);
         return json(201);
+      }
+      if (sub === '/secrets' && method === 'DELETE') {
+        for (const name of body) st.fnSecrets.delete(name);
+        return json(200);
       }
       return json(404, { message: 'no route' });
     }
@@ -570,14 +574,13 @@ describe('settings', () => {
 
   it('derives the ref and the defaults; empty variables count as unset', () => {
     const { settings: s, problems } = readSettings(
-      baseEnv({ APP_URL: '', PKG_CDN_URL: '' }),
+      baseEnv({ APP_URL: '' }),
       'all',
     );
     assert.deepEqual(problems, []);
     assert.equal(s.ref, REF);
     assert.equal(s.supabaseUrl, `https://${REF}.supabase.co`);
     assert.equal(s.appUrl, undefined);
-    assert.equal(s.pkgCdnUrl, 'https://esm.sh');
     assert.equal(s.webWorker, 'build-roulette-web');
     assert.equal(s.shellWorker, 'build-roulette-sandbox');
     assert.equal(s.webSubdomain, undefined, 'the default is used only to register one');
@@ -643,18 +646,16 @@ describe('settings', () => {
     );
   });
 
-  it('accepts a Sentry DSN with its public key, a custom APP_URL and a CDN with a path', () => {
+  it('accepts a Sentry DSN with its public key and a custom APP_URL', () => {
     const { settings: s, problems } = readSettings(
       baseEnv({
         NEXT_PUBLIC_SENTRY_DSN: `https://${hex(16)}@o1.ingest.sentry.io/2`,
         APP_URL: 'https://play.example.com/',
-        PKG_CDN_URL: 'https://cdn.example.com/npm/',
       }),
       'all',
     );
     assert.deepEqual(problems, []);
     assert.equal(s.appUrl, 'https://play.example.com');
-    assert.equal(s.pkgCdnUrl, 'https://cdn.example.com/npm');
   });
 
   it('refuses a secret-shaped anon key (the web build rule), and one of another project', () => {
@@ -674,7 +675,7 @@ describe('settings', () => {
       baseEnv({
         TURNSTILE_SITE_KEY: TURNSTILE_SITE,
         JOBS_CRON_SECRET: hex(32),
-        SHELL_URL: 'https://x/v1/',
+        SHELL_URL: 'https://x/v2/',
       }),
       'all',
     );
@@ -686,11 +687,12 @@ describe('settings', () => {
     assert.match(warnings.join('\n'), /SHELL_URL .*account B's workers\.dev subdomain/);
   });
 
-  it('warns about the old Pages project names and one token for both accounts', () => {
-    const { warnings, problems } = readSettings(
+  it('warns about the old Pages project names, the old package CDN and one token for both accounts', () => {
+    const { settings: s, warnings, problems } = readSettings(
       baseEnv({
         CF_PAGES_WEB_PROJECT: 'build-roulette-web',
         CF_PAGES_SHELL_PROJECT: 'x',
+        PKG_CDN_URL: 'https://esm.sh',
         CLOUDFLARE_SANDBOX_API_TOKEN: T.cf,
       }),
       'all',
@@ -699,6 +701,8 @@ describe('settings', () => {
     const text = warnings.join('\n');
     assert.match(text, /CF_PAGES_WEB_PROJECT is not used any more .*CF_WEB_WORKER now/);
     assert.match(text, /CF_PAGES_SHELL_PROJECT is not used any more .*CF_SANDBOX_WORKER now/);
+    assert.match(text, /PKG_CDN_URL is not used any more .*no package CDN.*Delete the PKG_CDN_URL variable/);
+    assert.equal(s.pkgCdnUrl, undefined);
     assert.match(text, /CLOUDFLARE_SANDBOX_API_TOKEN is the same token as CLOUDFLARE_API_TOKEN/);
     assert.ok(!text.includes(T.cf));
   });
@@ -715,12 +719,12 @@ describe('settings', () => {
         CF_ACCOUNT_ID: ACCOUNT,
         CF_WEB_WORKER: 'w',
       },
-      { BR_PKG_CDN_URL: 'https://esm.sh' },
+      { BR_APP_ORIGINS: 'https://app.example' },
     );
     assert.deepEqual(env, {
       PATH: '/usr/bin',
       HOME: '/home/runner',
-      BR_PKG_CDN_URL: 'https://esm.sh',
+      BR_APP_ORIGINS: 'https://app.example',
     });
   });
 });
@@ -890,7 +894,7 @@ describe('helpers', () => {
     assert.deepEqual(deriveUrls(custom, subs).appOrigins, ['https://play.example.com', APP]);
     const named = { ...s, webWorker: 'w', shellWorker: 'sb' };
     assert.equal(deriveUrls(named, subs).app, 'https://w.buildroulette.workers.dev');
-    assert.equal(deriveUrls(named, subs).shell, 'https://sb.buildroulette-sandbox.workers.dev/v1/');
+    assert.equal(deriveUrls(named, subs).shell, 'https://sb.buildroulette-sandbox.workers.dev/v2/');
     assert.throws(
       () => deriveUrls({ ...s, appUrl: 'https://other.buildroulette.workers.dev' }, subs),
       /APP_URL \(https:\/\/other\.buildroulette\.workers\.dev\) is a workers\.dev address, but not the web Worker's/,
@@ -1005,7 +1009,7 @@ describe('deploy: settings and preflight', () => {
     assert.match(later.summary, new RegExp(`\\| App \\| ${APP.replaceAll('.', '\\.')} \\|`));
     assert.match(
       later.summary,
-      /\*\*Addresses\*\*: the app https:\/\/build-roulette-web\.buildroulette\.workers\.dev, the sandbox shell https:\/\/build-roulette-sandbox\.buildroulette-sandbox\.workers\.dev\/v1\//,
+      /\*\*Addresses\*\*: the app https:\/\/build-roulette-web\.buildroulette\.workers\.dev, the sandbox shell https:\/\/build-roulette-sandbox\.buildroulette-sandbox\.workers\.dev\/v2\//,
     );
     assert.deepEqual(changes(w3), []);
   });
@@ -1259,7 +1263,6 @@ describe('deploy: target all', () => {
       JOBS_CRON_SECRET: cron,
       CAPTURE_SHELL_URL: `${SHELL}capture`,
       CAPTURE_HMAC_SECRET: capture,
-      PKG_CDN_URL: 'https://esm.sh',
       BROWSER_RENDERING_ACCOUNT_ID: ACCOUNT,
       BROWSER_RENDERING_API_TOKEN: T.br,
     });
@@ -1297,7 +1300,7 @@ describe('deploy: target all', () => {
       'pnpm --filter @br/sandbox-shell workers:deploy --name build-roulette-sandbox --secrets-file <file>',
       'pnpm --filter @br/web build',
       'pnpm --filter @br/web workers:deploy --name build-roulette-web',
-      `node /repo/scripts/deploy-check.mjs --app ${APP} --shell ${SHELL} --supabase https://${REF}.supabase.co --cdn https://esm.sh --json`,
+      `node /repo/scripts/deploy-check.mjs --app ${APP} --shell ${SHELL} --supabase https://${REF}.supabase.co --json`,
     ]);
     const [link, list, push, fn, shellBuild, shellDeploy, webBuild, webDeploy, check] = runs(w);
     for (const r of [link, list, push]) {
@@ -1320,7 +1323,7 @@ describe('deploy: target all', () => {
     ]);
     assert.equal(fn.env.SUPABASE_DB_PASSWORD, undefined);
     assert.equal(shellBuild.env.BR_APP_ORIGINS, APP);
-    assert.equal(shellBuild.env.BR_PKG_CDN_URL, 'https://esm.sh');
+    assert.equal(shellBuild.env.BR_PKG_CDN_URL, undefined, 'no package CDN since M6');
     // Each wrangler deploy gets its own account's token and id, and nothing else.
     assert.equal(shellDeploy.env.CLOUDFLARE_API_TOKEN, '<secret:CLOUDFLARE_SANDBOX_API_TOKEN>');
     assert.equal(shellDeploy.env.CLOUDFLARE_ACCOUNT_ID, ACCOUNT_B);
@@ -1340,7 +1343,6 @@ describe('deploy: target all', () => {
         NEXT_PUBLIC_SUPABASE_URL: `https://${REF}.supabase.co`,
         NEXT_PUBLIC_SUPABASE_ANON_KEY: '<secret:SUPABASE_ANON_KEY>',
         NEXT_PUBLIC_SANDBOX_SHELL_URL: SHELL,
-        NEXT_PUBLIC_PKG_CDN_URL: 'https://esm.sh',
         NEXT_PUBLIC_SITE_URL: APP,
       },
     );
@@ -1508,7 +1510,7 @@ describe('deploy: target all', () => {
       ['buildroulette', subA, 'buildroulette-sandbox', subB],
     );
     const app = `https://build-roulette-web.${subA}.workers.dev`;
-    const shell = `https://build-roulette-sandbox.${subB}.workers.dev/v1/`;
+    const shell = `https://build-roulette-sandbox.${subB}.workers.dev/v2/`;
     assert.equal(w.st.fnSecrets.get('CAPTURE_SHELL_URL'), `${shell}capture`);
     assert.equal(pnpmRun(w, 'sandbox-shell build').env.BR_APP_ORIGINS, app);
     const webBuild = pnpmRun(w, '@br/web build');
@@ -1655,7 +1657,6 @@ describe('deploy: target all', () => {
       env: {
         CF_WEB_WORKER: 'my-web',
         CF_SANDBOX_WORKER: 'my-shell',
-        PKG_CDN_URL: 'https://cdn.example.com/',
         NEXT_PUBLIC_SENTRY_DSN: sentry,
         NEXT_PUBLIC_POSTHOG_KEY: `phc_${hex(10)}`,
         NEXT_PUBLIC_POSTHOG_HOST: 'https://eu.i.posthog.com',
@@ -1668,15 +1669,28 @@ describe('deploy: target all', () => {
     const env = pnpmRun(w, '@br/web build').env;
     assert.equal(env.NEXT_PUBLIC_SENTRY_DSN, sentry);
     assert.equal(env.NEXT_PUBLIC_POSTHOG_HOST, 'https://eu.i.posthog.com');
-    assert.equal(env.NEXT_PUBLIC_PKG_CDN_URL, 'https://cdn.example.com');
+    assert.equal(env.NEXT_PUBLIC_PKG_CDN_URL, undefined);
     assert.equal(env.NEXT_PUBLIC_SITE_URL, 'https://my-web.buildroulette.workers.dev');
     assert.equal(
       env.NEXT_PUBLIC_SANDBOX_SHELL_URL,
-      'https://my-shell.buildroulette-sandbox.workers.dev/v1/',
+      'https://my-shell.buildroulette-sandbox.workers.dev/v2/',
     );
-    assert.equal(w.st.fnSecrets.get('PKG_CDN_URL'), 'https://cdn.example.com');
     assert.match(res.summary, /with Sentry, PostHog/);
     assert.match(res.summary, /Sentry \/ PostHog: if their projects only accept listed domains/);
+  });
+
+  it('deletes the package CDN function secret left from before import mode, and warns about its variable', async () => {
+    const w = world();
+    w.st.fnSecrets.set('PKG_CDN_URL', 'https://esm.sh');
+    const res = await run(w, { env: { PKG_CDN_URL: 'https://esm.sh' } });
+    assert.equal(res.code, 0, res.summary);
+    assert.equal(w.st.fnSecrets.has('PKG_CDN_URL'), false);
+    assert.match(res.summary, /Old function secrets.*deleted.*PKG_CDN_URL/);
+    assert.match(res.summary, /PKG_CDN_URL is not used any more/);
+    // Nothing left to delete the next time.
+    const again = await run(w);
+    assert.equal(again.code, 0, again.summary);
+    assert.doesNotMatch(again.summary, /Old function secrets/);
   });
 
   it('turns CAPTCHA on only with both keys, and only after the web deploy', async () => {

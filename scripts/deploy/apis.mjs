@@ -24,6 +24,7 @@
 //   GET   /v1/projects/{ref}/config/auth          PATCH the same path with only the changed fields
 //   GET   /v1/projects/{ref}/secrets              → [{name, value: digest, updated_at}]
 //   POST  /v1/projects/{ref}/secrets              [{name, value}]
+//   DELETE /v1/projects/{ref}/secrets             [name, …]
 
 export const CLOUDFLARE_API = 'https://api.cloudflare.com/client/v4';
 export const SUPABASE_API = 'https://api.supabase.com';
@@ -233,6 +234,11 @@ export function supabaseApi({ fetch: fetchImpl, sleep, token, ref, base = SUPABA
       const r = await req('/secrets', { method: 'POST', body: list });
       if (!ok(r))
         throw fail(`setting the function secrets ${list.map((s) => s.name).join(', ')}`, r);
+    },
+    /** Deletes function secrets by name. */
+    async deleteSecrets(names) {
+      const r = await req('/secrets', { method: 'DELETE', body: names });
+      if (!ok(r)) throw fail(`deleting the function secrets ${names.join(', ')}`, r);
     },
   };
 }

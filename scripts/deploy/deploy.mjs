@@ -64,7 +64,9 @@ import {
 /** The Supabase CLI this repository is tested with (supabase/README.md). */
 export const SUPABASE_CLI = 'supabase@2.119.0';
 /** The shell's version path: `/v${PROTOCOL_VERSION}/` (packages/protocol/src/messages.ts). */
-export const SHELL_PATH = '/v1/';
+export const SHELL_PATH = '/v2/';
+/** Function secrets an earlier version set and the jobs function no longer reads. */
+export const OLD_FUNCTION_SECRETS = ['PKG_CDN_URL'];
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 /** deploy-check: the first try at once, then after 10, 20 and 30 s (a new version spreading). */
 export const SMOKE_DELAYS_MS = [10_000, 20_000, 30_000];
@@ -744,7 +746,6 @@ async function functions(ctx) {
     JOBS_CRON_SECRET: ctx.secrets.cron,
     CAPTURE_SHELL_URL: `${ctx.urls.shell}capture`,
     CAPTURE_HMAC_SECRET: ctx.secrets.capture,
-    PKG_CDN_URL: s.pkgCdnUrl,
     BROWSER_RENDERING_ACCOUNT_ID: s.accountId,
     BROWSER_RENDERING_API_TOKEN: s.brToken,
   };
@@ -760,6 +761,12 @@ async function functions(ctx) {
     ctx.step('Function secrets', isNew ? 'created' : 'updated', changed.map(([n]) => n).join(', '));
   } else {
     ctx.step('Function secrets', 'unchanged', Object.keys(wanted).join(', '));
+  }
+  // Secrets the function no longer reads (import mode, M6: no package CDN, no import map).
+  const stale = OLD_FUNCTION_SECRETS.filter((name) => existing.has(name));
+  if (stale.length) {
+    await ctx.sb.deleteSecrets(stale);
+    ctx.step('Old function secrets', 'deleted', stale.join(', '));
   }
   await ctx.must(
     ctx.cli([
@@ -785,7 +792,6 @@ async function shell(ctx) {
   await ctx.must(
     ctx.pnpm(['--filter', '@br/sandbox-shell', 'build'], {
       BR_APP_ORIGINS: ctx.urls.appOrigins.join(','),
-      BR_PKG_CDN_URL: s.pkgCdnUrl,
     }),
     'the sandbox shell build',
   );
@@ -834,7 +840,6 @@ async function web(ctx) {
     NEXT_PUBLIC_SUPABASE_URL: s.supabaseUrl,
     NEXT_PUBLIC_SUPABASE_ANON_KEY: s.anonKey,
     NEXT_PUBLIC_SANDBOX_SHELL_URL: ctx.urls.shell,
-    NEXT_PUBLIC_PKG_CDN_URL: s.pkgCdnUrl,
     NEXT_PUBLIC_SITE_URL: ctx.urls.app,
     NEXT_TELEMETRY_DISABLED: '1',
   };
@@ -937,8 +942,6 @@ async function smoke(ctx) {
     ctx.urls.shell,
     '--supabase',
     s.supabaseUrl,
-    '--cdn',
-    s.pkgCdnUrl,
     '--json',
   ];
   const env = childEnv(ctx.env, {

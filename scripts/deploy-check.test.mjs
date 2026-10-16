@@ -9,6 +9,7 @@ import {
   baseUrl,
   checkAppHeaders,
   checkShellHeaders,
+  checkSiteWorker,
   classifyKeepAlive,
   cspHas,
   decodeEntities,
@@ -25,18 +26,18 @@ const ARGS = [
   '--app',
   'https://app.example/',
   '--shell',
-  'https://sandbox.example/v1',
+  'https://sandbox.example/v2',
   '--supabase',
   'https://ref.supabase.co',
 ];
 
 describe('parseArgs', () => {
-  it('reads the URLs, normalizes them, and defaults the CDN to esm.sh', () => {
+  it('reads the URLs and normalizes them', () => {
     const cfg = parseArgs([...ARGS, '--anon-key', KEY]);
     assert.equal(cfg.app, 'https://app.example');
-    assert.equal(cfg.shell, 'https://sandbox.example/v1/');
+    assert.equal(cfg.shell, 'https://sandbox.example/v2/');
     assert.equal(cfg.supabase, 'https://ref.supabase.co');
-    assert.equal(cfg.cdn, 'https://esm.sh');
+    assert.equal('cdn' in cfg, false, 'no package CDN since import mode (M6)');
     assert.equal(cfg.site, null);
     assert.equal(cfg.anonKey, KEY);
     assert.equal(cfg.cronSecret, null);
@@ -64,6 +65,10 @@ describe('parseArgs', () => {
     assert.throws(() => parseArgs([...ARGS, '--anon-key', KEY, '--nope', '1']), /unknown argument/);
     assert.throws(() => parseArgs([...ARGS, '--anon-key']), /--anon-key needs a value/);
     assert.throws(() => parseArgs([...ARGS, '--anon-key', KEY, '--battle', '42']), /UUID/);
+    assert.throws(
+      () => parseArgs([...ARGS, '--anon-key', KEY, '--cdn', 'https://esm.sh']),
+      /unknown argument "--cdn"/,
+    );
     assert.deepEqual(parseArgs(['--help']), { help: true });
   });
 
@@ -72,9 +77,9 @@ describe('parseArgs', () => {
     assert.throws(() => baseUrl('https://u:p@x.example', '--app'), /plain URL/);
     assert.throws(() => baseUrl('https://x.example/?q=1', '--app'), /plain URL/);
     assert.throws(() => baseUrl('not a url', '--app'), /not a URL/);
-    assert.equal(shellUrl('https://s.example/v1/'), 'https://s.example/v1/');
-    assert.throws(() => shellUrl('https://s.example/'), /version path/);
-    assert.throws(() => shellUrl('https://s.example/v1/capture'), /version path/);
+    assert.equal(shellUrl('https://s.example/v2/'), 'https://s.example/v2/');
+    assert.throws(() => shellUrl('https://s.example/'), /version path.*\/v2\//);
+    assert.throws(() => shellUrl('https://s.example/v2/capture'), /version path/);
   });
 });
 
@@ -147,7 +152,7 @@ function appCsp(cfg) {
     "default-src 'self'",
     "script-src 'self' 'wasm-unsafe-eval' 'sha256-abc'",
     `img-src 'self' data: blob: ${sb}`,
-    `connect-src 'self' ${sb} ${sb.replace(/^http/, 'ws')} ${new URL(cfg.cdn).origin}`,
+    `connect-src 'self' ${sb} ${sb.replace(/^http/, 'ws')}`,
     `frame-src ${new URL(cfg.shell).origin}`,
     "object-src 'none'",
     "frame-ancestors 'none'",
@@ -180,6 +185,8 @@ function standIns() {
       overDailyLimit: false,
       shellSecret: true,
       workerServed: false,
+      siteWorker: 'ok',
+      captureRouted: true,
       paused: false,
       readOnly: false,
       anonymous: true,
@@ -232,10 +239,16 @@ function standIns() {
     },
     shell(req, res) {
       const url = new URL(req.url, 'http://x');
-      const csp = `default-src 'none'; script-src 'self' 'unsafe-inline' blob: ${new URL(cfg().cdn).origin}; frame-ancestors ${new URL(cfg().app).origin}`;
-      if (url.pathname === '/v1/')
+      const csp = `default-src 'none'; script-src 'self' 'unsafe-inline' blob:; frame-ancestors ${new URL(cfg().app).origin}`;
+      if (url.pathname === '/v2/')
         res.writeHead(200, { 'content-security-policy': csp }).end('<html></html>');
-      else if (url.pathname === '/v1/capture') res.writeHead(state.shellSecret ? 403 : 503).end();
+      else if (url.pathname === '/v2/sw.js' && state.siteWorker !== 'missing') {
+        const h = { 'content-type': 'text/javascript; charset=utf-8' };
+        if (state.siteWorker !== 'no-scope') h['service-worker-allowed'] = '/';
+        if (state.siteWorker === 'html') h['content-type'] = 'text/html';
+        res.writeHead(200, h).end('self.addEventListener("fetch", () => {});');
+      } else if (url.pathname === '/v2/capture' && state.captureRouted)
+        res.writeHead(state.shellSecret ? 403 : 503).end();
       else if (url.pathname === '/worker.js' && state.workerServed)
         res.writeHead(200, { 'content-type': 'text/javascript' }).end('export default {}');
       else res.writeHead(404).end();
@@ -297,13 +310,11 @@ describe('runChecks against stand-ins', () => {
         '--app',
         s.state.base.app,
         '--shell',
-        `${s.state.base.shell}/v1/`,
+        `${s.state.base.shell}/v2/`,
         '--supabase',
         s.state.base.supabase,
         '--battle',
         BATTLE,
-        '--cdn',
-        'https://esm.sh',
       ],
       { SUPABASE_ANON_KEY: KEY, JOBS_CRON_SECRET: 's'.repeat(64) },
     );
@@ -357,6 +368,18 @@ describe('runChecks against stand-ins', () => {
       /CAPTURE_HMAC_SECRET is not set on the shell's Worker/,
     ],
     ['the shell serves its Worker code', { workerServed: true }, /worker\.js.*\.assetsignore/],
+    [
+      'the capture path does not reach the Worker',
+      { captureRouted: false },
+      /HTTP 404 \(want 403; .*run_worker_first \["\/v2\/capture"\]/,
+    ],
+    ['the site worker is missing', { siteWorker: 'missing' }, /sw\.js .*HTTP 404/],
+    [
+      'the site worker has no Service-Worker-Allowed',
+      { siteWorker: 'no-scope' },
+      /Service-Worker-Allowed: \/ missing: the shell cannot register it/,
+    ],
+    ['the site worker is not JavaScript', { siteWorker: 'html' }, /content-type text\/html/],
     ['the project is paused', { paused: true }, /PAUSED/],
     ['the database is read-only', { readOnly: true }, /READ-ONLY/],
     ['anonymous sign-ins are off', { anonymous: false }, /anonymous sign-ins/],
@@ -392,6 +415,22 @@ describe('runChecks against stand-ins', () => {
       'content-security-policy': "frame-ancestors https://elsewhere.example; script-src 'self'",
     });
     const sf = failures(checkShellHeaders(shell, cfg));
-    assert.equal(sf.length, 2, formatResults(sf));
+    assert.equal(sf.length, 1, formatResults(sf));
+    assert.match(sf[0].detail, /BR_APP_ORIGINS/);
+  });
+
+  it('the site worker check accepts both JavaScript types', () => {
+    for (const type of ['text/javascript; charset=utf-8', 'application/javascript']) {
+      const r = {
+        status: 200,
+        headers: new Headers({ 'content-type': type, 'service-worker-allowed': '/' }),
+      };
+      assert.deepEqual(failures(checkSiteWorker(r)), [], type);
+    }
+    const narrow = {
+      status: 200,
+      headers: new Headers({ 'content-type': 'text/javascript', 'service-worker-allowed': '/v2/' }),
+    };
+    assert.match(failures(checkSiteWorker(narrow))[0].detail, /^\/v2\/: the shell cannot/);
   });
 });

@@ -2,15 +2,15 @@
 // Checks a deployment of Build Roulette on the free setup (T-036, DEPLOY.md §6): the web app
 // (a Cloudflare Worker with static assets since T-043: headers and CSP, real 404s, the shells,
 // the link-preview Worker on /battles/*), the sandbox shell (its own Worker on a second
-// account: its CSP, the capture gate, its code not served), and Supabase (the API, anonymous
+// account: its CSP, the site worker /v2/sw.js, the capture gate, its code not served), and Supabase (the API, anonymous
 // sign-ins, the keep-alive RPC, the jobs Edge Function). Read-only, except that it pings
 // keep_alive like the daily workflow does. Node 22, no dependencies.
 //
 //   node scripts/deploy-check.mjs \
 //     --app https://build-roulette-web.<subdomain A>.workers.dev \
-//     --shell https://build-roulette-sandbox.<subdomain B>.workers.dev/v1/ \
+//     --shell https://build-roulette-sandbox.<subdomain B>.workers.dev/v2/ \
 //     --supabase https://<ref>.supabase.co --anon-key <anon or publishable key> \
-//     [--cdn https://esm.sh] [--site https://<the address people share>] \
+//     [--site https://<the address people share>] \
 //     [--battle <id of a finished battle>] [--cron-secret <JOBS_CRON_SECRET>] [--json]
 //
 // The anon key and the cron secret can also come from SUPABASE_ANON_KEY and JOBS_CRON_SECRET
@@ -20,13 +20,12 @@
 import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 
-export const DEFAULT_CDN = 'https://esm.sh';
 const TIMEOUT_MS = 15_000;
 
 // ─── Arguments ─────────────────────────────────────────────────────────────
 
 const USAGE = `usage: node scripts/deploy-check.mjs --app <url> --shell <url> --supabase <url> --anon-key <key>
-       [--cdn <url>] [--site <url>] [--battle <id>] [--cron-secret <secret>] [--json]`;
+       [--site <url>] [--battle <id>] [--cron-secret <secret>] [--json]`;
 
 /** Parses argv (without node and the script) and the environment into a check config. */
 export function parseArgs(argv, env = {}) {
@@ -37,7 +36,6 @@ export function parseArgs(argv, env = {}) {
     'shell',
     'supabase',
     'anon-key',
-    'cdn',
     'site',
     'battle',
     'cron-secret',
@@ -72,7 +70,6 @@ export function parseArgs(argv, env = {}) {
     app: baseUrl(opts.app, '--app'),
     shell: shellUrl(opts.shell),
     supabase: baseUrl(opts.supabase, '--supabase'),
-    cdn: baseUrl(opts.cdn ?? DEFAULT_CDN, '--cdn'),
     site: opts.site ? baseUrl(opts.site, '--site') : null,
     anonKey,
     cronSecret: cronSecret || null,
@@ -102,7 +99,7 @@ export function shellUrl(value) {
   const u = new URL(base);
   if (!/^\/v\d+$/.test(u.pathname)) {
     throw new Error(
-      '--shell must be the shell URL with its version path, e.g. https://build-roulette-sandbox.<subdomain>.workers.dev/v1/',
+      '--shell must be the shell URL with its version path, e.g. https://build-roulette-sandbox.<subdomain>.workers.dev/v2/',
     );
   }
   return `${base}/`;
@@ -251,7 +248,6 @@ export function checkAppHeaders(headers, cfg, where = '/') {
     ['frame-ancestors', "'none'", 'nothing may frame the app'],
     ['connect-src', supabase, 'Supabase (NEXT_PUBLIC_SUPABASE_URL)'],
     ['connect-src', supabase.replace(/^http/, 'ws'), 'Supabase Realtime'],
-    ['connect-src', new URL(cfg.cdn).origin, 'the package CDN (NEXT_PUBLIC_PKG_CDN_URL)'],
     ['frame-src', new URL(cfg.shell).origin, 'the sandbox shell (NEXT_PUBLIC_SANDBOX_SHELL_URL)'],
     ['img-src', supabase, 'screenshots in Supabase Storage'],
     ['object-src', "'none'", 'no plugins'],
@@ -275,13 +271,13 @@ export function checkAppHeaders(headers, cfg, where = '/') {
   return results;
 }
 
-/** The shell's CSP: framed by the app only, modules from the package CDN. */
+/** The shell's CSP: framed by the app only. */
 export function checkShellHeaders(headers, cfg) {
   const raw = headers.get('content-security-policy');
   if (!raw) return [fail('shell: content-security-policy', 'missing: _headers not deployed?')];
   const csp = parseCsp(raw);
   const appOrigins = [new URL(cfg.app).origin, ...(cfg.site ? [new URL(cfg.site).origin] : [])];
-  const results = appOrigins.map((o) =>
+  return appOrigins.map((o) =>
     cspHas(csp, 'frame-ancestors', o)
       ? pass(`shell: frame-ancestors allows ${o}`)
       : fail(
@@ -289,17 +285,32 @@ export function checkShellHeaders(headers, cfg) {
           'missing: rebuild the shell with BR_APP_ORIGINS including it',
         ),
   );
-  const cdn = new URL(cfg.cdn).origin;
-  results.push(
-    cspHas(csp, 'script-src', cdn)
-      ? pass(`shell: script-src allows the package CDN ${cdn}`)
-      : fail(
-          `shell: script-src allows the package CDN ${cdn}`,
-          'missing: rebuild the shell with BR_PKG_CDN_URL',
-        ),
-  );
-  return results;
 }
+
+/**
+ * The site worker script (`/v2/sw.js`, docs/09 §9.3): served as JavaScript (browsers refuse to
+ * register a worker of another type) with `Service-Worker-Allowed: /` (the shell registers it
+ * with scope `/`, above the script's own folder).
+ */
+export function checkSiteWorker(r) {
+  const name = 'shell: the site worker sw.js';
+  if (r.status !== 200) return [fail(name, `HTTP ${r.status} (sw.js missing from the upload?)`)];
+  const type = (r.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase();
+  const allowed = r.headers.get('service-worker-allowed');
+  return [
+    pass(`${name} answers 200`),
+    JS_TYPES.has(type)
+      ? pass(`${name} is JavaScript (${type})`)
+      : fail(`${name} is JavaScript`, `content-type ${type || 'missing'}: browsers refuse it`),
+    allowed === '/'
+      ? pass(`${name}: Service-Worker-Allowed: /`)
+      : fail(
+          `${name}: Service-Worker-Allowed: /`,
+          `${allowed === null ? 'missing' : allowed}: the shell cannot register it for the whole origin (_headers not deployed?)`,
+        ),
+  ];
+}
+const JS_TYPES = new Set(['text/javascript', 'application/javascript', 'application/x-javascript']);
 
 function pass(name, detail = '') {
   return { level: 'PASS', name, detail };
@@ -490,6 +501,9 @@ export async function runChecks(cfg, fetchImpl = fetch) {
     if (r.status !== 200) return fail('shell: the shell page answers 200', `HTTP ${r.status}`);
     return [pass('shell: the shell page answers 200'), ...checkShellHeaders(r.headers, cfg)];
   });
+  await step('shell site worker', async () =>
+    checkSiteWorker(await request(fetchImpl, `${cfg.shell}sw.js`)),
+  );
   await step('shell capture gate', async () => {
     const r = await request(fetchImpl, `${cfg.shell}capture`);
     if (r.status === 403) return pass('shell: the capture gate refuses an unsigned request (403)');
@@ -504,7 +518,7 @@ export async function runChecks(cfg, fetchImpl = fetch) {
     if (overDailyLimit(r)) return fail('shell: the capture gate', DAILY_LIMIT_TEXT);
     return fail(
       'shell: the capture gate',
-      `HTTP ${r.status} (want 403; is the shell's Worker deployed, with run_worker_first ["/v1/capture"]?)`,
+      `HTTP ${r.status} (want 403; is the shell's Worker deployed, with run_worker_first ["${new URL(cfg.shell).pathname}capture"]?)`,
     );
   });
   await step('shell worker code', async () => {

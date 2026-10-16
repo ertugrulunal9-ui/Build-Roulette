@@ -6,7 +6,6 @@
 export const TARGETS = ['all', 'check', 'supabase', 'shell', 'web'];
 
 export const DEFAULTS = {
-  PKG_CDN_URL: 'https://esm.sh',
   CF_WEB_WORKER: 'build-roulette-web',
   CF_SANDBOX_WORKER: 'build-roulette-sandbox',
   /** The workers.dev subdomains the run registers when an account has none (a suffix if taken). */
@@ -261,7 +260,6 @@ export function readSettings(env, target) {
     );
     s.appUrl = undefined;
   }
-  s.pkgCdnUrl = httpsBase(get('PKG_CDN_URL') ?? DEFAULTS.PKG_CDN_URL, 'PKG_CDN_URL', problems);
 
   s.webWorker = get('CF_WEB_WORKER') ?? DEFAULTS.CF_WEB_WORKER;
   s.shellWorker = get('CF_SANDBOX_WORKER') ?? DEFAULTS.CF_SANDBOX_WORKER;
@@ -300,6 +298,11 @@ export function readSettings(env, target) {
         `${old} is not used any more (the sites are Workers since T-043): the name is ${now} now (default ${DEFAULTS[now]}). Delete the ${old} variable.`,
       );
     }
+  }
+  if (get('PKG_CDN_URL')) {
+    warnings.push(
+      'PKG_CDN_URL is not used any more (import mode, M6: players import built sites, so there is no package CDN). Delete the PKG_CDN_URL variable.',
+    );
   }
 
   s.turnstileSiteKey = get('TURNSTILE_SITE_KEY');

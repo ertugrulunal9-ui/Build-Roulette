@@ -1,8 +1,6 @@
 import { expect, test } from '@playwright/test';
-import { REACT_MANIFEST, reactApp } from './fixtures';
-import { buildFrame, openPlayground } from './helpers';
-
-const SHELL_URL = `http://127.0.0.1:${process.env['SHELL_PORT'] ?? '4311'}/v1/`;
+import { markupSite } from './fixtures';
+import { SHELL_URL, buildFrame, loadSite, openPlayground } from './helpers';
 
 test('e. hello from a wrong origin or a different window is ignored', async ({ page }) => {
   await openPlayground(page);
@@ -14,7 +12,7 @@ test('e. hello from a wrong origin or a different window is ignored', async ({ p
 
   // 1. The page itself posting a hello (wrong source, wrong origin).
   await page.evaluate(() => {
-    window.postMessage({ type: 'hello', protocol: 1 }, '*');
+    window.postMessage({ type: 'hello', protocol: 2 }, '*');
   });
   expected += 1;
   await expect.poll(rejected).toBe(expected);
@@ -22,7 +20,7 @@ test('e. hello from a wrong origin or a different window is ignored', async ({ p
   // 2. Wrong origin, wrong window: a srcdoc frame (app origin) forging a hello.
   await page.evaluate(() => {
     const forged = document.createElement('iframe');
-    forged.srcdoc = `<script>parent.postMessage({ type: 'hello', protocol: 1 }, '*');</script>`;
+    forged.srcdoc = `<script>parent.postMessage({ type: 'hello', protocol: 2 }, '*');</script>`;
     document.body.append(forged);
   });
   expected += 1;
@@ -43,14 +41,7 @@ test('e. hello from a wrong origin or a different window is ignored', async ({ p
   expect(await page.evaluate(() => window.__playground.previewState())).toBe('connected');
 
   // The real preview still works after the spoof attempts.
-  const r = await page.evaluate(async () => {
-    window.__playground.writeFile(
-      'src/App.tsx',
-      `export function App() { return <h1 data-testid="title">still mine</h1>; }`,
-    );
-    return window.__playground.buildAndLoad();
-  });
-  expect(r.ok).toBe(true);
+  await loadSite(page, markupSite('<h1 data-testid="title">still mine</h1>'));
   await expect(buildFrame(page).getByTestId('title')).toHaveText('still mine');
 });
 
@@ -62,12 +53,11 @@ const PERMISSIONS_POLICY =
 function expectSecurityHeaders(h: Record<string, string>): void {
   const csp = h['content-security-policy'] ?? '';
   expect(csp).toContain("default-src 'none'");
-  expect(csp).toMatch(
-    /script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: http:\/\/localhost:\d+/,
-  );
-  expect(csp).toMatch(/frame-ancestors http:\/\/localhost:\d+/);
+  expect(csp).toContain("script-src 'self';");
+  expect(csp).toMatch(/frame-ancestors http:\/\/localhost:\d+;/);
   expect(csp).toContain("connect-src 'self' https: wss:");
-  expect(csp).toContain('worker-src blob:;');
+  expect(csp).toContain("frame-src 'self';");
+  expect(csp).toContain("worker-src 'self';");
   expect(csp).toContain("base-uri 'none'");
   expect(csp).toContain("form-action 'none'");
   expect(h['permissions-policy']).toBe(PERMISSIONS_POLICY);
@@ -80,18 +70,23 @@ function expectSecurityHeaders(h: Record<string, string>): void {
 test('shell responses carry the CSP / Permissions-Policy headers adapted for local origins', async ({
   request,
 }) => {
-  for (const url of [SHELL_URL, `${SHELL_URL}shell.js`]) {
+  for (const url of [SHELL_URL, `${SHELL_URL}shell.js`, `${SHELL_URL}sw.js`]) {
     const res = await request.get(url);
     expect(res.status()).toBe(200);
     expectSecurityHeaders(res.headers());
   }
+  // The site worker may control the whole origin and is never cached.
+  const sw = await request.get(`${SHELL_URL}sw.js`);
+  expect(sw.headers()['service-worker-allowed']).toBe('/');
+  expect(sw.headers()['cache-control']).toBe('no-store');
+  expect(sw.headers()['content-type']).toMatch(/^text\/javascript/);
 });
 
 test('every path of the sandbox host carries the security headers, 404s included', async ({
   request,
 }) => {
   const origin = new URL(SHELL_URL).origin;
-  for (const path of ['/', '/missing', '/v1/missing.js', '/v9/']) {
+  for (const path of ['/', '/missing', '/v2/missing.js', '/v1/', '/v9/', '/assets/index.js']) {
     const res = await request.get(`${origin}${path}`);
     expect(res.status(), path).toBe(404);
     expectSecurityHeaders(res.headers());
@@ -103,6 +98,56 @@ test('every path of the sandbox host carries the security headers, 404s included
   expectSecurityHeaders(reset.headers());
 });
 
+test('site responses from the site worker carry the site CSP and the security headers', async ({
+  page,
+}) => {
+  await openPlayground(page);
+  await loadSite(
+    page,
+    markupSite(
+      '<pre data-testid="headers"></pre>',
+      `const pick = (r) => Object.fromEntries([...r.headers].filter(([k]) => k !== 'date'));
+const results = {};
+for (const p of ['/', '/assets/app.js', '/nope.js']) {
+  const r = await fetch(p);
+  results[p] = { status: r.status, ...pick(r) };
+}
+setTimeout(() => { document.querySelector('[data-testid="headers"]').textContent = JSON.stringify(results); });`,
+    ),
+  );
+  const text = await buildFrame(page).getByTestId('headers').textContent();
+  const results = JSON.parse(text ?? '{}') as Record<string, Record<string, string | number>>;
+  const appOrigin = new URL(page.url()).origin;
+  const siteCsp = [
+    "default-src 'none'",
+    "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: https:",
+    "style-src 'self' 'unsafe-inline' blob: https:",
+    'img-src * data: blob:',
+    'font-src * data:',
+    'media-src * data: blob:',
+    expect.stringMatching(/^connect-src 'self' https: wss:/),
+    "worker-src 'self' blob:",
+    `frame-ancestors 'self' ${appOrigin}`,
+    "base-uri 'none'",
+    "form-action 'none'",
+  ];
+  for (const [path, h] of Object.entries(results)) {
+    expect(String(h['content-security-policy']).split('; '), path).toEqual(siteCsp);
+    expect(h['permissions-policy'], path).toBe(PERMISSIONS_POLICY);
+    expect(h['origin-agent-cluster'], path).toBe('?1');
+    expect(h['referrer-policy'], path).toBe('no-referrer');
+    expect(h['x-content-type-options'], path).toBe('nosniff');
+    expect(h['cross-origin-resource-policy'], path).toBe('same-site');
+    expect(h['cache-control'], path).toBe('no-store');
+  }
+  expect(results['/']).toMatchObject({ status: 200, 'content-type': 'text/html; charset=utf-8' });
+  expect(results['/assets/app.js']).toMatchObject({
+    status: 200,
+    'content-type': 'text/javascript; charset=utf-8',
+  });
+  expect(results['/nope.js']).toMatchObject({ status: 404 });
+});
+
 test('Chromium recognises every Permissions-Policy feature (no "Unrecognized feature" warning)', async ({
   page,
 }) => {
@@ -112,18 +157,19 @@ test('Chromium recognises every Permissions-Policy feature (no "Unrecognized fea
   // logged to this page's console.
   await page.goto(SHELL_URL);
   await expect(page).toHaveTitle('Build Roulette sandbox');
-  // The embedded case too: the preview iframe (allow=) and the shell's child frame.
+  // The embedded case too: the preview iframe (allow=) and the site's child frame (whose
+  // headers come from the site worker).
   await openPlayground(page);
   await page.waitForTimeout(300);
   expect(lines.filter((l) => /unrecognized feature|permissions.policy/i.test(l))).toEqual([]);
 });
 
 test('frame-ancestors blocks other origins from embedding the shell', async ({ page }) => {
-  // The mock CDN origin (http://localhost:4312) is a different origin from the app.
-  const cdnOrigin = `http://localhost:${process.env['CDN_PORT'] ?? '4312'}`;
+  // The other test origin (http://localhost:4312) is neither the app nor the sandbox.
+  const otherOrigin = `http://localhost:${process.env['OTHER_PORT'] ?? '4312'}`;
   const consoleLines: string[] = [];
   page.on('console', (m) => consoleLines.push(m.text()));
-  await page.goto(`${cdnOrigin}/health`);
+  await page.goto(`${otherOrigin}/health`);
   await page.evaluate((shellUrl) => {
     const f = document.createElement('iframe');
     f.src = shellUrl;
@@ -137,22 +183,18 @@ test('frame-ancestors blocks other origins from embedding the shell', async ({ p
   expect(child?.url()).not.toBe(SHELL_URL);
 });
 
-test('builds may use eval and new Function (script-src unsafe-eval)', async ({ page }) => {
+test('sites may use eval and new Function (script-src unsafe-eval)', async ({ page }) => {
   await openPlayground(page);
   // pixi.js v8 and other engines compile shaders/accessors with new Function at runtime.
-  const files = reactApp(
-    `<p data-testid="evaluated">{String(fromFunction + fromEval)}</p>`,
-    `const fromFunction = new Function('return 1')() as number;
-const fromEval = (0, eval)('2') as number;`,
+  await loadSite(
+    page,
+    markupSite(
+      '<p data-testid="evaluated"></p>',
+      `const fromFunction = new Function('return 1')();
+const fromEval = (0, eval)('2');
+setTimeout(() => { document.querySelector('[data-testid="evaluated"]').textContent = String(fromFunction + fromEval); });`,
+    ),
   );
-  const r = await page.evaluate(
-    async ({ files, manifest }) => {
-      await window.__playground.setProject(files, manifest);
-      return window.__playground.buildAndLoad();
-    },
-    { files, manifest: REACT_MANIFEST },
-  );
-  expect(r.ok).toBe(true);
   await expect(buildFrame(page).getByTestId('evaluated')).toHaveText('3');
   const errors = await page.evaluate(() =>
     window.__playground.events.filter((e) => e.type === 'error').map((e) => e.data),
@@ -166,23 +208,22 @@ test('preview frames allow fullscreen through allow= only (no allowfullscreen wa
   const consoleLines: string[] = [];
   page.on('console', (m) => consoleLines.push(m.text()));
   await openPlayground(page);
-  const r = await page.evaluate(async () => {
-    window.__playground.writeFile(
-      'src/App.tsx',
-      `export function App() { return <p data-testid="fs">{String(document.fullscreenEnabled)}</p>; }`,
-    );
-    return window.__playground.buildAndLoad();
-  });
-  expect(r.ok).toBe(true);
+  await loadSite(
+    page,
+    markupSite(
+      '<p data-testid="fs"></p>',
+      `setTimeout(() => { document.querySelector('[data-testid="fs"]').textContent = String(document.fullscreenEnabled); });`,
+    ),
+  );
 
   const preview = page.locator('#preview');
   expect(await preview.getAttribute('allow')).toContain('fullscreen');
   expect(await preview.getAttribute('allowfullscreen')).toBeNull();
-  // The shell's per-load child frame (the build's document).
+  // The shell's per-load child frame (the site's document).
   const child = page.frameLocator('#preview').locator('iframe');
   expect(await child.getAttribute('allow')).toContain('fullscreen');
   expect(await child.getAttribute('allowfullscreen')).toBeNull();
-  // Fullscreen is still delegated all the way down to the build.
+  // Fullscreen is still delegated all the way down to the site.
   await expect(buildFrame(page).getByTestId('fs')).toHaveText('true');
   // Chromium: "Allow attribute will take precedence over 'allowfullscreen'."
   expect(consoleLines.filter((l) => /allowfullscreen/i.test(l))).toEqual([]);

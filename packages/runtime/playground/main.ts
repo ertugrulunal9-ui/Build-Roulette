@@ -1,65 +1,52 @@
 /**
- * Dev playground: textareas per file, a cross-site preview, a console panel.
- * Exposes `window.__playground` so the Playwright tests can drive it.
+ * Dev playground: import a built site (a folder or a .zip) and run it in a cross-site
+ * preview, with a console panel. Exposes `window.__playground` so the Playwright tests can
+ * drive it with site packs made from text files (`SiteSpec`).
  */
 import type { RunMode, StorageResetMessage } from '@br/protocol';
-import { EsmBrowserRuntime } from '../src/runtime';
-import type { PreviewHandle, PreviewStats } from '../src/preview/preview-handle';
-import type { BuildResult, Diagnostic, FileMap, Manifest } from '../src/types';
-import type { InitAttemptReport } from '../src/worker/client';
-import type { WorkerResponse } from '../src/worker/protocol';
-import { SAMPLE_FILES, SAMPLE_MANIFEST } from './sample-project';
+import { contentTypeOf, packSite } from '@br/site';
+import { importFiles } from '@br/site/browser';
+import { PreviewHandle, type PreviewStats } from '../src/preview/preview-handle';
 
-declare const __PLAYGROUND_CONFIG__: {
-  shellUrl: string;
-  cdnBaseUrl: string;
-  wasmUrl: string;
-  workerUrl: string;
-};
+declare const __PLAYGROUND_CONFIG__: { shellUrl: string };
 const config = __PLAYGROUND_CONFIG__;
 
+/** A site as text files: path inside the site (`index.html`, `assets/app.js`) -> contents. */
+export type SiteSpec = Record<string, string>;
+
 export interface PlaygroundEvent {
-  type: 'console' | 'error' | 'ready' | 'crash' | 'connected' | 'build';
+  type: 'console' | 'error' | 'ready' | 'crash' | 'connected' | 'load';
   t: number;
   data: unknown;
 }
 
 export interface BootReport {
-  coldStartMs: number;
-  wasmInitMs: number;
-  firstBuildMs: number;
+  /** Page start -> first handshake. */
+  connectMs: number;
+  /** load() of the sample site -> its `ready`. */
   firstPreviewMs: number;
 }
 
-/** One bundler worker event, as this page saw it (`PlaygroundApi.bundlerLog`). */
-export interface BundlerLogEntry {
-  /** `performance.now()` of this page when it happened. */
-  t: number;
-  /** 1 for the first worker, 2 for the next (a retry, or a later start). */
-  worker: number;
-  type: 'created' | 'terminated' | 'init-progress' | 'init-done' | 'init-error';
-  stage?: 'download' | 'compile';
-  loaded?: number;
-}
-
-export interface BuildAndLoadReport {
-  ok: boolean;
-  /** Bundler time inside the worker. */
-  buildMs: number;
-  /** runtime.build() call -> `ready` from the preview (bundle + transfer + fresh document + evaluate). */
+export interface LoadReport {
+  loadId: number;
+  /** `load()` -> `ready` (pack copy, transfer, unpack, worker upload, fresh frame, site start). */
   totalMs: number;
-  diagnostics: Diagnostic[];
 }
 
 export interface PlaygroundApi {
   boot: Promise<BootReport>;
-  setProject(files: FileMap, manifest: Manifest): Promise<void>;
-  writeFile(path: string, contents: string): void;
-  buildAndLoad(): Promise<BuildAndLoadReport>;
+  /** Packs `files`, loads them and waits for `ready`. */
+  loadSite(files: SiteSpec, mode?: RunMode): Promise<LoadReport>;
+  /** Packs `files` and sends the load; does not wait. Returns the loadId. */
+  sendSite(files: SiteSpec, mode?: RunMode): number;
+  /** Sends raw bytes as the pack (for broken packs). Returns the loadId. */
+  sendPack(bytes: number[], mode?: RunMode): number;
+  /** Packs `files` and stores them on the test file server as `name` (capture e2e). */
+  uploadPack(name: string, files: SiteSpec): Promise<void>;
   waitForReady(loadId: number, timeoutMs?: number): Promise<number>;
   lastLoadId(): number;
   resetStorage(): Promise<StorageResetMessage>;
-  /** Best-effort WebP thumbnail of the running build (data URL), or null. */
+  /** Best-effort WebP thumbnail of the running site (data URL), or null. */
   captureThumbnail(width: number, height: number): Promise<string | null>;
   restartPreview(): Promise<void>;
   /** Run mode for the following loads; a different mode replaces the preview iframe. */
@@ -68,11 +55,43 @@ export interface PlaygroundApi {
   previewState(): string;
   previewStats(): PreviewStats;
   events: PlaygroundEvent[];
-  /** Every bundler worker start that ended (`onInitAttempt`, T-039 telemetry). */
-  initAttempts: InitAttemptReport[];
-  /** The bundler workers' start messages and lifetimes (T-041 e2e metrics). */
-  bundlerLog: BundlerLogEntry[];
 }
+
+/** The sample site: a Vite-like build (module entry, CSS, a lazy chunk, a JSON file). */
+export const SAMPLE_SITE: SiteSpec = {
+  'index.html': `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Sample</title>
+    <script type="module" crossorigin src="/assets/index-s4mpl3.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-s4mpl3.css" />
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>
+`,
+  'assets/index-s4mpl3.css': `body { font: 16px system-ui, sans-serif; margin: 24px; }
+.title { color: rgb(255, 0, 128); }
+`,
+  'assets/index-s4mpl3.js': `const root = document.getElementById('root');
+root.innerHTML = '<h1 class="title" data-testid="title">Hello Build Roulette</h1><button data-testid="inc">count is 0</button><p data-testid="data"></p>';
+let count = 0;
+root.querySelector('[data-testid="inc"]').addEventListener('click', (e) => {
+  count++;
+  e.currentTarget.textContent = 'count is ' + count;
+});
+fetch('/data.json').then((r) => r.json()).then((d) => {
+  root.querySelector('[data-testid="data"]').textContent = d.message;
+});
+import('./chunk-l4zy.js').then((m) => m.mark(root));
+`,
+  'assets/chunk-l4zy.js': `export function mark(root) { root.dataset.lazy = 'loaded'; }
+`,
+  'data.json': `{ "message": "data from /data.json" }
+`,
+};
 
 const $ = (id: string): HTMLElement => {
   const el = document.getElementById(id);
@@ -80,63 +99,13 @@ const $ = (id: string): HTMLElement => {
   return el;
 };
 
-/** `?initStallMs=…&initCompileMs=…`: the bundler start's limits (e2e only, T-041). */
-function limitsFromQuery(): { initStallMs?: number; initCompileMs?: number } {
-  const query = new URLSearchParams(location.search);
-  const limits: { initStallMs?: number; initCompileMs?: number } = {};
-  for (const name of ['initStallMs', 'initCompileMs'] as const) {
-    const v = Number(query.get(name) ?? NaN);
-    if (Number.isFinite(v) && v > 0) limits[name] = v;
-  }
-  return limits;
-}
-
-const initAttempts: InitAttemptReport[] = [];
-const bundlerLog: BundlerLogEntry[] = [];
-let workersCreated = 0;
-
-const runtime = new EsmBrowserRuntime({
-  wasmUrl: config.wasmUrl,
-  cdnBaseUrl: config.cdnBaseUrl,
-  ...limitsFromQuery(),
-  onInitAttempt: (r) => {
-    initAttempts.push(r);
-  },
-  // The worker's start messages, with the time this page received them (e2e metrics).
-  createWorker: () => {
-    const worker = new Worker(config.workerUrl, { type: 'module' });
-    const n = ++workersCreated;
-    bundlerLog.push({ t: performance.now(), worker: n, type: 'created' });
-    const terminate = worker.terminate.bind(worker);
-    worker.terminate = () => {
-      bundlerLog.push({ t: performance.now(), worker: n, type: 'terminated' });
-      terminate();
-    };
-    worker.addEventListener('message', (e: MessageEvent<WorkerResponse>) => {
-      const m = e.data;
-      if (m.type === 'init-progress') {
-        bundlerLog.push({
-          t: performance.now(),
-          worker: n,
-          type: m.type,
-          stage: m.stage,
-          loaded: m.loaded,
-        });
-      } else if (m.type === 'init-done' || m.type === 'init-error') {
-        bundlerLog.push({ t: performance.now(), worker: n, type: m.type });
-      }
-    });
-    return worker;
-  },
-});
+const started = performance.now();
 const events: PlaygroundEvent[] = [];
 const readyAt = new Map<number, number>();
 const readyWaiters = new Map<number, (t: number) => void>();
 let preview: PreviewHandle;
 let lastLoadId = 0;
 let mode: RunMode = 'live';
-let files: FileMap = { ...SAMPLE_FILES };
-let manifest: Manifest = SAMPLE_MANIFEST;
 
 function log(type: PlaygroundEvent['type'], data: unknown): void {
   events.push({ type, t: performance.now(), data });
@@ -157,37 +126,16 @@ function setStatus(s: string): void {
   $('status').textContent = s;
 }
 
-function renderFiles(): void {
-  const root = $('files');
-  root.textContent = '';
-  for (const [path, contents] of Object.entries(files)) {
-    const wrap = document.createElement('div');
-    wrap.className = 'file';
-    const label = document.createElement('label');
-    label.textContent = path;
-    const ta = document.createElement('textarea');
-    ta.value = contents;
-    ta.dataset['path'] = path;
-    ta.spellcheck = false;
-    ta.addEventListener('input', () => {
-      files[path] = ta.value;
-      runtime.writeFile(path, ta.value); // debounced rebuild -> onBuild -> preview.load
-    });
-    label.htmlFor = ta.id = `file-${path.replace(/[^\w]/g, '_')}`;
-    wrap.append(label, ta);
-    root.append(wrap);
-  }
-}
-
-function renderDiagnostics(diags: readonly Diagnostic[]): void {
-  $('diagnostics').textContent = diags.length
-    ? diags
-        .map(
-          (d) =>
-            `${d.severity}: ${d.file ? `${d.file}:${String(d.line ?? 0)}:${String(d.column ?? 0)} ` : ''}${d.text}`,
-        )
-        .join('\n')
-    : 'none';
+/** A pack of text files, each with the content type of its extension. */
+function pack(files: SiteSpec): Uint8Array<ArrayBuffer> {
+  const enc = new TextEncoder();
+  return packSite(
+    Object.entries(files).map(([path, text]) => ({
+      path,
+      type: contentTypeOf(path),
+      bytes: enc.encode(text),
+    })),
+  );
 }
 
 function createPreviewFrame(): PreviewHandle {
@@ -196,7 +144,7 @@ function createPreviewFrame(): PreviewHandle {
   const iframe = document.createElement('iframe');
   iframe.id = 'preview';
   container.append(iframe);
-  const handle = runtime.attachPreview(iframe, { shellUrl: config.shellUrl });
+  const handle = new PreviewHandle(iframe, { shellUrl: config.shellUrl });
   handle.on('connected', (d) => {
     log('connected', d);
   });
@@ -239,44 +187,33 @@ function waitForReady(loadId: number, timeoutMs = 15000): Promise<number> {
   });
 }
 
-runtime.onBuild((result: BuildResult) => {
-  log('build', {
-    ok: result.ok,
-    durationMs: result.durationMs,
-    diagnostics: result.diagnostics.length,
-  });
-  renderDiagnostics(result.diagnostics);
-  if (result.ok && preview.state !== 'crashed' && preview.state !== 'disposed') {
-    lastLoadId = preview.load(result, mode);
-  }
-  setStatus(`${result.ok ? 'built' : 'build failed'} in ${result.durationMs.toFixed(0)} ms`);
-});
+function sendBytes(site: Uint8Array, m: RunMode = mode): number {
+  lastLoadId = preview.load({ site }, m);
+  log('load', { loadId: lastLoadId, bytes: site.byteLength, mode: m });
+  return lastLoadId;
+}
 
-async function buildAndLoad(): Promise<BuildAndLoadReport> {
-  const started = performance.now();
-  const before = lastLoadId;
-  const result = await runtime.build();
-  if (!result.ok || lastLoadId === before) {
-    return {
-      ok: false,
-      buildMs: result.durationMs,
-      totalMs: performance.now() - started,
-      diagnostics: result.diagnostics,
-    };
-  }
-  const at = await waitForReady(lastLoadId);
-  return {
-    ok: true,
-    buildMs: result.durationMs,
-    totalMs: at - started,
-    diagnostics: result.diagnostics,
-  };
+async function loadSite(files: SiteSpec, m: RunMode = mode): Promise<LoadReport> {
+  const t0 = performance.now();
+  const loadId = sendBytes(pack(files), m);
+  const at = await waitForReady(loadId);
+  return { loadId, totalMs: at - t0 };
+}
+
+function connected(): Promise<void> {
+  if (preview.state === 'connected') return Promise.resolve();
+  return new Promise<void>((resolve) => {
+    const off = preview.on('connected', () => {
+      off();
+      resolve();
+    });
+  });
 }
 
 /** Restarts the preview in place: a new iframe and a new handshake (also after a crash). */
 async function restartPreview(): Promise<void> {
   document.getElementById('crashed')?.remove();
-  const connected = new Promise<void>((resolve) => {
+  const done = new Promise<void>((resolve) => {
     const off = preview.on('connected', () => {
       off();
       resolve();
@@ -284,26 +221,28 @@ async function restartPreview(): Promise<void> {
   });
   preview.restart(mode);
   setStatus('restarting preview');
-  await connected;
+  await done;
 }
 
 async function boot(): Promise<BootReport> {
-  renderFiles();
   preview = createPreviewFrame();
-  const timings = await runtime.boot({ files, manifest });
-  setStatus(`esbuild-wasm ready in ${timings.coldStartMs.toFixed(0)} ms`);
-  const first = await buildAndLoad();
-  if (!first.ok) throw new Error(`first build failed: ${JSON.stringify(first.diagnostics)}`);
-  return {
-    coldStartMs: timings.coldStartMs,
-    wasmInitMs: timings.wasmInitMs,
-    firstBuildMs: first.buildMs,
-    firstPreviewMs: first.totalMs,
-  };
+  await connected();
+  const connectMs = performance.now() - started;
+  const first = await loadSite(SAMPLE_SITE);
+  return { connectMs, firstPreviewMs: first.totalMs };
 }
 
-$('build').addEventListener('click', () => {
-  void buildAndLoad();
+$('folder').addEventListener('change', (e) => {
+  const input = e.currentTarget as HTMLInputElement;
+  const files = Array.from(input.files ?? []);
+  void importFiles(files).then((r) => {
+    if (!r.ok) {
+      setStatus(`import failed: ${r.error.code}${r.error.detail ? ` (${r.error.detail})` : ''}`);
+      return;
+    }
+    sendBytes(r.site.pack);
+    setStatus(`imported ${r.site.root || '.'}: ${String(r.site.files)} files`);
+  });
 });
 $('reset').addEventListener('click', () => {
   void preview.resetStorage().then((r) => {
@@ -311,26 +250,21 @@ $('reset').addEventListener('click', () => {
   });
 });
 $('restart').addEventListener('click', () => {
-  void restartPreview().then(() => buildAndLoad());
+  void restartPreview().then(() => loadSite(SAMPLE_SITE));
 });
 
 const api: PlaygroundApi = {
   boot: boot(),
-  async setProject(nextFiles, nextManifest) {
-    files = { ...nextFiles };
-    manifest = nextManifest;
-    renderFiles();
-    await runtime.boot({ files, manifest });
+  loadSite,
+  sendSite: (files, m) => sendBytes(pack(files), m),
+  sendPack: (bytes, m) => sendBytes(new Uint8Array(bytes), m),
+  async uploadPack(name, files) {
+    const res = await fetch(`/__test/site?name=${encodeURIComponent(name)}`, {
+      method: 'PUT',
+      body: pack(files),
+    });
+    if (!res.ok) throw new Error(`upload failed: HTTP ${String(res.status)}`);
   },
-  writeFile(path, contents) {
-    files[path] = contents;
-    const ta = document.querySelector<HTMLTextAreaElement>(
-      `textarea[data-path="${CSS.escape(path)}"]`,
-    );
-    if (ta) ta.value = contents;
-    runtime.writeFile(path, contents);
-  },
-  buildAndLoad,
   waitForReady,
   lastLoadId: () => lastLoadId,
   resetStorage: () => preview.resetStorage(),
@@ -343,14 +277,12 @@ const api: PlaygroundApi = {
   previewState: () => preview.state,
   previewStats: () => preview.stats,
   events,
-  initAttempts,
-  bundlerLog,
 };
 (window as unknown as { __playground: PlaygroundApi }).__playground = api;
 api.boot.then(
   (r) => {
     setStatus(
-      `ready: cold start ${r.coldStartMs.toFixed(0)} ms, first preview ${r.firstPreviewMs.toFixed(0)} ms`,
+      `ready: connected in ${r.connectMs.toFixed(0)} ms, first preview ${r.firstPreviewMs.toFixed(0)} ms`,
     );
   },
   (e: unknown) => {

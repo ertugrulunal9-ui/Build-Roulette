@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { SITE_LIMITS } from '@br/site';
 import {
   LIMITS,
   PROTOCOL_VERSION,
@@ -15,16 +16,13 @@ import {
 const validLoad = {
   type: 'load',
   loadId: 1,
-  js: 'console.log(1)',
-  css: 'body{}',
-  importMap: { imports: { react: 'https://pkg.example/react@19.3.0' } },
   mode: 'live',
+  site: new ArrayBuffer(16),
 };
 
 describe('PROTOCOL_VERSION', () => {
-  it('is a positive integer', () => {
-    expect(Number.isInteger(PROTOCOL_VERSION)).toBe(true);
-    expect(PROTOCOL_VERSION).toBeGreaterThan(0);
+  it('is 2: loads carry a site pack (docs/09 §9.3)', () => {
+    expect(PROTOCOL_VERSION).toBe(2);
   });
 });
 
@@ -33,14 +31,8 @@ describe('parseAppToShell', () => {
     for (const m of [
       validLoad,
       { ...validLoad, mode: 'reveal' },
-      {
-        ...validLoad,
-        mode: 'capture',
-        importMap: {
-          imports: {},
-          scopes: { 'https://a.example/': { x: 'https://b.example/x.js' } },
-        },
-      },
+      { ...validLoad, mode: 'capture', site: new ArrayBuffer(0) },
+      { ...validLoad, site: new ArrayBuffer(SITE_LIMITS.maxPackBytes) },
       { type: 'reset-storage' },
       { type: 'reset-storage', requestId: 3 },
       { type: 'capture-thumbnail', width: 320, height: 200 },
@@ -69,9 +61,11 @@ describe('parseAppToShell', () => {
       { ...validLoad, mode: 'debug' },
       { ...validLoad, loadId: -1 },
       { ...validLoad, loadId: 1.5 },
-      { ...validLoad, js: 5 },
-      { ...validLoad, importMap: { imports: { react: 'javascript:alert(1)' } } },
-      { ...validLoad, importMap: { imports: { react: 'blob:https://x/1' } } },
+      { type: 'load', loadId: 1, mode: 'live' }, // no site
+      { ...validLoad, site: 'BRSITE1' },
+      { ...validLoad, site: new Uint8Array(16) }, // a view, not the buffer
+      { ...validLoad, site: new SharedArrayBuffer(16) },
+      { ...validLoad, site: { byteLength: 16 } },
       { type: 'capture-thumbnail', width: 0, height: 10 },
       { type: 'capture-thumbnail', width: 5000, height: 10 },
       { type: 'hello', protocol: 1 }, // shell -> app message on the wrong direction
@@ -103,34 +97,25 @@ describe('parseAppToShell', () => {
     expect(parseAppToShell(hostile).ok).toBe(false);
   });
 
-  it('rejects oversized bundles and import maps', () => {
-    expect(parseAppToShell({ ...validLoad, js: 'x'.repeat(LIMITS.bundleJsMaxChars + 1) }).ok).toBe(
-      false,
-    );
-    expect(
-      parseAppToShell({ ...validLoad, css: 'x'.repeat(LIMITS.bundleCssMaxChars + 1) }).ok,
-    ).toBe(false);
-    const imports: Record<string, string> = {};
-    for (let i = 0; i <= LIMITS.importMapMaxEntries; i++)
-      imports[`p${i}`] = `https://x.example/p${i}`;
-    expect(parseAppToShell({ ...validLoad, importMap: { imports } }).ok).toBe(false);
+  it('rejects a site pack over SITE_LIMITS.maxPackBytes', () => {
+    const r = parseAppToShell({
+      ...validLoad,
+      site: new ArrayBuffer(SITE_LIMITS.maxPackBytes + 1),
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain('site');
   });
 
-  it('takes an optional list of package URLs (T-032), bounded and http(s) only', () => {
-    const packages = ['https://pkg.example/zustand@5.0.15?external=react,react-dom'];
-    const r = parseAppToShell({ ...validLoad, packages });
-    expect(r.ok && r.value.type === 'load' && r.value.packages).toEqual(packages);
-    const without = parseAppToShell(validLoad);
-    expect(without.ok && without.value.type === 'load' && without.value.packages).toBe(undefined);
-    for (const bad of [
-      ['javascript:alert(1)'],
-      ['blob:https://x/1'],
-      [`https://x.example/${'a'.repeat(LIMITS.importMapValueMaxChars)}`],
-      Array.from({ length: LIMITS.loadPackagesMax + 1 }, (_, i) => `https://x.example/p${i}`),
-      'https://x.example/p',
-    ]) {
-      expect(parseAppToShell({ ...validLoad, packages: bad }).ok).toBe(false);
-    }
+  it('keeps the very ArrayBuffer it validated (no copy in the shell)', () => {
+    const site = new ArrayBuffer(8);
+    const r = parseAppToShell({ ...validLoad, site });
+    expect(r.ok && r.value.type === 'load' && r.value.site).toBe(site);
+  });
+
+  it('has no v1 bundle fields any more', () => {
+    const r = parseAppToShell({ ...validLoad, js: 'x', css: '', importMap: { imports: {} } });
+    expect(r.ok).toBe(true);
+    expect(r.ok && Object.keys(r.value).sort()).toEqual(['loadId', 'mode', 'site', 'type']);
   });
 });
 

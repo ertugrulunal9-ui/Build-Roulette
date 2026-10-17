@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { PERMISSIONS_POLICY } from '../src/headers';
+import { PERMISSIONS_POLICY, SITE_WORKER_HEADERS } from '../src/headers';
 import { CAPTURE_HTML } from '../src/capture-gate';
 import { signCaptureUrl } from '../src/capture-sig';
 import { startShellServer, type ShellServer } from '../src/server';
@@ -7,10 +7,7 @@ import { startShellServer, type ShellServer } from '../src/server';
 let shell: ShellServer;
 
 beforeAll(async () => {
-  shell = await startShellServer({
-    appOrigins: ['http://localhost:4310'],
-    cdnOrigin: 'http://localhost:4312',
-  });
+  shell = await startShellServer({ appOrigins: ['http://localhost:4310'] });
 });
 afterAll(async () => {
   await shell.close();
@@ -39,15 +36,32 @@ describe('local shell server', () => {
     }
   });
 
+  it('serves the site worker with Service-Worker-Allowed: / and no-store, and counts requests', async () => {
+    const before = shell.workerScriptRequests();
+    const res = await fetch(`${shell.shellUrl}sw.js`);
+    expect(res.status).toBe(200);
+    expectSecurityHeaders(res, 'sw.js');
+    expect(res.headers.get('service-worker-allowed')).toBe(
+      SITE_WORKER_HEADERS['Service-Worker-Allowed'],
+    );
+    expect(res.headers.get('cache-control')).toBe('no-store');
+    expect(res.headers.get('content-type')).toBe('text/javascript; charset=utf-8');
+    const js = await res.text();
+    expect(js.length).toBe(shell.swJsBytes);
+    // The sites' headers are baked in, with this server's app origin in frame-ancestors.
+    expect(js).toContain("frame-ancestors 'self' http://localhost:4310");
+    expect(shell.workerScriptRequests()).toBe(before + 1);
+  });
+
   it('sends the security headers on 404s and unknown paths too', async () => {
-    for (const p of ['/', '/nope', '/v1/nope.html', '/v2/']) {
+    for (const p of ['/', '/nope', '/v2/nope.html', '/v1/', '/v3/', '/assets/index.js']) {
       const res = await fetch(`${shell.origin}${p}`);
       expect(res.status, p).toBe(404);
       expectSecurityHeaders(res, p);
     }
   });
 
-  it('serves /v1/reset with Clear-Site-Data and no-store, and counts requests', async () => {
+  it('serves /v2/reset with Clear-Site-Data and no-store, and counts requests', async () => {
     const before = shell.resetRequests();
     const res = await fetch(`${shell.shellUrl}reset`);
     expect(res.status).toBe(200);
@@ -64,7 +78,6 @@ describe('local shell server: capture gate', () => {
   beforeAll(async () => {
     capture = await startShellServer({
       appOrigins: ['http://localhost:4310'],
-      cdnOrigin: 'http://localhost:4312',
       extraConnectSrc: ['http://127.0.0.1:54321'],
       captureSecret: SECRET,
     });
@@ -73,7 +86,7 @@ describe('local shell server: capture gate', () => {
     await capture.close();
   });
 
-  it('answers 503 on /v1/capture without a configured secret', async () => {
+  it('answers 503 on /v2/capture without a configured secret', async () => {
     const res = await fetch(`${shell.shellUrl}capture`);
     expect(res.status).toBe(503);
     expect(await res.text()).toBe('');
@@ -82,7 +95,7 @@ describe('local shell server: capture gate', () => {
   it('serves the capture page only for a valid signature', async () => {
     const url = await signCaptureUrl({
       captureUrl: capture.captureUrl,
-      src: 'http://127.0.0.1:54321/storage/v1/object/sign/x/bundle.js?token=t',
+      src: 'http://127.0.0.1:54321/storage/v1/object/sign/x/site.bin?token=t',
       exp: Math.floor(Date.now() / 1000) + 60,
       secret: SECRET,
     });
@@ -91,9 +104,7 @@ describe('local shell server: capture gate', () => {
     expect(await ok.text()).toBe(CAPTURE_HTML);
     const csp = ok.headers.get('content-security-policy') ?? '';
     expect(csp).toContain("frame-ancestors 'none'");
-    expect(csp).toContain(
-      "connect-src 'self' https: wss: http://localhost:4312 http://127.0.0.1:54321",
-    );
+    expect(csp).toContain("connect-src 'self' https: wss: http://127.0.0.1:54321;");
     expect(csp).toContain('sandbox allow-scripts allow-same-origin');
     expect(ok.headers.get('cache-control')).toBe('no-store');
 

@@ -2,11 +2,11 @@ import { defineConfig } from '@playwright/test';
 
 const APP_PORT = Number(process.env['APP_PORT'] ?? 4310);
 const SHELL_PORT = Number(process.env['SHELL_PORT'] ?? 4311);
-const CDN_PORT = Number(process.env['CDN_PORT'] ?? 4312);
+const OTHER_PORT = Number(process.env['OTHER_PORT'] ?? 4312);
 
 export default defineConfig({
   testDir: './e2e',
-  // Timing measurements and the shared mock CDN: run serially.
+  // Timing measurements and one shared sandbox origin (one site worker): run serially.
   workers: 1,
   fullyParallel: false,
   timeout: 60_000,
@@ -23,7 +23,11 @@ export default defineConfig({
   webServer: {
     command: 'tsx test-support/dev-server.ts',
     url: `http://localhost:${String(APP_PORT)}/`,
-    env: { APP_PORT: String(APP_PORT), SHELL_PORT: String(SHELL_PORT), CDN_PORT: String(CDN_PORT) },
+    env: {
+      APP_PORT: String(APP_PORT),
+      SHELL_PORT: String(SHELL_PORT),
+      OTHER_PORT: String(OTHER_PORT),
+    },
     reuseExistingServer: false,
     stdout: 'pipe',
     timeout: 60_000,

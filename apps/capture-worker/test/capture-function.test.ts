@@ -27,9 +27,8 @@ import {
 } from './fakes';
 
 const CONFIG: CaptureConfig = {
-  shellCaptureUrl: 'https://{build}.usercontent.test/v1/capture',
+  shellCaptureUrl: 'https://{build}.usercontent.test/v2/capture',
   hmacSecret: 'unit-secret-0123456789abcdef0123456789abcdef',
-  pkgCdnUrl: 'https://pkg.test',
   signedUrlTtlSeconds: 120,
   captureTimeoutMs: 35_000,
   viewport: { width: 1280, height: 800 },
@@ -92,8 +91,7 @@ function deps(renderer: FakeRenderer): CaptureDeps {
 
 function shippedBuild(files: Record<string, Uint8Array | string> = {}): void {
   backend.addBuild({ status: 'shipped' });
-  backend.put(BUCKET_EPHEMERAL, `${PREFIX}/bundle.js`, 'console.log(1)');
-  backend.put(BUCKET_EPHEMERAL, `${PREFIX}/source.json`, '{}');
+  backend.put(BUCKET_EPHEMERAL, `${PREFIX}/site.bin`, 'BRSITE1 stand-in');
   for (const [k, v] of Object.entries(files)) backend.put(BUCKET_EPHEMERAL, `${PREFIX}/${k}`, v);
   backend.addJob('capture', BUILD);
 }

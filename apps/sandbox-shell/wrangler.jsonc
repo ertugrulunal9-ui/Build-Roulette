@@ -10,10 +10,10 @@
   // assets by `dist/.assetsignore`). `pnpm --filter @br/sandbox-shell workers:deploy` uploads
   // it (scripts/deploy does, with account B's token and the secret CAPTURE_HMAC_SECRET).
   //
-  // Requests: only `/v1/capture` invokes the Worker (`run_worker_first`, the gate checks the
+  // Requests: only `/v2/capture` invokes the Worker (`run_worker_first`, the gate checks the
   // HMAC); every other path is a static asset, free and not counted as a Worker request. An
   // unknown path gets `404.html` with a 404 from the assets, so it invokes nothing either.
-  // `/v1/` is the protocol version (packages/protocol PROTOCOL_VERSION; a unit test keeps the
+  // `/v2/` is the protocol version (packages/protocol PROTOCOL_VERSION; a unit test keeps the
   // two in step: test/wrangler-config.test.ts).
   //
   // No `account_id` on purpose: CLOUDFLARE_ACCOUNT_ID supplies it at deploy time.
@@ -29,7 +29,7 @@
   "assets": {
     "directory": "./dist",
     "binding": "ASSETS",
-    "run_worker_first": ["/v1/capture"],
+    "run_worker_first": ["/v2/capture"],
     "not_found_handling": "404-page",
     "html_handling": "auto-trailing-slash",
   },

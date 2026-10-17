@@ -2,6 +2,8 @@ import { createHmac } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import {
   CAPTURE_MAX_TTL_SECONDS,
+  CAPTURE_SIGNED_PARAMS,
+  CAPTURE_SIG_VERSION,
   canonicalCaptureString,
   signCaptureParams,
   signCaptureUrl,
@@ -9,19 +11,15 @@ import {
 } from '../src/capture-sig';
 
 const SECRET = 'test-secret-0123456789abcdef0123456789abcdef';
-const BASE = 'https://b1.usercontent.example/v1/capture';
+const BASE = 'https://b1.usercontent.example/v2/capture';
 const SRC =
-  'https://db.example.co/storage/v1/object/sign/ephemeral-builds/a/b/bundle.js?token=x.y.z';
-const CSS = 'https://db.example.co/storage/v1/object/sign/ephemeral-builds/a/b/bundle.css?token=q';
-const MAP = JSON.stringify({ imports: { react: 'https://pkg.example/react@19.3.0' } });
+  'https://db.example.co/storage/v1/object/sign/ephemeral-builds/a/b/site.bin?token=x.y.z';
 const NOW = 1_800_000_000;
 
 const sign = (over: Partial<Parameters<typeof signCaptureUrl>[0]> = {}) =>
   signCaptureUrl({
     captureUrl: BASE,
     src: SRC,
-    css: CSS,
-    map: MAP,
     exp: NOW + 60,
     secret: SECRET,
     ...over,
@@ -39,26 +37,30 @@ function withParam(url: string, name: string, value: string): string {
 }
 
 describe('canonicalCaptureString', () => {
+  it('v2 signs exactly src and exp (a site pack; no css, no import map)', () => {
+    expect(CAPTURE_SIG_VERSION).toBe('br-capture-v2');
+    expect(CAPTURE_SIGNED_PARAMS).toEqual(['exp', 'src']);
+  });
+
   it('sorts parameters, percent-encodes names and values, lowercases the host', () => {
     expect(
-      canonicalCaptureString('B1.Usercontent.Example:8443', '/v1/capture', {
+      canonicalCaptureString('B1.Usercontent.Example:8443', '/v2/capture', {
         src: 'https://x/a b?c=d&e',
         exp: '123',
-        map: '{"imports":{}}',
       }),
     ).toBe(
       [
-        'br-capture-v1',
+        'br-capture-v2',
         'b1.usercontent.example:8443',
-        '/v1/capture',
-        'exp=123&map=%7B%22imports%22%3A%7B%7D%7D&src=https%3A%2F%2Fx%2Fa%20b%3Fc%3Dd%26e',
+        '/v2/capture',
+        'exp=123&src=https%3A%2F%2Fx%2Fa%20b%3Fc%3Dd%26e',
       ].join('\n'),
     );
   });
 
   it('does not depend on the order the parameters were given in', () => {
-    const a = canonicalCaptureString('h', '/p', { src: 's', exp: '1', css: 'c' });
-    const b = canonicalCaptureString('h', '/p', { css: 'c', exp: '1', src: 's' });
+    const a = canonicalCaptureString('h', '/p', { src: 's', exp: '1' });
+    const b = canonicalCaptureString('h', '/p', { exp: '1', src: 's' });
     expect(a).toBe(b);
   });
 
@@ -73,9 +75,9 @@ describe('signCaptureParams', () => {
   it('is HMAC-SHA256 over the canonical string, base64url without padding', async () => {
     const params = { src: SRC, exp: String(NOW) };
     const expected = createHmac('sha256', SECRET)
-      .update(canonicalCaptureString('h.example', '/v1/capture', params))
+      .update(canonicalCaptureString('h.example', '/v2/capture', params))
       .digest('base64url');
-    expect(await signCaptureParams(SECRET, 'h.example', '/v1/capture', params)).toBe(expected);
+    expect(await signCaptureParams(SECRET, 'h.example', '/v2/capture', params)).toBe(expected);
   });
 
   it('refuses a short secret', async () => {
@@ -88,17 +90,28 @@ describe('signCaptureParams', () => {
 describe('signCaptureUrl + verifyCaptureUrl', () => {
   it('round-trips and returns the decoded parameters', async () => {
     const url = await sign();
-    expect(url.startsWith(`${BASE}?css=`)).toBe(true);
+    expect(url.startsWith(`${BASE}?exp=${String(NOW + 60)}&src=`)).toBe(true);
     const r = await verifyCaptureUrl(url, SECRET, NOW);
-    expect(r).toEqual({ ok: true, params: { src: SRC, css: CSS, map: MAP, exp: NOW + 60 } });
+    expect(r).toEqual({ ok: true, params: { src: SRC, exp: NOW + 60 } });
   });
 
-  it('css and map are optional', async () => {
-    const url = await signCaptureUrl({ captureUrl: BASE, src: SRC, exp: NOW + 1, secret: SECRET });
-    expect(await verifyCaptureUrl(url, SECRET, NOW)).toEqual({
-      ok: true,
-      params: { src: SRC, exp: NOW + 1 },
-    });
+  it('refuses the v1 parameters css and map, signed or not', async () => {
+    const url = await sign();
+    for (const extra of ['css=https%3A%2F%2Fx%2Fa.css', 'map=%7B%7D']) {
+      expect(await verifyCaptureUrl(`${url}&${extra}`, SECRET, NOW), extra).toEqual({
+        ok: false,
+        reason: 'unknown-param',
+      });
+      const signedWithIt = new URL(BASE);
+      const [name = '', value = ''] = extra.split('=');
+      const params = { src: SRC, exp: String(NOW + 60), [name]: decodeURIComponent(value) };
+      const sig = await signCaptureParams(SECRET, signedWithIt.host, signedWithIt.pathname, params);
+      signedWithIt.search = `?${new URLSearchParams({ ...params, sig }).toString()}`;
+      expect(await verifyCaptureUrl(signedWithIt, SECRET, NOW), extra).toEqual({
+        ok: false,
+        reason: 'unknown-param',
+      });
+    }
   });
 
   it('accepts an equivalent percent-encoding of the same values (canonical form is decoded)', async () => {
@@ -130,9 +143,7 @@ describe('signCaptureUrl + verifyCaptureUrl', () => {
   it('refuses a changed value of any signed parameter', async () => {
     const url = await sign();
     for (const [name, value] of [
-      ['src', encodeURIComponent('https://evil.example/x.js')],
-      ['css', encodeURIComponent('https://evil.example/x.css')],
-      ['map', encodeURIComponent('{"imports":{}}')],
+      ['src', encodeURIComponent('https://evil.example/site.bin')],
       ['exp', String(NOW + 61)],
     ] as const) {
       expect(await verifyCaptureUrl(withParam(url, name, value), SECRET, NOW), name).toEqual({
@@ -142,15 +153,6 @@ describe('signCaptureUrl + verifyCaptureUrl', () => {
     }
   });
 
-  it('refuses a removed optional parameter (it is part of the signature)', async () => {
-    const url = new URL(await sign());
-    url.searchParams.delete('css');
-    expect(await verifyCaptureUrl(url, SECRET, NOW)).toEqual({
-      ok: false,
-      reason: 'bad-signature',
-    });
-  });
-
   it('binds the URL to its host and path', async () => {
     const url = await sign();
     const otherBuild = url.replace('b1.usercontent.example', 'b2.usercontent.example');
@@ -158,7 +160,7 @@ describe('signCaptureUrl + verifyCaptureUrl', () => {
       ok: false,
       reason: 'bad-signature',
     });
-    const otherPath = url.replace('/v1/capture', '/v1/capturex');
+    const otherPath = url.replace('/v2/capture', '/v2/capturex');
     expect(await verifyCaptureUrl(otherPath, SECRET, NOW)).toEqual({
       ok: false,
       reason: 'bad-signature',
@@ -209,18 +211,11 @@ describe('signCaptureUrl + verifyCaptureUrl', () => {
     });
   });
 
-  it('refuses non-http(s) bundle URLs and malformed exp before checking the MAC', async () => {
+  it('refuses a non-http(s) site pack URL and a malformed exp before checking the MAC', async () => {
     const url = await sign();
     expect(
       await verifyCaptureUrl(
         withParam(url, 'src', encodeURIComponent('javascript:alert(1)')),
-        SECRET,
-        NOW,
-      ),
-    ).toEqual({ ok: false, reason: 'bad-url' });
-    expect(
-      await verifyCaptureUrl(
-        withParam(url, 'css', encodeURIComponent('data:text/css,x')),
         SECRET,
         NOW,
       ),
@@ -251,7 +246,6 @@ describe('signCaptureUrl + verifyCaptureUrl', () => {
   it('the signer validates its input', async () => {
     await expect(sign({ captureUrl: `${BASE}?x=1` })).rejects.toThrow('query');
     await expect(sign({ src: 'file:///etc/passwd' })).rejects.toThrow('src');
-    await expect(sign({ css: 'ftp://x/y.css' })).rejects.toThrow('css');
     await expect(sign({ exp: 1.5 })).rejects.toThrow('exp');
     await expect(sign({ secret: 'short' })).rejects.toThrow('at least 32');
   });

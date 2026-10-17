@@ -40,6 +40,9 @@ files until their destroy job ran (the 24 h TTL sweep is the safety net).
   screenshots taken meanwhile are client thumbnails (`fallback`).
 - **Budget spent:** from some time of the (UTC) day on, every screenshot is a thumbnail, with
   no errors.
+- **The site worker does not run in the renderer** (import mode, M6): right after a deploy,
+  every screenshot is a thumbnail or `failed`, with `capture.render_unusable` lines (a blank
+  page) and no 429s or budget lines. See step 7.
 - Self-hosted worker: Sentry (`service: capture-worker`): `claim.failed`, `capture.error` /
   `destroy.error`, `job.crashed`; `capture.render_unusable` (warn) in its stdout.
 
@@ -155,8 +158,8 @@ curl -sS -X POST "$SUPABASE_URL/functions/v1/jobs?wait=1" -H "x-br-cron-secret: 
 
 3. **The budget is spent every day** (`refused` > 0 most days): the rest of each day gets
    thumbnails, which is the designed degradation. To get more renders: make builds signal
-   readiness (the starter templates call `window.buildRoulette.ready()`; a build without it
-   costs the full 6 s cap, `ms_per_render` shows it), move to Workers Paid (10 h a month
+   readiness (a site that calls `window.buildRoulette.ready()` is shot at once; a site
+   without it costs the full 6 s cap, `ms_per_render` shows it), move to Workers Paid (10 h a month
    included) and raise `BROWSER_BUDGET_MS_PER_DAY`, or run the self-hosted worker (next item).
 
 4. **Switch to the self-hosted worker** (a machine with Playwright, `apps/capture-worker`):
@@ -211,6 +214,22 @@ curl -sS -X POST "$SUPABASE_URL/functions/v1/jobs?wait=1" -H "x-br-cron-secret: 
      and j.status = 'queued'
      and j.created_at < now() - interval '15 minutes';
    ```
+
+7. **Every capture is blank since a deploy** (the site worker, docs/09 §9.3): the v2 capture
+   page loads the site through a service worker (`/v2/sw.js`), so the renderer must run
+   service workers. Players still get their client thumbnails, so the game is not blocked.
+   Check that the shell serves the worker (`200`, a JavaScript type and
+   `service-worker-allowed: /`):
+
+   ```sh check
+   curl -sS -o /dev/null -D - "${SHELL_URL}sw.js" | grep -i -E '^(HTTP|content-type|service-worker-allowed)'
+   ```
+
+   If it does, and a capture of the same build with the self-hosted worker (step 4, Playwright
+   Chromium) gives a real screenshot, Browser Rendering is not running the worker: keep the
+   thumbnails, or switch to the self-hosted worker until that is solved. Builds made before
+   the deploy have no `site.bin` and always fall back (`site.bin is missing` in
+   `capture.render_unusable`).
 
 ## Verify
 

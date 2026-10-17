@@ -1,7 +1,8 @@
 /**
- * PlaywrightRenderer against the real shell capture page and real Chromium (no Supabase):
- * readiness (signal / idle / cap), the navigation guard, popups, modals, the hard timeout,
- * and the capture gate refusing bad signatures.
+ * PlaywrightRenderer against the real shell capture page (protocol v2: a site pack served by
+ * the site worker) and real Chromium (no Supabase): readiness (signal / idle / cap), the
+ * navigation guard, popups, modals, the hard timeout, and the capture gate refusing bad
+ * signatures.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { signCaptureUrl } from '@br/sandbox-shell/capture-sig';
@@ -10,9 +11,11 @@ import { PlaywrightRenderer } from '../src/playwright-renderer';
 import { RenderError } from '../src/renderer';
 import {
   SECRET,
-  buildReactBundle,
+  SITE_PACK_TYPE,
+  builtSite,
   colorClose,
-  reactApp,
+  scriptSite,
+  sitePack,
   startFileServer,
   startFixtures,
   type FileServer,
@@ -23,51 +26,44 @@ const VIEWPORT = { width: 1280, height: 800 };
 let fx: Fixtures;
 let files: FileServer;
 let renderer: PlaywrightRenderer;
-let importMap: string;
+
+function serve(path: string, site: Record<string, string>): void {
+  files.files.set(path, { body: sitePack(site), type: SITE_PACK_TYPE });
+}
 
 beforeAll(async () => {
   files = await startFileServer();
   fx = await startFixtures([files.url]);
   renderer = new PlaywrightRenderer();
-  const react = await buildReactBundle(
-    fx.cdn.url,
-    reactApp({ title: 'Snack Overflow', background: 'rgb(255, 87, 34)', signalReady: true }),
+  serve(
+    '/built.bin',
+    builtSite({ title: 'Snack Overflow', background: 'rgb(255, 87, 34)', signalReady: true }),
   );
-  files.files.set('/react.js', { body: react.js, type: 'text/javascript' });
-  files.files.set('/react.css', { body: react.css, type: 'text/css' });
-  const quiet = await buildReactBundle(
-    fx.cdn.url,
-    reactApp({ title: 'No signal', background: 'rgb(33, 150, 243)', signalReady: false }),
-  );
-  files.files.set('/quiet.js', { body: quiet.js, type: 'text/javascript' });
-  files.files.set('/quiet.css', { body: quiet.css, type: 'text/css' });
-  importMap = JSON.stringify(
-    (await import('@br/runtime/bundler')).buildImportMap(
-      { react: '19.3.0', 'react-dom': '19.3.0' },
-      fx.cdn.url,
-    ),
+  serve(
+    '/quiet.bin',
+    builtSite({ title: 'No signal', background: 'rgb(33, 150, 243)', signalReady: false }),
   );
   const paint = `document.body.style.cssText = 'margin:0;background:#2e7d32';
 document.body.innerHTML = '<h1 style="color:#fff;font:bold 96px sans-serif;margin:40px">hi</h1>';`;
-  files.files.set('/hang.js', {
-    body: `${paint}\nfetch('${files.url}/hang').catch(() => {});`,
-    type: 'text/javascript',
-  });
-  files.files.set('/escape.js', {
-    body: `${paint}
+  serve('/hang.bin', scriptSite(`${paint}\nfetch('${files.url}/hang').catch(() => {});`));
+  serve(
+    '/escape.bin',
+    scriptSite(`${paint}
 const tries = [];
 try { window.open('${files.url}/popup'); tries.push('open'); } catch (e) { tries.push('open threw'); }
 try { top.location.href = '${files.url}/top'; } catch (e) { tries.push('top threw'); }
-// Code in the (same-origin) capture page realm may navigate it: the renderer must block that.
-try { parent.eval("location.href = '${files.url}/via-parent'"); } catch (e) { tries.push('eval threw'); }
+// The site may reach the (same-origin) capture page's DOM and make it navigate itself, here
+// with a link of its own (its CSP stops parent.eval): the renderer must block that.
+try {
+  const a = parent.document.createElement('a');
+  a.href = '${files.url}/via-parent';
+  parent.document.body.append(a);
+  a.click();
+} catch (e) { tries.push('link threw'); }
 alert('modal must not block'); confirm('x'); prompt('y');
-window.buildRoulette.ready();`,
-    type: 'text/javascript',
-  });
-  files.files.set('/loop.js', {
-    body: `${paint}\nsetTimeout(() => { for (;;) {} }, 100);`,
-    type: 'text/javascript',
-  });
+window.buildRoulette.ready();`),
+  );
+  serve('/loop.bin', scriptSite(`${paint}\nsetTimeout(() => { for (;;) {} }, 100);`));
 });
 
 afterAll(async () => {
@@ -76,21 +72,19 @@ afterAll(async () => {
   await files.close();
 });
 
-async function captureUrl(src: string, extra: { css?: string; map?: string } = {}) {
+async function captureUrl(src: string) {
   return signCaptureUrl({
     captureUrl: fx.shell.captureUrl,
     src: `${files.url}${src}`,
-    css: extra.css === undefined ? undefined : `${files.url}${extra.css}`,
-    map: extra.map,
     exp: Math.floor(Date.now() / 1000) + 60,
     secret: SECRET,
   });
 }
 
 describe('PlaywrightRenderer + shell capture page', () => {
-  it('renders a React build at 1280×800 and takes the ready signal', async () => {
+  it('renders a built site at 1280×800 and takes the ready signal', async () => {
     const result = await renderer.render({
-      url: await captureUrl('/react.js', { css: '/react.css', map: importMap }),
+      url: await captureUrl('/built.bin'),
       viewport: VIEWPORT,
       timeoutMs: 20_000,
     });
@@ -100,14 +94,19 @@ describe('PlaywrightRenderer + shell capture page', () => {
     expect([img.width, img.height]).toEqual([1280, 800]);
     const stats = pixelStats(img);
     expect(isBlank(stats)).toBe(false);
+    // The colour comes from the stylesheet, the title from a lazy chunk and /data.json: the
+    // site worker served every file of the pack.
     expect(colorClose(stats.dominant, { r: 255, g: 87, b: 34 })).toBe(true);
     expect(result.notes).toContain('ready');
     expect(result.notes).toContain('loaded');
+    // The site frame's navigation (/?__br_site=…) is answered by the site worker: the
+    // navigation guard neither sees nor blocks it.
+    expect(result.blocked).toEqual({ navigations: 0, popups: 0 });
   });
 
   it('without a signal: network idle + 2 s', async () => {
     const result = await renderer.render({
-      url: await captureUrl('/quiet.js', { css: '/quiet.css', map: importMap }),
+      url: await captureUrl('/quiet.bin'),
       viewport: VIEWPORT,
       timeoutMs: 20_000,
     });
@@ -121,7 +120,7 @@ describe('PlaywrightRenderer + shell capture page', () => {
 
   it('a request that never ends: capped at 6 s', async () => {
     const result = await renderer.render({
-      url: await captureUrl('/hang.js'),
+      url: await captureUrl('/hang.bin'),
       viewport: VIEWPORT,
       timeoutMs: 20_000,
     });
@@ -133,7 +132,7 @@ describe('PlaywrightRenderer + shell capture page', () => {
 
   it('blocks popups, top-level navigations and modals; the capture still succeeds', async () => {
     const result = await renderer.render({
-      url: await captureUrl('/escape.js'),
+      url: await captureUrl('/escape.bin'),
       viewport: VIEWPORT,
       timeoutMs: 20_000,
     });
@@ -150,14 +149,14 @@ describe('PlaywrightRenderer + shell capture page', () => {
   it('an infinite loop hits the hard timeout, and the renderer keeps working', async () => {
     const t0 = Date.now();
     const err = await renderer
-      .render({ url: await captureUrl('/loop.js'), viewport: VIEWPORT, timeoutMs: 9000 })
+      .render({ url: await captureUrl('/loop.bin'), viewport: VIEWPORT, timeoutMs: 9000 })
       .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(RenderError);
     expect((err as RenderError).code).toBe('timeout');
     expect(Date.now() - t0).toBeLessThan(12_000);
 
     const again = await renderer.render({
-      url: await captureUrl('/react.js', { css: '/react.css', map: importMap }),
+      url: await captureUrl('/built.bin'),
       viewport: VIEWPORT,
       timeoutMs: 20_000,
     });
@@ -165,11 +164,11 @@ describe('PlaywrightRenderer + shell capture page', () => {
   });
 
   it('a bad or expired signature: the gate serves nothing (shell-refused)', async () => {
-    const good = await captureUrl('/react.js');
+    const good = await captureUrl('/built.bin');
     const forged = good.replace(/sig=[^&]+/, `sig=${'A'.repeat(43)}`);
     const expired = await signCaptureUrl({
       captureUrl: fx.shell.captureUrl,
-      src: `${files.url}/react.js`,
+      src: `${files.url}/built.bin`,
       exp: Math.floor(Date.now() / 1000) - 1,
       secret: SECRET,
     });
@@ -183,13 +182,13 @@ describe('PlaywrightRenderer + shell capture page', () => {
     }
   });
 
-  it('a missing bundle fails fast with the page hint', async () => {
+  it('a missing site pack fails fast with the page hint', async () => {
     const t0 = Date.now();
     const err = await renderer
-      .render({ url: await captureUrl('/nope.js'), viewport: VIEWPORT, timeoutMs: 20_000 })
+      .render({ url: await captureUrl('/nope.bin'), viewport: VIEWPORT, timeoutMs: 20_000 })
       .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(RenderError);
-    expect((err as Error).message).toContain('bundle.js: HTTP 404');
+    expect((err as Error).message).toContain('site.bin: HTTP 404');
     expect(Date.now() - t0).toBeLessThan(5000);
   });
 });

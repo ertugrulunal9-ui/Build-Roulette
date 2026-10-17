@@ -1,7 +1,9 @@
 /**
- * Signed capture URLs (docs/03 §3.7).
+ * Signed capture URLs (docs/03 §3.7, docs/09 §9.3).
  *
- *   https://{build}.<usercontent>/v1/capture?src=<url>&css=<url>&map=<json>&exp=<unix>&sig=<hmac>
+ *   https://{build}.<usercontent>/v2/capture?src=<url>&exp=<unix>&sig=<hmac>
+ *
+ * `src` is a short-lived signed URL of the build's site pack (`site.bin`).
  *
  * The capture worker signs the URL with a secret it shares with the shell host's capture
  * gate (`capture-gate.ts`), which runs server-side: the shell's Cloudflare Worker
@@ -11,9 +13,9 @@
  *
  * Canonical string (what is signed), one field per line:
  *
- *   br-capture-v1
+ *   br-capture-v2
  *   <host>        lowercase host[:port] of the capture URL (binds the URL to one build origin)
- *   <pathname>    /v1/capture
+ *   <pathname>    /v2/capture
  *   <query>       every parameter except `sig`, sorted by name, `name=value` with both parts
  *                 encoded by encodeURIComponent and joined with `&`
  *
@@ -27,9 +29,10 @@
  * Workers and browsers.
  */
 
-export const CAPTURE_SIG_VERSION = 'br-capture-v1';
+/** v2 (protocol v2): `src` is a site pack, and `css`/`map` are gone. */
+export const CAPTURE_SIG_VERSION = 'br-capture-v2';
 /** Parameters covered by the signature. `sig` itself is the only other one allowed. */
-export const CAPTURE_SIGNED_PARAMS = ['css', 'exp', 'map', 'src'] as const;
+export const CAPTURE_SIGNED_PARAMS = ['exp', 'src'] as const;
 export type CaptureParamName = (typeof CAPTURE_SIGNED_PARAMS)[number];
 /** Longest allowed lifetime of a signed URL, in seconds. Captures need well under a minute. */
 export const CAPTURE_MAX_TTL_SECONDS = 600;
@@ -39,12 +42,8 @@ export const CAPTURE_MIN_SECRET_LENGTH = 32;
 export const CAPTURE_MAX_QUERY_CHARS = 16_384;
 
 export interface CaptureParams {
-  /** URL of the bundle's JS (a short-lived signed Storage URL). */
+  /** URL of the build's site pack, `site.bin` (a short-lived signed Storage URL). */
   src: string;
-  /** URL of the bundle's CSS, if the build has any. */
-  css?: string;
-  /** The import map as JSON (`{"imports": {...}}`), validated again by the capture page. */
-  map?: string;
   /** Expiry, unix seconds. */
   exp: number;
 }
@@ -137,11 +136,10 @@ export async function signCaptureParams(
 }
 
 export interface SignCaptureUrlInput {
-  /** The capture page URL without a query, e.g. `https://b1.usercontent.example/v1/capture`. */
+  /** The capture page URL without a query, e.g. `https://b1.usercontent.example/v2/capture`. */
   captureUrl: string;
+  /** URL of the site pack (`site.bin`), a short-lived signed Storage URL. */
   src: string;
-  css?: string | undefined;
-  map?: string | undefined;
   /** Expiry, unix seconds. */
   exp: number;
   secret: string;
@@ -155,11 +153,7 @@ export async function signCaptureUrl(input: SignCaptureUrlInput): Promise<string
     throw new Error('exp must be a positive integer (unix seconds)');
   }
   if (!isHttpUrl(input.src)) throw new Error('src must be an http(s) URL');
-  if (input.css !== undefined && !isHttpUrl(input.css))
-    throw new Error('css must be an http(s) URL');
   const params: Record<string, string> = { src: input.src, exp: String(input.exp) };
-  if (input.css !== undefined) params['css'] = input.css;
-  if (input.map !== undefined) params['map'] = input.map;
   const sig = await signCaptureParams(input.secret, url.host, url.pathname, params);
   const query = Object.keys(params)
     .sort()
@@ -201,11 +195,7 @@ export async function verifyCaptureUrl(
   if (sig === undefined || src === undefined || expRaw === undefined) {
     return { ok: false, reason: 'missing-param' };
   }
-  const css = seen.get('css');
-  const map = seen.get('map');
-  if (!isHttpUrl(src) || (css !== undefined && !isHttpUrl(css))) {
-    return { ok: false, reason: 'bad-url' };
-  }
+  if (!isHttpUrl(src)) return { ok: false, reason: 'bad-url' };
   if (!EXP_RE.test(expRaw)) return { ok: false, reason: 'bad-exp' };
   const exp = Number(expRaw);
   if (!SIG_RE.test(sig)) return { ok: false, reason: 'bad-signature' };
@@ -224,13 +214,5 @@ export async function verifyCaptureUrl(
   if (nowSeconds > exp) return { ok: false, reason: 'expired' };
   if (exp - nowSeconds > CAPTURE_MAX_TTL_SECONDS) return { ok: false, reason: 'ttl-too-long' };
 
-  return {
-    ok: true,
-    params: {
-      src,
-      exp,
-      ...(css === undefined ? {} : { css }),
-      ...(map === undefined ? {} : { map }),
-    },
-  };
+  return { ok: true, params: { src, exp } };
 }

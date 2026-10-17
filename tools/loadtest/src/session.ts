@@ -17,33 +17,26 @@
  *   **Nudges:** at each deadline (+0–500 ms jitter) `advance_battle` with the snapshot's
  *   version, then a refetch; while the version does not move, again after 5, 10, 20, then
  *   every 30 s; RESULTS not at all while a final build's screenshot is pending (T-029).
- * - **BUILDING:** autosave every 30 s (`autosave/{bundle.js,bundle.css,source.json}`, plus
- *   `manifest.json` once), a final autosave 3 s before the deadline, one more in the SHIPPING
- *   grace; a ship (`source.json, bundle.js, bundle.css, manifest.json, thumb.webp` then
- *   `ship_build`) at a random time for players who ship; editing in bursts and pauses
- *   (`editLoop`, an assumed model) that feeds the presence activity.
+ * - **BUILDING** (import mode, docs/09): players build on their own computer, so the room
+ *   only sees their imports (`importLoop`, an assumed model). Each import uploads its site
+ *   pack as `autosave/site.bin` at once (what the deadline auto-ships) and updates the
+ *   presence activity `{imported, imports}`; a ship (`site.bin` of the last import and
+ *   `thumb.webp`, then `ship_build`) at a random time after the first import for players
+ *   who ship.
  * - **REVEAL:** `get_reveal_builds` once, every build's `thumb.webp`, and the spotlighted
- *   and the next build's `bundle.js`, `bundle.css`, `manifest.json` (prefetch). The host
+ *   and the next build's `site.bin` (prefetch). The host
  *   clicks `reveal_next` in some slots (CAS, resent up to 3 times on a stale version with
  *   the same spotlight), the others time out.
  * - **VOTING:** `get_my_votes`, then one `cast_vote` per category (overall, rule, style,
  *   chaos) for a random other final build, sometimes a revote; a few voters stay silent.
  * - **RESULTS:** every screenshot through its public URL, as the results page's <img>s.
  *
- * Not simulated: the sandbox preview itself (bundling, iframes, the package CDN), spectators,
+ * Not simulated: the sandbox preview itself (the shell, its site worker, iframes), spectators,
  * kicks, leaves and refreshes mid-battle (the chaos e2e covers those), host migration
  * (handled if it happens), solo battles, reports and the admin page.
  */
 import type { LoadConfig } from './config';
-import {
-  MANIFEST_JSON,
-  bundleCss,
-  bundleJs,
-  drawBuildSizes,
-  sourceJson,
-  thumbWebp,
-  type BuildSizes,
-} from './payloads';
+import { drawBuildSizes, sitePack, thumbWebp, type BuildSizes } from './payloads';
 import { now, sleep, type SimPlayer, type Topic } from './player';
 import type { Rng } from './rng';
 
@@ -90,7 +83,7 @@ interface BattleSnap {
 interface RevealBuild {
   build_id: string;
   position: number;
-  files: { js: string | null; css: string | null; manifest: string | null; thumb: string | null };
+  files: { site: string | null; thumb: string | null };
 }
 
 interface BattleState {
@@ -108,7 +101,6 @@ interface BattleState {
   entered: Set<string>;
   shipped: boolean;
   shipping: boolean;
-  manifestUploaded: boolean;
   revealBuilds: RevealBuild[] | null;
   downloaded: Set<string>;
   hostActed: Set<number>;
@@ -122,17 +114,13 @@ interface BattleState {
   timers: Set<NodeJS.Timeout>;
   finished: boolean;
   finish: (o: Outcome) => void;
-  lines: number;
-  /** When the player last edited (the web client's "active" = an edit in the last 15 s). */
-  lastEditAt: number;
-  /** The preview's last build: a half-typed line breaks it until the next edit. */
-  buildBroken: 'no' | 'moment' | 'real';
+  /** Successful imports so far, and the last one's site pack (what a ship uploads). */
+  imports: number;
+  site: Uint8Array<ArrayBuffer> | null;
 }
 
 /** The web client's nudge backoff (SoloController DEFAULT_TIMINGS.nudgeBackoffMs). */
 export const NUDGE_BACKOFF_MS = [5_000, 10_000, 20_000, 30_000] as const;
-/** The web client's ACTIVITY_RECENT_MS (@br/game): "active" = an edit within this long. */
-const ACTIVE_MS = 15_000;
 /** A resync sample is used when its RTT ≤ max(2 × reference, reference + 100 ms). */
 const RESYNC_RTT_SLACK_MS = 100;
 const RESYNC_MAX_IGNORED = 3;
@@ -397,7 +385,6 @@ export class PlayerSession {
       entered: new Set(),
       shipped: false,
       shipping: false,
-      manifestUploaded: false,
       revealBuilds: null,
       downloaded: new Set(),
       hostActed: new Set(),
@@ -417,9 +404,8 @@ export class PlayerSession {
         if (b.nudgeTimer) clearTimeout(b.nudgeTimer);
         finish(o);
       },
-      lines: 0,
-      lastEditAt: 0,
-      buildBroken: 'no',
+      imports: 0,
+      site: null,
     };
     this.battle = b;
     this.after(
@@ -585,9 +571,6 @@ export class PlayerSession {
       case 'building':
         this.enterBuilding(b);
         break;
-      case 'shipping':
-        if (b.plan === 'auto' && !b.shipped) void this.autosave(b);
-        break;
       case 'reveal':
         void this.enterReveal(b);
         break;
@@ -605,106 +588,58 @@ export class PlayerSession {
     const start = ms(s?.building_started_at) ?? now();
     const end = ms(s?.building_ends_at) ?? b.phaseEndsAt ?? start + cfg.buildS * 1000;
     const dur = Math.max(1000, end - start);
-    const progress = () => Math.min(1, Math.max(0, (now() - start) / dur));
-    this.editLoop(b);
+    this.roomTopic?.setActivity({ imported: false, imports: 0 });
     if (b.plan === 'dnf') return;
-    const autosaveLoop = () => {
-      if (b.finished || b.phase !== 'building' || b.shipped) return;
-      void this.autosave(b, progress()).finally(() => {
-        this.after(cfg.autosaveMs, autosaveLoop, b.timers);
-      });
-    };
-    this.after(cfg.autosaveMs, autosaveLoop, b.timers);
-    this.after(
-      end - now() - 3000,
-      () => {
-        if (!b.shipped && b.phase === 'building') void this.autosave(b, 1);
-      },
-      b.timers,
-    );
+    const firstImport = start + dur * rng.between(0.25, 0.7);
+    this.importLoop(b, start, dur, firstImport);
     if (b.plan === 'ship') {
-      const at = start + dur * rng.between(0.35, 0.95);
+      const at = Math.max(firstImport + 2000, start + dur * rng.between(0.35, 0.95));
       this.after(at - now(), () => void this.ship(b), b.timers);
     }
   }
 
   /**
-   * The player's editing during BUILDING, an ASSUMED model (2026-10-08, no production data),
-   * feeding the presence activity the way the web client's BUILD screen does: the template
-   * on mount (30–50 lines, not active), then bursts of edits (one every 1.5–4 s for 20–90 s)
-   * and pauses (5–45 s; "active" = an edit in the last 15 s, so it goes off in most pauses).
-   * Each edit adds 0–3 lines, a paste (3 % of edits) 20–60; a half-typed line breaks the
-   * preview's build until the next edit in 30 % of edits, a real error (4 %) lasts until the
-   * edits of the next 10–60 s fix it.
+   * The player's imports during BUILDING, an ASSUMED model (2026-10-16, no production data):
+   * the first import at 25–70 % of the build, then another one 10–30 % of the build later
+   * with a 60 % chance each time, until 97 % of the build or a ship. Each import uploads its
+   * pack as `autosave/site.bin` and tells the room (presence activity), like the web client's
+   * BUILD stage.
    */
-  private editLoop(b: BattleState): void {
+  private importLoop(b: BattleState, start: number, dur: number, first: number): void {
     const rng = this.deps.rng;
-    const topic = this.roomTopic;
-    if (!topic) return;
-    b.lines = rng.int(30, 50);
-    const emit = () => {
-      const active = b.lastEditAt > 0 && now() - b.lastEditAt < ACTIVE_MS;
-      topic.setActivity({
-        lines: b.lines,
-        last_build: b.buildBroken === 'no' ? 'ok' : 'error',
-        typing: active,
-      });
+    const next = (at: number) => {
+      if (at > start + dur * 0.97) return;
+      this.after(
+        at - now(),
+        () => {
+          if (b.finished || b.phase !== 'building' || b.shipped || b.shipping || this.stopped)
+            return;
+          void this.importSite(b, Math.min(1, Math.max(0, (now() - start) / dur)));
+          if (rng.chance(0.6)) next(now() + dur * rng.between(0.1, 0.3));
+        },
+        b.timers,
+      );
     };
-    emit();
-    let realUntil = 0;
-    const edit = () => {
-      if (b.finished || b.phase !== 'building' || this.stopped) return;
-      b.lastEditAt = now();
-      b.lines += rng.chance(0.03) ? rng.int(20, 60) : rng.int(0, 3);
-      if (b.buildBroken === 'real' && now() >= realUntil) b.buildBroken = 'no';
-      if (b.buildBroken !== 'real') {
-        if (rng.chance(0.04)) {
-          b.buildBroken = 'real';
-          realUntil = now() + rng.between(10_000, 60_000);
-        } else {
-          b.buildBroken = rng.chance(0.3) ? 'moment' : 'no';
-        }
-      }
-      emit();
-      // The BUILD screen emits again when "active" runs out.
-      this.after(ACTIVE_MS, emit, b.timers);
-    };
-    const burst = () => {
-      if (b.finished || b.phase !== 'building' || this.stopped) return;
-      const until = now() + rng.between(20_000, 90_000);
-      const next = () => {
-        if (b.finished || b.phase !== 'building' || this.stopped) return;
-        if (now() >= until) {
-          this.after(rng.between(5_000, 45_000), burst, b.timers);
-          return;
-        }
-        edit();
-        this.after(rng.between(1_500, 4_000), next, b.timers);
-      };
-      next();
-    };
-    this.after(rng.between(500, 5_000), burst, b.timers);
+    next(first);
   }
 
   private path(b: BattleState, file: string): string {
     return `${b.id}/${this.player.id}/${file}`;
   }
 
-  private async autosave(b: BattleState, progress = 1): Promise<void> {
-    const rng = this.deps.rng;
-    this.m.count('autosave');
-    const files: [string, string, string][] = [
-      ['autosave/bundle.js', bundleJs(rng, b.sizes, b.buildName, progress), 'text/javascript'],
-      ['autosave/bundle.css', bundleCss(rng, b.sizes, progress), 'text/css'],
-      ['autosave/source.json', sourceJson(rng, b.sizes, progress), 'application/json'],
-    ];
-    if (!b.manifestUploaded)
-      files.push(['autosave/manifest.json', MANIFEST_JSON, 'application/json']);
-    const ok = await Promise.all(
-      files.map(([f, body, type]) => this.player.upload(this.path(b, f), body, type)),
+  /** One import: the pack goes up as `autosave/site.bin`, then the room hears about it. */
+  private async importSite(b: BattleState, progress: number): Promise<void> {
+    const site = sitePack(this.deps.rng, b.sizes, b.buildName, progress);
+    this.m.count('import');
+    b.site = site;
+    b.imports++;
+    this.roomTopic?.setActivity({ imported: true, imports: b.imports });
+    const ok = await this.player.upload(
+      this.path(b, 'autosave/site.bin'),
+      site,
+      'application/octet-stream',
     );
-    if (ok.every(Boolean)) b.manifestUploaded = true;
-    else this.m.count('autosave_failed');
+    if (!ok) this.m.count('import_upload_failed');
   }
 
   private async ship(b: BattleState): Promise<void> {
@@ -712,19 +647,20 @@ export class PlayerSession {
       this.m.count('ship_skipped');
       return;
     }
+    const site = b.site;
+    if (!site) {
+      this.m.count('ship_skipped');
+      return;
+    }
     b.shipping = true;
-    const rng = this.deps.rng;
-    const uploads: [string, string | Uint8Array<ArrayBuffer>, string][] = [
-      ['source.json', sourceJson(rng, b.sizes, 1), 'application/json'],
-      ['bundle.js', bundleJs(rng, b.sizes, b.buildName, 1), 'text/javascript'],
-      ['bundle.css', bundleCss(rng, b.sizes, 1), 'text/css'],
-      ['manifest.json', MANIFEST_JSON, 'application/json'],
-      ['thumb.webp', thumbWebp(rng, b.sizes), 'image/webp'],
+    const uploads: [string, Uint8Array<ArrayBuffer>, string][] = [
+      ['site.bin', site, 'application/octet-stream'],
+      ['thumb.webp', thumbWebp(this.deps.rng, b.sizes), 'image/webp'],
     ];
     const ok = await Promise.all(
       uploads.map(([f, body, type]) => this.player.upload(this.path(b, f), body, type)),
     );
-    if (!ok[0] || !ok[1]) {
+    if (!ok[0]) {
       this.m.count('ship_upload_failed');
       b.shipping = false;
       return;
@@ -732,13 +668,8 @@ export class PlayerSession {
     const r = await this.player.rpc('ship_build', {
       p_battle_id: b.id,
       p_name: b.buildName,
-      p_stats: {
-        files: 4,
-        lines: b.lines + 40,
-        bundle_bytes: b.sizes.bundle,
-        rebuilds: rng.int(5, 80),
-        pastes: rng.int(0, 5),
-      },
+      // What the web client reports (docs/09 §9.2): the site's files, the pack size, imports.
+      p_stats: { files: 3, bundle_bytes: site.byteLength, imports: b.imports },
     });
     b.shipping = false;
     if (r.error) {
@@ -779,8 +710,7 @@ export class PlayerSession {
     if (!list || i < 0 || b.phase !== 'reveal') return;
     for (const rb of [list[i], list[i + 1]]) {
       if (!rb) continue;
-      for (const p of [rb.files.js, rb.files.css, rb.files.manifest])
-        if (p) void this.fetchOnce(b, p);
+      if (rb.files.site) void this.fetchOnce(b, rb.files.site);
     }
     if (b.isHost && !b.hostActed.has(i)) {
       b.hostActed.add(i);

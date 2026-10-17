@@ -8,9 +8,8 @@ import { WorkerRunner } from '../src/runner';
 import { BATTLE, BUILD, FakeBackend, FakeRenderer, USER, imageWithBlock, rendered } from './fakes';
 
 const CONFIG: CaptureConfig = {
-  shellCaptureUrl: 'https://shell.test/v1/capture',
+  shellCaptureUrl: 'https://shell.test/v2/capture',
   hmacSecret: 'runner-secret-0123456789abcdef0123456789abcdef',
-  pkgCdnUrl: 'https://pkg.test',
   signedUrlTtlSeconds: 120,
   captureTimeoutMs: 20_000,
   viewport: { width: 1280, height: 800 },
@@ -31,7 +30,7 @@ async function waitFor(cond: () => boolean, ms = 3000): Promise<void> {
 
 function capturable(backend: FakeBackend, id = BUILD): void {
   backend.addBuild({ id });
-  backend.put(BUCKET_EPHEMERAL, `${BATTLE}/${USER}/bundle.js`, 'x');
+  backend.put(BUCKET_EPHEMERAL, `${BATTLE}/${USER}/site.bin`, 'x');
   backend.addJob('capture', id);
 }
 

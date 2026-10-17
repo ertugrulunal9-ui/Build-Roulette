@@ -8,7 +8,7 @@
 //   ```sql          read-only: run inside a READ ONLY transaction (a write fails the check)
 //   ```sql write    changes data: run inside a transaction that is rolled back
 //   ```sh check     a local command: `bash -n`, and with --sh run with the local targets
-//                   (APP_ORIGIN, PKG_CDN_URL, SUPABASE_URL, SUPABASE_ANON_KEY, BATTLE_ID)
+//                   (APP_ORIGIN, SHELL_URL, SUPABASE_URL, SUPABASE_ANON_KEY, BATTLE_ID)
 //   ```sh check-cf  like `sh check`, but needs the local Workers preview's state (cf:preview)
 //   ```sh / sh prod production or external only: `bash -n`
 // Every SQL block runs after the fixtures below (inserted in the same transaction, so nothing
@@ -188,7 +188,7 @@ function report(ok, name, detail) {
 
 const shEnv = {
   APP_ORIGIN: process.env.APP_ORIGIN ?? 'http://localhost:3100',
-  PKG_CDN_URL: process.env.PKG_CDN_URL ?? 'http://127.0.0.1:4400',
+  SHELL_URL: process.env.SHELL_URL ?? 'http://127.0.0.1:4321/v2/',
   SUPABASE_URL: process.env.SUPABASE_URL ?? env.API_URL,
   SUPABASE_ANON_KEY: process.env.SUPABASE_ANON_KEY ?? env.ANON_KEY,
   BATTLE_ID: process.env.BATTLE_ID ?? ID.stuck,

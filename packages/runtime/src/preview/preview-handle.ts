@@ -35,15 +35,14 @@
  * `heartbeat` and `storage-reset` are hints; the app never takes an action that matters for
  * the game because of one (threat model §3.9, README "Trust model").
  */
+import { SITE_LIMITS } from '@br/site';
 import {
-  LIMITS,
   PROTOCOL_VERSION,
   createNonce,
   parseShellToApp,
   type AppToShell,
   type ConsoleMessage,
   type Hello,
-  type ImportMap,
   type LoadMessage,
   type ParseResult,
   type RunMode,
@@ -106,7 +105,7 @@ export function applyPreviewAttributes(iframe: HTMLIFrameElement, mode: RunMode)
 }
 
 export interface PreviewOptions {
-  /** Shell URL, e.g. `https://{build_id}.buildroulette-usercontent.net/v1/`. */
+  /** Shell URL, e.g. `https://{build_id}.buildroulette-usercontent.net/v2/`. */
   shellUrl: string;
   /** Expected origin of the shell. Defaults to the origin of `shellUrl`. */
   shellOrigin?: string;
@@ -139,15 +138,25 @@ export interface PreviewOptions {
   now?: () => number;
 }
 
+/** What a preview runs (protocol v2, docs/09 §9.3): an imported site. */
 export interface PreviewBuild {
-  js: string;
-  css: string;
-  importMap: ImportMap;
   /**
-   * The package CDN module URLs the bundle imports (`BuildResult.packages`, T-032): a hint
-   * the shell uses to name the package that could not load. Optional.
+   * The site pack (`packSite` from `@br/site`), at most `SITE_LIMITS.maxPackBytes`. `load()`
+   * copies it (it is never transferred), so the caller keeps its pack for `restart()` and
+   * later loads.
    */
-  packages?: readonly string[];
+  site: ArrayBuffer | Uint8Array;
+}
+
+/** A private copy of a site pack as its own ArrayBuffer (what the protocol carries). */
+function copyPack(site: ArrayBuffer | Uint8Array): ArrayBuffer {
+  const view = site instanceof Uint8Array ? site : new Uint8Array(site);
+  if (view.byteLength > SITE_LIMITS.maxPackBytes) {
+    throw new RangeError(
+      `site pack too large (${String(view.byteLength)} > ${String(SITE_LIMITS.maxPackBytes)} bytes)`,
+    );
+  }
+  return view.slice().buffer;
 }
 
 /** `heartbeat-timeout`: no `pong` within `heartbeatTimeoutMs` (name kept for compatibility). */
@@ -459,23 +468,16 @@ export class PreviewHandle {
   }
 
   /**
-   * Runs a build in a fresh document. Returns the loadId echoed by the `ready` event.
-   * A `mode` different from the current one replaces the iframe first (new sandbox flags).
+   * Runs a site in a fresh child frame of the shell. Returns the loadId echoed by the
+   * `ready` event. A `mode` different from the current one replaces the iframe first (new
+   * sandbox flags). The pack is copied, never transferred (the caller keeps it). Throws a
+   * `RangeError` for a pack over `SITE_LIMITS.maxPackBytes`.
    */
   load(build: PreviewBuild, mode: RunMode = this._mode): number {
     this.assertUsable();
+    const site = copyPack(build.site);
     const loadId = this.nextLoadId++;
-    const msg: LoadMessage = {
-      type: 'load',
-      loadId,
-      js: build.js,
-      css: build.css,
-      importMap: build.importMap,
-      mode,
-      ...(build.packages?.length
-        ? { packages: build.packages.slice(0, LIMITS.loadPackagesMax) }
-        : {}),
-    };
+    const msg: LoadMessage = { type: 'load', loadId, mode, site };
     this.latestLoadId = loadId;
     this.readyAccepted = false;
     if (mode !== this._mode) {

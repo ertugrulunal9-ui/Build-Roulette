@@ -1,5 +1,6 @@
 import { defineConfig } from '@playwright/test';
 import { APP_SERVER_ENV, appServerCommand } from './e2e/app-server';
+import { welcomeSeen } from './e2e/welcome';
 
 /**
  * Error reporting and analytics end to end (T-030) against a local fake ingest (Sentry
@@ -30,6 +31,8 @@ export default defineConfig({
   reporter: [['list']],
   use: {
     baseURL: APP_ORIGIN,
+    // The welcome screen is already seen (e2e/welcome.ts).
+    storageState: welcomeSeen(APP_ORIGIN),
     browserName: 'chromium',
     channel: 'chromium',
     headless: true,
@@ -38,7 +41,7 @@ export default defineConfig({
   webServer: [
     {
       command: 'tsx scripts/sandbox-servers.ts',
-      url: 'http://127.0.0.1:4321/v1/',
+      url: 'http://127.0.0.1:4321/v2/',
       env: { BR_APP_ORIGINS: APP_ORIGIN },
       reuseExistingServer: false,
       stdout: 'pipe',

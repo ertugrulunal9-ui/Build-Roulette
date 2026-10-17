@@ -13,6 +13,8 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@br/game": "workspace:*",
+    "@br/site": "workspace:*",
     "@supabase/supabase-js": "2.117.2",
     "pg": "8.23.1"
   },

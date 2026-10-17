@@ -18,8 +18,8 @@
  * The old watchdog crashes in both (checked: `heartbeat-timeout`, silence 7.4 s / 6.6 s).
  */
 import { expect, test, type Frame, type Page } from '@playwright/test';
-import { REACT_MANIFEST, reactApp } from './fixtures';
-import { buildFrame, fmt, freezeRenderers, openPlayground } from './helpers';
+import { markupSite } from './fixtures';
+import { buildFrame, fmt, freezeRenderers, loadSite, openPlayground, shellFrame } from './helpers';
 
 const THROTTLE_RATE = 6;
 
@@ -35,12 +35,6 @@ interface CrashEvent {
   };
 }
 
-function shellFrame(page: Page): Frame {
-  const frame = page.frames().find((f) => /^http:\/\/127\.0\.0\.1:\d+\/v1\/$/.test(f.url()));
-  if (!frame) throw new Error('shell frame not found');
-  return frame;
-}
-
 /** CDP CPU throttling of the app page and of the (out-of-process) preview frame. */
 async function throttleBoth(page: Page, rate: number): Promise<void> {
   for (const target of [page, shellFrame(page)]) {
@@ -49,24 +43,17 @@ async function throttleBoth(page: Page, rate: number): Promise<void> {
   }
 }
 
-/** A calm React build with a button that starts an infinite loop 300 ms after a click. */
+/** A calm site with a button that starts an infinite loop 300 ms after a click. */
 async function loadCalmBuild(page: Page): Promise<void> {
-  const loaded = await page.evaluate(
-    async ({ files, manifest }) => {
-      await window.__playground.setProject(files, manifest);
-      return window.__playground.buildAndLoad();
-    },
-    {
-      files: reactApp(
-        `<main>
-          <h1 data-testid="title">calm build</h1>
-          <button className="freeze" onClick={() => { setTimeout(() => { console.log('loop-start'); for (;;) {} }, 300); }}>Freeze</button>
-        </main>`,
-      ),
-      manifest: REACT_MANIFEST,
-    },
+  await loadSite(
+    page,
+    markupSite(
+      '<main><h1 data-testid="title">calm build</h1><button class="freeze">Freeze</button></main>',
+      `document.addEventListener('click', (e) => {
+  if (e.target.closest('button.freeze')) setTimeout(() => { console.log('loop-start'); for (;;) {} }, 300);
+});`,
+    ),
   );
-  expect(loaded.ok).toBe(true);
   await expect(buildFrame(page).getByTestId('title')).toHaveText('calm build');
   await page.waitForTimeout(1500); // a few normal pongs
 }

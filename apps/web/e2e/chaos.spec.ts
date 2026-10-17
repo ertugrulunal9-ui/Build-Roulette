@@ -4,20 +4,18 @@ import { buildFrame, clickRouted } from './helpers';
 import {
   autosaveNow,
   battleOf,
-  buildStartMetrics,
   createRoom,
+  importApp,
   joinByLink,
   member,
   newPlayer,
-  openFile,
   phaseOf,
   progress,
   revealLive,
   ship,
-  storedFile,
+  storedSite,
   vote,
   waitForBuild,
-  writeApp,
   type Player,
 } from './rooms';
 import {
@@ -64,7 +62,7 @@ async function gather(players: Player[]): Promise<string> {
 
 /**
  * Everyone readies up, the host starts, and while the battle spins its time limit becomes
- * `limitS` (the real one is 5–15 min). Returns the battle id once every player builds.
+ * `limitS` (the real one is 10–20 min). Returns the battle id once every player builds.
  */
 async function startBattle(code: string, players: Player[], limitS: number): Promise<string> {
   const [host] = players;
@@ -86,7 +84,6 @@ async function startBattle(code: string, players: Player[], limitS: number): Pro
                     returning c.id`);
   expect(changed, 'the time limit must be set while the battle spins').not.toBe('');
   for (const p of players) await waitForBuild(p.page);
-  console.log(`[metrics] battle start: ${await buildStartMetrics(players.map((p) => p.page))}`);
   expect(
     sql(
       `select extract(epoch from building_ends_at - building_started_at)::int from public.battles where id = '${battleId}'`,
@@ -231,29 +228,6 @@ async function expectTerminal(
   return b;
 }
 
-/** Every file of the battle's workspace in this page's IndexedDB. */
-async function storedFiles(page: Page, battleId: string): Promise<Record<string, string>> {
-  return page.evaluate(async (key) => {
-    const db = await new Promise<IDBDatabase>((resolve, reject) => {
-      const req = indexedDB.open('br-workspaces');
-      req.onsuccess = () => {
-        resolve(req.result);
-      };
-      req.onerror = () => {
-        reject(new Error('open failed'));
-      };
-    });
-    const value = await new Promise<unknown>((resolve) => {
-      const r = db.transaction('workspaces', 'readonly').objectStore('workspaces').get(key);
-      r.onsuccess = () => {
-        resolve(r.result as unknown);
-      };
-    });
-    db.close();
-    return (value as { files?: Record<string, string> } | undefined)?.files ?? {};
-  }, `battle:${battleId}`);
-}
-
 /**
  * REVEAL and VOTING without their timers: whenever the battle is in one of them, its
  * deadline (the current slot, or the vote) is moved to now, and the server (pg_cron every
@@ -286,7 +260,7 @@ async function expectSameSpotlight(players: Player[]): Promise<void> {
     });
     await expect(p.page.getByTestId('reveal-stage')).toHaveAttribute('data-build', build);
   }
-  // The build runs (its heading: a template that was shipped untouched has its own).
+  // The build runs (its heading).
   for (const p of players) {
     await expect(revealLive(p.page).locator('h1').first()).toBeVisible({ timeout: 30_000 });
   }
@@ -325,24 +299,24 @@ test('6 players under chaos: skewed clocks, a network drop, refreshes, the host 
   // Every countdown shows the server's time, skewed clocks included.
   for (const p of all) await expectCountdownInSync(p, battleId);
 
-  // ─── Dee's network drops for 15 s mid-BUILD; she keeps editing ────────────────────
-  await writeApp(dee.page, 'Dee Before', 'rgb(120, 20, 160)');
+  // ─── Dee's network drops for 15 s mid-BUILD; she keeps importing ──────────────────
+  await importApp(dee.page, 'Dee Before', 'rgb(120, 20, 160)');
   await dee.context.setOffline(true);
   const offlineAt = Date.now();
   await expect(dee.page.getByTestId('reconnecting')).toBeVisible({ timeout: 20_000 });
-  await writeApp(dee.page, 'Dee Offline Edit', 'rgb(160, 20, 120)', { waitForPreview: false });
+  await importApp(dee.page, 'Dee Offline Edit', 'rgb(160, 20, 120)', { waitForPreview: false });
   await expect
-    .poll(() => storedFile(dee.page, battleId, 'src/App.tsx'))
-    .toContain('Dee Offline Edit');
+    .poll(() => storedSite(dee.page, battleId))
+    .toEqual({ title: 'Dee Offline Edit', imports: 2 });
 
-  // Meanwhile: Ben (+5 min) ships, Cy (−5 min) builds and autosaves (and will not ship).
-  await writeApp(ben.page, 'Ben Early', 'rgb(255, 87, 34)');
+  // Meanwhile: Ben (+5 min) ships, Cy (−5 min) imports and autosaves (and will not ship).
+  await importApp(ben.page, 'Ben Early', 'rgb(255, 87, 34)');
   await ship(ben.page, 'Ben Early');
-  await writeApp(cy.page, 'Cy Behind', 'rgb(0, 150, 136)');
+  await importApp(cy.page, 'Cy Behind', 'rgb(0, 150, 136)');
   await autosaveNow(cy.page);
 
-  // ─── The host writes, autosaves, and her laptop dies (the context closes) ─────────
-  await writeApp(ada.page, 'Ada Vanished', 'rgb(33, 150, 243)');
+  // ─── The host imports, autosaves, and her laptop dies (the context closes) ────────
+  await importApp(ada.page, 'Ada Vanished', 'rgb(33, 150, 243)');
   await autosaveNow(ada.page);
   const benCrowned = ben.page
     .getByTestId('toast')
@@ -363,10 +337,10 @@ test('6 players under chaos: skewed clocks, a network drop, refreshes, the host 
   // What happened while she was away is there; the countdown is right.
   await expect(progress(dee.page, ben.name)).toHaveAttribute('data-state', 'shipped');
   await expectCountdownInSync(dee, battleId);
-  // The edit made offline reaches the server autosave (the 30 s loop retries).
+  // The import made offline reaches the server autosave (the upload is retried).
   const deeId = userOf(battleId, dee.name);
   await expect
-    .poll(() => ephemeralText(`${battleId}/${deeId}/autosave/source.json`), {
+    .poll(() => ephemeralText(`${battleId}/${deeId}/autosave/site.bin`), {
       timeout: 45_000,
       intervals: [1_000],
     })
@@ -374,9 +348,11 @@ test('6 players under chaos: skewed clocks, a network drop, refreshes, the host 
   await expect(buildFrame(dee.page).locator('h1.e2e-title')).toHaveText('Dee Offline Edit');
   await ship(dee.page, 'Dee Unplugged');
 
-  // ─── Eve refreshes mid-BUILD and gets everything back ─────────────────────────────
-  await writeApp(eve.page, 'Eve Refreshed', 'rgb(76, 175, 80)');
-  await expect.poll(() => storedFile(eve.page, battleId, 'src/App.tsx')).toContain('Eve Refreshed');
+  // ─── Eve refreshes mid-BUILD and gets her import back ─────────────────────────────
+  await importApp(eve.page, 'Eve Refreshed', 'rgb(76, 175, 80)');
+  await expect
+    .poll(() => storedSite(eve.page, battleId))
+    .toEqual({ title: 'Eve Refreshed', imports: 1 });
   await eve.page.reload();
   await expect(eve.page.getByTestId('build-stage')).toBeVisible({ timeout: 30_000 });
   await expect(buildFrame(eve.page).locator('h1.e2e-title')).toHaveText('Eve Refreshed', {
@@ -486,8 +462,8 @@ test('6 players under chaos: skewed clocks, a network drop, refreshes, the host 
     [dee.name]: 'shipped',
     [eve.name]: 'shipped',
   });
-  // Fay never touched her template: its autosave ships, or nothing was saved (DNF).
-  expect(['auto_shipped', 'dnf']).toContain(statuses[fay.name]);
+  // Fay never imported anything: nothing to auto-ship (DNF).
+  expect(statuses[fay.name]).toBe('dnf');
   await expect(fay.page.locator('[data-testid=ranked-build][data-status=shipped]')).toHaveCount(3);
 
   // ─── DESTROY, back in the lobby; Cy hosts the rematch ─────────────────────────────
@@ -539,7 +515,7 @@ test('reveal and vote under chaos: a refresh mid-REVEAL, a vote cast offline (re
   const title: Record<string, string> = {};
   for (const [i, p] of all.entries()) {
     title[p.name] = `${p.name} build`;
-    await writeApp(p.page, title[p.name] ?? '', 'rgb(40, 90, 160)');
+    await importApp(p.page, title[p.name] ?? '', 'rgb(40, 90, 160)');
     await ship(p.page, `${p.name} build`, { last: i === all.length - 1 });
   }
   const buildOf = (name: string) =>
@@ -701,7 +677,7 @@ function prng(seed: number): () => number {
   };
 }
 
-test('random chaos (seeded): drops, refreshes, edits and ships at random on skewed clocks; no shipped build is lost @chaos-2', async ({
+test('random chaos (seeded): drops, refreshes, imports and ships at random on skewed clocks; no shipped build is lost @chaos-2', async ({
   browser,
 }, info) => {
   test.setTimeout(7 * MIN);
@@ -720,6 +696,8 @@ test('random chaos (seeded): drops, refreshes, edits and ships at random on skew
   const battleId = await startBattle(code, players, 100);
   const shipped: Record<string, string> = {};
   const log: string[] = [];
+  // Everyone imports once first, so every player has something the deadline can auto-ship.
+  for (const p of players) await importApp(p.page, `${p.name} first`, 'rgb(60, 60, 60)');
 
   // Chaos until 25 s before the deadline, or until everyone shipped (BUILD then ends at
   // once: a refresh or a ship would no longer land on the BUILD screen).
@@ -729,14 +707,14 @@ test('random chaos (seeded): drops, refreshes, edits and ships at random on skew
     const p = pick(players);
     const action = shipped[p.name]
       ? pick(['drop', 'refresh'] as const)
-      : pick(['drop', 'refresh', 'edit', 'edit', 'ship'] as const);
+      : pick(['drop', 'refresh', 'import', 'import', 'ship'] as const);
     log.push(`${String(step)} ${p.name} ${action}`);
     if (action === 'drop') {
       const ms = 3_000 + Math.floor(rnd() * 9_000);
       await p.context.setOffline(true);
       await expect(p.page.getByTestId('reconnecting')).toBeVisible();
       if (!shipped[p.name]) {
-        await writeApp(p.page, `${p.name} offline ${String(step)}`, 'rgb(90, 90, 200)', {
+        await importApp(p.page, `${p.name} offline ${String(step)}`, 'rgb(90, 90, 200)', {
           waitForPreview: false,
         });
       }
@@ -746,11 +724,11 @@ test('random chaos (seeded): drops, refreshes, edits and ships at random on skew
     } else if (action === 'refresh') {
       await p.page.reload();
       await expect(p.page.getByTestId('build-stage')).toBeVisible({ timeout: 30_000 });
-      await expect(p.page.getByTestId('build-status')).toHaveText(/^Built in \d+ ms$/, {
-        timeout: 30_000,
-      });
-    } else if (action === 'edit') {
-      await writeApp(p.page, `${p.name} edit ${String(step)}`, 'rgb(200, 90, 90)');
+      // The last import is back (from IndexedDB) and runs.
+      await expect(p.page.getByTestId('import-summary')).toBeVisible({ timeout: 30_000 });
+      await expect(buildFrame(p.page).locator('h1.e2e-title')).toBeVisible({ timeout: 30_000 });
+    } else if (action === 'import') {
+      await importApp(p.page, `${p.name} import ${String(step)}`, 'rgb(200, 90, 90)');
     } else {
       const name = `${p.name.split(' ')[0] ?? 'X'} ship ${String(step)}`;
       await ship(p.page, name, { last: Object.keys(shipped).length === players.length - 1 });
@@ -787,7 +765,8 @@ test('random chaos (seeded): drops, refreshes, edits and ships at random on skew
     await expect(p.page.getByTestId('lobby')).toBeVisible({ timeout: MIN });
   }
   const row = await expectTerminal(battleId, { phase: 'destroyed', shipped });
-  // Everyone who did not ship had autosaved (the 30 s loop or the final autosave).
+  // Everyone who did not ship had imported, and every import is autosaved (retried after a
+  // drop, and once more 3 s before the deadline).
   for (const b of row.builds) {
     expect(b.status, b.builder).toBe(shipped[b.builder] ? 'shipped' : 'auto_shipped');
   }
@@ -808,36 +787,34 @@ test('all clients closed at T-0: pg_cron alone ends BUILD, auto-ships the autosa
   const code = await gather(all);
   const battleId = await startBattle(code, all, 60);
 
-  await writeApp(ivy.page, 'Ivy Shipped', 'rgb(255, 193, 7)');
+  await importApp(ivy.page, 'Ivy Shipped', 'rgb(255, 193, 7)');
   await ship(ivy.page, 'Ivy Shipped');
-  await writeApp(gus.page, 'Gus Autosaved', 'rgb(63, 81, 181)');
+  await importApp(gus.page, 'Gus Autosaved', 'rgb(63, 81, 181)');
   await autosaveNow(gus.page);
   // Ivy and Gus are done (shipped, autosaved): their network goes now, well before T-0.
   // (T-021: cutting all three only after Hal's final autosave left too little margin once:
   // Gus's deadline nudge, sent a few ms before the cut on a client clock estimate a hair
   // early, reached the server 72 ms after T-0 and was logged as his action.)
   await Promise.all([gus, ivy].map((p) => p.context.setOffline(true)));
-  // Hal edits once the 30 s autosave loop has run: only the final autosave (3 s before
-  // the deadline, timed by the client from the server clock) can carry this edit.
+  // Hal imports in the last 20 s: the import's own autosave must land before T-0, and that
+  // autosave is what the server auto-ships.
   await expect
     .poll(() => serverRemainingS(battleId), { timeout: MIN, intervals: [500] })
     .toBeLessThan(20);
-  await writeApp(hal.page, 'Hal Final Autosave', 'rgb(233, 30, 99)');
+  await importApp(hal.page, 'Hal Final Autosave', 'rgb(233, 30, 99)');
   const halId = userOf(battleId, hal.name);
   await expect
-    .poll(() => ephemeralText(`${battleId}/${halId}/autosave/source.json`), {
+    .poll(() => ephemeralText(`${battleId}/${halId}/autosave/site.bin`), {
       timeout: 30_000,
       intervals: [250],
     })
     .toContain('Hal Final Autosave');
   const savedAtRemainingS = serverRemainingS(battleId);
   expect(savedAtRemainingS).toBeGreaterThan(0.5);
-  expect(savedAtRemainingS).toBeLessThan(3.5);
 
   // Every client goes before T-0: nobody can nudge the battle any more. The network goes
   // first (instant), then the contexts close: a graceful close of three pages takes
-  // 2.5–3 s here, more than the ~2.7 s the final autosave leaves (measured with and without
-  // T-020), so closing alone raced T-0.
+  // 2.5–3 s here (measured with and without T-020), so closing alone raced T-0.
   expectNoPageErrors(all);
   await Promise.all(all.map((p) => p.context.setOffline(true)));
   expect(serverRemainingS(battleId), 'every client was cut off before T-0').toBeGreaterThan(0);
@@ -889,7 +866,7 @@ test('abandoned: no roster player for 5 min; a returning player finds the battle
   const kai = await newPlayer(browser, info, 'Kai Gone');
   const code = await gather([jo, kai]);
   const battleId = await startBattle(code, [jo, kai], 300);
-  await writeApp(kai.page, 'Kai Shipped', 'rgb(0, 188, 212)');
+  await importApp(kai.page, 'Kai Shipped', 'rgb(0, 188, 212)');
   await ship(kai.page, 'Kai Shipped');
   expectNoPageErrors([jo, kai]);
 
@@ -927,13 +904,13 @@ test('abandoned: no roster player for 5 min; a returning player finds the battle
   await jo.context.close();
 });
 
-// ─── Steady typing vs Realtime's presence limit ───────────────────────────────────────
+// ─── Steady imports vs Realtime's presence limit ──────────────────────────────────────
 
-test('a minute of steady typing keeps the room channel (Realtime closes channels above 5 presence messages per 30 s)', async ({
+test('a minute of imports every few seconds keeps the room channel (Realtime closes channels above 5 presence messages per 30 s)', async ({
   browser,
 }, info) => {
   test.setTimeout(4 * MIN);
-  const pia = await newPlayer(browser, info, 'Pia Typist');
+  const pia = await newPlayer(browser, info, 'Pia Importer');
   const quinn = await newPlayer(browser, info, 'Quinn Watcher');
   // What the Realtime server tells Pia's page (it closes a channel over the limit).
   const serverErrors: string[] = [];
@@ -945,36 +922,25 @@ test('a minute of steady typing keeps the room channel (Realtime closes channels
   });
   const code = await gather([pia, quinn]);
   const battleId = await startBattle(code, [pia, quinn], 300);
-  await openFile(pia.page, 'src/App.tsx');
-  await pia.page.locator('[data-testid=code-editor] .cm-content').click();
-  await pia.page.keyboard.press('ControlOrMeta+End');
 
-  // A new line every ~1.5 s for 60 s: the activity (lines, typing) changes all the time.
+  // A new import every ~3 s for 60 s: the activity changes with each one.
   let reconnecting = 0;
   const until = Date.now() + 60_000;
   let n = 0;
   while (Date.now() < until) {
     n++;
-    await pia.page.keyboard.type(`\n// line ${String(n)}`, { delay: 100 });
+    await importApp(pia.page, `Pia ${String(n)}`, 'rgb(90, 30, 160)');
     reconnecting += await pia.page.getByTestId('reconnecting').count();
+    await pia.page.waitForTimeout(2_000);
   }
-  // Her line count (all files, as the activity counts them) once the edits are saved locally.
-  let lines = 0;
   await expect
-    .poll(async () => {
-      const files = await storedFiles(pia.page, battleId);
-      lines = Object.values(files).reduce(
-        (sum, t) => sum + (t.length === 0 ? 0 : t.split('\n').length - (t.endsWith('\n') ? 1 : 0)),
-        0,
-      );
-      return files['src/App.tsx'] ?? '';
-    })
-    .toContain(`// line ${String(n)}`);
+    .poll(() => storedSite(pia.page, battleId))
+    .toEqual({ title: `Pia ${String(n)}`, imports: n });
   expect(serverErrors, 'Realtime refused or closed something').toEqual([]);
   expect(reconnecting, 'Pia never lost the room channel').toBe(0);
-  // Quinn sees Pia's latest line count (within the presence budget).
+  // Quinn sees Pia's latest import count (within the presence budget).
   await expect(progress(quinn.page, pia.name).getByTestId('activity')).toContainText(
-    `${String(lines)} lines`,
+    `imported (${String(n)}×)`,
     { timeout: 30_000 },
   );
   await expect(progress(quinn.page, pia.name)).toHaveAttribute('data-online', 'true');
@@ -1011,6 +977,7 @@ test('Realtime stops delivering the battle events mid-REVEAL (channels still sub
   }
   const code = await gather(all);
   const battleId = await startBattle(code, all, 120);
+  for (const p of all) await importApp(p.page, `${p.name} build`, 'rgb(0, 120, 120)');
   for (const [i, p] of all.entries()) {
     await ship(p.page, `${p.name} build`, { last: i === all.length - 1 });
   }
@@ -1123,7 +1090,8 @@ test('8 players, a full party battle: everyone ships, the reveal of 8 builds, ev
   await expect(host.page.getByTestId('player-count')).toHaveText('8/8 players');
   const battleId = await startBattle(code, players, 240);
 
-  // Everyone ships the template as it is (the editor and the bundler run in 8 tabs).
+  // Everyone imports a site (8 live previews at once) and ships it.
+  for (const p of players) await importApp(p.page, `${p.name} build`, 'rgb(120, 60, 0)');
   for (const [i, p] of players.entries()) {
     await ship(p.page, `${p.name} build`, { last: i === players.length - 1 });
   }

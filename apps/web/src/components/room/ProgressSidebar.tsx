@@ -1,12 +1,14 @@
 'use client';
 
 /**
- * Everyone's progress during BUILD: live activity from Presence (lines, last build, active =
- * edited in the last 15 s; at most one update per 15 s per player and only for a change that
- * matters, T-029) and the shipped badges from `build` events, e.g.
- * "Ada shipped 'Snack Overflow' at 3:12". No database writes: Presence is client-claimed
- * and only decorates; the ship badges are server state.
+ * Everyone's progress during BUILD: "building…" until a player's first import, then
+ * "imported" (with how many imports) from Presence (at most one update per 15 s per player,
+ * T-029), and the shipped badges from `build` events, e.g. "Ada shipped 'Snack Overflow' at
+ * 3:12". Players build on their own computers (docs/09), so imports are all the room sees.
+ * No database writes: Presence is client-claimed and only decorates; the ship badges are
+ * server state.
  */
+import { useT } from '../../lib/i18n/context';
 import type { PresenceMap } from '../../lib/room/types';
 import { formatCountdown } from '../../lib/solo/format';
 import type { BattleSnapshot } from '../../lib/solo/types';
@@ -15,13 +17,15 @@ import { Avatar, OnlineDot } from './pieces';
 interface ProgressSidebarProps {
   battle: BattleSnapshot;
   presence: PresenceMap;
-  /** `sidebar`: a column next to the editor; `grid`: cards for spectators. */
+  /** `sidebar`: a column next to the import area; `grid`: cards for spectators. */
   layout: 'sidebar' | 'grid';
 }
 
 type RowState = 'shipped' | 'building' | 'left' | 'kicked' | 'disqualified';
 
 export function ProgressSidebar({ battle, presence, layout }: ProgressSidebarProps) {
+  const t = useT();
+  const words = t.progress;
   const me = battle.me.user_id;
   const shipped = battle.builds.filter((b) => b.status === 'shipped').length;
   const rows = battle.players.map((p) => {
@@ -67,12 +71,14 @@ export function ProgressSidebar({ battle, presence, layout }: ProgressSidebarPro
             <Avatar userId={p.user_id} name={p.display_name} size="sm" />
             <span className="min-w-0 flex-1 truncate font-bold">
               {battle.battle.host_id === p.user_id && (
-                <span title="Host" aria-label="Host" data-testid="host-crown">
+                <span title={t.common.host} aria-label={t.common.host} data-testid="host-crown">
                   👑{' '}
                 </span>
               )}
               {p.display_name}
-              {p.user_id === me && <span className="font-normal text-zinc-500"> (you)</span>}
+              {p.user_id === me && (
+                <span className="font-normal text-zinc-500"> {t.common.you}</span>
+              )}
             </span>
             <OnlineDot online={live !== null} />
           </div>
@@ -81,37 +87,35 @@ export function ProgressSidebar({ battle, presence, layout }: ProgressSidebarPro
               className="text-xs font-semibold text-emerald-800 dark:text-emerald-300"
               data-testid="shipped-badge"
             >
-              🚀 Shipped “{build.name}”
-              {build.completion_ms !== null && <> at {formatCountdown(build.completion_ms)}</>}
+              {words.shipped(
+                build.name ?? '',
+                build.completion_ms === null ? null : formatCountdown(build.completion_ms),
+              )}
             </p>
           ) : state === 'left' ? (
-            <p className="text-xs text-zinc-500">Left the room</p>
+            <p className="text-xs text-zinc-500">{words.left}</p>
           ) : state === 'kicked' || state === 'disqualified' ? (
-            <p className="text-xs text-zinc-500">Removed by the host</p>
+            <p className="text-xs text-zinc-500">{words.removed}</p>
           ) : live ? (
             <p
               className="flex flex-wrap items-center gap-x-2 text-xs text-zinc-600 dark:text-zinc-400"
               data-testid="activity"
+              data-imported={live.activity.imported ? 'true' : 'false'}
             >
-              <span>{live.activity.lines} lines</span>
-              {live.activity.last_build === 'error' ? (
-                <span className="text-red-600 dark:text-red-400">⚠ build failing</span>
-              ) : (
-                <span className="text-emerald-700 dark:text-emerald-400">✓ builds</span>
-              )}
-              {live.activity.typing && (
-                <span
-                  className="font-semibold"
-                  title="Edited in the last 15 s"
-                  data-testid="active"
-                >
-                  ✎ active
+              {live.activity.imported ? (
+                <span className="font-semibold text-sky-700 dark:text-sky-300">
+                  {words.imported}
+                  {live.activity.imports > 1 && (
+                    <span className="font-normal"> {words.imports(live.activity.imports)}</span>
+                  )}
                 </span>
+              ) : (
+                <span>{words.building}</span>
               )}
-              {live.device === 'mobile' && <span title="On a phone">📱</span>}
+              {live.device === 'mobile' && <span title={words.onPhone}>📱</span>}
             </p>
           ) : (
-            <p className="text-xs text-zinc-500">Offline</p>
+            <p className="text-xs text-zinc-500">{words.offline}</p>
           )}
         </li>
       ))}
@@ -122,11 +126,11 @@ export function ProgressSidebar({ battle, presence, layout }: ProgressSidebarPro
   return (
     <aside
       data-testid="progress-sidebar"
-      aria-label="Players"
+      aria-label={words.players}
       className="flex shrink-0 flex-col gap-2 border-t border-zinc-200 bg-zinc-50 p-3 lg:w-72 lg:overflow-y-auto lg:border-t-0 lg:border-l dark:border-zinc-800 dark:bg-zinc-950"
     >
       <p className="text-xs font-bold tracking-widest text-zinc-500 uppercase">
-        Players · {shipped}/{battle.players.length} shipped
+        {words.header(shipped, battle.players.length)}
       </p>
       {list}
     </aside>

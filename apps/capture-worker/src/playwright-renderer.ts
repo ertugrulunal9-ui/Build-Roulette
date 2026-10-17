@@ -5,11 +5,15 @@
  * in CI; this package never downloads one.
  *
  * One browser process, one fresh context per capture (no shared storage, cache or service
- * workers between builds), closed after the capture. Security measures, in addition to the
- * capture page's own CSP `sandbox` (no popups, no modals, no downloads):
+ * workers between builds), closed after the capture. Service workers are allowed: the v2
+ * capture page runs the site from the shell's site worker (docs/09 §9.3), and the sandbox
+ * host serves no other worker script. Security measures, in addition to the capture page's
+ * own CSP `sandbox` (no popups, no modals, no downloads):
  * - only ONE navigation is allowed: the main frame to the exact capture URL. Every other
- *   navigation request (the main frame again, any frame, any popup) is aborted, popups that
- *   still open are closed, and a capture whose page is no longer at the capture URL fails;
+ *   navigation request that reaches the network (the main frame again, any frame, any popup)
+ *   is aborted, popups that still open are closed, and a capture whose page is no longer at
+ *   the capture URL fails. The site frame's own navigations (`/?__br_site=…`, in-site links)
+ *   are answered by the site worker and never reach the network;
  * - dialogs are dismissed and downloads refused;
  * - a hard timer closes the context after `timeoutMs`, which also ends a page stuck in an
  *   infinite loop (its evaluate/screenshot calls reject).
@@ -163,7 +167,7 @@ export class PlaywrightRenderer implements Renderer {
       context = await browser.newContext({
         viewport: req.viewport,
         deviceScaleFactor: 1,
-        serviceWorkers: 'block',
+        serviceWorkers: 'allow',
         acceptDownloads: false,
         locale: 'en-US',
         timezoneId: 'UTC',

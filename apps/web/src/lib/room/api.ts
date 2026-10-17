@@ -180,9 +180,14 @@ export class SupabaseRoomApi implements RoomApi {
     return res.data;
   }
 
-  async downloadText(path: string): Promise<string | null> {
+  async downloadBytes(path: string): Promise<Uint8Array<ArrayBuffer> | null> {
     const blob = await this.downloadBlob(path);
-    return blob === null ? null : blob.text();
+    if (blob === null) return null;
+    try {
+      return new Uint8Array(await blob.arrayBuffer());
+    } catch (e) {
+      throw toGameError(e);
+    }
   }
 }
 

@@ -1,7 +1,7 @@
 /**
  * The capture gate: the only thing that serves the capture page (docs/03 §3.7).
  *
- * `GET /v{N}/capture?src=…&css=…&map=…&exp=…&sig=…` is answered with the capture page only
+ * `GET /v{N}/capture?src=…&exp=…&sig=…` is answered with the capture page only
  * when the HMAC over the exact parameters is valid and unexpired (`capture-sig.ts`).
  * Anything else gets an empty 403, so the page renders nothing. The gate runs server-side
  * (the shell's Cloudflare Worker in production, `worker.ts`; `server.ts` locally) because it
@@ -11,12 +11,13 @@
  */
 import { PROTOCOL_VERSION } from '@br/protocol';
 import { verifyCaptureUrl, type CaptureRejectReason } from './capture-sig';
+import { CAPTURE_VIEWPORT } from './capture-viewport';
 
-/** Path of the capture page, next to the shell (`/v1/capture`). */
+/** Path of the capture page, next to the shell (`/v2/capture`). */
 export const CAPTURE_PATH = `/v${String(PROTOCOL_VERSION)}/capture`;
 
-/** Fixed viewport of a capture (docs/03 §3.7). The renderer uses the same size at DPR 1. */
-export const CAPTURE_VIEWPORT = { width: 1280, height: 800 } as const;
+/** Fixed viewport of a capture (docs/03 §3.7), re-exported for the capture worker. */
+export { CAPTURE_VIEWPORT };
 
 /**
  * The capture page. Static: it embeds no parameter. `capture.js` reads them from

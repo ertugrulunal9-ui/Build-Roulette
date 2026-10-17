@@ -17,12 +17,11 @@ import {
   sentryOrigin,
   type CspSources,
 } from './pages-config';
-import { SHELLS, pagesRedirects, shellParam } from './shells';
+import { REDIRECTS, SHELLS, pagesRedirects, shellParam } from './shells';
 
 const LOCAL: CspSources = {
   supabaseUrl: 'http://127.0.0.1:54321',
-  shellUrl: 'http://127.0.0.1:4321/v1/',
-  cdnUrl: 'http://localhost:4322',
+  shellUrl: 'http://127.0.0.1:4321/v2/',
   sentryDsn: null,
   posthogHost: null,
   turnstile: false,
@@ -38,8 +37,11 @@ const directive = (csp: string, name: string) =>
 
 describe('shells', () => {
   it('_redirects rewrites each shell path (one segment) to its page, status 200', () => {
-    expect(pagesRedirects()).toBe('/r/:code /r 200\n/battles/:id /battles 200\n/u/:id /u 200\n');
+    expect(pagesRedirects()).toBe(
+      '/playground /try 301\n/r/:code /r 200\n/battles/:id /battles 200\n/u/:id /u 200\n',
+    );
     expect(SHELLS.length).toBeLessThanOrEqual(PAGES_LIMITS.dynamicRedirects);
+    expect(REDIRECTS.length).toBeLessThanOrEqual(PAGES_LIMITS.staticRedirects);
   });
 
   it('reads the parameter of a shell path as typed', () => {
@@ -55,22 +57,17 @@ describe('shells', () => {
 });
 
 describe('the Content-Security-Policy', () => {
-  it('locally: the local stack, shell and CDN; no inline scripts but the hashed ones', () => {
+  it('locally: the local stack and the shell; no inline scripts but the hashed ones', () => {
     const csp = contentSecurityPolicy({
       ...LOCAL,
       scriptHashes: ["'sha256-b'", "'sha256-a'", "'sha256-b'"],
     });
-    expect(directive(csp, 'script-src')).toEqual([
-      "'self'",
-      "'wasm-unsafe-eval'",
-      "'sha256-a'",
-      "'sha256-b'",
-    ]);
+    expect(directive(csp, 'script-src')).toEqual(["'self'", "'sha256-a'", "'sha256-b'"]);
+    // No package CDN and no WebAssembly any more: the app does not build code (docs/09).
     expect(directive(csp, 'connect-src')).toEqual([
       "'self'",
       'http://127.0.0.1:54321',
       'ws://127.0.0.1:54321',
-      'http://localhost:4322',
     ]);
     expect(directive(csp, 'frame-src')).toEqual(['http://127.0.0.1:4321']);
     expect(directive(csp, 'img-src')).toEqual([
@@ -87,8 +84,7 @@ describe('the Content-Security-Policy', () => {
   it('production: https and wss, Sentry, PostHog and Turnstile only when configured', () => {
     const csp = contentSecurityPolicy({
       supabaseUrl: 'https://abc.supabase.co',
-      shellUrl: 'https://sandbox.pages.dev/v1/',
-      cdnUrl: 'https://esm.sh',
+      shellUrl: 'https://sandbox.pages.dev/v2/',
       sentryDsn: 'https://key@o1.ingest.de.sentry.io/42',
       posthogHost: 'https://eu.i.posthog.com',
       turnstile: true,
@@ -98,7 +94,6 @@ describe('the Content-Security-Policy', () => {
       "'self'",
       'https://abc.supabase.co',
       'wss://abc.supabase.co',
-      'https://esm.sh',
       'https://o1.ingest.de.sentry.io',
       'https://eu.i.posthog.com',
       'https://challenges.cloudflare.com',

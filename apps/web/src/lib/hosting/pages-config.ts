@@ -12,7 +12,8 @@
  *   with.
  *
  * The Content-Security-Policy has no `'unsafe-inline'` for scripts: each exported page has
- * two inline scripts (Next's flight data), and their SHA-256 hashes are listed instead. One
+ * a few inline scripts (Next's flight data, and the root layout's language script, T-050:
+ * lib/i18n/locale.ts), and their SHA-256 hashes are listed instead. One
  * policy covers every page (about ten hashes in all), so the 404 page and the shells that a
  * rewrite serves under any path get the same one. Cloudflare limits one header line to 2,000
  * characters and a file to 100 rules: `checkHeaders` fails the build before that.
@@ -25,8 +26,6 @@ export interface CspSources {
   supabaseUrl: string;
   /** The sandbox shell URL (the preview iframe). */
   shellUrl: string;
-  /** The package CDN (the bundler worker fetches from it). */
-  cdnUrl: string;
   /** Sentry DSN, or null (error reporting off). */
   sentryDsn: string | null;
   /** PostHog host when analytics is on (a key is set), else null. */
@@ -97,10 +96,10 @@ export function contentSecurityPolicy(s: CspSources): string {
   const turnstile = s.turnstile ? TURNSTILE_ORIGIN : null;
   const directives: [string, ...(string | null)[]][] = [
     ['default-src', "'self'"],
-    // Next's chunks, the hashed inline flight data, WebAssembly for the bundler's esbuild.
-    ['script-src', "'self'", "'wasm-unsafe-eval'", ...unique(s.scriptHashes).sort(), turnstile],
+    // Next's chunks and the hashed inline flight data.
+    ['script-src', "'self'", ...unique(s.scriptHashes).sort(), turnstile],
     ['worker-src', "'self'", 'blob:'],
-    // React style attributes and CodeMirror's injected <style> elements.
+    // React style attributes.
     ['style-src', "'self'", "'unsafe-inline'"],
     // Screenshots in Supabase Storage; ship-time thumbnails are blob:/data: URLs.
     ['img-src', "'self'", 'data:', 'blob:', supabase],
@@ -110,7 +109,6 @@ export function contentSecurityPolicy(s: CspSources): string {
       "'self'",
       supabase,
       wsOrigin(supabase),
-      origin(s.cdnUrl),
       sentryOrigin(s.sentryDsn),
       s.posthogHost ? origin(s.posthogHost) : null,
       turnstile,

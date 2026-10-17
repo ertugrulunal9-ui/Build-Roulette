@@ -1,28 +1,23 @@
 /**
- * Shared fixtures for the integration tests: the local sandbox shell with its capture gate,
- * the mock package CDN (React from packages/runtime's node_modules), a tiny file server for
- * bundles that do not come from Supabase, and React bundles built with @br/runtime's real
- * bundler.
+ * Shared fixtures for the integration tests: the local sandbox shell (protocol v2) with its
+ * capture gate, a tiny file server for site packs that do not come from Supabase, and built
+ * static sites packed with `@br/site`'s `packSite`, the format players import (docs/09).
  */
 import { createServer, type Server, type ServerResponse } from 'node:http';
-import * as esbuild from 'esbuild';
-import { bundle } from '@br/runtime/bundler';
+import { contentTypeOf, packSite } from '@br/site';
 import { startShellServer, type ShellServer } from '@br/sandbox-shell/server';
-// Imported by path: @br/runtime does not export its test support (same as apps/web).
-import { startMockCdn, type MockCdn } from '../../../packages/runtime/test-support/mock-cdn';
 
 export const SECRET = 'integration-secret-0123456789abcdef0123456789abcdef';
-export const REACT_VERSION = '19.3.0';
 
 export interface FileServer {
   url: string;
-  files: Map<string, { body: string; type: string }>;
+  files: Map<string, { body: string | Uint8Array; type: string }>;
   close(): Promise<void>;
 }
 
 /** Serves `files` with CORS; `/hang` never answers (keeps the network busy). */
 export async function startFileServer(): Promise<FileServer> {
-  const files = new Map<string, { body: string; type: string }>();
+  const files = new Map<string, { body: string | Uint8Array; type: string }>();
   const hanging = new Set<ServerResponse>();
   const server: Server = createServer((req, res) => {
     const path = new URL(req.url ?? '/', 'http://x').pathname;
@@ -63,89 +58,94 @@ export async function startFileServer(): Promise<FileServer> {
 }
 
 export interface Fixtures {
-  cdn: MockCdn;
   shell: ShellServer;
   close(): Promise<void>;
 }
 
-/** Mock CDN + shell (capture gate with SECRET). `connectSrc`: extra origins the page may fetch. */
+/** The shell (capture gate with SECRET). `connectSrc`: extra origins the page may fetch. */
 export async function startFixtures(connectSrc: readonly string[]): Promise<Fixtures> {
-  const cdn = await startMockCdn({ host: 'localhost' });
   const shell = await startShellServer({
     host: '127.0.0.1',
     appOrigins: ['http://localhost:3000'],
-    cdnOrigin: cdn.url,
     extraConnectSrc: connectSrc,
     captureSecret: SECRET,
   });
-  return {
-    cdn,
-    shell,
-    close: async () => {
-      await Promise.all([shell.close(), cdn.close()]);
-    },
-  };
+  return { shell, close: () => shell.close() };
 }
 
-export interface BuiltBundle {
-  js: string;
-  css: string;
-  source: string;
-}
+/** The media type a site pack is stored with (the `ephemeral-builds` bucket allows it). */
+export const SITE_PACK_TYPE = 'application/octet-stream';
 
-/** Bundles a React project with @br/runtime's bundler (native esbuild, same plugins as the worker). */
-export async function buildReactBundle(
-  cdnUrl: string,
-  files: Record<string, string>,
-): Promise<BuiltBundle> {
-  const manifest = {
-    entry: 'src/main.tsx',
-    dependencies: { react: REACT_VERSION, 'react-dom': REACT_VERSION },
-  };
-  const result = await bundle(
-    esbuild,
-    { files, manifest, mode: 'production' },
-    {
-      cdnBaseUrl: cdnUrl,
-      fetchText: () => Promise.reject(new Error('no package CSS in these fixtures')),
-    },
+/** Packs `files` (path → text) as a site pack (`@br/site`); content types from the paths. */
+export function sitePack(files: Record<string, string>): Uint8Array<ArrayBuffer> {
+  return packSite(
+    Object.entries(files).map(([path, text]) => ({
+      path,
+      type: contentTypeOf(path),
+      bytes: new TextEncoder().encode(text),
+    })),
   );
-  if (!result.ok) throw new Error(`bundle failed: ${JSON.stringify(result.diagnostics)}`);
-  return { js: result.js, css: result.css, source: JSON.stringify({ files, manifest }) };
+}
+
+function html(head: string, body: string): string {
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Capture fixture</title>
+    ${head}
+  </head>
+  <body>${body}</body>
+</html>
+`;
 }
 
 /**
- * A React app filling the 1280×800 viewport with `background` and a big white title. It
- * calls `window.buildRoulette.ready()` after its first paint when `signalReady` is set.
+ * A built site the way a bundler emits it (Vite's layout: root-relative hashed assets, a
+ * lazily imported chunk, `fetch('/data.json')`), filling the 1280×800 viewport with
+ * `background` (from the stylesheet) and a big white title. It calls
+ * `window.buildRoulette.ready()` after its first paint when `signalReady` is set.
  */
-export function reactApp(opts: {
+export function builtSite(opts: {
   title: string;
   background: string;
   signalReady: boolean;
-  /** Inline styles instead of a CSS file. */
-  inlineStyles?: boolean;
 }): Record<string, string> {
   const css = `body { margin: 0; }
 .hero { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
-  background: ${opts.background}; color: #fff; font: bold 120px sans-serif; }`;
-  const style = opts.inlineStyles
-    ? `style={{ position: 'fixed', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '${opts.background}', color: '#fff', font: 'bold 120px sans-serif', margin: 0 }}`
-    : 'className="hero"';
+  background: ${opts.background}; color: #fff; font: bold 120px sans-serif; }
+.hero h1 { margin: 0; font: inherit; }
+`;
   return {
-    'src/main.tsx': `import { createRoot } from 'react-dom/client';
-${opts.inlineStyles ? '' : "import './styles.css';\n"}import { App } from './App';
-createRoot(document.getElementById('root')!).render(<App />);
+    'index.html': html(
+      `<script type="module" crossorigin src="/assets/index-c4pt.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-c4pt.css" />`,
+      '<div id="root"></div>',
+    ),
+    'assets/index-c4pt.js': `const { heading } = await import('./title-c4pt.js');
+const data = await (await fetch('/data.json')).json();
+const main = document.createElement('main');
+main.className = 'hero';
+main.append(heading(data.title));
+document.getElementById('root').append(main);
+${opts.signalReady ? 'requestAnimationFrame(() => window.buildRoulette?.ready());' : ''}
 `,
-    'src/App.tsx': `import { useEffect } from 'react';
-declare global { interface Window { buildRoulette?: { ready(): void } } }
-export function App() {
-  useEffect(() => {
-    ${opts.signalReady ? 'requestAnimationFrame(() => window.buildRoulette?.ready());' : ''}
-  }, []);
-  return <main ${style}><h1 style={{ margin: 0, font: 'inherit' }}>${opts.title}</h1></main>;
+    'assets/title-c4pt.js': `export function heading(text) {
+  const h1 = document.createElement('h1');
+  h1.textContent = text;
+  return h1;
 }
 `,
-    ...(opts.inlineStyles ? {} : { 'src/styles.css': css }),
+    'assets/index-c4pt.css': css,
+    'data.json': JSON.stringify({ title: opts.title }),
+  };
+}
+
+/** A site whose one classic script (`/main.js`, at the end of the body) is `js`. */
+export function scriptSite(js: string): Record<string, string> {
+  return {
+    'index.html': html('', '<script src="/main.js"></script>'),
+    'main.js': js,
   };
 }
 

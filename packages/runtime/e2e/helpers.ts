@@ -1,5 +1,6 @@
-import { expect, type Browser, type FrameLocator, type Page } from '@playwright/test';
-import type { BootReport, PlaygroundApi } from '../playground/main';
+import { expect, type Browser, type Frame, type FrameLocator, type Page } from '@playwright/test';
+import type { RunMode } from '@br/protocol';
+import type { BootReport, LoadReport, PlaygroundApi, SiteSpec } from '../playground/main';
 
 declare global {
   interface Window {
@@ -7,9 +8,28 @@ declare global {
   }
 }
 
-/** The user's document lives in the shell's child iframe: preview iframe -> build iframe. */
+export const SHELL_ORIGIN = `http://127.0.0.1:${process.env['SHELL_PORT'] ?? '4311'}`;
+export const SHELL_URL = `${SHELL_ORIGIN}/v2/`;
+export const OTHER_ORIGIN = `http://localhost:${process.env['OTHER_PORT'] ?? '4312'}`;
+
+/** The site lives in the shell's child iframe: preview iframe -> site iframe. */
 export function buildFrame(page: Page): FrameLocator {
   return page.frameLocator('#preview').frameLocator('iframe');
+}
+
+/** The shell's frame (the preview iframe's document). */
+export function shellFrame(page: Page): Frame {
+  const frame = page.frames().find((f) => f.url() === SHELL_URL);
+  if (!frame) throw new Error('shell frame not found');
+  return frame;
+}
+
+/** The site's frame (the shell's child frame), as a Playwright Frame. */
+export function siteFrame(page: Page): Frame {
+  const shell = shellFrame(page);
+  const frame = shell.childFrames()[0];
+  if (!frame) throw new Error('site frame not found');
+  return frame;
 }
 
 export async function openPlayground(page: Page): Promise<BootReport> {
@@ -19,6 +39,37 @@ export async function openPlayground(page: Page): Promise<BootReport> {
   const report = await page.evaluate(() => window.__playground.boot);
   expect(pageErrors).toEqual([]);
   return report;
+}
+
+/** Loads a site (text files) into the preview and waits for its `ready`. */
+export async function loadSite(page: Page, files: SiteSpec, mode?: RunMode): Promise<LoadReport> {
+  return page.evaluate(
+    ({ files, mode }) => {
+      if (mode) window.__playground.setMode(mode);
+      return window.__playground.loadSite(files);
+    },
+    { files, mode },
+  );
+}
+
+/** Event payloads of one type the playground recorded. */
+export async function eventsOf(page: Page, type: string): Promise<unknown[]> {
+  return page.evaluate(
+    (type) => window.__playground.events.filter((e) => e.type === type).map((e) => e.data),
+    type,
+  );
+}
+
+/** Console lines the app received from the site (`level: args…`). */
+export async function consoleLines(page: Page): Promise<string[]> {
+  return page.evaluate(() =>
+    window.__playground.events
+      .filter((e) => e.type === 'console')
+      .map((e) => {
+        const d = e.data as { level: string; args: string[] };
+        return `${d.level}: ${d.args.join(' ')}`;
+      }),
+  );
 }
 
 export function percentile(values: readonly number[], p: number): number {

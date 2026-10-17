@@ -11,6 +11,7 @@ export type { BattlePhase, TerminalPhase } from './phases';
 export {
   BUILD_TIME_LIMITS_MINUTES,
   DEFAULT_PHASE_DURATIONS,
+  RANDOM_BUILD_TIME_LIMITS_MINUTES,
   isBuildTimeLimitMinutes,
 } from './durations';
 export type { BuildTimeLimitMinutes } from './durations';
@@ -40,8 +41,6 @@ export { estimateClockOffset, remainingMs } from './clock';
 export type { ClockSample } from './clock';
 
 export {
-  ACTIVITY_BUILD_ERROR_MS,
-  ACTIVITY_RECENT_MS,
   AUTO_AWARDS,
   BATTLE_EVENT_TYPES,
   BATTLE_ROLES,
@@ -52,7 +51,6 @@ export {
   MEMBER_ROLES,
   MEMBER_STATES,
   PRESENCE_ACTIVITY_INTERVAL_MS,
-  PRESENCE_LINES_STEP,
   PRESENCE_MAX_PER_WINDOW,
   PRESENCE_THROTTLE_MS,
   PRESENCE_WINDOW_MS,

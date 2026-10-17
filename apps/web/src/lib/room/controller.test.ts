@@ -3,9 +3,9 @@
  * battle controller per battle (rematch), toasts, leaving and being kicked, and roomView.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { battleWorkspaceId } from '../solo/controller';
+import { battleSiteKey } from '../site/local-sites';
 import { GameError } from '../solo/errors';
-import { FakeApi, FakeLocalWorkspaces } from '../solo/test-support';
+import { FakeApi, FakeLocalSites } from '../solo/test-support';
 import type { AnalyticsEventName } from '../telemetry/analytics';
 import { SandboxHealthTally } from '../telemetry/sandbox-health';
 import { RoomController, playerCount, readyCount, roomView, type NameStore } from './controller';
@@ -26,7 +26,7 @@ import {
 
 let api: FakeRoomApi;
 let rt: FakeRealtime;
-let local: FakeLocalWorkspaces;
+let local: FakeLocalSites;
 let saved: string | null;
 const names: NameStore = {
   get: () => saved,
@@ -46,8 +46,7 @@ function controller(code = 'k7qxm'): RoomController {
     api,
     soloApi: new FakeApi(),
     realtime: rt,
-    cdnBaseUrl: 'https://pkg.test',
-    localWorkspaces: local,
+    localSites: local,
     nameStore: names,
     env: new FakeEnvironment(),
     // The battle topic is joined at once (the random 0–500 ms stagger is sync.test.ts's).
@@ -68,7 +67,7 @@ beforeEach(() => {
   vi.useFakeTimers({ now: new Date('2026-10-06T12:00:00Z') });
   api = new FakeRoomApi();
   rt = new FakeRealtime();
-  local = new FakeLocalWorkspaces();
+  local = new FakeLocalSites();
   saved = null;
 });
 afterEach(() => {
@@ -278,7 +277,7 @@ describe('battles', () => {
     const c = await joined();
     const show = c.getSnapshot().show;
     expect(show?.getSnapshot()).toMatchObject({ battleId: BATTLE_1 });
-    expect(show?.getSnapshot().bundles['build-me']?.status).toBe('ready');
+    expect(show?.getSnapshot().sites['build-me']?.status).toBe('ready');
     // A slot step from the host: the spotlight's next build is already there (prefetched).
     rt.open(`battle:${BATTLE_1}`).send({
       type: 'phase',
@@ -291,7 +290,7 @@ describe('battles', () => {
     });
     await flush();
     expect(c.getSnapshot().battle?.getSnapshot().snapshot?.battle.reveal_index).toBe(1);
-    expect(Object.keys(show?.getSnapshot().bundles ?? {}).sort()).toEqual([
+    expect(Object.keys(show?.getSnapshot().sites ?? {}).sort()).toEqual([
       'build-bob',
       'build-cleo',
     ]);
@@ -396,13 +395,13 @@ describe('roomView', () => {
 });
 
 describe('leaving and being kicked', () => {
-  it('leave calls leave_room, deletes a running battle workspace and ends the session', async () => {
+  it('leave calls leave_room, deletes a running battle site and ends the session', async () => {
     api.room = roomSnapshot({ battleId: BATTLE_1 });
     api.battles.set(BATTLE_1, battleSnapshot({ phase: 'building' }));
     const c = await joined();
     await c.leave();
     expect(api.count('leaveRoom', ROOM)).toBe(1);
-    expect(local.deleted).toEqual([battleWorkspaceId(BATTLE_1)]);
+    expect(local.deleted).toEqual([battleSiteKey(BATTLE_1)]);
     expect(c.getSnapshot()).toMatchObject({ stage: 'ended', ended: 'left', battle: null });
     expect(rt.topics.every((t) => t.closed)).toBe(true);
     // Rejoin.
@@ -460,8 +459,7 @@ describe('analytics (T-030)', () => {
       api,
       soloApi: new FakeApi(),
       realtime: rt,
-      cdnBaseUrl: 'https://pkg.test',
-      localWorkspaces: local,
+      localSites: local,
       nameStore: names,
       env: new FakeEnvironment(),
       syncTimings: { battleJoinStaggerMs: 0 },

@@ -14,11 +14,13 @@
  * A build a moderator removed after RESULTS (T-028) keeps its rank and its vote counts but
  * has no Winner banner, gold ring, medal or awards; nobody else becomes the winner.
  */
-import { VOTE_CATEGORIES, isTerminalPhase } from '@br/game';
+import { isTerminalPhase } from '@br/game';
+import { useT } from '../../lib/i18n/context';
+import { en, type Messages } from '../../lib/i18n/messages/en';
 import { myBuild, type SoloState } from '../../lib/solo/controller';
 import {
-  CAPTURE_TEXT,
   awardsOf,
+  categoryLabel,
   formatCompletion,
   formatCountdown,
   isWinner,
@@ -26,7 +28,9 @@ import {
 } from '../../lib/solo/format';
 import type { BattleSnapshot, SnapshotBuild } from '../../lib/solo/types';
 import { screenshotUrl } from '../../lib/supabase/config';
-import { REMOVED_TEXT, RemovedCard } from '../moderation/Removed';
+import { LanguagePicker } from '../i18n/LanguagePicker';
+import { Rich } from '../i18n/Rich';
+import { RemovedCard } from '../moderation/Removed';
 import { ReportButton } from '../moderation/ReportButton';
 import { AwardBadges, ChallengeCards, VoteTally } from '../results/ResultPieces';
 import { RevealPane } from '../solo/RevealPane';
@@ -41,39 +45,45 @@ interface RoomResultsProps {
   lostVotes?: Readonly<Record<string, string>>;
 }
 
-/** "Your pick for Best Build (“Snack Overflow”) was not counted…", or null. */
+/**
+ * "Not counted: your pick for Best Build (“Snack Overflow”) did not reach the server…", or
+ * null, in the catalog's language (default English).
+ */
 export function lostVotesText(
   snapshot: BattleSnapshot,
   lost: Readonly<Record<string, string>> | undefined,
+  m: Messages = en,
 ): string | null {
   const entries = Object.entries(lost ?? {});
   if (entries.length === 0) return null;
   const label = (slug: string) =>
-    snapshot.vote_categories?.find((c) => c.slug === slug)?.label ??
-    VOTE_CATEGORIES.find((c) => c.slug === slug)?.label ??
-    slug;
-  const picks = entries.map(([slug, buildId]) => {
-    const name = snapshot.builds.find((b) => b.id === buildId)?.name;
-    return name ? `${label(slug)} (“${name}”)` : label(slug);
-  });
-  const list =
-    picks.length === 1 ? picks[0] : `${picks.slice(0, -1).join(', ')} and ${String(picks.at(-1))}`;
-  return `Not counted: your pick${picks.length === 1 ? '' : 's'} for ${String(list)} did not reach the server before voting closed (the connection was down).`;
+    categoryLabel(slug, m, snapshot.vote_categories?.find((c) => c.slug === slug)?.label);
+  const picks = entries.map(([slug, buildId]) =>
+    m.roomResults.lostPick(
+      label(slug),
+      snapshot.builds.find((b) => b.id === buildId)?.name ?? null,
+    ),
+  );
+  return m.roomResults.lost(picks.length, m.units.andList(picks));
 }
 
-const STATUS_BADGE: Partial<Record<SnapshotBuild['status'], { text: string; tone: string }>> = {
+const STATUS_BADGE: Partial<
+  Record<SnapshotBuild['status'], { text: 'autoShipped' | 'dnf' | 'disqualified'; tone: string }>
+> = {
   auto_shipped: {
-    text: 'Auto-shipped',
+    text: 'autoShipped',
     tone: 'bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-200',
   },
-  dnf: { text: 'DNF', tone: 'bg-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300' },
+  dnf: { text: 'dnf', tone: 'bg-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300' },
   disqualified: {
-    text: 'Disqualified',
+    text: 'disqualified',
     tone: 'bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-200',
   },
 };
 
 export function RoomResults({ state, remaining, lostVotes }: RoomResultsProps) {
+  const t = useT();
+  const rr = t.roomResults;
   const snapshot = state.snapshot;
   if (!snapshot) throw new Error('RoomResults needs a snapshot');
   const destroyed = isTerminalPhase(snapshot.battle.phase);
@@ -91,15 +101,15 @@ export function RoomResults({ state, remaining, lostVotes }: RoomResultsProps) {
 
   const caption = destroyed
     ? state.destroy === 'animating'
-      ? 'Destroying every build…'
-      : 'Builds destroyed'
+      ? rr.destroying
+      : rr.destroyed
     : remaining !== null && remaining > 0
-      ? `Last look · ${isPlayer ? 'your build self-destructs' : 'the builds self-destruct'} in ${formatCountdown(remaining)}`
+      ? rr.lastLookIn(isPlayer, formatCountdown(remaining))
       : pendingCaptures
-        ? 'Last look · destroying as soon as the screenshots are done…'
-        : 'Last look · destroying…';
+        ? rr.lastLookCaptures
+        : rr.lastLookDestroying;
 
-  const lost = lostVotesText(snapshot, lostVotes);
+  const lost = lostVotesText(snapshot, lostVotes, t);
 
   return (
     <main
@@ -107,17 +117,18 @@ export function RoomResults({ state, remaining, lostVotes }: RoomResultsProps) {
       data-testid="results"
     >
       <header className="flex flex-col gap-3">
-        <p className="text-sm font-semibold tracking-widest text-zinc-500 uppercase">
-          {destroyed ? 'Destroy build' : 'Results'}
-        </p>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <p className="text-sm font-semibold tracking-widest text-zinc-500 uppercase">
+            {destroyed ? t.results.eyebrowDestroy : t.results.eyebrowResults}
+          </p>
+          <LanguagePicker />
+        </div>
         <h1 className="text-3xl font-black tracking-tight break-words sm:text-4xl">
           {snapshot.challenge.build.text}
         </h1>
         <ChallengeCards challenge={snapshot.challenge} compact />
         <p className="text-sm text-zinc-500" data-testid="ranking-rule">
-          {votedResults(snapshot)
-            ? 'Ranked by votes: Best Build first, then all votes, then the earlier ship. Each category award has one winner: a tie goes to more votes in all, then the earlier ship.'
-            : 'Ranked by completion time.'}
+          {votedResults(snapshot) ? rr.rankedVotes : rr.rankedTime}
         </p>
         {lost && (
           <p
@@ -133,7 +144,7 @@ export function RoomResults({ state, remaining, lostVotes }: RoomResultsProps) {
       <div
         className={`grid grid-cols-1 gap-6 ${lastLook ? 'lg:grid-cols-[minmax(0,1fr)_minmax(0,0.9fr)]' : ''}`}
       >
-        <section className="flex flex-col gap-3" aria-label="Ranking">
+        <section className="flex flex-col gap-3" aria-label={rr.ranking}>
           <RankedBuilds snapshot={snapshot} />
           {!lastLook && (
             <p className="text-sm text-zinc-500" data-testid="last-look">
@@ -143,10 +154,10 @@ export function RoomResults({ state, remaining, lostVotes }: RoomResultsProps) {
           {mine && (!shipped || mine.taken_down === true) && (
             <p className="text-sm text-zinc-500" data-testid="no-last-look">
               {mine.taken_down === true
-                ? 'Your build was removed by the moderators.'
+                ? rr.removedMine
                 : mine.status === 'disqualified'
-                  ? 'Your build was disqualified.'
-                  : 'You did not ship this time. There is always the rematch.'}
+                  ? rr.disqualifiedMine
+                  : rr.didNotShip}
             </p>
           )}
         </section>
@@ -172,6 +183,8 @@ export function votedResults(snapshot: BattleSnapshot): boolean {
 }
 
 function RankedBuilds({ snapshot }: { snapshot: BattleSnapshot }) {
+  const t = useT();
+  const rr = t.roomResults;
   const voted = votedResults(snapshot);
   const builds = [...snapshot.builds].sort((a, b) => {
     const ra = a.final_rank ?? Number.POSITIVE_INFINITY;
@@ -179,7 +192,7 @@ function RankedBuilds({ snapshot }: { snapshot: BattleSnapshot }) {
     return ra - rb;
   });
   const nameOf = (id: string) =>
-    snapshot.players.find((p) => p.user_id === id)?.display_name ?? 'Someone';
+    snapshot.players.find((p) => p.user_id === id)?.display_name ?? t.common.someone;
   return (
     <ol className="flex flex-col gap-3">
       {builds.map((b) => {
@@ -216,7 +229,7 @@ function RankedBuilds({ snapshot }: { snapshot: BattleSnapshot }) {
                 className="absolute -top-3 left-4 rounded-full bg-amber-400 px-3 py-0.5 text-xs font-black tracking-widest text-amber-950 uppercase shadow"
                 data-testid="winner-banner"
               >
-                🏆 Winner
+                {t.common.winner}
               </span>
             )}
             <div className="flex w-8 shrink-0 flex-col items-center justify-center text-center sm:w-10">
@@ -234,13 +247,13 @@ function RankedBuilds({ snapshot }: { snapshot: BattleSnapshot }) {
                 // eslint-disable-next-line @next/next/no-img-element -- a public Supabase Storage URL
                 <img
                   src={screenshotUrl(b.screenshot_path)}
-                  alt={`Screenshot of ${b.name ?? 'the build'}`}
+                  alt={t.common.screenshotOf(b.name ?? t.common.theBuild)}
                   data-testid="build-screenshot"
                   className="absolute inset-0 h-full w-full object-cover object-top"
                 />
               ) : (
                 <p className="absolute inset-0 grid place-items-center p-2 text-center text-[11px] text-zinc-500">
-                  {shipped ? CAPTURE_TEXT[b.capture_status] : 'Nothing shipped'}
+                  {shipped ? t.capture[b.capture_status] : rr.nothingShipped}
                 </p>
               )}
             </div>
@@ -250,23 +263,31 @@ function RankedBuilds({ snapshot }: { snapshot: BattleSnapshot }) {
                 data-testid="ranked-build-name"
               >
                 {removed
-                  ? REMOVED_TEXT
+                  ? t.moderation.removed
                   : (b.name ??
-                    (b.status === 'dnf' ? 'Did not finish' : `${nameOf(b.builder_id)}'s build`))}
+                    (b.status === 'dnf'
+                      ? t.common.didNotFinish
+                      : t.common.buildOf(nameOf(b.builder_id))))}
               </p>
               <p className="text-sm text-zinc-600 dark:text-zinc-400">
-                by{' '}
-                <a
-                  href={`/u/${b.builder_id}`}
-                  className="font-bold underline decoration-zinc-300 underline-offset-2 hover:decoration-current dark:decoration-zinc-600"
-                  data-testid="player-history-link"
-                  // A new tab: the room (and the last look) keeps running here.
-                  target="_blank"
-                  title={`${nameOf(b.builder_id)}'s battles (opens a new tab)`}
-                >
-                  {nameOf(b.builder_id)}
-                </a>
-                {isMe && ' (you)'}
+                <Rich
+                  text={t.reveal.byName}
+                  slots={{
+                    name: (
+                      <a
+                        href={`/u/${b.builder_id}`}
+                        className="font-bold underline decoration-zinc-300 underline-offset-2 hover:decoration-current dark:decoration-zinc-600"
+                        data-testid="player-history-link"
+                        // A new tab: the room (and the last look) keeps running here.
+                        target="_blank"
+                        title={rr.historyTitle(nameOf(b.builder_id))}
+                      >
+                        {nameOf(b.builder_id)}
+                      </a>
+                    ),
+                  }}
+                />
+                {isMe && ` ${t.common.you}`}
                 {shipped && b.completion_ms !== null && (
                   <>
                     {' '}
@@ -283,7 +304,7 @@ function RankedBuilds({ snapshot }: { snapshot: BattleSnapshot }) {
                     data-testid="status-badge"
                     className={`rounded-full px-2.5 py-0.5 text-xs font-bold ${badge.tone}`}
                   >
-                    {badge.text}
+                    {rr[badge.text]}
                   </span>
                 )}
                 <AwardBadges awards={awardsOf(snapshot.awards, b)} />
@@ -291,7 +312,7 @@ function RankedBuilds({ snapshot }: { snapshot: BattleSnapshot }) {
                   <span className="ml-auto">
                     <ReportButton
                       buildId={b.id}
-                      buildLabel={`${b.name ? `“${b.name}”` : 'A build'} by ${nameOf(b.builder_id)}`}
+                      buildLabel={t.common.buildLabel(b.name, nameOf(b.builder_id))}
                     />
                   </span>
                 )}

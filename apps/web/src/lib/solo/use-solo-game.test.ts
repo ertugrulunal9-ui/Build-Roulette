@@ -7,14 +7,14 @@ import { act, renderHook } from '@testing-library/react';
 import { StrictMode, createElement, type ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SoloControllerDeps } from './controller';
-import { BATTLE, FakeApi, FakeBridge, FakeLocalWorkspaces, snapshotAt } from './test-support';
+import { GameError } from './errors';
+import { BATTLE, FakeApi, FakeLocalSites, fakeSite, snapshotAt } from './test-support';
 import { useSoloGame } from './use-solo-game';
 
 let api: FakeApi;
 const deps = (): SoloControllerDeps => ({
   api,
-  cdnBaseUrl: 'https://pkg.test',
-  localWorkspaces: new FakeLocalWorkspaces(),
+  localSites: new FakeLocalSites(),
   clock: { now: () => Date.now(), setTimeout, clearTimeout, random: () => 0 },
 });
 
@@ -54,19 +54,27 @@ describe('useSoloGame', () => {
     unmount();
   });
 
-  it('autosaves when the tab is hidden and resyncs when it is visible again', async () => {
+  it('saves an unsaved import when the tab is hidden and resyncs when it is visible again', async () => {
     const { result, unmount } = renderHook(() => useSoloGame(deps, BATTLE));
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
     });
-    act(() => {
-      result.current.controller?.attachWorkspace(new FakeBridge());
+    // The import's own upload fails (offline); hiding the tab tries again at once.
+    api.onUpload = () => {
+      throw new GameError('network', 'offline');
+    };
+    await act(async () => {
+      result.current.controller?.importSite(fakeSite());
+      await vi.advanceTimersByTimeAsync(0);
     });
+    expect(result.current.state.autosave.status).toBe('error');
+    api.onUpload = () => undefined;
     await act(async () => {
       setVisibility('hidden');
       await vi.advanceTimersByTimeAsync(0);
     });
-    expect(api.uploadsOf('autosave/bundle.js')).toBe(1);
+    expect(api.uploadsOf('autosave/site.bin')).toBe(2);
+    expect(result.current.state.autosave.status).toBe('saved');
     const polls = api.count('getSnapshot');
     await act(async () => {
       setVisibility('visible');

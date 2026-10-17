@@ -2,7 +2,8 @@
 
 /** Small pieces shared by the room screens. */
 import { useEffect, useRef, type ReactNode } from 'react';
-import type { Toast } from '../../lib/room/controller';
+import { useT } from '../../lib/i18n/context';
+import { toastText, type Toast } from '../../lib/room/controller';
 
 export function Centered({ children, testId }: { children: ReactNode; testId?: string }) {
   return (
@@ -69,25 +70,26 @@ export function Toasts({
   toasts: readonly Toast[];
   onDismiss: (id: number) => void;
 }) {
+  const t = useT();
   if (toasts.length === 0) return null;
   return (
     <ol
       aria-live="polite"
       className="pointer-events-none fixed right-3 bottom-3 z-50 flex w-[min(24rem,calc(100vw-1.5rem))] flex-col gap-2"
     >
-      {toasts.map((t) => (
+      {toasts.map((toast) => (
         <li
-          key={t.id}
+          key={toast.id}
           data-testid="toast"
-          data-kind={t.kind}
+          data-kind={toast.kind}
           className="pointer-events-auto flex items-start justify-between gap-3 rounded-xl bg-zinc-900 px-4 py-3 text-sm font-semibold text-white shadow-lg dark:bg-zinc-100 dark:text-zinc-900"
         >
-          <span>{t.text}</span>
+          <span>{toastText(toast.message, t)}</span>
           <button
             type="button"
-            aria-label="Dismiss"
+            aria-label={t.common.dismiss}
             onClick={() => {
-              onDismiss(t.id);
+              onDismiss(toast.id);
             }}
             className="opacity-60 hover:opacity-100"
           >
@@ -100,6 +102,7 @@ export function Toasts({
 }
 
 export function ErrorBanner({ text, onDismiss }: { text: string; onDismiss: () => void }) {
+  const t = useT();
   return (
     <div
       role="alert"
@@ -108,7 +111,7 @@ export function ErrorBanner({ text, onDismiss }: { text: string; onDismiss: () =
     >
       <span>{text}</span>
       <button type="button" onClick={onDismiss} className="font-semibold underline">
-        Dismiss
+        {t.common.dismiss}
       </button>
     </div>
   );
@@ -134,6 +137,7 @@ export function ConfirmDialog({
   onCancel: () => void;
   testId?: string;
 }) {
+  const t = useT();
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     const d = ref.current;
@@ -159,7 +163,7 @@ export function ConfirmDialog({
           onClick={onCancel}
           className="rounded-lg border border-zinc-300 px-4 py-2 text-sm font-semibold dark:border-zinc-700"
         >
-          Cancel
+          {t.common.cancel}
         </button>
         <button
           type="button"
@@ -173,13 +177,4 @@ export function ConfirmDialog({
       </div>
     </dialog>
   );
-}
-
-/** "12 s ago", "3 min ago", "2 h ago". */
-export function ago(ms: number): string {
-  const s = Math.max(0, Math.round(ms / 1000));
-  if (s < 60) return `${String(s)} s ago`;
-  const m = Math.round(s / 60);
-  if (m < 60) return `${String(m)} min ago`;
-  return `${String(Math.round(m / 60))} h ago`;
 }

@@ -9,6 +9,7 @@ import { normalizeRoomCode } from '@br/game';
 import Link from 'next/link';
 import { useState } from 'react';
 import { loadPage } from '../../lib/hosting/navigate';
+import { useT } from '../../lib/i18n/context';
 import { describeError, toGameError, type GameError } from '../../lib/solo/errors';
 import { randomDisplayName } from '../../lib/solo/names';
 
@@ -32,17 +33,18 @@ function rememberedName(): string {
 type Panel = 'none' | 'create' | 'join';
 
 export function HomeActions() {
+  const t = useT();
   const [panel, setPanel] = useState<Panel>('none');
   const [name, setName] = useState('');
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<GameError | null>(null);
-  const [codeError, setCodeError] = useState<string | null>(null);
+  const [codeError, setCodeError] = useState(false);
 
   const open = (p: Panel) => {
     setPanel(p);
     setError(null);
-    setCodeError(null);
+    setCodeError(false);
     if (p === 'create' && name === '') setName(rememberedName());
   };
 
@@ -78,7 +80,7 @@ export function HomeActions() {
   const joinRoom = () => {
     const normalized = normalizeRoomCode(code);
     if (!normalized) {
-      setCodeError('A room code has 5 letters and digits, like K7QXM.');
+      setCodeError(true);
       return;
     }
     loadPage(`/r/${normalized}`);
@@ -92,7 +94,7 @@ export function HomeActions() {
           data-testid="play-solo"
           className={`${buttonClass} bg-emerald-600 text-white hover:bg-emerald-700`}
         >
-          Play solo
+          {t.home.playSolo}
         </Link>
         <button
           type="button"
@@ -103,7 +105,7 @@ export function HomeActions() {
           }}
           className={`${buttonClass} bg-zinc-900 text-zinc-50 dark:bg-zinc-100 dark:text-zinc-900`}
         >
-          Create room
+          {t.home.createRoom}
         </button>
         <button
           type="button"
@@ -114,7 +116,7 @@ export function HomeActions() {
           }}
           className={`${buttonClass} border border-zinc-300 dark:border-zinc-700`}
         >
-          Join with code
+          {t.home.joinWithCode}
         </button>
       </div>
 
@@ -128,7 +130,7 @@ export function HomeActions() {
           }}
         >
           <label htmlFor="host-name" className="text-sm font-semibold">
-            Your name
+            {t.common.yourName}
           </label>
           <div className="flex gap-2">
             <input
@@ -150,12 +152,12 @@ export function HomeActions() {
               disabled={busy || name.trim().length === 0}
               className={`${buttonClass} bg-zinc-900 text-zinc-50 dark:bg-zinc-100 dark:text-zinc-900`}
             >
-              {busy ? 'Creating…' : 'Create'}
+              {busy ? t.home.creating : t.home.create}
             </button>
           </div>
           {error && (
             <p role="alert" className="text-sm text-red-700 dark:text-red-300">
-              {describeError(error)}
+              {describeError(error, t)}
             </p>
           )}
         </form>
@@ -171,7 +173,7 @@ export function HomeActions() {
           }}
         >
           <label htmlFor="room-code" className="text-sm font-semibold">
-            Room code
+            {t.home.roomCode}
           </label>
           <div className="flex gap-2">
             <input
@@ -185,7 +187,7 @@ export function HomeActions() {
               autoFocus
               onChange={(e) => {
                 setCode(e.target.value);
-                setCodeError(null);
+                setCodeError(false);
               }}
               className={`${inputClass} font-mono tracking-widest uppercase`}
             />
@@ -195,7 +197,7 @@ export function HomeActions() {
               disabled={code.trim().length === 0}
               className={`${buttonClass} bg-zinc-900 text-zinc-50 dark:bg-zinc-100 dark:text-zinc-900`}
             >
-              Join
+              {t.home.join}
             </button>
           </div>
           {codeError && (
@@ -204,7 +206,7 @@ export function HomeActions() {
               data-testid="code-error"
               className="text-sm text-red-700 dark:text-red-300"
             >
-              {codeError}
+              {t.home.codeError}
             </p>
           )}
         </form>

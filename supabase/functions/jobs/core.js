@@ -623,147 +623,8 @@ var BrowserRenderingRenderer = class {
   }
 };
 
-// ../../packages/protocol/src/limits.ts
-var LIMITS = {
-  /** Max console arguments forwarded per call. Extra args are summarized in one marker arg. */
-  consoleMaxArgs: 20,
-  /** Max characters per serialized console argument. */
-  consoleArgMaxChars: 2e3,
-  /** Max characters of a runtime error message. */
-  errorMessageMaxChars: 2e3,
-  /** Max characters of a runtime error stack. */
-  errorStackMaxChars: 8e3,
-  /** Max console messages per second the shell forwards. Extra messages are dropped and counted. */
-  consoleMaxPerSecond: 100,
-  /** Max characters of a `load` JS bundle (app -> shell, trusted, but still bounded). */
-  bundleJsMaxChars: 1e7,
-  /** Max characters of a `load` CSS bundle. */
-  bundleCssMaxChars: 2e6,
-  /** Max import map entries. */
-  importMapMaxEntries: 200,
-  /** Max characters of an import map specifier or URL (also each `load.packages` URL). */
-  importMapValueMaxChars: 2048,
-  /** Max URLs in a `load`'s `packages` hint (T-032). */
-  loadPackagesMax: 200,
-  /** Max characters of a thumbnail data URL. */
-  thumbnailMaxChars: 2e6,
-  /** Max error strings in a storage-reset ack. */
-  storageResetMaxErrors: 20
-};
-
-// ../../packages/runtime/src/bundler/resolve.ts
-var SHARED_EXTERNALS = ["react", "react-dom"];
-var REACT_SET = ["react", "react-dom", "scheduler"];
-var REACT_DOM_SCHEDULER = {
-  "19.0": "0.25.0",
-  "19.1": "0.26.0",
-  "19.2": "0.27.0",
-  "19.3": "0.28.0"
-};
-var MAX_CDN_EXTERNALS = 32;
-var MAX_EXTERNALS_CHARS = 1200;
-var MAX_ASSET_BYTES = 200 * 1024;
-var NODE_BUILTINS = new Set(
-  "assert async_hooks buffer child_process cluster console constants crypto dgram diagnostics_channel dns domain events fs http http2 https inspector module net os path perf_hooks process punycode querystring readline repl stream string_decoder sys timers tls trace_events tty url util v8 vm wasi worker_threads zlib".split(
-    " "
-  )
-);
-var PINNED_VERSION_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
-var CDN_NAME_RE = /^(?:@[a-z0-9-][a-z0-9._-]*\/)?[a-z0-9-][a-z0-9._-]*$/;
-var CDN_RESERVED_NAMES = /* @__PURE__ */ new Set(["node_modules", "favicon.ico"]);
-var CDN_VERSION_RE = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*)?$/;
-var CDN_MAX_VERSION_CHARS = 128;
-function isPinnedVersion(v) {
-  return PINNED_VERSION_RE.test(v);
-}
-function trimBase(cdnBaseUrl) {
-  return cdnBaseUrl.replace(/\/+$/, "");
-}
-function ownVersion(dependencies, name) {
-  return Object.prototype.hasOwnProperty.call(dependencies, name) ? dependencies[name] : void 0;
-}
-function isCdnPackage(name, version) {
-  return version !== void 0 && name.length <= 214 && CDN_NAME_RE.test(name) && !CDN_RESERVED_NAMES.has(name) && version.length <= CDN_MAX_VERSION_CHARS && CDN_VERSION_RE.test(version);
-}
-function schedulerPin(dependencies) {
-  const own = ownVersion(dependencies, "scheduler");
-  if (own !== void 0) return isCdnPackage("scheduler", own) ? own : null;
-  const reactDom = ownVersion(dependencies, "react-dom");
-  const minor = reactDom === void 0 ? null : /^(\d+)\.(\d+)\.\d+$/.exec(reactDom);
-  if (!minor) return null;
-  return REACT_DOM_SCHEDULER[`${minor[1] ?? ""}.${minor[2] ?? ""}`] ?? null;
-}
-function inPathName(name) {
-  return name.replace("/", "%252F");
-}
-function cdnExternals(dependencies) {
-  const names = new Set(SHARED_EXTERNALS);
-  for (const name of Object.keys(dependencies)) {
-    if (isCdnPackage(name, dependencies[name])) names.add(name);
-  }
-  const list = [...names].sort();
-  if (list.length - 1 > MAX_CDN_EXTERNALS) return null;
-  if (list.map(inPathName).join(",").length > MAX_EXTERNALS_CHARS) return null;
-  return list;
-}
-function urlExternals(name, subpath, dependencies, externals) {
-  if (subpath === "" && (name === "react" || name === "scheduler")) return [];
-  if (name === "react") return [...SHARED_EXTERNALS];
-  if (name === "react-dom" || name === "scheduler") {
-    return schedulerPin(dependencies) === null ? [...SHARED_EXTERNALS] : [...SHARED_EXTERNALS, "scheduler"];
-  }
-  if (externals === null) return [...SHARED_EXTERNALS];
-  return externals.filter((n) => n !== name);
-}
-function cdnModuleUrl(cdnBaseUrl, name, version, subpath, externals = []) {
-  const url = `${trimBase(cdnBaseUrl)}/${name}@${version}${subpath}`;
-  return externals.length > 0 ? `${url}?external=${externals.join(",")}` : url;
-}
-function cdnPrefixUrl(cdnBaseUrl, name, version, externals) {
-  const query = externals.length > 0 ? `&external=${externals.map(inPathName).join(",")}` : "";
-  return `${trimBase(cdnBaseUrl)}/${name}@${version}${query}/`;
-}
-function buildImportMap(dependencies, cdnBaseUrl) {
-  const imports = {};
-  const externals = cdnExternals(dependencies);
-  const set = (specifier, url2) => {
-    if (url2.length <= LIMITS.importMapValueMaxChars) imports[specifier] = url2;
-  };
-  const url = (name, version, subpath) => cdnModuleUrl(
-    cdnBaseUrl,
-    name,
-    version,
-    subpath,
-    urlExternals(name, subpath, dependencies, externals)
-  );
-  const prefix = (name, version) => cdnPrefixUrl(cdnBaseUrl, name, version, urlExternals(name, "/", dependencies, externals));
-  const react = ownVersion(dependencies, "react");
-  const reactDom = ownVersion(dependencies, "react-dom");
-  if (react && isPinnedVersion(react)) {
-    set("react", url("react", react, ""));
-    set("react/jsx-runtime", url("react", react, "/jsx-runtime"));
-    set("react/jsx-dev-runtime", url("react", react, "/jsx-dev-runtime"));
-    set("react/", prefix("react", react));
-  }
-  if (reactDom && isPinnedVersion(reactDom)) {
-    set("react-dom", url("react-dom", reactDom, ""));
-    set("react-dom/client", url("react-dom", reactDom, "/client"));
-    set("react-dom/", prefix("react-dom", reactDom));
-  }
-  const scheduler = schedulerPin(dependencies);
-  if (scheduler !== null) set("scheduler", url("scheduler", scheduler, ""));
-  for (const name of externals ?? []) {
-    if (REACT_SET.includes(name)) continue;
-    const version = ownVersion(dependencies, name);
-    if (version === void 0) continue;
-    set(name, url(name, version, ""));
-    set(`${name}/`, prefix(name, version));
-  }
-  return { imports };
-}
-
 // ../sandbox-shell/src/capture-sig.ts
-var CAPTURE_SIG_VERSION = "br-capture-v1";
+var CAPTURE_SIG_VERSION = "br-capture-v2";
 var CAPTURE_MIN_SECRET_LENGTH = 32;
 var EXP_RE = /^[1-9]\d{0,11}$/;
 function canonicalCaptureString(host, pathname, params) {
@@ -816,11 +677,7 @@ async function signCaptureUrl(input) {
     throw new Error("exp must be a positive integer (unix seconds)");
   }
   if (!isHttpUrl(input.src)) throw new Error("src must be an http(s) URL");
-  if (input.css !== void 0 && !isHttpUrl(input.css))
-    throw new Error("css must be an http(s) URL");
   const params = { src: input.src, exp: String(input.exp) };
-  if (input.css !== void 0) params["css"] = input.css;
-  if (input.map !== void 0) params["map"] = input.map;
   const sig = await signCaptureParams(input.secret, url.host, url.pathname, params);
   const query = Object.keys(params).sort().map((k) => `${encodeURIComponent(k)}=${encodeURIComponent(params[k] ?? "")}`);
   query.push(`sig=${sig}`);
@@ -869,22 +726,10 @@ function buildSources(build) {
   assertUuid("builder_id", build.builder_id);
   const base = `${build.battle_id}/${build.builder_id}/`;
   if (build.status === "shipped") {
-    return {
-      kind: "shipped",
-      js: `${base}bundle.js`,
-      css: `${base}bundle.css`,
-      source: `${base}source.json`,
-      thumb: `${base}thumb.webp`
-    };
+    return { kind: "shipped", site: `${base}site.bin`, thumb: `${base}thumb.webp` };
   }
   if (build.status === "auto_shipped") {
-    return {
-      kind: "autosave",
-      js: `${base}autosave/bundle.js`,
-      css: `${base}autosave/bundle.css`,
-      source: `${base}autosave/source.json`,
-      thumb: `${base}thumb.webp`
-    };
+    return { kind: "autosave", site: `${base}autosave/site.bin`, thumb: `${base}thumb.webp` };
   }
   throw new Error(`a ${build.status} build has nothing to capture`);
 }
@@ -907,30 +752,8 @@ function battlePrefix(battleId) {
 }
 
 // src/capture-job.ts
-var MAX_SOURCE_BYTES = 5 * 1024 * 1024;
 function captureUrlFor(config, buildId) {
   return config.shellCaptureUrl.replaceAll("{build}", buildId);
-}
-async function importMapFor(backend, sourcePath, cdnUrl, log) {
-  try {
-    const bytes = await backend.download(BUCKET_EPHEMERAL, sourcePath);
-    if (!bytes) {
-      log.warn("capture.no_source_json");
-      return { imports: {} };
-    }
-    if (bytes.byteLength > MAX_SOURCE_BYTES) throw new Error("source.json is too large");
-    const parsed = JSON.parse(new TextDecoder().decode(bytes));
-    const deps = parsed.manifest?.dependencies;
-    if (typeof deps !== "object" || deps === null || Array.isArray(deps)) {
-      throw new Error("source.json has no manifest.dependencies object");
-    }
-    const strings = {};
-    for (const [k, v] of Object.entries(deps)) if (typeof v === "string") strings[k] = v;
-    return buildImportMap(strings, cdnUrl);
-  } catch (e) {
-    log.warn("capture.bad_manifest", { error: errorMessage(e) });
-    return { imports: {} };
-  }
 }
 async function renderWithBudget(deps, url, signal) {
   const { budget, config } = deps;
@@ -962,16 +785,12 @@ async function renderWithBudget(deps, url, signal) {
 async function renderBuild(deps, build, sources, signal, log) {
   const { backend, config } = deps;
   const ttl = config.signedUrlTtlSeconds;
-  const src = await backend.createSignedUrl(BUCKET_EPHEMERAL, sources.js, ttl);
+  const src = await backend.createSignedUrl(BUCKET_EPHEMERAL, sources.site, ttl);
   if (!src) return { kind: "missing" };
-  const css = await backend.createSignedUrl(BUCKET_EPHEMERAL, sources.css, ttl);
-  const map = await importMapFor(backend, sources.source, config.pkgCdnUrl, log);
   const now = deps.now ?? Date.now;
   const url = await signCaptureUrl({
     captureUrl: captureUrlFor(config, build.id),
     src,
-    css: css ?? void 0,
-    map: JSON.stringify(map),
     exp: Math.floor(now() / 1e3) + ttl,
     secret: config.hmacSecret
   });
@@ -1056,7 +875,7 @@ async function runCapture(deps, job, signal, log) {
     });
     return { result: "captured", path: target, ready: attempt.ready, renderMs: attempt.renderMs };
   }
-  const renderFailure = attempt.kind === "missing" ? `${sources.kind} bundle.js is missing` : attempt.reason;
+  const renderFailure = attempt.kind === "missing" ? `${sources.kind} site.bin is missing` : attempt.reason;
   if (attempt.kind === "no-render" && afterNoRender(attempt.why, job.attempts) === "retry") {
     log.warn("capture.service_failed", { reason: renderFailure });
     return giveUpOrRetry(deps, job, renderFailure, log);
@@ -1623,7 +1442,7 @@ function loadFunctionConfig(env) {
   if (shellCaptureUrl && URL.canParse(shellCaptureUrl.replaceAll("{build}", "b"))) {
     const u = new URL(shellCaptureUrl.replaceAll("{build}", "b"));
     if (!u.pathname.endsWith("/capture") || u.search || u.hash) {
-      problems.push("CAPTURE_SHELL_URL must be the capture page URL (…/v1/capture, no query)");
+      problems.push("CAPTURE_SHELL_URL must be the capture page URL (…/v2/capture, no query)");
     }
   }
   const hmacSecret = str("CAPTURE_HMAC_SECRET");
@@ -1632,7 +1451,6 @@ function loadFunctionConfig(env) {
       `CAPTURE_HMAC_SECRET must be at least ${String(CAPTURE_MIN_SECRET_LENGTH)} characters`
     );
   }
-  const pkgCdnUrl = url("PKG_CDN_URL", str("PKG_CDN_URL"));
   const accountId = str("BROWSER_RENDERING_ACCOUNT_ID");
   if (accountId && !/^[0-9A-Za-z_-]{1,64}$/.test(accountId)) {
     problems.push("BROWSER_RENDERING_ACCOUNT_ID is not an account id");
@@ -1679,7 +1497,6 @@ function loadFunctionConfig(env) {
     capture: {
       shellCaptureUrl,
       hmacSecret,
-      pkgCdnUrl,
       signedUrlTtlSeconds,
       captureTimeoutMs,
       viewport: { ...FUNCTION_VIEWPORT }
@@ -1695,7 +1512,6 @@ function describeFunctionConfig(c) {
     supabaseUrl: c.supabaseUrl,
     publicSupabaseUrl: c.publicSupabaseUrl,
     shellCaptureUrl: c.capture.shellCaptureUrl,
-    pkgCdnUrl: c.capture.pkgCdnUrl,
     browserRendering: c.browserRendering.apiUrl,
     minIntervalMs: c.browserRendering.minIntervalMs,
     budgetMsPerDay: c.budget.limitMs,

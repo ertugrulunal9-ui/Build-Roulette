@@ -14,14 +14,19 @@ import {
   type RevealVoteController,
   type RevealVoteState,
 } from '../../lib/room/reveal-vote';
+import { I18nProvider } from '../../lib/i18n/context';
 import { BATTLE_1, BOB, CLEO, ME, battleSnapshot, revealBuilds } from '../../lib/room/test-support';
 import { INITIAL_SOLO_STATE, type SoloController, type SoloState } from '../../lib/solo/controller';
 import { GameError } from '../../lib/solo/errors';
+import { fakeSite } from '../../lib/solo/test-support';
 import type { BattleSnapshot } from '../../lib/solo/types';
 import { TOUCH_PRIMARY_QUERY } from '../../lib/device';
 import { RevealStage, spotlightView } from './RevealStage';
 import { RoomResults, lostVotesText, votedResults } from './RoomResults';
 import { VoteStage, ballotNote, buildImage } from './VoteStage';
+
+/** A site pack for the live spotlight. */
+const PACK = fakeSite('x').pack;
 
 afterEach(cleanup);
 
@@ -96,7 +101,7 @@ describe('RevealStage', () => {
   it('the spotlight: Build k of n, name, builder; the strip hides upcoming builds', () => {
     renderReveal(
       battleSnapshot({ phase: 'reveal', revealIndex: 1 }),
-      showState({ bundles: { 'build-bob': { status: 'loading', build: null } } }),
+      showState({ sites: { 'build-bob': { status: 'loading', build: null } } }),
     );
     const stage = screen.getByTestId('reveal-stage');
     expect(stage.dataset['index']).toBe('1');
@@ -145,7 +150,7 @@ describe('RevealStage', () => {
   it('Skip this build is outside the frame and local; a skipped build shows its thumbnail', () => {
     const show = renderReveal(
       battleSnapshot({ phase: 'reveal', revealIndex: 1 }),
-      showState({ bundles: { 'build-bob': { status: 'loading', build: null } } }),
+      showState({ sites: { 'build-bob': { status: 'loading', build: null } } }),
     );
     fireEvent.click(screen.getByTestId('skip-build'));
     expect(show.skip).toHaveBeenCalledWith('build-bob');
@@ -184,13 +189,13 @@ describe('RevealStage', () => {
     expect(screen.getByTestId('watch-build')).toBeTruthy();
   });
 
-  it('a build whose packages could not load (T-032): its screenshot, the reason, Run it again', () => {
+  it('a build the sandbox could not serve here: its screenshot, the reason, Run it again', () => {
     const show = renderReveal(
       battleSnapshot({ phase: 'reveal', revealIndex: 1 }),
-      showState({ noPackages: ['build-bob'], thumbs: { 'build-bob': 'blob:bob' } }),
+      showState({ noLoad: ['build-bob'], thumbs: { 'build-bob': 'blob:bob' } }),
     );
-    const note = screen.getByTestId('build-no-packages');
-    expect(note.textContent).toContain('package server');
+    const note = screen.getByTestId('build-no-load');
+    expect(note.textContent).toContain('couldn’t load on your screen');
     expect(note.textContent).not.toContain('froze');
     expect(screen.getByTestId('fallback-thumb').getAttribute('src')).toBe('blob:bob');
     expect(screen.queryByTestId('reveal-live')).toBeNull();
@@ -198,12 +203,12 @@ describe('RevealStage', () => {
     expect(show.watch).toHaveBeenCalledWith('build-bob');
   });
 
-  it('spotlightView: local stops first, then the touch still, then the bundle', () => {
+  it('spotlightView: local stops first, then the touch still, then the site pack', () => {
     const ready = {
       status: 'ready' as const,
-      build: { js: 'x', css: '', importMap: { imports: {} } },
+      build: { site: PACK },
     };
-    const base = showState({ bundles: { 'build-bob': ready } });
+    const base = showState({ sites: { 'build-bob': ready } });
     const desktop = { stillFirst: false, tapped: [] };
     const phone = { stillFirst: true, tapped: [] };
     expect(spotlightView(base, 'build-bob', desktop)).toBe('live');
@@ -216,13 +221,11 @@ describe('RevealStage', () => {
     expect(spotlightView({ ...base, failedToStart: ['build-bob'] }, 'build-bob', desktop)).toBe(
       'no_start',
     );
-    expect(spotlightView({ ...base, noPackages: ['build-bob'] }, 'build-bob', phone)).toBe(
-      'no_packages',
-    );
+    expect(spotlightView({ ...base, noLoad: ['build-bob'] }, 'build-bob', phone)).toBe('no_load');
     expect(spotlightView(showState(), 'build-bob', desktop)).toBe('loading');
     expect(
       spotlightView(
-        showState({ bundles: { 'build-bob': { status: 'missing', build: null } } }),
+        showState({ sites: { 'build-bob': { status: 'missing', build: null } } }),
         'build-bob',
         desktop,
       ),
@@ -237,9 +240,9 @@ describe('RevealStage', () => {
     );
     const ready = {
       status: 'ready' as const,
-      build: { js: 'x', css: '', importMap: { imports: {} } },
+      build: { site: PACK },
     };
-    renderReveal(snap, showState({ bundles: { 'build-bob': ready } }));
+    renderReveal(snap, showState({ sites: { 'build-bob': ready } }));
     expect(screen.getByTestId('reveal-stage').dataset['view']).toBe('removed');
     expect(screen.getByTestId('reveal-title').textContent).toBe('Removed by moderators');
     // In the spotlight and in the strip.
@@ -257,7 +260,7 @@ describe('RevealStage', () => {
   it('Report sits next to Skip for other players’ builds (not your own); hiding = Skip', () => {
     const show = renderReveal(
       battleSnapshot({ phase: 'reveal', revealIndex: 1 }),
-      showState({ bundles: { 'build-bob': { status: 'loading', build: null } } }),
+      showState({ sites: { 'build-bob': { status: 'loading', build: null } } }),
     );
     const report = screen.getByTestId('report-build');
     expect(report.dataset['build']).toBe('build-bob');
@@ -276,10 +279,10 @@ describe('RevealStage', () => {
       renderReveal(
         battleSnapshot({ phase: 'reveal', revealIndex: 1 }),
         showState({
-          bundles: {
+          sites: {
             'build-bob': {
               status: 'ready',
-              build: { js: 'x', css: '', importMap: { imports: {} } },
+              build: { site: PACK },
             },
           },
         }),
@@ -308,10 +311,10 @@ describe('RevealStage', () => {
       renderReveal(
         battleSnapshot({ phase: 'reveal' }),
         showState({
-          bundles: {
+          sites: {
             'build-me': {
               status: 'ready',
-              build: { js: 'x', css: '', importMap: { imports: {} } },
+              build: { site: PACK },
             },
           },
         }),
@@ -327,12 +330,12 @@ describe('RevealStage', () => {
     }
   });
 
-  it('a ready bundle runs in one reveal-mode iframe (no popups, modals or clipboard)', () => {
+  it('a ready site pack runs in one reveal-mode iframe (no popups, modals or clipboard)', () => {
     renderReveal(
       battleSnapshot({ phase: 'reveal' }),
       showState({
-        bundles: {
-          'build-me': { status: 'ready', build: { js: 'x', css: '', importMap: { imports: {} } } },
+        sites: {
+          'build-me': { status: 'ready', build: { site: PACK } },
         },
       }),
     );
@@ -669,5 +672,78 @@ describe('RoomResults with votes', () => {
       [`/u/${BOB}`, `/u/${CLEO}`, `/u/${ME}`].sort(),
     );
     expect(links[0]?.getAttribute('target')).toBe('_blank');
+  });
+});
+
+describe('in Turkish (T-050)', () => {
+  /** English UI words that must not show on a Turkish screen (the cards and names may). */
+  const ENGLISH =
+    /\b(Build \d of|Skip this build|Spectating|Vote for the best|Pick one|Your pick|Ranked by|Winner|Last look|voted|by Bob|by Cleo)\b/;
+
+  const turkish = (el: ReturnType<typeof createElement>) =>
+    createElement(I18nProvider, { locale: 'tr' }, el);
+
+  it('REVEAL, VOTE and RESULTS speak Turkish, with the same data', () => {
+    const show = fakeShow() as unknown as RevealVoteController;
+    render(
+      turkish(
+        createElement(RevealStage, {
+          battle: battleController,
+          battleState: soloState(battleSnapshot({ phase: 'reveal', revealIndex: 1 })),
+          show,
+          showState: showState({ sites: { 'build-bob': { status: 'loading', build: null } } }),
+          code: 'K7QXM',
+          headerActions: null,
+        }),
+      ),
+    );
+    expect(screen.getByTestId('reveal-position').textContent).toBe('Proje 2 / 3');
+    expect(screen.getByTestId('reveal-builder').textContent).toContain('Yapan: Bob');
+    expect(screen.getByTestId('skip-build').textContent).toBe('⏭ Bu projeyi atla');
+    expect(screen.getByRole('group', { name: 'Dil' })).toBeTruthy();
+    expect(screen.getByTestId('reveal-stage').textContent).not.toMatch(ENGLISH);
+    cleanup();
+
+    render(
+      turkish(
+        createElement(VoteStage, {
+          battle: battleController,
+          battleState: soloState(
+            battleSnapshot({
+              phase: 'voting',
+              voteProgress: { voted_count: 1, eligible_count: 3 },
+            }),
+          ),
+          show,
+          showState: showState({ ballot: ballot({}) }),
+          code: 'K7QXM',
+          headerActions: null,
+        }),
+      ),
+    );
+    expect(screen.getByTestId('vote-progress').textContent).toContain('1/3 oy verdi');
+    expect(screen.getByText('En iyi projelere oy ver')).toBeTruthy();
+    const overall = screen.getAllByTestId('vote-category')[0];
+    expect(overall?.textContent).toContain('En İyi Proje');
+    expect(overall?.textContent).toContain('Birini seç');
+    expect(screen.getByTestId('vote-stage').textContent).not.toMatch(ENGLISH);
+    cleanup();
+
+    const snap = votedResultsSnapshot();
+    render(
+      turkish(
+        createElement(RoomResults, {
+          state: soloState(snap),
+          remaining: 30_000,
+          lostVotes: { overall: 'build-bob' },
+        }),
+      ),
+    );
+    expect(screen.getByTestId('ranking-rule').textContent).toContain('Oylara göre sıralandı');
+    expect(screen.getByTestId('winner-banner').textContent).toBe('🏆 Kazanan');
+    expect(screen.getByTestId('lost-votes').textContent).toContain(
+      'Sayılmadı: En İyi Proje (“build-bob app”) için seçimin',
+    );
+    expect(screen.getByTestId('results').textContent).not.toMatch(ENGLISH);
   });
 });

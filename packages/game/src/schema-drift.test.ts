@@ -6,7 +6,8 @@
  *   them): `create type ... as enum (...)` sets the list,
  *   `alter type ... add value [if not exists] 'x' [before|after 'y']` and
  *   `alter type ... rename value 'a' to 'b'` modify it.
- * - `BUILD_TIME_LIMITS_MINUTES` must match `private.build_time_limits_seconds()` and
+ * - `BUILD_TIME_LIMITS_MINUTES` must match `private.build_time_limits_seconds()`,
+ *   `RANDOM_BUILD_TIME_LIMITS_MINUTES` `private.random_build_time_limits_seconds()` (T-046) and
  *   `DEFAULT_PHASE_DURATIONS` the `<phase>_s` keys of `private.default_battle_settings()`,
  *   taking the last definition of each function across the migrations.
  *
@@ -30,7 +31,11 @@ import { join, resolve } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { BUILD_TIME_LIMITS_MINUTES, DEFAULT_PHASE_DURATIONS } from './durations';
+import {
+  BUILD_TIME_LIMITS_MINUTES,
+  DEFAULT_PHASE_DURATIONS,
+  RANDOM_BUILD_TIME_LIMITS_MINUTES,
+} from './durations';
 import {
   ADMIN_ERROR_CODES,
   CAST_VOTE_ERRORS,
@@ -269,9 +274,12 @@ function lastPrivateFunctionBody(
   return body;
 }
 
-/** `private.build_time_limits_seconds()`: the integers of its `array[...]` literal. */
-function timeLimitsSecondsFromMigrations(files: readonly { name: string; sql: string }[]) {
-  const body = lastPrivateFunctionBody(files, 'build_time_limits_seconds');
+/** `private.<functionName>()`: the integers of its `array[...]` literal. */
+function timeLimitsSecondsFromMigrations(
+  files: readonly { name: string; sql: string }[],
+  functionName = 'build_time_limits_seconds',
+) {
+  const body = lastPrivateFunctionBody(files, functionName);
   const list = body === null ? undefined : /\barray\s*\[([\d\s,]*)\]/i.exec(body)?.[1];
   if (list === undefined) return null;
   return list
@@ -300,6 +308,32 @@ describe('schema drift: durations vs SQL constants', () => {
       'private.build_time_limits_seconds() not found or not a flat array',
     ).not.toBeNull();
     expect(seconds).toEqual(BUILD_TIME_LIMITS_MINUTES.map((minutes) => minutes * 60));
+  });
+
+  it('RANDOM_BUILD_TIME_LIMITS_MINUTES matches private.random_build_time_limits_seconds()', () => {
+    const seconds = timeLimitsSecondsFromMigrations(
+      readMigrations(),
+      'random_build_time_limits_seconds',
+    );
+    expect(
+      seconds,
+      'private.random_build_time_limits_seconds() not found or not a flat array',
+    ).not.toBeNull();
+    expect(seconds).toEqual(RANDOM_BUILD_TIME_LIMITS_MINUTES.map((minutes) => minutes * 60));
+  });
+
+  it('every random draw goes through private.draw_build_time_limit() (no inline arrays)', () => {
+    for (const fn of ['start_solo_battle', 'start_battle']) {
+      const body = lastPrivateFunctionBody(readMigrations(), fn, {
+        anyArgs: true,
+        schema: 'public',
+      });
+      expect(body, `public.${fn} not found`).not.toBeNull();
+      expect(body).toContain('private.draw_build_time_limit()');
+      expect(body ?? '', `public.${fn} draws from an inline array`).not.toMatch(
+        /\(\s*array\s*\[[\d\s,]*\]\s*\)\s*\[/i,
+      );
+    }
   });
 
   it('DEFAULT_PHASE_DURATIONS matches private.default_battle_settings()', () => {

@@ -1,34 +1,24 @@
 import { expect, test } from '@playwright/test';
-import { REACT_MANIFEST, reactApp } from './fixtures';
-import { buildFrame, openPlayground } from './helpers';
+import { html, moduleSite } from './fixtures';
+import { buildFrame, eventsOf, loadSite, openPlayground } from './helpers';
 
 test('f. runtime errors, unhandled rejections and console calls are forwarded', async ({
   page,
 }) => {
   await openPlayground(page);
-  const files = reactApp(
-    `<button data-testid="throw" onClick={() => { throw new Error('boom from a click handler'); }}>throw</button>`,
-    `console.log('hello from the build', { answer: 42 }, [1, 2]);
+  await loadSite(
+    page,
+    moduleSite(`console.log('hello from the build', { answer: 42 }, [1, 2]);
 console.warn('careful');
 setTimeout(() => { throw new Error('boom from a timer'); }, 0);
-Promise.reject(new TypeError('async boom'));`,
+Promise.reject(new TypeError('async boom'));
+root.innerHTML = '<button data-testid="throw">throw</button>';
+root.querySelector('button').addEventListener('click', () => { throw new Error('boom from a click handler'); });`),
   );
-  const r = await page.evaluate(
-    async ({ files, manifest }) => {
-      await window.__playground.setProject(files, manifest);
-      return window.__playground.buildAndLoad();
-    },
-    { files, manifest: REACT_MANIFEST },
-  );
-  expect(r.ok).toBe(true);
   await buildFrame(page).getByTestId('throw').click();
 
   await expect
-    .poll(() =>
-      page.evaluate(() =>
-        window.__playground.events.filter((e) => e.type === 'error').map((e) => e.data),
-      ),
-    )
+    .poll(() => eventsOf(page, 'error'))
     .toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -49,10 +39,7 @@ Promise.reject(new TypeError('async boom'));`,
         }),
       ]),
     );
-  const consoleEvents = await page.evaluate(() =>
-    window.__playground.events.filter((e) => e.type === 'console').map((e) => e.data),
-  );
-  expect(consoleEvents).toEqual(
+  expect(await eventsOf(page, 'console')).toEqual(
     expect.arrayContaining([
       { level: 'log', args: ['hello from the build', '{answer: 42}', '[1, 2]'] },
       { level: 'warn', args: ['careful'] },
@@ -62,70 +49,76 @@ Promise.reject(new TypeError('async boom'));`,
   expect(await page.evaluate(() => window.__playground.previewState())).toBe('connected');
 });
 
-test('f. a package that fails to load from the CDN is reported as a module-load error', async ({
+test('f. a console flood is rate-limited by the shell and the drop is reported', async ({
   page,
 }) => {
   await openPlayground(page);
-  const files = reactApp(
-    `<p>uses zustand</p>`,
-    `import { create } from 'zustand';\nconsole.log(typeof create);`,
+  await loadSite(
+    page,
+    moduleSite(`for (let i = 0; i < 500; i++) console.log('flood ' + i);
+setTimeout(() => console.log('after the flood'), 1100);`),
   );
-  const r = await page.evaluate(
-    async ({ files }) => {
-      // 4.0.0 is not installed in the mock CDN -> HTTP 404 for the module.
-      await window.__playground.setProject(files, {
-        entry: 'src/main.tsx',
-        dependencies: { react: '19.3.0', 'react-dom': '19.3.0', zustand: '4.0.0' },
-      });
-      return window.__playground.buildAndLoad();
-    },
-    { files },
+  await expect
+    .poll(async () =>
+      ((await eventsOf(page, 'console')) as { args: string[] }[]).some(
+        (c) => c.args[0] === 'after the flood',
+      ),
+    )
+    .toBe(true);
+  const lines = ((await eventsOf(page, 'console')) as { level: string; args: string[] }[]).map(
+    (c) => `${c.level}: ${c.args.join(' ')}`,
   );
-  expect(r.ok).toBe(true); // the bundle builds; the failure is at load time
-  const errors = await page.evaluate(() =>
-    window.__playground.events.filter((e) => e.type === 'error').map((e) => e.data),
-  );
-  expect(errors).toEqual([expect.objectContaining({ kind: 'module-load' })]);
+  const flood = lines.filter((l) => l.startsWith('log: flood '));
+  // The shell forwards at most LIMITS.consoleMaxPerSecond (100) per second...
+  expect(flood.length).toBe(100);
+  // ...and says how many it dropped, with the next message after the second.
+  expect(lines).toContain('warn: [sandbox] 400 console messages dropped (rate limit)');
+  expect(await page.evaluate(() => window.__playground.previewState())).toBe('connected');
 });
 
-test('g. importing an undeclared package or a Node built-in gives diagnostics, not a crash', async ({
+test('f. a script or stylesheet the site lacks is a module-load error; ready still comes', async ({
   page,
 }) => {
   await openPlayground(page);
-  const frame = buildFrame(page);
-  await expect(frame.getByTestId('title')).toHaveText('Hello Build Roulette');
-  const loadIdBefore = await page.evaluate(() => window.__playground.lastLoadId());
-
-  const r = await page.evaluate(async () => {
-    window.__playground.writeFile(
-      'src/App.tsx',
-      `import _ from 'lodash';\nimport { readFileSync } from 'node:fs';\nexport function App() { return <p>{String(_)}{String(readFileSync)}</p>; }\n`,
-    );
-    return window.__playground.buildAndLoad();
+  await loadSite(page, {
+    'index.html': html({
+      head: `<script type="module" src="/assets/index-missing.js"></script>
+    <link rel="stylesheet" href="/assets/index-missing.css" />`,
+      body: '<p data-testid="static">static content still shows</p>',
+    }),
   });
-  expect(r.ok).toBe(false);
-  expect(r.diagnostics).toEqual(
-    expect.arrayContaining([
-      expect.objectContaining({
-        severity: 'error',
-        file: 'src/App.tsx',
-        line: 1,
-        text: expect.stringContaining('Package "lodash" is not in dependencies'),
-      }),
-      expect.objectContaining({
-        severity: 'error',
-        file: 'src/App.tsx',
-        line: 2,
-        text: expect.stringContaining('Node.js built-in'),
-      }),
-    ]),
+  await expect(buildFrame(page).getByTestId('static')).toHaveText('static content still shows');
+  await expect
+    .poll(() => eventsOf(page, 'error'))
+    .toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'module-load',
+          message: 'Failed to load /assets/index-missing.js',
+        }),
+        expect.objectContaining({
+          kind: 'module-load',
+          message: 'Failed to load /assets/index-missing.css',
+        }),
+      ]),
+    );
+});
+
+test('f. a pack that is not a site pack is reported as a module-load error with a ready', async ({
+  page,
+}) => {
+  await openPlayground(page);
+  const loadId = await page.evaluate(() =>
+    window.__playground.sendPack(Array.from(new TextEncoder().encode('PK\u0003\u0004 a zip'))),
   );
-  await expect(page.locator('#diagnostics')).toContainText('lodash');
-  // No load was sent, the last good build keeps running, nothing crashed.
-  expect(await page.evaluate(() => window.__playground.lastLoadId())).toBe(loadIdBefore);
-  await expect(frame.getByTestId('title')).toHaveText('Hello Build Roulette');
-  expect(await page.evaluate(() => window.__playground.previewState())).toBe('connected');
-  expect(
-    await page.evaluate(() => window.__playground.events.some((e) => e.type === 'crash')),
-  ).toBe(false);
+  await page.evaluate((id) => window.__playground.waitForReady(id), loadId);
+  expect(await eventsOf(page, 'error')).toEqual([
+    expect.objectContaining({
+      kind: 'module-load',
+      message: 'The imported site could not be read: not a site pack. Import it again.',
+    }),
+  ]);
+  // No frame for it; the preview is fine and takes the next load.
+  await loadSite(page, moduleSite(`root.innerHTML = '<p data-testid="ok">next load</p>';`));
+  await expect(buildFrame(page).getByTestId('ok')).toHaveText('next load');
 });

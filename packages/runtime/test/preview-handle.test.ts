@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { SITE_LIMITS } from '@br/site';
 import {
   PREVIEW_ALLOW_BY_MODE,
   PREVIEW_SANDBOX_BY_MODE,
@@ -18,7 +19,7 @@ import {
   helloFrom,
 } from './fake-dom';
 
-const BUILD = { js: 'export {}', css: '', importMap: { imports: {} } };
+const BUILD = { site: new Uint8Array([66, 82, 83, 73, 84, 69]) };
 
 function setup(opts: Partial<PreviewOptions> = {}) {
   const page = fakePage();
@@ -199,20 +200,36 @@ describe('iframe attributes per mode', () => {
     expect(current().getAttribute('sandbox')).toBe(PREVIEW_SANDBOX_BY_MODE.live);
   });
 
-  it('sends the build package URLs as a hint (T-032); none when the build has none', () => {
+  it("sends a copy of the site pack (protocol v2), never the caller's buffer", () => {
     const { handle, connect } = setup();
     const shell = connect();
-    const packages = ['https://pkg.example/zustand@5.0.15?external=react,react-dom'];
-    handle.load({ ...BUILD, packages });
-    handle.load(BUILD);
-    handle.load({ ...BUILD, packages: [] });
-    const many = Array.from({ length: 300 }, (_, i) => `https://pkg.example/p${String(i)}@1.0.0`);
-    handle.load({ ...BUILD, packages: many });
+    const pack = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
+    const view = pack.subarray(2, 6);
+    const loadId = handle.load({ site: view });
+    handle.load({ site: pack.buffer });
     const loads = shell.messages.filter((m) => m.type === 'load');
-    expect(loads[0]?.['packages']).toEqual(packages);
-    expect('packages' in (loads[1] ?? {})).toBe(false);
-    expect('packages' in (loads[2] ?? {})).toBe(false);
-    expect(loads[3]?.['packages']).toEqual(many.slice(0, 200));
+    expect(Object.keys(loads[0] ?? {}).sort()).toEqual(['loadId', 'mode', 'site', 'type']);
+    expect(loads[0]).toMatchObject({ type: 'load', loadId, mode: 'live' });
+    const sent = loads[0]?.['site'];
+    expect(sent).toBeInstanceOf(ArrayBuffer);
+    expect(Array.from(new Uint8Array(sent as ArrayBuffer))).toEqual([3, 4, 5, 6]);
+    expect(sent).not.toBe(pack.buffer);
+    // The caller's pack is untouched (not transferred, not detached) and can be loaded again.
+    pack[2] = 99;
+    expect(Array.from(new Uint8Array(sent as ArrayBuffer))).toEqual([3, 4, 5, 6]);
+    expect(pack.buffer.byteLength).toBe(8);
+    expect(Array.from(new Uint8Array(loads[1]?.['site'] as ArrayBuffer))).toEqual([
+      1, 2, 3, 4, 5, 6, 7, 8,
+    ]);
+  });
+
+  it('refuses a pack over SITE_LIMITS.maxPackBytes before sending anything', () => {
+    const { handle, connect } = setup();
+    const shell = connect();
+    expect(() => handle.load({ site: new Uint8Array(SITE_LIMITS.maxPackBytes + 1) })).toThrow(
+      RangeError,
+    );
+    expect(shell.messages.filter((m) => m.type === 'load')).toEqual([]);
   });
 });
 

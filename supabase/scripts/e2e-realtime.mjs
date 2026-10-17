@@ -211,9 +211,9 @@ check(
   // REVEAL with the two final builds), all in one transaction: two versions arrive back to
   // back.
   for (const who of [alice, bob]) {
+    // One site pack (a stand-in: Storage never looks inside one).
     for (const [file, body, type] of [
-      ['source.json', '{"files":{}}', 'application/json'],
-      ['bundle.js', 'document.body.textContent = "hi";', 'text/javascript'],
+      ['site.bin', 'BRSITE1\n(a stand-in site pack)', 'application/octet-stream'],
     ]) {
       const { error } = await who.client.storage
         .from('ephemeral-builds')

@@ -1,8 +1,9 @@
 # 5. Database schema
 
 Postgres on Supabase. The **permanent** data is the challenge, builder, build name,
-completion time, screenshot path, awards and battle results. Source code and bundles are
-**never** stored in Postgres. They live only in the ephemeral Storage bucket.
+completion time, screenshot path, awards and battle results. The imported sites (one site
+pack per import since M6, docs/09) are **never** stored in Postgres. They live only in the
+ephemeral Storage bucket.
 
 ## 5.1 Entity overview
 
@@ -144,7 +145,7 @@ create table builds (
   status              build_status not null default 'draft',
   shipped_at          timestamptz,
   completion_ms       int check (completion_ms >= 0),
-  stats               jsonb not null default '{}',   -- {files, lines, deps[], bundle_bytes, rebuilds, pastes}
+  stats               jsonb not null default '{}',   -- {files, bundle_bytes, imports} (M6); older rows: lines, deps[], rebuilds, pastes
   capture_status      capture_status not null default 'pending',
   screenshot_path     text,                          -- screenshots/{battle_id}/{id}.webp
   captured_at         timestamptz,
@@ -271,7 +272,7 @@ Every function is `security definer` with `set search_path = ''`. Each one valid
 | `start_battle(room_id, opts) → battle_id` | host | See transition table in [04](04-state-machine.md#43-battle-phases) |
 | `advance_battle(battle_id, expected_version) → {changed, version}` | any member, cron | The **only** transition function. It's idempotent. |
 | `reveal_next(battle_id, expected_version)` / `skip_to_vote(...)` | host | |
-| `ship_build(battle_id, name, stats) → build` | roster player | Checks phase, deadline + grace and that `source.json` + `bundle.js` exist in `storage.objects` under the player's prefix. Stamps `shipped_at = now()`. |
+| `ship_build(battle_id, name, stats) → build` | roster player | Checks phase, deadline + grace and that `site.bin` (the site pack, M6) exists in `storage.objects` under the player's prefix (`files_missing` otherwise). Stamps `shipped_at = now()`. |
 | `cast_vote(battle_id, category, build_id)` | eligible voter | No self-votes, only shipped builds, `voting` phase only. Upsert. |
 | `get_battle_snapshot(battle_id) → jsonb` | member / public after results | One round trip for the client sync loop |
 | `report_build(build_id, reason, details)` | authenticated | Rate-limited |
@@ -294,7 +295,7 @@ clients call a cheap `heartbeat(battle_id)` RPC every 60 s, which updates
 
 | Bucket | Public | Path | Written by | Read by | Lifetime |
 |---|---|---|---|---|---|
-| `ephemeral-builds` | no | `{battle_id}/{user_id}/source.json`, `bundle.js`, `bundle.css`, `thumb.webp`, `autosave/source.json`, `autosave/bundle.js` | The owner, via storage RLS | The owner any time. Battle members once `phase >= reveal`. Service role. | Until destroy (≤ ~1 h typical, 24 h hard TTL) |
+| `ephemeral-builds` | no | `{battle_id}/{user_id}/site.bin`, `thumb.webp`, `autosave/site.bin` (M6, docs/09 §9.4) | The owner, via storage RLS | The owner any time. Battle members from REVEAL to RESULTS: the final build's `site.bin` + `thumb.webp`, or an auto-shipped build's `autosave/site.bin`. Service role. | Until destroy (≤ ~1 h typical, 24 h hard TTL) |
 | `screenshots` | yes (unguessable path) | `{battle_id}/{build_id}.webp` | Service role only | Everyone | Permanent (deleted on moderation takedown) |
 
 Storage RLS for writes to `ephemeral-builds`, sketched:
@@ -308,8 +309,16 @@ with check (
 );
 -- matching UPDATE policy for upsert (autosave overwrites); no DELETE policy for clients
 ```
-Size limits: the bucket `file_size_limit` is 5 MB and allowed MIME types are
-`application/json`, `text/javascript`, `text/css` and `image/webp`.
+Size limits: the bucket `file_size_limit` is 5 MB (`SITE_LIMITS.maxPackBytes`) and the
+allowed MIME types are `application/octet-stream` (the site pack) and `image/webp` (the
+thumbnail). One import is one immutable site pack (`@br/site`), stored as one object, so the
+bucket keeps a fixed allowlist of three names and cannot serve as free file hosting:
+
+| Object | Written |
+|---|---|
+| `{battle}/{uid}/autosave/site.bin` | every successful import during BUILD (the deadline auto-ships it) |
+| `{battle}/{uid}/site.bin` | at SHIP |
+| `{battle}/{uid}/thumb.webp` | at SHIP (client thumbnail, the capture fallback) |
 
 **Deleting files:** the destroy job (the `jobs` Edge Function since T-034, or the self-hosted
 worker) lists `{battle_id}/` and deletes through the
@@ -323,7 +332,7 @@ underlying objects behind.
 | Challenge, battle, roster names, build name, completion time, stats, rank, awards | Forever |
 | Screenshot WebP | Forever (unless taken down) |
 | Votes (individual ballots) | Kept (they could be pruned: the tallies are on `builds.total_votes`, `builds.vote_counts` and `awards`; not done) |
-| Source, bundles, autosaves, client thumbnails | Until DESTROY. Hard max 24 h. |
+| Site packs (shipped and autosaved), client thumbnails | Until DESTROY. Hard max 24 h. |
 | Rooms and members, room events | 7 days after close; room events also after 30 days (T-036) |
 | Battle events, jobs | 30 days for the events of finished battles, 7 days for finished capture and destroy jobs (T-036: `prune_event_logs`, daily; settings in `private.ops_settings`). Takedown jobs are kept |
 | Anonymous profiles with no battles | 30 days |
@@ -341,7 +350,8 @@ migrations in `supabase/migrations/` are the source of truth.
 - **Solo RPCs:** `start_solo_battle`, `advance_battle`, `ship_build`,
   `get_battle_snapshot`, `server_now`.
   - Each player can have only one running solo battle.
-  - If no time limit is given, the server picks 5, 10 or 15 minutes.
+  - If no time limit is given, the server picks 10, 15 or 20 minutes (5, 10 or 15 before
+    M6; see "Import mode" below).
   - Versions start at 1.
   - `advance_battle` applies every transition that is due in one call. For example, the
     last ship goes BUILDING → SHIPPING (no grace) → RESULTS.
@@ -355,13 +365,15 @@ migrations in `supabase/migrations/` are the source of truth.
   - `fastest_ship`: only when at least 2 builds were shipped by hand.
 
   Auto-shipped builds get no awards.
-- **Auto-ship:** needs both `autosave/bundle.js` and `autosave/source.json`; otherwise the
-  build is a DNF. DNF builds get no capture job.
+- **Auto-ship:** needs `autosave/site.bin` (M6; it needed `autosave/bundle.js` +
+  `autosave/source.json` before); otherwise the build is a DNF. DNF builds get no capture
+  job.
 - **Storage:**
-  - `ephemeral-builds`: 5 MB, json/js/css/webp. Only the 6 known file names under
-    `{battle}/{uid}/` may be written, and only while the build is a draft, the phase allows
-    it and the deadline + grace hasn't passed. Owners can read their own folder. No client
-    deletes.
+  - `ephemeral-builds`: 5 MB, `application/octet-stream` and `image/webp` since M6 (json,
+    js, css and webp before). Only the known file names under `{battle}/{uid}/` may be
+    written (`site.bin`, `thumb.webp`, `autosave/site.bin` since M6), and only while the
+    build is a draft, the phase allows it and the deadline + grace hasn't passed. Owners can
+    read their own folder. No client deletes.
   - `screenshots`: public, webp/png, written only by the service role.
   - Deleting `storage.objects` rows from SQL is blocked by a trigger; workers must use the
     Storage API.
@@ -380,9 +392,9 @@ migrations in `supabase/migrations/` are the source of truth.
   (`prune_event_logs`: battle events of finished battles and room events after 30 days,
   finished capture and destroy jobs after 7; docs/08 §6.4).
 - **T-014 additions:**
-  - `autosave/bundle.css` is an allowed autosave file and is used when capturing
-    auto-shipped builds. It's optional, so auto-ship still needs only the autosave
-    `bundle.js` + `source.json`.
+  - `autosave/bundle.css` was an allowed autosave file, used when capturing auto-shipped
+    builds (optional; auto-ship needed only the autosave `bundle.js` + `source.json`).
+    Replaced by `autosave/site.bin` in M6.
   - `get_public_battle(p_battle_id)` is read-only and callable by **`anon`**. It returns
     only permanent data (challenge, display names, build names, times, statuses, ranks,
     awards, display stats, final screenshot path) and only for battles in
@@ -434,4 +446,33 @@ migrations in `supabase/migrations/` are the source of truth.
   - **Turnstile:** the token is passed to `signInAnonymously` when
     `NEXT_PUBLIC_TURNSTILE_SITE_KEY` is set. Production must enable CAPTCHA in Supabase Auth
     at the same time.
+- **Import mode (T-046, M6, `20261016120000_import_mode.sql`, docs/09 §9.4, §9.7):**
+  - **Storage:** the writable names are exactly `site.bin`, `thumb.webp` and
+    `autosave/site.bin` (same draft + deadline rule and path checks as before); the bucket
+    allows `application/octet-stream` and `image/webp`, 5 MB. Objects uploaded under the old
+    names are still deleted by DESTROY.
+  - **Ship and auto-ship:** `ship_build` requires `{battle}/{uid}/site.bin`
+    (`files_missing`, "Upload site.bin before shipping."). At the end of SHIPPING a draft
+    with `autosave/site.bin` becomes `auto_shipped` (`private.has_autosave`); anything else
+    is DNF.
+  - **REVEAL:** `private.reveal_file_names` returns `{site, thumb}`: a shipped build's
+    `site.bin` and `thumb.webp`, an auto-shipped build's `autosave/site.bin` and a null
+    thumb. The storage read policy (`can_read_revealed_object`) and `get_reveal_builds`
+    (`files: {site, thumb}`, null for files never uploaded; both null for a taken-down
+    build) follow. There is no `source.json` any more: what a player imports is exactly
+    what the other members see.
+  - **Stats:** `clean_build_stats` accepts `imports` (non-negative integer, capped at
+    100,000) next to `files` and `bundle_bytes` (the pack size); the editor-era keys
+    (`lines`, `deps`, `rebuilds`, `pastes`) are still accepted, so older rows stay valid.
+  - **Time limits:** `private.build_time_limits_seconds()` is 600, 900, 1200, 1800, 2700
+    (10–45 minutes; 180 and 300 are refused with `invalid_time_limit`). When nobody chose
+    (a solo start without a limit, every room battle) the server draws from
+    `private.random_build_time_limits_seconds()`: 600, 900 or 1200
+    (`private.draw_build_time_limit()`). `@br/game` mirrors both
+    (`BUILD_TIME_LIMITS_MINUTES`, `RANDOM_BUILD_TIME_LIMITS_MINUTES`, drift-tested). The
+    `time_limit_seconds` check (60–3600) already allows 2700; existing challenges are not
+    rewritten.
+  - **Capture:** the jobs Edge Function and the self-hosted worker sign one Storage URL for
+    the site pack (`site.bin`, or `autosave/site.bin` for an auto-shipped build) and open
+    the v2 capture page (`/v2/capture?src=&exp=&sig=`). No manifest, no import map.
 

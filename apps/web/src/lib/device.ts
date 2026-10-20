@@ -6,9 +6,9 @@
  *   with each build's screenshot first and run it live only on a tap. Mobile browsers do not
  *   always put a cross-site iframe in its own process, so a looping build could freeze the
  *   whole tab there; one tap per build keeps that the viewer's choice.
- * - The same devices get a "building needs a desktop browser" notice instead of the editor
- *   (mobile is reveal-and-vote only in v1), with a way to build anyway (a tablet with a
- *   keyboard can).
+ * - The same devices get a "building needs a computer" notice instead of the import (players
+ *   build with their own tools on a computer, docs/09), with a way to import anyway (a tablet
+ *   that has the built site can).
  *
  * The media query, not the user agent: it follows what the device can do, and Playwright's
  * mobile emulation (`hasTouch`, `isMobile`) sets it like a real phone does.

@@ -1,6 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from '@playwright/test';
 import { APP_SERVER_ENV, appServerCommand } from './e2e/app-server';
+import { welcomeSeen } from './e2e/welcome';
 
 /**
  * Chaos e2e for rooms (`e2e/chaos*.spec.ts`, docs/04 §4.8 and the M3 exit criteria): up to
@@ -69,6 +70,8 @@ export default defineConfig({
   ],
   use: {
     baseURL: APP_ORIGIN,
+    // The welcome screen is already seen (e2e/welcome.ts).
+    storageState: welcomeSeen(APP_ORIGIN),
     browserName: 'chromium',
     channel: 'chromium',
     headless: true,
@@ -79,7 +82,7 @@ export default defineConfig({
   webServer: [
     {
       command: 'tsx scripts/solo-services.ts --realtime',
-      url: 'http://127.0.0.1:4321/v1/',
+      url: 'http://127.0.0.1:4321/v2/',
       env: { BR_APP_ORIGINS: APP_ORIGIN, BR_SERVICES_LOG: SERVICES_LOG },
       gracefulShutdown: { signal: 'SIGTERM', timeout: 40_000 },
       reuseExistingServer: process.env['E2E_REUSE_SERVERS'] === '1',

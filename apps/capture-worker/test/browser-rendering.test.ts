@@ -23,7 +23,7 @@ import { RenderError, type RenderRequest } from '../src/renderer';
 import { bodyText, urlOf } from './fakes';
 
 const REQ: RenderRequest = {
-  url: 'https://b1.usercontent.test/v1/capture?src=https%3A%2F%2Fx.supabase.co%2Fsign%3Ftoken%3Dsecret&sig=abc',
+  url: 'https://b1.usercontent.test/v2/capture?src=https%3A%2F%2Fx.supabase.co%2Fsign%3Ftoken%3Dsecret&sig=abc',
   viewport: { width: 1280, height: 800 },
   timeoutMs: 5000,
 };
@@ -146,13 +146,13 @@ describe('the answer', () => {
     const { r } = renderer([
       ok(
         page(
-          'data-br-capture="failed" data-br-capture-error="bundle.js: HTTP 404 https://x.test/a?token=s"',
+          'data-br-capture="failed" data-br-capture-error="site.bin: HTTP 404 https://x.test/a?token=s"',
         ),
       ),
     ]);
     const e = await renderError(r.render(REQ));
     expect(e.code).toBe('navigation');
-    expect(e.message).toContain('bundle.js: HTTP 404');
+    expect(e.message).toContain('site.bin: HTTP 404');
     expect(e.message).not.toContain('token=s');
     expect(classifyRenderFailure(e)).toBe('render');
   });

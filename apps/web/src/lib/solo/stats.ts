@@ -1,84 +1,51 @@
 /**
- * The display-only build stats sent with `ship_build` (docs/03 §3.6): non-code facts that
- * stay after DESTROY, so results can say "made with three.js" without keeping any code.
- * The server validates and caps them (`private.clean_build_stats`).
+ * The display-only build stats sent with `ship_build` (docs/03 §3.6, docs/09 §9.2): non-code
+ * facts that stay after DESTROY. Import mode reports `files` (in the site), `bundle_bytes`
+ * (the site pack's size) and `imports` (how many imports the player made). The server
+ * validates and caps them (`private.clean_build_stats`), and still accepts the editor's older
+ * keys (`lines`, `deps`, `rebuilds`, `pastes`), which builds from before M6 keep.
  */
-import { isTemplateId, validateWorkspace, type Workspace } from '@br/workspace';
+import { formatBytes } from '../i18n/format';
+import type { Locale } from '../i18n/locale';
+import { en, type Messages } from '../i18n/messages/en';
+import type { ImportedSite } from '../site/site';
 import type { BuildStats } from './types';
 
-const encoder = new TextEncoder();
-
-export function byteLength(s: string): number {
-  return encoder.encode(s).byteLength;
-}
-
-/** Lines of code in the workspace (images, stored as data: URLs, are not code). */
-export function countLines(files: Readonly<Record<string, string>>): number {
-  let lines = 0;
-  for (const text of Object.values(files)) {
-    if (text.startsWith('data:')) continue;
-    lines += text.length === 0 ? 0 : text.split('\n').length - (text.endsWith('\n') ? 1 : 0);
-  }
-  return lines;
-}
-
-export function buildStats(
-  workspace: Workspace,
-  bundle: { js: string; css: string },
-  counters: { rebuilds: number; pastes: number },
-): BuildStats {
+export function siteStats(site: ImportedSite, imports: number): BuildStats {
   return {
-    files: Object.keys(workspace.files).length,
-    lines: countLines(workspace.files),
-    deps: Object.keys(workspace.manifest.dependencies).sort(),
-    bundle_bytes: byteLength(bundle.js) + byteLength(bundle.css),
-    rebuilds: Math.max(0, Math.floor(counters.rebuilds)),
-    pastes: Math.max(0, Math.floor(counters.pastes)),
+    files: Math.max(0, Math.floor(site.files)),
+    bundle_bytes: site.pack.byteLength,
+    imports: Math.max(1, Math.floor(imports)),
   };
-}
-
-/** `source.json`: what the capture worker reads for the import map, and what a restore needs. */
-export function sourceJson(workspace: Workspace): string {
-  return JSON.stringify({ files: workspace.files, manifest: workspace.manifest });
 }
 
 /**
- * `manifest.json`: only the pinned dependencies (`{dependencies: {name: version}}`). Other
- * members read it during REVEAL to build the import map, so it carries no source code
- * (supabase/README.md "Reveal and voting").
+ * The stats as short phrases for the results (`12 files`, `340 KB`, `imported 3 times`), only
+ * what the row has, in the page's language (default English). An editor build from before M6
+ * shows its lines and packages instead.
  */
-export function manifestJson(workspace: Workspace): string {
-  return JSON.stringify({ dependencies: { ...workspace.manifest.dependencies } });
-}
-
-/** Parses an uploaded `source.json` back into a valid workspace, or null. */
-export function parseSourceJson(text: string): Workspace | null {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    return null;
+export function statsPhrases(
+  stats: BuildStats | null | undefined,
+  m: Messages = en,
+  locale: Locale = 'en',
+): string[] {
+  if (!stats) return [];
+  const out: string[] = [];
+  const num = (v: unknown): number | null =>
+    typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.floor(v) : null;
+  const files = num(stats.files);
+  const bytes = num(stats.bundle_bytes);
+  const imports = num(stats.imports);
+  const lines = num(stats.lines);
+  if (files !== null) out.push(m.stats.files(files));
+  if (imports !== null) {
+    if (bytes !== null) out.push(formatBytes(bytes, locale));
+    out.push(m.stats.imported(imports));
+    return out;
   }
-  if (typeof parsed !== 'object' || parsed === null) return null;
-  const { files, manifest } = parsed as { files?: unknown; manifest?: unknown };
-  if (typeof files !== 'object' || files === null) return null;
-  if (typeof manifest !== 'object' || manifest === null) return null;
-  const m = manifest as Record<string, unknown>;
-  const template = m['template'];
-  const entry = m['entry'];
-  const deps = m['dependencies'];
-  if (!isTemplateId(template) || typeof entry !== 'string') return null;
-  if (typeof deps !== 'object' || deps === null) return null;
-  const isStrings = (o: object) => Object.values(o).every((v) => typeof v === 'string');
-  if (!isStrings(files) || !isStrings(deps)) return null;
-  const ws: Workspace = {
-    files: { ...(files as Record<string, string>) },
-    manifest: {
-      template,
-      entry,
-      dependencies: { ...(deps as Record<string, string>) },
-      tailwind: m['tailwind'] === true,
-    },
-  };
-  return validateWorkspace(ws).length === 0 ? ws : null;
+  // An editor build (before M6): lines of code and the packages it used.
+  if (lines !== null) out.push(m.stats.lines(lines));
+  const deps = Array.isArray(stats.deps) ? stats.deps.filter((d) => typeof d === 'string') : [];
+  if (deps.length > 0) out.push(m.stats.madeWith(deps.join(', ')));
+  return out;
 }

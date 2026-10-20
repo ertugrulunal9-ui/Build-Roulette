@@ -18,7 +18,9 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@br/protocol": "workspace:*"
+    "@br/protocol": "workspace:*",
+    "@br/site": "workspace:*",
+    "zod": "4.6.5"
   },
   "devDependencies": {
     "@br/config": "workspace:*",

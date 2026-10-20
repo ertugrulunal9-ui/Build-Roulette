@@ -128,12 +128,9 @@ update public.battles
        building_ends_at = now() + interval '200 seconds', phase_ends_at = now() + interval '200 seconds'
  where id = :'a';
 insert into storage.objects (bucket_id, name) values
-  ('ephemeral-builds', :'a' || '/' || :'ana_id' || '/source.json'),
-  ('ephemeral-builds', :'a' || '/' || :'ana_id' || '/bundle.js'),
-  ('ephemeral-builds', :'a' || '/' || :'ben_id' || '/source.json'),
-  ('ephemeral-builds', :'a' || '/' || :'ben_id' || '/bundle.js'),
-  ('ephemeral-builds', :'a' || '/' || :'cy_id' || '/autosave/source.json'),
-  ('ephemeral-builds', :'a' || '/' || :'cy_id' || '/autosave/bundle.js');
+  ('ephemeral-builds', :'a' || '/' || :'ana_id' || '/site.bin'),
+  ('ephemeral-builds', :'a' || '/' || :'ben_id' || '/site.bin'),
+  ('ephemeral-builds', :'a' || '/' || :'cy_id' || '/autosave/site.bin');
 set local role authenticated;
 select set_config('request.jwt.claims', :'ana', true);
 select public.ship_build(:'a', 'Ana Clock', '{}');
@@ -502,7 +499,7 @@ select public.advance_battle(:'b', 1);
 reset role;
 insert into storage.objects (bucket_id, name)
 select 'ephemeral-builds', :'b' || '/' || u || '/' || f
-from unnest(array[:'ana_id', :'ben_id', :'cy_id']) u, unnest(array['source.json', 'bundle.js']) f;
+from unnest(array[:'ana_id', :'ben_id', :'cy_id']) u, unnest(array['site.bin']) f;
 set local role authenticated;
 select set_config('request.jwt.claims', :'ana', true);
 select public.ship_build(:'b', 'A2', '{}');
@@ -615,8 +612,7 @@ select set_config('request.jwt.claims', :'ben', true);
 select public.advance_battle(:'c', 1);
 reset role;
 insert into storage.objects (bucket_id, name) values
-  ('ephemeral-builds', :'c' || '/' || :'ben_id' || '/source.json'),
-  ('ephemeral-builds', :'c' || '/' || :'ben_id' || '/bundle.js');
+  ('ephemeral-builds', :'c' || '/' || :'ben_id' || '/site.bin');
 set local role authenticated;
 select set_config('request.jwt.claims', :'ben', true);
 select public.ship_build(:'c', 'Lonely', '{}');
@@ -676,7 +672,7 @@ delete from private.app_settings;
 -- ─── Solo is unchanged ────────────────────────────────────────────────
 set local role authenticated;
 select set_config('request.jwt.claims', :'gus', true);
-select public.start_solo_battle('gus', 300) as s \gset
+select public.start_solo_battle('gus', 600) as s \gset
 reset role;
 select is((select settings from public.battles where id = :'s') ? 'reveal_vote', false, 'solo: no reveal_vote setting');
 update public.battles set phase_ends_at = now() - interval '1 second' where id = :'s';
@@ -685,8 +681,7 @@ select set_config('request.jwt.claims', :'gus', true);
 select public.advance_battle(:'s', 1);
 reset role;
 insert into storage.objects (bucket_id, name) values
-  ('ephemeral-builds', :'s' || '/' || :'gus_id' || '/source.json'),
-  ('ephemeral-builds', :'s' || '/' || :'gus_id' || '/bundle.js');
+  ('ephemeral-builds', :'s' || '/' || :'gus_id' || '/site.bin');
 set local role authenticated;
 select set_config('request.jwt.claims', :'gus', true);
 select is(public.ship_build(:'s', 'Solo', '{}') -> 'battle' ->> 'phase', 'results', 'solo: ship → RESULTS, no REVEAL');

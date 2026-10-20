@@ -3,9 +3,8 @@
  *
  *   local Supabase stack     http://127.0.0.1:54321   (`supabase start` WITH Realtime and the
  *                                                      Edge Runtime; checked or started)
- *   mock package CDN         http://localhost:4322
- *   sandbox shell            http://127.0.0.1:4321/v1/          (preview, a different site)
- *     + capture page         http://127.0.0.1:4321/v1/capture   (HMAC gate, same shell)
+ *   sandbox shell            http://127.0.0.1:4321/v2/          (preview, a different site)
+ *     + capture page         http://127.0.0.1:4321/v2/capture   (HMAC gate, same shell)
  *   jobs (capture, destroy, takedown), as in production (T-034):
  *     the `jobs` Edge Function   `supabase functions serve` (supabase/functions/jobs)
  *     started by pg_cron         every 2 s through pg_net (`e2e-jobs-run`, the production
@@ -24,9 +23,8 @@
  * up; needs Docker), --realtime (fail when the stack runs without Realtime, which rooms need:
  * private channels, broadcasts from the database, Presence), --worker (jobs by the Node
  * capture worker instead of the Edge Function; also BR_JOBS=worker). Env: BR_APP_ORIGINS
- * (default http://localhost:3000), SHELL_PORT (4321), CDN_PORT (4322), CDN_CONTROL_PORT
- * (4323: `POST /cdn-outage?mode=refuse|error|hang|off` simulates a package CDN outage, T-032
- * e2e), STAND_IN_PORT (4325), APP_PORT (3000, with --next), CAPTURE_HMAC_SECRET (default:
+ * (default http://localhost:3000), SHELL_PORT (4321), STAND_IN_PORT (4325), APP_PORT (3000,
+ * with --next), CAPTURE_HMAC_SECRET (default:
  * random per run), SUPABASE_INTERNAL_IMAGE_REGISTRY (passed to `supabase start`), and the
  * stack's API_URL / ANON_KEY / SERVICE_ROLE_KEY / DB_URL (default: `supabase status -o
  * env`), and BR_SERVICES_LOG (a file that also gets every line, each prefixed with an ISO
@@ -41,13 +39,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CAPTURE_PATH } from '@br/sandbox-shell/capture-gate';
 import { startShellServer, type ShellServer } from '@br/sandbox-shell/server';
-// The mock CDN lives in @br/runtime's test support (imported by path, like dev:sandbox).
-import {
-  parseLayout,
-  startMockCdn,
-  startOutageControl,
-} from '../../../packages/runtime/test-support/mock-cdn';
-// The Browser Rendering stand-in (imported by path, like the mock CDN).
+// The Browser Rendering stand-in (imported by path: the capture worker does not export it).
 import { createLogger } from '../../capture-worker/src/log';
 import { startBrowserRenderingStandIn } from '../../capture-worker/src/stand-in';
 
@@ -71,8 +63,6 @@ const appOrigins = (env['BR_APP_ORIGINS'] ?? `http://localhost:${String(appPort)
   .map((s) => s.trim())
   .filter(Boolean);
 const shellPort = Number(env['SHELL_PORT'] ?? 4321);
-const cdnPort = Number(env['CDN_PORT'] ?? 4322);
-const controlPort = Number(env['CDN_CONTROL_PORT'] ?? 4323);
 const standInPort = Number(env['STAND_IN_PORT'] ?? 4325);
 
 const logFd = (() => {
@@ -180,14 +170,6 @@ function sql(query: string): void {
 }
 
 const secret = env['CAPTURE_HMAC_SECRET'] ?? randomBytes(32).toString('hex');
-// CDN_LAYOUT=esm.sh: the mock answers like the public esm.sh (entry modules, T-035).
-const cdn = await startMockCdn({
-  port: cdnPort,
-  host: 'localhost',
-  layout: parseLayout(env['CDN_LAYOUT']),
-});
-const control = await startOutageControl(cdn, controlPort);
-log(`mock CDN      ${cdn.url}  (outages: POST ${control.url}/cdn-outage?mode=…)`);
 const captureUrl = `http://127.0.0.1:${String(shellPort)}${CAPTURE_PATH}`;
 
 const children: ChildProcess[] = [];
@@ -248,7 +230,6 @@ if (useWorker) {
       SUPABASE_SERVICE_ROLE_KEY: stackEnv.SERVICE_ROLE_KEY,
       CAPTURE_SHELL_URL: captureUrl,
       CAPTURE_HMAC_SECRET: secret,
-      PKG_CDN_URL: cdn.url,
       // Pick up new jobs quickly while someone is playing.
       WORKER_IDLE_MAX_MS: env['WORKER_IDLE_MAX_MS'] ?? '2000',
     },
@@ -288,7 +269,6 @@ async function startJobsFunction(): Promise<void> {
       JOBS_CRON_SECRET: cronSecret,
       CAPTURE_SHELL_URL: captureUrl,
       CAPTURE_HMAC_SECRET: secret,
-      PKG_CDN_URL: cdn.url,
       BROWSER_RENDERING_ACCOUNT_ID: 'e2e',
       BROWSER_RENDERING_API_TOKEN: token,
       // The function runs in Docker; the stand-in and the browser run on this machine.
@@ -356,8 +336,7 @@ shell = await startShellServer({
   port: shellPort,
   host: '127.0.0.1',
   appOrigins,
-  cdnOrigin: cdn.url,
-  // The capture page fetches the bundle from Storage (signed URLs).
+  // The capture page fetches the site pack from Storage (signed URLs).
   extraConnectSrc: [new URL(stackEnv.API_URL).origin],
   captureSecret: secret,
 });
@@ -375,7 +354,6 @@ if (args.has('--next')) {
       NEXT_PUBLIC_SUPABASE_URL: env.NEXT_PUBLIC_SUPABASE_URL ?? stackEnv.API_URL,
       NEXT_PUBLIC_SUPABASE_ANON_KEY: env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? stackEnv.ANON_KEY,
       NEXT_PUBLIC_SANDBOX_SHELL_URL: shell.shellUrl,
-      NEXT_PUBLIC_PKG_CDN_URL: cdn.url,
     },
     webDir,
   );
@@ -401,7 +379,7 @@ async function stop(code: number): Promise<void> {
   for (const c of children) c.kill('SIGTERM');
   // The capture worker finishes (or hands back) its current job first; cap the wait.
   await Promise.race([Promise.all(exited), new Promise((r) => setTimeout(r, 35_000))]);
-  await Promise.all([shell?.close(), cdn.close(), control.close()]);
+  await shell?.close();
   process.exit(code);
 }
 process.on('SIGINT', () => void stop(0));

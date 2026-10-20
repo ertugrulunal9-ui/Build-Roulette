@@ -12,26 +12,26 @@
  *   engine feeds it snapshots and the clock, and the solo stages (spin, build, ship, results,
  *   destroy) render it. REVEAL and VOTING run in a RevealVoteController fed the same
  *   snapshots. A rematch is a new battle, so new controllers.
- * - **Leave / kicked:** `leave_room` (and the battle's local workspace is deleted if a battle
- *   was running), or the kicked / closed / gone end states.
+ * - **Leave / kicked:** `leave_room` (and the battle's imported site is deleted from this
+ *   browser if a battle was running), or the kicked / closed / gone end states.
  * - **Telemetry (T-030):** `room_joined`, `battle_started` and `rematch` (the host's start),
  *   and one `sync_health` event per battle from the sync engine's counters (analytics.ts),
  *   plus this tab's preview watchdog counters for the battle (T-031, sandbox-health.ts);
  *   the room id is the error reports' `room_id` tag. All no-ops while telemetry is off.
  */
 import { isTerminalPhase, normalizeRoomCode } from '@br/game';
+import { battleSiteKey, type LocalSites } from '../site/local-sites';
 import type { SoloApi } from '../solo/api';
 import {
   SoloController,
-  battleWorkspaceId,
   realClock,
   type DestroyStage,
-  type LocalWorkspaces,
   type SoloClock,
   type TimerHandle,
 } from '../solo/controller';
 import { GameError, toGameError } from '../solo/errors';
 import { formatCountdown } from '../solo/format';
+import { en, type Messages } from '../i18n/messages/en';
 import { randomDisplayName } from '../solo/names';
 import type { BattleSnapshot } from '../solo/types';
 import type { RoomApi } from './api';
@@ -87,8 +87,8 @@ export interface RoomControllerDeps {
   /** The battle RPCs and storage (ship, autosave, last look). */
   soloApi: SoloApi;
   realtime: RealtimePort;
-  cdnBaseUrl: string;
-  localWorkspaces: LocalWorkspaces;
+  /** The latest import of each battle on this device (IndexedDB). */
+  localSites: LocalSites;
   nameStore?: NameStore;
   clock?: SoloClock;
   env?: SyncEnvironment;
@@ -105,10 +105,54 @@ export interface RoomControllerDeps {
 
 export type RoomStage = 'starting' | 'name' | 'joining' | 'room' | 'join_error' | 'ended';
 
+/**
+ * What a toast says, as data: the page words it in its language (T-050: `toastText` with the
+ * catalog), so a language switch rewords the toasts on screen too.
+ */
+export type ToastMessage =
+  | { kind: 'host'; you: true }
+  | { kind: 'host'; you: false; name: string | null }
+  | {
+      kind: 'member';
+      change: 'joined' | 'left' | 'kicked';
+      name: string | null;
+      spectator: boolean;
+    }
+  | {
+      kind: 'ship';
+      /** This player shipped ("You shipped…"). */
+      you: boolean;
+      who: string | null;
+      name: string | null;
+      completionMs: number | null;
+    };
+
 export interface Toast {
   id: number;
-  kind: 'host' | 'ship' | 'member';
+  kind: ToastMessage['kind'];
+  message: ToastMessage;
+  /** In English (logs and tests). */
   text: string;
+}
+
+/** A toast's sentence in a language (default English). */
+export function toastText(message: ToastMessage, m: Messages = en): string {
+  switch (message.kind) {
+    case 'host':
+      return message.you ? m.toasts.hostYou : m.toasts.hostOther(message.name);
+    case 'member': {
+      const name = message.name ?? m.common.someone;
+      if (message.change === 'joined') return m.toasts.joined(name, message.spectator);
+      if (message.change === 'left') return m.toasts.left(name);
+      return m.toasts.kicked(name);
+    }
+    case 'ship':
+      return m.toasts.shipped(
+        message.you ? null : (message.who ?? m.common.someone),
+        message.name,
+        message.completionMs === null ? null : formatCountdown(message.completionMs),
+      );
+  }
 }
 
 export interface PendingActions {
@@ -456,10 +500,9 @@ export class RoomController {
     if (prevRoom && next.room && prevRoom.room.host_id !== next.room.room.host_id) {
       const host = next.room.members.find((m) => m.user_id === next.room?.room.host_id);
       this.toast(
-        'host',
         next.room.me.is_host
-          ? '👑 You are the host now.'
-          : `👑 ${host?.display_name ?? 'Someone else'} is the host now.`,
+          ? { kind: 'host', you: true }
+          : { kind: 'host', you: false, name: host?.display_name ?? null },
       );
     }
     this.patch({ sync: next });
@@ -481,15 +524,13 @@ export class RoomController {
       const refetch = () => this.sync?.refetchBattle() ?? Promise.resolve();
       const c = new SoloController({
         api: this.deps.soloApi,
-        cdnBaseUrl: this.deps.cdnBaseUrl,
-        localWorkspaces: this.deps.localWorkspaces,
+        localSites: this.deps.localSites,
         clock: this.clock,
         external: { refetch },
         track: this.track,
       });
       const show = new RevealVoteController(snap.battle.id, {
         api: this.deps.api,
-        cdnBaseUrl: this.deps.cdnBaseUrl,
         refetch,
         clock: this.clock,
         track: this.track,
@@ -538,13 +579,14 @@ export class RoomController {
     if (n.topic === 'room') {
       const ev = n.event;
       if (ev.type !== 'member' || ev.user_id === n.room.me.user_id) return;
-      const name = ev.display_name ?? 'Someone';
+      const name = ev.display_name ?? null;
+      const spectator = ev.role === 'spectator';
       if (ev.change === 'member_joined') {
-        this.toast('member', `${name} joined${ev.role === 'spectator' ? ' to watch' : ''}.`);
+        this.toast({ kind: 'member', change: 'joined', name, spectator });
       } else if (ev.change === 'member_left') {
-        this.toast('member', `${name} left.`);
+        this.toast({ kind: 'member', change: 'left', name, spectator });
       } else if (ev.change === 'member_kicked') {
-        this.toast('member', `${name} was removed by the host.`);
+        this.toast({ kind: 'member', change: 'kicked', name, spectator });
       }
       return;
     }
@@ -567,23 +609,26 @@ export class RoomController {
       ) {
         continue;
       }
-      const who =
-        b.builder_id === next.me.user_id
-          ? 'You'
-          : (next.players.find((p) => p.user_id === b.builder_id)?.display_name ?? 'Someone');
-      const at = b.completion_ms === null ? '' : ` at ${formatCountdown(b.completion_ms)}`;
-      this.toast('ship', `🚀 ${who} shipped “${b.name ?? 'Untitled'}”${at}`);
+      this.toast({
+        kind: 'ship',
+        you: b.builder_id === next.me.user_id,
+        who: next.players.find((p) => p.user_id === b.builder_id)?.display_name ?? null,
+        name: b.name,
+        completionMs: b.completion_ms,
+      });
     }
   }
 
-  private toast(kind: Toast['kind'], text: string): void {
+  private toast(message: ToastMessage): void {
     const id = this.nextToastId++;
     // At most three at a time; the oldest goes first.
     const keep = this.state.toasts.slice(-2);
     for (const t of this.state.toasts) {
       if (!keep.includes(t)) this.dismissToast(t.id);
     }
-    this.patch({ toasts: [...keep, { id, kind, text }] });
+    this.patch({
+      toasts: [...keep, { id, kind: message.kind, message, text: toastText(message) }],
+    });
     this.toastTimers.set(
       id,
       this.clock.setTimeout(() => {
@@ -598,9 +643,7 @@ export class RoomController {
     const battle = this.state.sync.battle;
     // Nothing of a running battle stays in this browser (the server keeps the autosave).
     if (battle?.me.is_player && !isTerminalPhase(battle.battle.phase)) {
-      void this.deps.localWorkspaces
-        .delete(battleWorkspaceId(battle.battle.id))
-        .catch(() => undefined);
+      void this.deps.localSites.delete(battleSiteKey(battle.battle.id)).catch(() => undefined);
     }
     this.teardownSync();
     this.dropBattle();

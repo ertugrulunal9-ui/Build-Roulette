@@ -4,7 +4,8 @@ import { PROFILES, UsageError, compressedSettings, parseArgs } from '../src/conf
 import { parseDockerStats } from '../src/docker';
 import { bodySize, classifyRequest, frameEvent } from '../src/instrument';
 import { isBillable } from '../src/metrics';
-import { bundleJs, drawBuildSizes } from '../src/payloads';
+import { SITE_ENTRY, unpackSite } from '@br/site';
+import { SIZE_SHAPES, drawBuildSizes, sitePack } from '../src/payloads';
 import { CLIENT_RULES, activityMatters, errorCode, rejoinDelayMs } from '../src/player';
 import { Rng } from '../src/rng';
 import { NUDGE_BACKOFF_MS, nudgeBackoffMs } from '../src/session';
@@ -96,11 +97,11 @@ describe('instrument', () => {
     expect(
       classifyRequest(
         'POST',
-        `${api}/storage/v1/object/ephemeral-builds/${battle}/${user}/autosave/bundle.js`,
+        `${api}/storage/v1/object/ephemeral-builds/${battle}/${user}/autosave/site.bin`,
       ),
     ).toEqual({
       key: 'storage:upload',
-      file: 'autosave/bundle.js',
+      file: 'autosave/site.bin',
       battleId: battle,
     });
     expect(
@@ -145,12 +146,22 @@ describe('instrument', () => {
 });
 
 describe('payloads', () => {
-  it('bundles are valid JavaScript near the drawn size', () => {
+  it('site packs are valid packs of a Vite-style site near the drawn size', () => {
     const r = new Rng(3);
     const sizes = drawBuildSizes(r);
-    const js = bundleJs(r, sizes, 'Cat "Clicker"', 1);
-    expect(() => new vm.Script(js)).not.toThrow();
-    expect(Math.abs(js.length - sizes.bundle)).toBeLessThan(200);
+    const pack = sitePack(r, sizes, 'Cat "Clicker"', 1);
+    expect(Math.abs(pack.byteLength - sizes.site)).toBeLessThan(400);
+    const files = unpackSite(pack);
+    const html = new TextDecoder().decode(files.get(SITE_ENTRY)?.bytes);
+    const src = /<script type="module" crossorigin src="\/([^"]+)"/.exec(html)?.[1] ?? '';
+    const js = files.get(src);
+    expect(js?.type).toBe('text/javascript; charset=utf-8');
+    expect(() => new vm.Script(new TextDecoder().decode(js?.bytes))).not.toThrow();
+    expect([...files.keys()].filter((p) => p.endsWith('.css'))).toHaveLength(1);
+    // An early import is smaller; the largest drawn site still fits the 5 MB pack limit.
+    expect(sitePack(r, sizes, 'x', 0).byteLength).toBeLessThan(pack.byteLength);
+    const big = { ...sizes, site: SIZE_SHAPES.site.max };
+    expect(() => sitePack(r, big, 'x', 1)).not.toThrow();
   });
 });
 
@@ -183,13 +194,13 @@ describe('errors and docker stats', () => {
 });
 
 describe('the web client rules mirrored by the simulated players (T-029)', () => {
-  it('presence activity matters on active on/off, a failing or fixed build, ±20 lines', () => {
-    const sent = { lines: 50, last_build: 'ok' as const, typing: true };
-    expect(activityMatters(null, sent)).toBe(true);
-    expect(activityMatters(sent, { ...sent, typing: false })).toBe(true);
-    expect(activityMatters(sent, { ...sent, last_build: 'error' })).toBe(true);
-    expect(activityMatters(sent, { ...sent, lines: 69 })).toBe(false);
-    expect(activityMatters(sent, { ...sent, lines: 70 })).toBe(true);
+  it('presence activity {imported, imports} matters on the first import and each new one', () => {
+    const none = { imported: false, imports: 0 };
+    const first = { imported: true, imports: 1 };
+    expect(activityMatters(null, none)).toBe(true);
+    expect(activityMatters(none, first)).toBe(true);
+    expect(activityMatters(first, { imported: true, imports: 2 })).toBe(true);
+    expect(activityMatters(first, { ...first })).toBe(false);
     expect(CLIENT_RULES.presenceActivityMs).toBe(15_000);
   });
 

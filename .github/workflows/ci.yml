@@ -6,18 +6,9 @@ on:
   # Nightly: everything once a day, even without a push.
   schedule:
     - cron: '17 3 * * *'
-  # Manual runs also offer the network-bound package compatibility suite (job `compat`)
-  # and can leave out the rooms chaos e2e (job `chaos`).
+  # Manual runs can leave out the rooms chaos e2e (job `chaos`) and run the load test.
   workflow_dispatch:
     inputs:
-      compat:
-        description: Run the R1 package compatibility suite against the npm registry
-        type: boolean
-        default: true
-      compat_cdn:
-        description: Package CDN for the compatibility suite, as a base URL (e.g. https://esm.sh). Empty = our own CDN (@br/pkg-cdn, started by the suite)
-        type: string
-        default: ''
       chaos:
         description: Run the rooms chaos e2e (network drops, skewed clocks, refreshes; 3 shards of ~5 min)
         type: boolean
@@ -32,7 +23,7 @@ permissions:
 
 # A new push cancels the older run of the same branch. The nightly and the manual runs have
 # their own groups: a push used to cancel them halfway (run 29, its chaos job never finished;
-# run 57, the esm.sh compat run started by hand, cancelled by a push a minute later).
+# run 57, a manual run, cancelled by a push a minute later).
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}${{ github.event_name == 'schedule' && '-nightly' || github.event_name == 'workflow_dispatch' && '-manual' || '' }}
   cancel-in-progress: true
@@ -186,7 +177,7 @@ jobs:
           -x studio,imgproxy,vector,logflare,supavisor,mailpit,realtime,postgres-meta
 
       # Renderer tests (real shell capture page, no Supabase) and the full capture/destroy
-      # loop against the stack: solo battles through the HTTP APIs, real React bundles,
+      # loop against the stack: solo battles through the HTTP APIs, real built sites (site packs),
       # WebP screenshots, fallback, final-attempt failure, destroy. Needs psql (runner image).
       - name: Run the capture worker integration tests
         id: capture-integration
@@ -203,10 +194,11 @@ jobs:
       # The solo game end to end on the same stack: the static export and its link-preview
       # Worker (pnpm build) served by `wrangler dev` like Cloudflare serves the Worker with
       # static assets (apps/web/e2e/app-server.ts),
-      # the sandbox shell with the capture gate, the mock CDN and the jobs Edge Function
-      # started by pg_cron, rendering through the Browser Rendering stand-in
-      # (apps/web/scripts/solo-services.ts). Ship path to the permanent page, and the
-      # auto-ship path. Same Chromium as above (Playwright 1.56.1). Needs psql.
+      # the sandbox shell with the capture gate and the jobs Edge Function started by pg_cron,
+      # rendering through the Browser Rendering stand-in (apps/web/scripts/solo-services.ts).
+      # Players import fixture sites (apps/web/e2e/sites.ts): ship path to the permanent page,
+      # the auto-ship path, a reload restoring the import, and Storage down mid-BUILD. Same
+      # Chromium as above (Playwright 1.56.1). Needs psql.
       - name: Run the solo game e2e
         if: ${{ !cancelled() && steps.capture-integration.outcome != 'skipped' }}
         run: pnpm --filter @br/web test:e2e:solo
@@ -269,13 +261,14 @@ jobs:
           -x studio,imgproxy,vector,logflare,supavisor,mailpit,postgres-meta
 
       # Several browser contexts (anonymous players) against the static export served by
-      # `wrangler dev` (the Worker with static assets), the sandbox shell,
-      # the mock CDN and the jobs function (apps/web/scripts/solo-services.ts --realtime):
-      # create/join, lobby presence, ready/start, ship and auto-ship, ranked results with
+      # `wrangler dev` (the Worker with static assets), the sandbox shell and the jobs
+      # function (apps/web/scripts/solo-services.ts --realtime): create/join, lobby presence,
+      # ready/start, imports of fixture sites, ship and auto-ship, ranked results with
       # screenshots, REVEAL (host controls, a frozen build skipped locally), VOTE (revote,
       # refresh, early end) and vote-based results, destroy, rematch, a late spectator, a
-      # refresh mid-BUILD, kick. Plus phones (e2e/multiplayer-mobile.spec.ts, iPhone 13
-      # emulation in Chromium): a phone hosts, the desktop-needed notice in BUILD, the
+      # refresh mid-BUILD, kick, one player's Storage down. Plus phones
+      # (e2e/multiplayer-mobile.spec.ts, iPhone 13 emulation in Chromium): a phone hosts, the
+      # "building needs a computer" notice in BUILD, the
       # still-first REVEAL with "Tap to run live", VOTE with taps (latest tap wins), RESULTS,
       # the /u/[id] history page, and no sideways scrolling. Needs psql.
       - name: Run the rooms e2e
@@ -318,7 +311,7 @@ jobs:
       fail-fast: false
       matrix:
         # 1: 6 players under chaos, abandoned, full room. 2: random chaos, everyone gone at
-        # T-0. 3: every other test (REVEAL/VOTE chaos, steady typing, the lost Realtime feed,
+        # T-0. 3: every other test (REVEAL/VOTE chaos, steady imports, the lost Realtime feed,
         # 8 players, and any new test without a @chaos-1/@chaos-2 tag).
         shard: [1, 2, 3]
     env:
@@ -352,7 +345,7 @@ jobs:
       # e2e/chaos.spec.ts, the shard picked by CHAOS_SHARD: 6 players under chaos, REVEAL
       # and VOTE under chaos (a refresh mid-REVEAL, a vote cast offline and retried, a player
       # offline until the vote closes, the host leaving mid-VOTE), a seeded random run (the
-      # seed is in the log and the report; CHAOS_SEED replays it), steady typing vs the
+      # seed is in the log and the report; CHAOS_SEED replays it), steady imports vs the
       # presence limit, everyone gone at T-0, an abandoned battle, an 8-player battle, a full
       # room, Realtime losing its database feed mid-REVEAL. Needs psql and docker (the
       # lost-feed test, and the container logs of a failed test).
@@ -377,7 +370,7 @@ jobs:
         run: npx -y "$SUPABASE_CLI" stop --no-backup
 
   e2e:
-    name: E2E (runtime + web playground, Playwright Chromium)
+    name: E2E (runtime + web /try, Playwright Chromium)
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -403,18 +396,18 @@ jobs:
       - name: Install Playwright Chromium
         run: pnpm --filter @br/runtime exec playwright install --with-deps chromium
 
-      # Every runtime suite against the mock CDN, then the render and CDN-outage suites again
-      # with the mock CDN answering like esm.sh (an entry module that re-exports an internal
-      # build path; T-035, playwright.esm-sh.config.ts).
+      # Every runtime suite: imported sites served by the shell's site worker (/v2/sw.js),
+      # isolation, policy, storage wipes, the watchdog, capture and thumbnails.
       - name: Run runtime e2e tests
         id: runtime-e2e
         run: pnpm --filter @br/runtime test:e2e
 
-      # Runs `pnpm build` (the static export and its Worker), then the /playground tests and
-      # the static site's checks (rewrites, 404, headers, CSP, `/battles/*` to the Worker)
-      # against `wrangler dev` with the local sandbox shell and mock CDN. Also runs when the runtime suite failed, so one CI
-      # run reports both.
-      - name: Run web playground e2e tests
+      # Runs `pnpm build` (the static export and its Worker), then the /try tests (importing
+      # fixture sites: folders, .zip, a real drop, refused source code) and the static site's
+      # checks (rewrites and the /playground → /try redirect, 404, headers, CSP, `/battles/*`
+      # to the Worker) against `wrangler dev` with the local sandbox shell. Also runs when the
+      # runtime suite failed, so one CI run reports both.
+      - name: Run web /try e2e tests
         if: ${{ !cancelled() && steps.runtime-e2e.outcome != 'skipped' }}
         run: pnpm --filter @br/web test:e2e
 
@@ -428,53 +421,6 @@ jobs:
             apps/web/test-results/
           if-no-files-found: ignore
           retention-days: 7
-
-  compat:
-    name: Package compatibility suite (R1, ${{ inputs.compat_cdn || 'our CDN and the npm registry' }})
-    # Hits the npm registry (or the CDN given in `compat_cdn`) for ~50 packages, so it only
-    # runs when started by hand.
-    if: github.event_name == 'workflow_dispatch' && inputs.compat
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    env:
-      # Read by compat/run.ts (T-035): empty starts @br/pkg-cdn; a base URL such as
-      # https://esm.sh runs every case and the CDN contract checks against that CDN, and the
-      # report is RESULTS-<host>.md. Passed as an environment variable, never pasted into the
-      # script, and validated by the suite.
-      COMPAT_CDN: ${{ inputs.compat_cdn }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Set up pnpm
-        uses: pnpm/action-setup@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version-file: .nvmrc
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Install Playwright Chromium
-        run: pnpm --filter @br/pkg-cdn exec playwright install --with-deps chromium
-
-      - name: Run the compatibility suite
-        run: pnpm --filter @br/pkg-cdn compat
-
-      - name: Upload results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: compat-results
-          path: |
-            apps/pkg-cdn/compat/RESULTS*.md
-            apps/pkg-cdn/node_modules/.cache/pkg-cdn-compat/results.json
-          if-no-files-found: ignore
-          include-hidden-files: true
-          retention-days: 30
 
   # T-025: the load generator (tools/loadtest) on a fresh stack, smoke profile only (manual
   # runs with the `loadtest` input). Scripted supabase-js clients (no browsers) play full

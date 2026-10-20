@@ -1,12 +1,13 @@
 /**
  * The `jobs` Edge Function (T-034) for real: the local Edge Runtime (`supabase functions
  * serve`) runs supabase/functions/jobs, which calls the Browser Rendering stand-in
- * (src/stand-in.ts: Playwright Chromium on this machine), which opens the shell's signed
- * capture page, which loads the bundle from Storage; the WebP goes to the `screenshots`
- * bucket. Players play solo battles through the HTTP APIs, as in stack.test.ts.
+ * (src/stand-in.ts: Playwright Chromium on this machine), which opens the shell's signed v2
+ * capture page, which loads the build's site pack (site.bin) from Storage and runs it from
+ * the site worker; the WebP goes to the `screenshots` bucket. Players play solo battles
+ * through the HTTP APIs, as in stack.test.ts.
  *
- *   alice  React build                         → captured (WebP 1280×800, budget counted)
- *   bob    throwing bundle + client thumbnail  → fallback (the page reports nothing painted)
+ *   alice  built site                          → captured (WebP 1280×800, budget counted)
+ *   bob    throwing site + client thumbnail    → fallback (the page reports nothing painted)
  *   carol  budget spent                        → fallback, Browser Rendering not called
  *   dave   429 with a short Retry-After        → retried in the same run, captured
  *   erin   429 with a long Retry-After         → handed back twice, thumbnail on attempt 3
@@ -35,16 +36,18 @@ import { serveFunction, type ServedFunction } from './function-support';
 import { Stack, loadStackEnv, sleep, type User } from './supabase-stack';
 import {
   SECRET,
-  buildReactBundle,
+  SITE_PACK_TYPE,
+  builtSite,
   colorClose,
-  reactApp,
+  scriptSite,
+  sitePack,
   startFixtures,
   type Fixtures,
 } from './support';
 
 const ORANGE = { r: 255, g: 87, b: 34 };
 const GREEN = { r: 0, g: 160, b: 80 };
-const THROWING = `throw new Error('boom on load');\n`;
+const THROWING = sitePack(scriptSite(`throw new Error('boom on load');\n`));
 const ACCOUNT = 'local-test';
 const TOKEN = `stand-in-token-${randomBytes(8).toString('hex')}`;
 const CRON_SECRET = randomBytes(32).toString('hex');
@@ -131,7 +134,7 @@ function budget(): BudgetRow {
   return { ...empty, ...(JSON.parse(row) as Partial<BudgetRow>) };
 }
 
-/** Requests the stand-in got for this battle's build (the bundle URL carries the battle id). */
+/** Requests the stand-in got for this battle's build (the site.bin URL carries the battle id). */
 function requestsFor(battle: string) {
   return standIn.requests.filter(
     (r) => r.url !== null && decodeURIComponent(r.url).includes(battle),
@@ -164,7 +167,7 @@ async function ship(name: string, files: Record<string, [string | Uint8Array, st
 }
 
 let thumbWebp: Uint8Array;
-let reactFiles: Record<string, [string, string]>;
+let siteFiles: Record<string, [Uint8Array, string]>;
 
 beforeAll(async () => {
   stack = new Stack(loadStackEnv());
@@ -175,7 +178,6 @@ beforeAll(async () => {
     JOBS_CRON_SECRET: CRON_SECRET,
     CAPTURE_SHELL_URL: fx.shell.captureUrl,
     CAPTURE_HMAC_SECRET: SECRET,
-    PKG_CDN_URL: fx.cdn.url,
     BROWSER_RENDERING_ACCOUNT_ID: ACCOUNT,
     BROWSER_RENDERING_API_TOKEN: TOKEN,
     BROWSER_RENDERING_API_URL: standIn.urlFor('host.docker.internal'),
@@ -191,14 +193,13 @@ beforeAll(async () => {
   // Process what other suites left in the queue, so the runs below are about our jobs.
   for (let i = 0; i < 10; i++) if ((await runOnce()).jobs.length === 0) break;
 
-  const react = await buildReactBundle(
-    fx.cdn.url,
-    reactApp({ title: 'Free Tier', background: 'rgb(255, 87, 34)', signalReady: true }),
-  );
-  reactFiles = {
-    'source.json': [react.source, 'application/json'],
-    'bundle.js': [react.js, 'text/javascript'],
-    'bundle.css': [react.css, 'text/css'],
+  siteFiles = {
+    'site.bin': [
+      sitePack(
+        builtSite({ title: 'Free Tier', background: 'rgb(255, 87, 34)', signalReady: true }),
+      ),
+      SITE_PACK_TYPE,
+    ],
   };
   thumbWebp = new Uint8Array(
     await sharp({ create: { width: 640, height: 400, channels: 3, background: GREEN } })
@@ -242,9 +243,9 @@ describe('the jobs Edge Function on the local stack', () => {
     expect(get.status).toBe(405);
   });
 
-  it('captures a shipped React build: WebP 1280×800 in screenshots, the browser time counted', async () => {
+  it('captures a shipped site: WebP 1280×800 in screenshots, the browser time counted', async () => {
     const before = budget();
-    const alice = await ship('alice', reactFiles);
+    const alice = await ship('alice', siteFiles);
     expect(await runFor('capture', alice.build)).toBe('captured');
     expect(captureStatus(alice.build)).toBe('captured');
     expect(job('capture', alice.build)).toMatchObject({ status: 'done', attempts: 1 });
@@ -268,7 +269,7 @@ describe('the jobs Edge Function on the local stack', () => {
 
   it('the request body is the one the unit tests pin (viewport, webp at 70, ready selector, cap)', () => {
     const body = snapshotRequestBody({
-      url: 'https://x/v1/capture',
+      url: 'https://x/v2/capture',
       viewport: { width: 1280, height: 800 },
     });
     expect(body).toMatchObject({
@@ -279,10 +280,9 @@ describe('the jobs Edge Function on the local stack', () => {
     });
   });
 
-  it('a bundle that throws on load: the page reports nothing painted, the thumbnail is used', async () => {
+  it('a site that throws on load: the page reports nothing painted, the thumbnail is used', async () => {
     const bob = await ship('bob', {
-      'source.json': ['{}', 'application/json'],
-      'bundle.js': [THROWING, 'text/javascript'],
+      'site.bin': [THROWING, SITE_PACK_TYPE],
       'thumb.webp': [thumbWebp, 'image/webp'],
     });
     expect(await runFor('capture', bob.build)).toBe('fallback');
@@ -301,7 +301,7 @@ describe('the jobs Edge Function on the local stack', () => {
     stack.sql(`insert into private.browser_budget (day, used_ms) values ((now() at time zone 'utc')::date, 570000)
                on conflict (day) do update set used_ms = 570000`);
     const before = budget();
-    const carol = await ship('carol', { ...reactFiles, 'thumb.webp': [thumbWebp, 'image/webp'] });
+    const carol = await ship('carol', { ...siteFiles, 'thumb.webp': [thumbWebp, 'image/webp'] });
     expect(await runFor('capture', carol.build)).toBe('fallback');
     expect(captureStatus(carol.build)).toBe('fallback');
     expect(requestsFor(carol.battle)).toHaveLength(0);
@@ -314,7 +314,7 @@ describe('the jobs Edge Function on the local stack', () => {
 
   it('REST 429 with a short Retry-After: waits and retries in the same run', async () => {
     standIn.inject({ status: 429, retryAfterS: 1 });
-    const dave = await ship('dave', reactFiles);
+    const dave = await ship('dave', siteFiles);
     expect(await runFor('capture', dave.build)).toBe('captured');
     expect(requestsFor(dave.battle).map((r) => r.status)).toEqual([429, 200]);
     expect(job('capture', dave.build)).toMatchObject({ status: 'done', attempts: 1 });
@@ -323,7 +323,7 @@ describe('the jobs Edge Function on the local stack', () => {
   it('REST 429 with a long Retry-After: handed back twice, then the thumbnail', async () => {
     const before = budget();
     standIn.inject({ status: 429, retryAfterS: 60 }, 3);
-    const erin = await ship('erin', { ...reactFiles, 'thumb.webp': [thumbWebp, 'image/webp'] });
+    const erin = await ship('erin', { ...siteFiles, 'thumb.webp': [thumbWebp, 'image/webp'] });
     expect(await runFor('capture', erin.build)).toBe('retry');
     expect(job('capture', erin.build)).toMatchObject({ status: 'queued', attempts: 1 });
     expect(job('capture', erin.build).error).toContain('429');
@@ -344,7 +344,7 @@ describe('the jobs Edge Function on the local stack', () => {
 
   it('killed mid-capture: the job keeps its lease, then the next run captures it', async () => {
     standIn.inject({ hang: true });
-    const frank = await ship('frank', reactFiles);
+    const frank = await ship('frank', siteFiles);
     const started = await fn.invoke({ wait: false });
     expect(started.status).toBe(202);
     for (let i = 0; i < 60 && requestsFor(frank.battle).length === 0; i++) await sleep(500);
@@ -428,7 +428,7 @@ describe('the jobs Edge Function on the local stack', () => {
     stack.sql(`delete from vault.secrets where name in ('br_jobs_function_url', 'br_jobs_cron_secret');
                select vault.create_secret('http://kong:8000/functions/v1/jobs', 'br_jobs_function_url');
                select vault.create_secret('${CRON_SECRET}', 'br_jobs_cron_secret')`);
-    const gina = await ship('gina', reactFiles);
+    const gina = await ship('gina', siteFiles);
     const requestId = stack.sql(`select private.run_jobs_function()`);
     expect(requestId).toMatch(/^\d+$/);
     for (let i = 0; i < 120 && captureStatus(gina.build) === 'pending'; i++) await sleep(500);

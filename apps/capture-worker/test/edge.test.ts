@@ -21,9 +21,8 @@ const ENV = {
   SUPABASE_URL: 'http://kong:8000',
   SUPABASE_SERVICE_ROLE_KEY: 'eyJ.service.key',
   JOBS_CRON_SECRET: 'cron-secret-0123456789abcdef0123456789abcdef',
-  CAPTURE_SHELL_URL: 'https://{build}.usercontent.example/v1/capture',
+  CAPTURE_SHELL_URL: 'https://{build}.usercontent.example/v2/capture',
   CAPTURE_HMAC_SECRET: 'hmac-secret-0123456789abcdef0123456789abcdef',
-  PKG_CDN_URL: 'https://esm.sh/',
   BROWSER_RENDERING_ACCOUNT_ID: '0123456789abcdef0123456789abcdef',
   BROWSER_RENDERING_API_TOKEN: 'cf-token-value',
 };
@@ -33,7 +32,6 @@ describe('loadFunctionConfig', () => {
     const c = loadFunctionConfig(ENV);
     expect(c.publicSupabaseUrl).toBe('http://kong:8000');
     expect(c.capture).toMatchObject({
-      pkgCdnUrl: 'https://esm.sh',
       captureTimeoutMs: 35_000,
       signedUrlTtlSeconds: 120,
       viewport: { width: 1280, height: 800 },
@@ -57,7 +55,7 @@ describe('loadFunctionConfig', () => {
       loadFunctionConfig({
         SUPABASE_URL: 'ftp://x',
         JOBS_CRON_SECRET: 'short',
-        CAPTURE_SHELL_URL: 'https://x.test/v1/capture?x=1',
+        CAPTURE_SHELL_URL: 'https://x.test/v2/capture?x=1',
         CAPTURE_HMAC_SECRET: 'tiny',
         BROWSER_RENDERING_ACCOUNT_ID: 'not an id!',
         BROWSER_BUDGET_MS_PER_DAY: '-1',
@@ -77,7 +75,6 @@ describe('loadFunctionConfig', () => {
       'JOBS_CRON_SECRET must be at least 32',
       'CAPTURE_SHELL_URL must be the capture page URL',
       'CAPTURE_HMAC_SECRET must be at least 32',
-      'PKG_CDN_URL is required',
       'BROWSER_RENDERING_ACCOUNT_ID is not an account id',
       'BROWSER_RENDERING_API_TOKEN is required',
       'BROWSER_BUDGET_MS_PER_DAY must be an integer',

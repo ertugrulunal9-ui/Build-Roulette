@@ -5,7 +5,7 @@
 begin;
 create extension if not exists pgtap with schema extensions;
 
-select plan(39);
+select plan(42);
 
 \set gina '{"sub":"6a000000-0000-0000-0000-000000000001","role":"authenticated"}'
 \set hugo '{"sub":"6a000000-0000-0000-0000-000000000002","role":"authenticated"}'
@@ -19,7 +19,7 @@ insert into public.profiles (id, display_name) values ('6a000000-0000-0000-0000-
 -- ─── Not signed in (4) ────────────────────────────────────────────────────
 set local role authenticated;
 select set_config('request.jwt.claims', :'nobody', true);
-select throws_ok($$ select public.start_solo_battle('x', 300) $$, '42501', 'not_authenticated',
+select throws_ok($$ select public.start_solo_battle('x', 600) $$, '42501', 'not_authenticated',
   'start_solo_battle needs a user');
 select throws_ok($$ select public.advance_battle(gen_random_uuid(), 1) $$, '42501', 'not_authenticated',
   'advance_battle needs a user (or the service role)');
@@ -29,21 +29,26 @@ select throws_ok($$ select public.get_battle_snapshot(gen_random_uuid()) $$, '42
   'get_battle_snapshot needs a user');
 reset role;
 
--- ─── start_solo_battle input (7) ──────────────────────────────────────────
+-- ─── start_solo_battle input (9) ──────────────────────────────────────────
 set local role authenticated;
 select set_config('request.jwt.claims', :'gina', true);
-select throws_ok($$ select public.start_solo_battle('   ', 300) $$, '22023', 'invalid_display_name',
+select throws_ok($$ select public.start_solo_battle('   ', 600) $$, '22023', 'invalid_display_name',
   'blank display name');
-select throws_ok($$ select public.start_solo_battle(null, 300) $$, '22023', 'invalid_display_name',
+select throws_ok($$ select public.start_solo_battle(null, 600) $$, '22023', 'invalid_display_name',
   'null display name');
-select throws_ok($$ select public.start_solo_battle(repeat('x', 25), 300) $$, '22023', 'invalid_display_name',
+select throws_ok($$ select public.start_solo_battle(repeat('x', 25), 600) $$, '22023', 'invalid_display_name',
   '25-character display name');
-select throws_ok($$ select public.start_solo_battle(e'bad\nname', 300) $$, '22023', 'invalid_display_name',
+select throws_ok($$ select public.start_solo_battle(e'bad\nname', 600) $$, '22023', 'invalid_display_name',
   'control characters in the display name');
 select throws_ok($$ select public.start_solo_battle('gina', 120) $$, '22023', 'invalid_time_limit',
   'a time limit outside the list (2 min)');
 select throws_ok($$ select public.start_solo_battle('gina', 3600) $$, '22023', 'invalid_time_limit',
   'a time limit outside the list (60 min)');
+-- T-046: 3 and 5 minutes are gone (10, 15, 20, 30, 45 now).
+select throws_ok($$ select public.start_solo_battle('gina', 180) $$, '22023', 'invalid_time_limit',
+  'the old 3-minute limit is refused');
+select throws_ok($$ select public.start_solo_battle('gina', 300) $$, '22023', 'invalid_time_limit',
+  'the old 5-minute limit is refused');
 select is((select count(*)::int from public.profiles where id = '6a000000-0000-0000-0000-000000000001'), 0,
   'a refused start leaves no profile behind');
 reset role;
@@ -51,8 +56,8 @@ reset role;
 -- ─── One running battle per player (2) ────────────────────────────────────
 set local role authenticated;
 select set_config('request.jwt.claims', :'gina', true);
-select public.start_solo_battle('gina', 300) as g_battle \gset
-select throws_ok($$ select public.start_solo_battle('gina', 300) $$, 'P0001', 'battle_in_progress',
+select public.start_solo_battle('gina', 600) as g_battle \gset
+select throws_ok($$ select public.start_solo_battle('gina', 600) $$, 'P0001', 'battle_in_progress',
   'a second start while one is running is refused');
 reset role;
 select is((select count(*)::int from public.battle_players where user_id = '6a000000-0000-0000-0000-000000000001'), 1,
@@ -78,8 +83,11 @@ select throws_ok($$ select public.advance_battle(gen_random_uuid(), 1) $$, 'P000
 reset role;
 
 -- ─── ship_build: phase, roster, files (6) ─────────────────────────────────
+-- T-046: only {battle}/{uid}/site.bin counts. The editor-era files and the autosave do not.
 insert into storage.objects (bucket_id, name) values
-  ('ephemeral-builds', :'g_battle' || '/6a000000-0000-0000-0000-000000000001/source.json');
+  ('ephemeral-builds', :'g_battle' || '/6a000000-0000-0000-0000-000000000001/source.json'),
+  ('ephemeral-builds', :'g_battle' || '/6a000000-0000-0000-0000-000000000001/bundle.js'),
+  ('ephemeral-builds', :'g_battle' || '/6a000000-0000-0000-0000-000000000001/autosave/site.bin');
 
 set local role authenticated;
 select set_config('request.jwt.claims', :'gina', true);
@@ -94,7 +102,7 @@ set local role authenticated;
 select set_config('request.jwt.claims', :'gina', true);
 select is(public.advance_battle(:'g_battle', 1) ->> 'phase', 'building', 'gina is BUILDING');
 select throws_ok(format($$ select public.ship_build(%L, 'x', '{}') $$, :'g_battle'), 'P0001', 'files_missing',
-  'bundle.js missing');
+  'site.bin missing (bundle.js, source.json and autosave/site.bin do not count)');
 reset role;
 
 set local role authenticated;
@@ -105,16 +113,16 @@ reset role;
 
 -- Files of the wrong player or the wrong bucket do not count.
 insert into storage.objects (bucket_id, name) values
-  ('ephemeral-builds', :'g_battle' || '/6a000000-0000-0000-0000-000000000002/bundle.js'),
-  ('screenshots',      :'g_battle' || '/6a000000-0000-0000-0000-000000000001/bundle.js');
+  ('ephemeral-builds', :'g_battle' || '/6a000000-0000-0000-0000-000000000002/site.bin'),
+  ('screenshots',      :'g_battle' || '/6a000000-0000-0000-0000-000000000001/site.bin');
 set local role authenticated;
 select set_config('request.jwt.claims', :'gina', true);
 select throws_ok(format($$ select public.ship_build(%L, 'x', '{}') $$, :'g_battle'), 'P0001', 'files_missing',
-  'a bundle.js under another prefix or bucket does not count');
+  'a site.bin under another prefix or bucket does not count');
 reset role;
 
 insert into storage.objects (bucket_id, name) values
-  ('ephemeral-builds', :'g_battle' || '/6a000000-0000-0000-0000-000000000001/bundle.js');
+  ('ephemeral-builds', :'g_battle' || '/6a000000-0000-0000-0000-000000000001/site.bin');
 
 -- ─── ship_build: name (4) ─────────────────────────────────────────────────
 set local role authenticated;
@@ -128,7 +136,7 @@ select throws_ok(format($$ select public.ship_build(%L, repeat('x', 49), '{}') $
 select throws_ok(format($$ select public.ship_build(%L, e'tab\there', '{}') $$, :'g_battle'), '22023', 'invalid_name',
   'control characters in the name');
 
--- ─── ship_build: stats (8) ────────────────────────────────────────────────
+-- ─── ship_build: stats (9) ────────────────────────────────────────────────
 select throws_ok(format($$ select public.ship_build(%L, 'x', '[1, 2]') $$, :'g_battle'), '22023', 'invalid_stats',
   'stats must be an object');
 select throws_ok(format($$ select public.ship_build(%L, 'x', '{"files": "3"}') $$, :'g_battle'), '22023', 'invalid_stats',
@@ -137,6 +145,8 @@ select throws_ok(format($$ select public.ship_build(%L, 'x', '{"lines": -1}') $$
   'a negative number');
 select throws_ok(format($$ select public.ship_build(%L, 'x', '{"rebuilds": 1.5}') $$, :'g_battle'), '22023', 'invalid_stats',
   'a fraction');
+select throws_ok(format($$ select public.ship_build(%L, 'x', '{"imports": -2}') $$, :'g_battle'), '22023', 'invalid_stats',
+  'imports must be a non-negative integer');
 select throws_ok(format($$ select public.ship_build(%L, 'x', '{"deps": "react"}') $$, :'g_battle'), '22023', 'invalid_stats',
   'deps must be an array');
 select throws_ok(format($$ select public.ship_build(%L, 'x', '{"deps": ["../../etc"]}') $$, :'g_battle'), '22023', 'invalid_stats',
@@ -169,7 +179,7 @@ update public.battles
 set local role authenticated;
 select set_config('request.jwt.claims', :'gina', true);
 select lives_ok(
-  format($$ select public.ship_build(%L, 'Edge case', '{"files": 9999, "deps": [%s, "@scope/pkg"], "lines": null}') $$,
+  format($$ select public.ship_build(%L, 'Edge case', '{"files": 9999, "imports": 100001, "deps": [%s, "@scope/pkg"], "lines": null}') $$,
          :'g_battle',
          (select string_agg(format('"a%s"', lpad(n::text, 2, '0')), ', ') from generate_series(0, 59) n)),
   'a ship exactly at building_ends_at + grace is accepted');
@@ -177,9 +187,9 @@ select throws_ok(format($$ select public.ship_build(%L, 'x', '{}') $$, :'g_battl
   'double ship');
 reset role;
 select is((select stats from public.builds where battle_id = :'g_battle'),
-  jsonb_build_object('files', 500, 'deps',
+  jsonb_build_object('files', 500, 'imports', 100000, 'deps',
     (select jsonb_agg(format('a%s', lpad(n::text, 2, '0')) order by n) from generate_series(0, 49) n)),
-  'stats: deps capped at 50 entries, files capped at 500, null values dropped');
+  'stats: deps capped at 50 entries, files capped at 500, imports at 100000, null values dropped');
 
 select * from finish();
 rollback;

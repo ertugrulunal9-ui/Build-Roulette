@@ -1,11 +1,12 @@
 /**
  * Load test configuration: profiles plus command-line overrides (`--rooms 20 --players 6`).
  *
- * Time compression: real battles last 5–15 min of BUILDING plus REVEAL, VOTING and RESULTS
- * (about 20 min). The generator shortens every phase through SQL on each battle it starts
- * (see db.ts `compressBattle`), so a battle takes a few minutes. Client cadences that are
- * wall-clock rates in the product (heartbeat 10 s, autosave 30 s, clock resync 60 s,
- * presence activity ≤ 1 per 15 s, rejoin backoff) are NOT compressed: the concurrent load
+ * Time compression: real battles last 10–45 min of BUILDING (a random battle draws 10, 15 or
+ * 20) plus REVEAL, VOTING and RESULTS. The generator shortens every phase through SQL on each
+ * battle it starts (see db.ts `compressBattle`), so a battle takes a few minutes. Imports are
+ * placed by the build's progress (session.ts `importLoop`). Client cadences that are
+ * wall-clock rates in the product (heartbeat 10 s, clock resync 60 s, presence activity ≤ 1
+ * per 15 s, rejoin backoff) are NOT compressed: the concurrent load
  * per connected client is the real one. Per-battle totals of those rate-driven items are scaled back to real battle
  * lengths in the cost model (cost.ts), not taken from the compressed run as they are.
  */
@@ -37,13 +38,12 @@ export interface LoadConfig {
 
   // Client cadences (product values, not compressed).
   heartbeatMs: number;
-  autosaveMs: number;
   clockResyncMs: number;
 
   // Player behaviour.
-  /** Share of players who ship by hand; the rest auto-ship from their autosave or DNF. */
+  /** Share of players who ship by hand; the rest auto-ship their last import or DNF. */
   shipShare: number;
-  /** Share of players who never autosave nor ship (DNF, e.g. a phone player). */
+  /** Share of players who never import nor ship (DNF, e.g. a phone player). */
   dnfShare: number;
   /** Share of voters who never vote (VOTING then runs to its deadline). */
   silentVoterShare: number;
@@ -87,7 +87,6 @@ const BASE: LoadConfig = {
   resultsS: 10,
   captureDeadlineS: 240,
   heartbeatMs: 10_000,
-  autosaveMs: 30_000,
   clockResyncMs: 60_000,
   shipShare: 0.75,
   dnfShare: 0.05,
@@ -136,7 +135,6 @@ const NUMERIC: (keyof LoadConfig)[] = [
   'resultsS',
   'captureDeadlineS',
   'heartbeatMs',
-  'autosaveMs',
   'clockResyncMs',
   'shipShare',
   'dnfShare',
@@ -261,7 +259,8 @@ export const PRODUCT_DURATIONS = {
   voting_s: 60,
   results_s: 60,
   capture_deadline_s: 600,
-  build_s: [300, 600, 900],
+  /** The random battle's draw (private.random_build_time_limits_seconds); hosts pick up to 45 min. */
+  build_s: [600, 900, 1200],
 } as const;
 
 export const HELP = `Build Roulette load generator (tools/loadtest, T-025)
@@ -272,7 +271,7 @@ Options (defaults in src/config.ts):
   --rooms N --players N --battles-per-room N --ramp-s S --procs N
   --build-s S --spinning-s S --shipping-s S --reveal-slot-s S --voting-s S --results-s S
   --capture-deadline-s S
-  --heartbeat-ms MS --autosave-ms MS --clock-resync-ms MS
+  --heartbeat-ms MS --clock-resync-ms MS
   --ship-share P --dnf-share P --silent-voter-share P --host-next-share P
   --capture true|false --capture-concurrency N
   --realtime-limits keep|free|pro|pro-nocap|unlimited   (local Realtime tenant quotas)

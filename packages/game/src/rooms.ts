@@ -35,51 +35,32 @@ export const HEARTBEAT_INTERVAL_MS = 10_000;
 export const PRESENCE_THROTTLE_MS = 2_000;
 
 /**
- * BUILD activity updates (lines, last build, active) are sent at most this often per player
- * (T-029). Presence was 92 % of all Realtime messages in the load test (docs/07 §7.4), and
- * every track also counts against the tenant's presence quota. Activity goes out only
- * during BUILDING and only for a change that matters ({@link activityMatters}); the latest
- * activity wins.
+ * BUILD activity updates (has a site imported, how many imports) are sent at most this often
+ * per player (T-029). Presence was 92 % of all Realtime messages in the load test (docs/07
+ * §7.4), and every track also counts against the tenant's presence quota. Activity goes out
+ * only during BUILDING and only for a change that matters ({@link activityMatters}); the
+ * latest activity wins.
  */
 export const PRESENCE_ACTIVITY_INTERVAL_MS = 15_000;
 
-/** A line count that moved by at least this much since the last update is worth sending. */
-export const PRESENCE_LINES_STEP = 20;
-
 /**
- * A failing build is reported in the activity once it has failed this long: the preview
- * rebuilds 150 ms after each edit, so a half-typed line fails for a moment all the time.
+ * A player's BUILD activity (Presence) in import mode (docs/09 §9.5): players build on their
+ * own computer, so the room only sees their imports.
  */
-export const ACTIVITY_BUILD_ERROR_MS = 10_000;
-
-/**
- * The activity's `typing` flag means "edited recently": an edit within this long (T-029;
- * before, 3 s). With updates at most every 15 s, "typing…" would claim more than the
- * sidebar can know, so it reads "active" (docs/04 §4.10).
- */
-export const ACTIVITY_RECENT_MS = 15_000;
-
-/** The parts of a player's BUILD activity (Presence) that {@link activityMatters} compares. */
 export interface ActivityLike {
-  lines: number;
-  last_build: 'ok' | 'error';
-  /** Edited within {@link ACTIVITY_RECENT_MS} ("active"). */
-  typing: boolean;
+  /** A site is imported (what ships, or what the deadline auto-ships). */
+  imported: boolean;
+  /** Successful imports so far in this battle. */
+  imports: number;
 }
 
 /**
  * Whether `next` differs from the activity the others last received (`sent`; null: none
- * yet) enough to spend a presence message on it: active on/off, the build starting or
- * stopping to fail, or the line count moving by {@link PRESENCE_LINES_STEP} or more. Smaller
- * line changes ride along with the next update that matters (the latest activity is sent).
+ * yet): the first import, or another one. Imports are minutes apart, so each one is news.
  */
 export function activityMatters(sent: ActivityLike | null, next: ActivityLike): boolean {
   if (sent === null) return true;
-  return (
-    sent.typing !== next.typing ||
-    sent.last_build !== next.last_build ||
-    Math.abs(next.lines - sent.lines) >= PRESENCE_LINES_STEP
-  );
+  return sent.imported !== next.imported || sent.imports !== next.imports;
 }
 
 /**

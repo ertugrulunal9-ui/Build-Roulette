@@ -169,11 +169,15 @@ export type BattleEvent =
 
 // ─── Presence (client-claimed, never read by the server) ──────────────────────────────
 
+/**
+ * BUILD activity (import mode, docs/09 §9.5): players build on their own computer, so the
+ * others see whether a site is imported and how many imports were made.
+ */
 export interface Activity {
-  /** Lines of code in the workspace. */
-  lines: number;
-  last_build: 'ok' | 'error';
-  typing: boolean;
+  /** A site is imported (it ships, or the deadline auto-ships it). */
+  imported: boolean;
+  /** Successful imports in this battle. */
+  imports: number;
 }
 
 /** What each client tracks on `room:{id}` (docs/04 §4.7). */

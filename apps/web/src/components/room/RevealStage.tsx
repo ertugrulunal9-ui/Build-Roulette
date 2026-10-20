@@ -7,14 +7,14 @@
  *
  * - **One live build:** only the spotlighted build runs, in a fresh preview iframe in
  *   **reveal** mode (no popups, modals or clipboard; docs/03 §3.9), whose sandbox storage is
- *   wiped before the bundle loads. A new spotlight is a new iframe.
+ *   wiped before its site pack loads. A new spotlight is a new iframe.
  * - **Chrome:** the frame is labelled as a user-made build; nothing inside it can act for
  *   the app (shell messages are display-only).
  * - **Skip / stopped:** "Skip this build" lives outside the iframe, so it works even when
  *   the build hangs; it stops the build in this tab only and shows its screenshot (or
  *   thumbnail). The watchdog's crash states show the same fallback: "this build froze" (no
  *   pong for 5 s) or "this build couldn't start" (the sandbox never answered), and so does a
- *   build whose packages can't load while the package CDN is down (T-032).
+ *   build whose site the sandbox cannot serve in this browser (site-errors.ts).
  * - **Phones and tablets** (touch-primary, `useTouchPrimary`): each build shows its
  *   screenshot or thumbnail first, with a big "Tap to run live" button (docs/02 R2: mobile
  *   browsers isolate cross-site frames less, so running someone's build is the viewer's
@@ -31,7 +31,10 @@
 import { PreviewHandle, type PreviewBuild, type PreviewCrash } from '@br/runtime';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useTouchPrimary } from '../../lib/device';
-import { playgroundConfig } from '../../lib/playground/config';
+import { useT } from '../../lib/i18n/context';
+import { en, type Messages } from '../../lib/i18n/messages/en';
+import { previewConfig } from '../../lib/preview/config';
+import { isSiteLoadFailure } from '../../lib/preview/site-errors';
 import type { PreviewHealth } from '../../lib/telemetry/sandbox-health';
 import {
   spotlightBuild,
@@ -42,7 +45,9 @@ import type { SoloController, SoloState } from '../../lib/solo/controller';
 import { describeError } from '../../lib/solo/errors';
 import type { BattleSnapshot, RevealBuild, SnapshotBuild } from '../../lib/solo/types';
 import { screenshotUrl } from '../../lib/supabase/config';
-import { REMOVED_TEXT, RemovedCard } from '../moderation/Removed';
+import { LanguagePicker } from '../i18n/LanguagePicker';
+import { Rich } from '../i18n/Rich';
+import { RemovedCard } from '../moderation/Removed';
 import { ReportButton } from '../moderation/ReportButton';
 import { ChallengeCards } from '../results/ResultPieces';
 import { Countdown } from '../solo/Countdown';
@@ -67,7 +72,7 @@ export type SpotlightView =
   | 'skipped'
   | 'frozen'
   | 'no_start'
-  | 'no_packages'
+  | 'no_load'
   | 'still'
   | 'live'
   | 'loading'
@@ -76,7 +81,7 @@ export type SpotlightView =
 /**
  * The spotlight's content for this viewer: a build removed by a moderator never runs; then
  * a local stop (skip, freeze, failed start) wins; then a touch device shows the still image
- * until the viewer taps "run live"; then the bundle's state decides.
+ * until the viewer taps "run live"; then the site pack's state decides.
  */
 export function spotlightView(
   showState: RevealVoteState,
@@ -92,41 +97,36 @@ export function spotlightView(
   if (showState.skipped.includes(buildId)) return 'skipped';
   if (showState.frozen.includes(buildId)) return 'frozen';
   if (showState.failedToStart.includes(buildId)) return 'no_start';
-  if (showState.noPackages.includes(buildId)) return 'no_packages';
+  if (showState.noLoad.includes(buildId)) return 'no_load';
   if (stillFirst && !tapped.includes(buildId)) return 'still';
-  const bundle = showState.bundles[buildId];
-  if (bundle?.status === 'ready') return 'live';
-  if (bundle?.status === 'missing' || bundle?.status === 'error') return 'unavailable';
+  const site = showState.sites[buildId];
+  if (site?.status === 'ready') return 'live';
+  if (site?.status === 'missing' || site?.status === 'error') return 'unavailable';
   return 'loading';
 }
 
 /** Why this tab stopped running the spotlight (each shows the still image instead). */
-export type StoppedView = 'skipped' | 'frozen' | 'no_start' | 'no_packages';
+export type StoppedView = 'skipped' | 'frozen' | 'no_start' | 'no_load';
 
 export function isStopped(view: SpotlightView): view is StoppedView {
-  return view === 'skipped' || view === 'frozen' || view === 'no_start' || view === 'no_packages';
+  return view === 'skipped' || view === 'frozen' || view === 'no_start' || view === 'no_load';
 }
 
-/** The fallback of a build this tab stopped running, by why it stopped. */
-export const STOPPED: Record<StoppedView, { testId: string; text: string }> = {
-  skipped: {
-    testId: 'build-skipped',
-    text: 'You skipped this build. It keeps going for everyone else.',
-  },
-  frozen: {
-    testId: 'build-froze',
-    text: 'This build froze, so it was stopped on your screen. Everyone else keeps watching.',
-  },
-  no_start: {
-    testId: 'build-no-start',
-    text: 'This build couldn’t start on your screen (its sandbox never answered). Everyone else keeps watching.',
-  },
-  // T-032: with the package CDN down, a package this browser never loaded can't load.
-  no_packages: {
-    testId: 'build-no-packages',
-    text: 'This build’s packages couldn’t load on your screen (the package server isn’t answering), so here is its screenshot. Everyone else keeps watching.',
-  },
+/**
+ * The fallback of a build this tab stopped running, by why it stopped (`no_load`: the sandbox
+ * could not serve the site in this browser, e.g. no service workers here). The text is the
+ * catalog's `reveal.stopped` (English by default).
+ */
+export const STOPPED_TEST_ID: Record<StoppedView, string> = {
+  skipped: 'build-skipped',
+  frozen: 'build-froze',
+  no_start: 'build-no-start',
+  no_load: 'build-no-load',
 };
+
+export function stoppedText(view: StoppedView, m: Messages = en): string {
+  return m.reveal.stopped[view];
+}
 
 interface RevealStageProps {
   battle: SoloController;
@@ -145,6 +145,8 @@ export function RevealStage({
   code,
   headerActions,
 }: RevealStageProps) {
+  const t = useT();
+  const rv = t.reveal;
   const snapshot = battleState.snapshot;
   if (!snapshot) throw new Error('RevealStage needs a snapshot');
   const order = snapshot.battle.reveal_order ?? [];
@@ -157,13 +159,15 @@ export function RevealStage({
   const builderName =
     spot?.builder_name ??
     snapshot.players.find((p) => p.user_id === builderId)?.display_name ??
-    'Someone';
+    t.common.someone;
   const removed = spot?.taken_down === true || fallback?.taken_down === true;
   // An auto-shipped autosave has no name.
-  const name = removed ? REMOVED_TEXT : (spot?.name ?? fallback?.name ?? `${builderName}'s build`);
+  const name = removed
+    ? t.moderation.removed
+    : (spot?.name ?? fallback?.name ?? t.common.buildOf(builderName));
   const autoShipped = (spot?.status ?? fallback?.status) === 'auto_shipped';
   const mine = builderId === snapshot.me.user_id;
-  const bundle = buildId ? showState.bundles[buildId] : undefined;
+  const site = buildId ? showState.sites[buildId] : undefined;
   const stillFirst = useTouchPrimary();
   // Builds this viewer chose to run live (a touch device starts each one as a still image).
   const [tapped, setTapped] = useState<readonly string[]>([]);
@@ -185,35 +189,37 @@ export function RevealStage({
     >
       <header className="flex flex-wrap items-center gap-3 border-b border-zinc-800 px-4 py-3">
         <h1 className="text-sm font-bold tracking-tight">
-          Build Roulette <span className="font-normal text-zinc-400">· Room {code}</span>
+          Build Roulette{' '}
+          <span className="font-normal text-zinc-400">· {t.common.roomCode(code)}</span>
         </h1>
         <span className="rounded-full bg-fuchsia-600 px-2.5 py-0.5 text-xs font-black tracking-widest text-white uppercase">
-          🎬 Reveal
+          {rv.badge}
         </span>
         {!snapshot.me.is_player && (
           <span className="rounded-full bg-zinc-800 px-2.5 py-0.5 text-xs font-black tracking-widest text-zinc-300 uppercase">
-            👀 Spectating
+            {rv.spectating}
           </span>
         )}
+        <LanguagePicker tone="dark" />
         {headerActions}
         <div className="ml-auto rounded-lg ring-1 ring-zinc-700">
           <Countdown
             getRemaining={() => battle.remainingMs()}
-            label="This build"
+            label={rv.thisBuild}
             lowMs={SHORT_PHASE_LOW_MS}
           />
         </div>
       </header>
 
       <div className="mx-auto grid w-full max-w-7xl flex-1 grid-cols-1 gap-5 px-4 py-5 lg:grid-cols-[minmax(0,1fr)_19rem]">
-        <section className="flex min-w-0 flex-col gap-3" aria-label="Spotlight">
+        <section className="flex min-w-0 flex-col gap-3" aria-label={rv.spotlight}>
           <div className="flex flex-wrap items-end justify-between gap-3">
             <div className="min-w-0">
               <p
                 className="text-xs font-black tracking-[0.3em] text-fuchsia-400 uppercase"
                 data-testid="reveal-position"
               >
-                Build {index + 1} of {total}
+                {rv.position(index + 1, total)}
               </p>
               <h2
                 className="truncate text-3xl font-black tracking-tight sm:text-4xl"
@@ -226,14 +232,19 @@ export function RevealStage({
                 data-testid="reveal-builder"
               >
                 {builderId && <Avatar userId={builderId} name={builderName} size="sm" />}
-                by <strong className="text-zinc-100">{builderName}</strong>
-                {mine && <span className="text-fuchsia-300">(that is you!)</span>}
+                <span>
+                  <Rich
+                    text={rv.byName}
+                    slots={{ name: <strong className="text-zinc-100">{builderName}</strong> }}
+                  />
+                </span>
+                {mine && <span className="text-fuchsia-300">{rv.thatsYou}</span>}
                 {autoShipped && (
                   <span
                     className="rounded-full bg-amber-900/70 px-2 py-0.5 text-xs font-bold text-amber-200"
-                    title="Not shipped by hand: the last autosave shipped at the deadline"
+                    title={rv.autoShippedTitle}
                   >
-                    Auto-shipped
+                    {rv.autoShipped}
                   </span>
                 )}
               </p>
@@ -247,17 +258,19 @@ export function RevealStage({
                 className="font-black tracking-widest text-amber-300 uppercase"
                 data-testid="user-build-label"
               >
-                ⚠ User-made build
+                {rv.userMade}
               </span>
               <span className="hidden text-amber-100/80 sm:inline">
-                by {builderName} · runs in a sandbox, cannot see your account. Nothing in it can act
-                for Build Roulette.
+                {rv.sandboxNote(builderName)}
               </span>
               <div className="ml-auto flex gap-2">
                 {buildId && !mine && !removed && (
                   <ReportButton
                     buildId={buildId}
-                    buildLabel={`${(spot?.name ?? fallback?.name) ? `“${name}”` : 'A build'} by ${builderName}`}
+                    buildLabel={t.common.buildLabel(
+                      (spot?.name ?? fallback?.name) ? name : null,
+                      builderName,
+                    )}
                     tone="dark"
                     onHide={
                       stopped
@@ -277,11 +290,11 @@ export function RevealStage({
                     }}
                     className="min-h-9 rounded-md border border-amber-300/60 px-2.5 py-1 font-semibold text-amber-100 hover:bg-amber-400/20"
                   >
-                    ▶ Run it again
+                    {rv.runAgain}
                   </button>
                 ) : view === 'still' ? (
                   <span className="py-1 font-semibold text-amber-100/80" data-testid="still-label">
-                    Screenshot · not running
+                    {rv.still}
                   </span>
                 ) : (
                   <button
@@ -291,10 +304,10 @@ export function RevealStage({
                     onClick={() => {
                       if (buildId) show.skip(buildId);
                     }}
-                    title="Stop running this build on your screen (the room keeps going)"
+                    title={rv.skipTitle}
                     className="min-h-9 rounded-md bg-amber-300 px-2.5 py-1 font-bold text-amber-950 hover:bg-amber-200"
                   >
-                    ⏭ Skip this build
+                    {rv.skip}
                   </button>
                 )}
               </div>
@@ -306,8 +319,8 @@ export function RevealStage({
                 <StillImage
                   image={image}
                   name={name}
-                  testId={STOPPED[view].testId}
-                  message={STOPPED[view].text}
+                  testId={STOPPED_TEST_ID[view]}
+                  message={stoppedText(view, t)}
                 />
               ) : view === 'still' ? (
                 <StillImage image={image} name={name} testId="reveal-still" dim={false}>
@@ -319,21 +332,21 @@ export function RevealStage({
                     }}
                     className="absolute inset-x-4 bottom-4 min-h-14 rounded-2xl bg-fuchsia-500 px-5 py-3 text-lg font-black text-white shadow-xl hover:bg-fuchsia-400 sm:inset-x-auto sm:right-4"
                   >
-                    ▶ Tap to run live
+                    {rv.tapToRun}
                   </button>
                 </StillImage>
-              ) : view === 'live' && bundle?.status === 'ready' && buildId ? (
+              ) : view === 'live' && site?.status === 'ready' && buildId ? (
                 <LiveBuild
                   key={buildId}
                   buildId={buildId}
-                  build={bundle.build}
-                  title={`${name} by ${builderName} (user-made build)`}
+                  build={site.build}
+                  title={rv.frameTitle(name, builderName)}
                   health={show.previewHealth}
                   onCrash={(id, crash) => {
                     show.previewCrashed(id, crash);
                   }}
-                  onPackagesFailed={(id) => {
-                    show.packagesFailed(id);
+                  onLoadFailed={(id) => {
+                    show.loadFailed(id);
                   }}
                 />
               ) : view === 'unavailable' ? (
@@ -342,9 +355,9 @@ export function RevealStage({
                   name={name}
                   testId="build-unavailable"
                   message={
-                    bundle?.status === 'error'
-                      ? `This build could not be loaded. ${describeError(bundle.error)}`
-                      : 'This build has nothing to run.'
+                    site?.status === 'error'
+                      ? rv.couldNotLoad(describeError(site.error, t))
+                      : rv.nothingToRun
                   }
                 />
               ) : (
@@ -353,8 +366,8 @@ export function RevealStage({
                   data-testid="build-loading"
                 >
                   {showState.buildsError
-                    ? `Loading the builds… (${describeError(showState.buildsError)})`
-                    : 'Loading the build…'}
+                    ? rv.loadingBuilds(describeError(showState.buildsError, t))
+                    : rv.loadingBuild}
                 </p>
               )}
             </div>
@@ -364,21 +377,18 @@ export function RevealStage({
         <aside className="flex flex-col gap-4">
           <HostPanel
             isHost={isHost}
-            hostName={hostName ?? 'The host'}
+            hostName={hostName ?? rv.theHost}
             last={index >= total - 1}
             show={show}
             showState={showState}
           />
           <section className="rounded-2xl border border-zinc-800 bg-zinc-900 p-4">
             <h2 className="mb-2 text-xs font-black tracking-widest text-zinc-400 uppercase">
-              The challenge
+              {rv.challenge}
             </h2>
             <ChallengeCards challenge={snapshot.challenge} compact stacked />
           </section>
-          <p className="text-xs text-zinc-500">
-            Watch closely: when the reveal ends, every player votes for the best build in four
-            categories (never their own).
-          </p>
+          <p className="text-xs text-zinc-500">{rv.watchNote}</p>
         </aside>
       </div>
 
@@ -391,7 +401,7 @@ export function RevealStage({
 
 /**
  * One fresh preview per build (the parent keys it by build id): a new iframe in reveal
- * mode, the sandbox origin's storage wiped first, then the bundle. Unmounting disposes it,
+ * mode, the sandbox origin's storage wiped first, then the site pack. Unmounting disposes it,
  * which removes the iframe and stops everything the build runs. Its watchdog stats count
  * for the battle's preview health (T-031) while it runs.
  */
@@ -401,7 +411,7 @@ function LiveBuild({
   title,
   health,
   onCrash,
-  onPackagesFailed,
+  onLoadFailed,
 }: {
   buildId: string;
   build: PreviewBuild;
@@ -409,20 +419,23 @@ function LiveBuild({
   health: PreviewHealth;
   /** The watchdog stopped the build: it froze, or it never started. */
   onCrash: (buildId: string, crash: PreviewCrash) => void;
-  /** Its code or packages could not load (the shell's `module-load` error, T-032). */
-  onPackagesFailed: (buildId: string) => void;
+  /** The sandbox could not serve its site here (site-errors.ts). */
+  onLoadFailed: (buildId: string) => void;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const onCrashRef = useRef(onCrash);
-  const onPackagesFailedRef = useRef(onPackagesFailed);
+  const onLoadFailedRef = useRef(onLoadFailed);
   const titleRef = useRef(title);
   const healthRef = useRef(health);
   useEffect(() => {
     onCrashRef.current = onCrash;
-    onPackagesFailedRef.current = onPackagesFailed;
+    onLoadFailedRef.current = onLoadFailed;
     titleRef.current = title;
     healthRef.current = health;
-  }, [onCrash, onPackagesFailed, title, health]);
+    // A new title (a language switch) renames the running frame; it does not reload it.
+    const iframe = hostRef.current?.querySelector('iframe');
+    if (iframe) iframe.title = title;
+  }, [onCrash, onLoadFailed, title, health]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -435,17 +448,17 @@ function LiveBuild({
       'position:absolute;inset:0;width:100%;height:100%;border:0;background:#fff';
     host.replaceChildren(iframe);
     const preview = new PreviewHandle(iframe, {
-      shellUrl: playgroundConfig.shellUrl,
+      shellUrl: previewConfig.shellUrl,
       mode: 'reveal',
     });
     const stopFollowing = healthRef.current.follow(preview);
     const offCrash = preview.on('crash', (crash) => {
       onCrashRef.current(buildId, crash);
     });
-    // A package that can't load (or still hasn't after 8 s) while the package CDN is down:
-    // the screenshot is more use to the room than a blank frame (T-032).
+    // A site the sandbox cannot serve in this browser: the screenshot is more use to the room
+    // than a blank frame. (A single file that fails to load does not stop the site.)
     const offError = preview.on('error', (m) => {
-      if (m.kind === 'module-load') onPackagesFailedRef.current(buildId);
+      if (isSiteLoadFailure(m)) onLoadFailedRef.current(buildId);
     });
     // Wipe what an earlier build left on the sandbox origin, in a fresh iframe; the load
     // waits for the new shell, which handles the wipe first.
@@ -457,7 +470,7 @@ function LiveBuild({
       preview.dispose();
       stopFollowing();
     };
-    // A new build (or bundle) is a new preview; a new title alone is not.
+    // A new build (or site pack) is a new preview; a new title alone is not.
   }, [buildId, build]);
 
   return <div ref={hostRef} className="absolute inset-0" data-testid="reveal-live" />;
@@ -480,13 +493,14 @@ function StillImage({
   dim?: boolean;
   children?: ReactNode;
 }) {
+  const t = useT();
   return (
     <div className="absolute inset-0 bg-zinc-900" data-testid={testId}>
       {image ? (
         // eslint-disable-next-line @next/next/no-img-element -- a Storage URL or an object URL
         <img
           src={image}
-          alt={`Screenshot of ${name}`}
+          alt={t.common.screenshotOf(name)}
           className={`absolute inset-0 h-full w-full object-contain ${dim ? 'opacity-60' : ''}`}
           data-testid="fallback-thumb"
         />
@@ -534,14 +548,18 @@ function HostPanel({
   show: RevealVoteController;
   showState: RevealVoteState;
 }) {
+  const t = useT();
+  const rv = t.reveal;
   if (!isHost) {
     return (
       <p
         className="rounded-2xl border border-zinc-800 bg-zinc-900 p-4 text-sm text-zinc-400"
         data-testid="reveal-host-note"
       >
-        👑 <strong className="text-zinc-200">{hostName}</strong> can move to the next build or skip
-        to the vote. Otherwise each build gets its full slot.
+        <Rich
+          text={rv.hostNote}
+          slots={{ host: <strong className="text-zinc-200">{hostName}</strong> }}
+        />
       </p>
     );
   }
@@ -554,7 +572,7 @@ function HostPanel({
       data-testid="reveal-host-controls"
     >
       <h2 className="text-xs font-black tracking-widest text-fuchsia-300 uppercase">
-        👑 You host the reveal
+        {rv.hostTitle}
       </h2>
       <div className="flex gap-2 lg:flex-col">
         <button
@@ -566,7 +584,7 @@ function HostPanel({
           }}
           className="min-h-12 flex-1 rounded-xl bg-fuchsia-500 px-4 py-3 font-black text-white hover:bg-fuchsia-400 disabled:opacity-50"
         >
-          {pending === 'next' ? 'Moving on…' : last ? 'Next: start the vote ▶' : 'Next build ▶'}
+          {pending === 'next' ? rv.movingOn : last ? rv.nextVote : rv.next}
         </button>
         <button
           type="button"
@@ -577,12 +595,12 @@ function HostPanel({
           }}
           className="min-h-12 flex-1 rounded-xl border border-fuchsia-400/60 px-4 py-2 text-sm font-bold text-fuchsia-100 hover:bg-fuchsia-900/60 disabled:opacity-50"
         >
-          {pending === 'skip' ? 'Skipping…' : '⏭ Skip to the vote'}
+          {pending === 'skip' ? rv.skipping : rv.skipToVote}
         </button>
       </div>
       {showState.host.error && (
         <p role="alert" className="text-xs text-red-300" data-testid="host-error">
-          {describeError(showState.host.error)}{' '}
+          {describeError(showState.host.error, t)}{' '}
           <button
             type="button"
             className="underline"
@@ -590,7 +608,7 @@ function HostPanel({
               show.dismissHostError();
             }}
           >
-            OK
+            {t.common.ok}
           </button>
         </p>
       )}
@@ -609,13 +627,11 @@ function RevealStrip({
   showState: RevealVoteState;
   index: number;
 }) {
+  const t = useT();
   const order = snapshot.battle.reveal_order ?? [];
   const byId = new Map<string, RevealBuild>((showState.builds ?? []).map((b) => [b.build_id, b]));
   return (
-    <nav
-      aria-label="Every build of the reveal"
-      className="border-t border-zinc-800 bg-zinc-900/60 px-4 py-3"
-    >
+    <nav aria-label={t.reveal.strip} className="border-t border-zinc-800 bg-zinc-900/60 px-4 py-3">
       <ol className="mx-auto flex max-w-7xl gap-3 overflow-x-auto" data-testid="reveal-strip">
         {order.map((id, i) => {
           const b = byId.get(id);
@@ -627,8 +643,8 @@ function RevealStrip({
           const removed =
             b?.taken_down === true || snapshot.builds.find((x) => x.id === id)?.taken_down === true;
           const label = removed
-            ? REMOVED_TEXT
-            : (b?.name ?? `${b?.builder_name ?? 'Someone'}'s build`);
+            ? t.moderation.removed
+            : (b?.name ?? t.common.buildOf(b?.builder_name ?? t.common.someone));
           return (
             <li
               key={id}
@@ -653,7 +669,7 @@ function RevealStrip({
                   // eslint-disable-next-line @next/next/no-img-element -- a Storage URL or an object URL
                   <img
                     src={image}
-                    alt={`Thumbnail of ${label}`}
+                    alt={t.reveal.thumbnailOf(label)}
                     className="absolute inset-0 h-full w-full object-cover object-top"
                     data-testid="strip-thumb"
                   />
@@ -663,7 +679,7 @@ function RevealStrip({
               </div>
               <p className="truncate px-2 py-1 text-xs font-semibold">
                 <span className="text-zinc-500">{i + 1}.</span>{' '}
-                {state === 'upcoming' ? 'Coming up' : label}
+                {state === 'upcoming' ? t.reveal.comingUp : label}
                 {state !== 'upcoming' && b && (
                   <span className="text-zinc-500"> · {b.builder_name}</span>
                 )}

@@ -1,5 +1,6 @@
 import { defineConfig } from '@playwright/test';
 import { APP_SERVER_ENV, appServerCommand } from './e2e/app-server';
+import { welcomeSeen } from './e2e/welcome';
 
 /**
  * E2E for the solo game (`e2e/solo*.spec.ts`) against the REAL local Supabase stack, with
@@ -8,7 +9,7 @@ import { APP_SERVER_ENV, appServerCommand } from './e2e/app-server';
  * supabase/README.md); the tests move deadlines with psql as the superuser, like the DB
  * tests, and commit their data.
  *
- * scripts/solo-services.ts starts the sandbox shell (with the capture gate), the mock CDN and
+ * scripts/solo-services.ts starts the sandbox shell (with the capture gate) and
  * the jobs Edge Function with its Browser Rendering stand-in (`--worker`: the Node worker);
  * Playwright serves the static export with `wrangler dev` (e2e/app-server.ts). The production build uses the default (local) Supabase URL and anon
  * key. `E2E_REUSE_SERVERS=1` reuses servers already running (e.g. `tsx
@@ -29,6 +30,8 @@ export default defineConfig({
   reporter: [['list']],
   use: {
     baseURL: APP_ORIGIN,
+    // The welcome screen is already seen (e2e/welcome.ts).
+    storageState: welcomeSeen(APP_ORIGIN),
     browserName: 'chromium',
     channel: 'chromium',
     headless: true,
@@ -40,7 +43,7 @@ export default defineConfig({
   webServer: [
     {
       command: 'tsx scripts/solo-services.ts',
-      url: 'http://127.0.0.1:4321/v1/',
+      url: 'http://127.0.0.1:4321/v2/',
       env: { BR_APP_ORIGINS: APP_ORIGIN },
       // SIGTERM, so solo-services removes its pg_cron schedule and Vault secrets (and a
       // --worker hands its job back) before it exits.

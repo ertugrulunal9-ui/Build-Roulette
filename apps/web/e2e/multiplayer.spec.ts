@@ -5,6 +5,7 @@ import { crawl, one } from './link-preview';
 import {
   FREEZE_BUTTON,
   battleOf,
+  importApp,
   joinByLink,
   member,
   newPlayer,
@@ -13,10 +14,9 @@ import {
   revealLive,
   setVisibility,
   ship,
-  storedFile,
+  storedSite,
   vote,
   waitForBuild,
-  writeApp,
   type Player,
 } from './rooms';
 import { sql } from './stack';
@@ -104,25 +104,29 @@ test('a 3-player room: lobby → battle → ship and auto-ship → reveal → vo
       `select c.time_limit_seconds from public.battles b join public.challenges c on c.id = b.challenge_id where b.id = '${battleId}'`,
     ),
   );
-  expect([300, 600, 900]).toContain(limitS);
+  // A room battle draws 10, 15 or 20 minutes (docs/09 §9.7).
+  expect([600, 900, 1200]).toContain(limitS);
   for (const p of [host, bob, cleo]) {
     await waitForBuild(p.page);
     await expect(p.page.getByTestId('challenge')).toContainText(card);
     await expect(progress(p.page, host.name)).toHaveAttribute('data-state', 'building');
+    // Nothing imported yet: the drop zone, and Ship it waits for an import.
+    await expect(p.page.getByTestId('ship-button')).toBeDisabled();
   }
+  await expect(progress(bob.page, host.name).getByTestId('activity')).toContainText('building…');
 
-  // ─── A late joiner is a spectator: challenge, countdown, progress, no editor ──────
+  // ─── A late joiner is a spectator: challenge, countdown, progress, no import ──────
   await joinByLink(dave, code);
   await expect(dave.page.getByTestId('spectator-stage')).toBeVisible();
   await expect(dave.page.getByTestId('challenge')).toContainText(card);
   await expect(dave.page.getByTestId('countdown')).toBeVisible();
   await expect(dave.page.getByTestId('progress-player')).toHaveCount(3);
-  await expect(dave.page.getByTestId('code-editor')).toHaveCount(0);
+  await expect(dave.page.getByTestId('drop-zone')).toHaveCount(0);
   await expect(dave.page.getByTestId('build-stage')).toHaveCount(0);
   await expect(dave.page.getByTestId('ship-button')).toHaveCount(0);
 
   // ─── The host ships fast (speedrun) ───────────────────────────────────────────────
-  await writeApp(host.page, 'Ada Rocket', 'rgb(255, 87, 34)');
+  await importApp(host.page, 'Ada Rocket', 'rgb(255, 87, 34)');
   await ship(host.page, 'Ada Rocket');
   // The others see the ship at once (a `build` event): the badge and a toast.
   for (const p of [bob, cleo, dave]) {
@@ -135,11 +139,15 @@ test('a 3-player room: lobby → battle → ship and auto-ship → reveal → vo
     bob.page.getByTestId('toast').filter({ hasText: `${host.name} shipped “Ada Rocket”` }),
   ).toBeVisible();
 
-  // ─── Cleo edits, refreshes mid-BUILD and gets her work back ───────────────────────
-  await writeApp(cleo.page, 'Cleo Autosave', 'rgb(0, 160, 80)');
+  // ─── Cleo imports, refreshes mid-BUILD and gets her import back ───────────────────
+  await importApp(cleo.page, 'Cleo Autosave', 'rgb(0, 160, 80)');
+  await expect(cleo.page.getByTestId('autosave-status')).toHaveAttribute('data-state', 'saved');
   await expect
-    .poll(() => storedFile(cleo.page, battleId, 'src/App.tsx'))
-    .toContain('Cleo Autosave');
+    .poll(() => storedSite(cleo.page, battleId))
+    .toEqual({
+      title: 'Cleo Autosave',
+      imports: 1,
+    });
   await cleo.page.reload();
   await expect(cleo.page.getByTestId('build-stage')).toBeVisible({ timeout: 30_000 });
   await expect(cleo.page.getByTestId('challenge')).toContainText(card);
@@ -147,16 +155,25 @@ test('a 3-player room: lobby → battle → ship and auto-ship → reveal → vo
     timeout: 30_000,
   });
   await expect(progress(cleo.page, host.name)).toHaveAttribute('data-state', 'shipped');
-  // She does not ship; hiding the tab autosaves (as does the 30 s timer).
+  // The others see that she imported (Presence, at most every 15 s).
+  await expect(progress(host.page, cleo.name).getByTestId('activity')).toContainText('imported', {
+    timeout: 30_000,
+  });
+  // She does not ship: the deadline auto-ships her autosave.
   await setVisibility(cleo.page, 'hidden');
   await expect(cleo.page.getByTestId('autosave-status')).toHaveAttribute('data-state', 'saved');
   await setVisibility(cleo.page, 'visible');
 
-  // ─── Bob builds on; the others see his live activity; he ships late (no speedrun) ─
+  // ─── Bob imports twice; the others see it; he ships late (no speedrun) ────────────
   // (His build has a button that hangs it: the REVEAL below skips it when it freezes.)
-  await writeApp(bob.page, 'Bob Turtle', 'rgb(30, 64, 175)', { extra: FREEZE_BUTTON });
+  await importApp(bob.page, 'Bob Draft', 'rgb(90, 90, 90)');
+  await importApp(bob.page, 'Bob Turtle', 'rgb(30, 64, 175)', FREEZE_BUTTON);
+  await expect(bob.page.getByTestId('import-summary')).toContainText('Imported dist');
   await expect(progress(host.page, bob.name)).toHaveAttribute('data-online', 'true');
-  await expect(progress(host.page, bob.name).getByTestId('activity')).toContainText('lines');
+  await expect(progress(host.page, bob.name).getByTestId('activity')).toContainText(
+    'imported (2×)',
+    { timeout: 30_000 },
+  );
   await snap(bob.page, 'build-sidebar');
   await snap(dave.page, 'spectator');
   // 60% of the time limit has passed (the server computes completion times).
@@ -443,7 +460,7 @@ test('a 3-player room: lobby → battle → ship and auto-ship → reveal → vo
   }
   expect(phaseOf(battleId)).toBe('destroyed');
   // The battle's local copies are gone; the late spectator now has a player slot.
-  expect(await storedFile(host.page, battleId, 'src/App.tsx')).toBeNull();
+  expect(await storedSite(host.page, battleId)).toBeNull();
   await expect(member(host.page, dave.name)).toHaveAttribute('data-role', 'player');
   await expect(host.page.getByTestId('player-count')).toHaveText('4/8 players');
 

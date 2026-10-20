@@ -1,21 +1,21 @@
 /**
- * Synthetic build files with realistic sizes. The shapes are ASSUMPTIONS (2026-10-07), set
- * from the product's limits and the runtime's output, not from production data (there is
- * none yet):
+ * Synthetic build files with realistic sizes. The shapes are ASSUMPTIONS, set from the
+ * product's limits and typical static builds, not from production data (there is none yet):
  *
- * - `source.json`: the workspace (limit 1 MB, docs/03 §3.3; the react-ts template is about
- *   5 KB). A 10-minute build adds a few hundred lines; some paste images as data URLs.
- * - `bundle.js`: esbuild production output (minified), packages are external (import map
- *   to the package CDN), images are inlined. So most bundles are small; image-heavy ones
- *   are not.
- * - `bundle.css`, `manifest.json` (`{dependencies}`), `thumb.webp` (640×400 client
- *   thumbnail, best effort at ship).
+ * - `site.bin`: the site pack of one import (import mode, docs/09 §9.2; `packSite` of
+ *   `@br/site`, limit 5 MB). A built site carries its own packages now (no package CDN since
+ *   M6), so a Vite + React build is a few hundred KB of JavaScript; a plain HTML page is a
+ *   few KB; image-heavy sites approach the limit. Re-estimated for M6 (2026-10-16): to be
+ *   replaced by measured sizes once there are real imports.
+ * - `thumb.webp` (640×400 client thumbnail, best effort at ship).
  *
- * The bundle is real JavaScript that renders a coloured page with the build name, so the
- * capture worker produces a real screenshot (not a blank-page fallback). Half of the
- * builds call `window.buildRoulette.ready()` (the template's hint); the others are shot
- * at network idle + 2 s, like builds that never call it.
+ * The pack is a real site in Vite's layout (`index.html` loading root-relative hashed
+ * assets), so the capture page's site worker serves it and the capture produces a real
+ * screenshot (not a blank-page fallback). Half of the builds call
+ * `window.buildRoulette.ready()`; the others are shot at network idle + 2 s, like builds
+ * that never call it.
  */
+import { contentTypeOf, packSite } from '@br/site';
 import type { Rng } from './rng';
 
 export interface SizeShape {
@@ -25,18 +25,15 @@ export interface SizeShape {
   max: number;
 }
 
-export const SIZE_SHAPES: Record<'source' | 'bundle' | 'css' | 'thumb', SizeShape> = {
-  source: { median: 14_000, p90: 60_000, min: 2_000, max: 1_000_000 },
-  bundle: { median: 12_000, p90: 70_000, min: 1_500, max: 1_500_000 },
-  css: { median: 2_000, p90: 8_000, min: 200, max: 100_000 },
+export const SIZE_SHAPES: Record<'site' | 'thumb', SizeShape> = {
+  site: { median: 180_000, p90: 900_000, min: 3_000, max: 4_500_000 },
   thumb: { median: 18_000, p90: 40_000, min: 4_000, max: 150_000 },
 };
 
 /** The final sizes of one player's build (drawn once per battle). */
 export interface BuildSizes {
-  source: number;
-  bundle: number;
-  css: number;
+  /** The site pack, in bytes. */
+  site: number;
   thumb: number;
   readySignal: boolean;
   hue: number;
@@ -48,9 +45,7 @@ export function drawBuildSizes(rng: Rng): BuildSizes {
     return rng.logNormal(sh.median, sh.p90, sh.min, sh.max);
   };
   return {
-    source: s('source'),
-    bundle: s('bundle'),
-    css: s('css'),
+    site: s('site'),
     thumb: s('thumb'),
     readySignal: rng.chance(0.5),
     hue: rng.int(0, 359),
@@ -95,24 +90,22 @@ function filler(rng: Rng, bytes: number): string {
   return parts.join('').slice(0, Math.max(0, bytes));
 }
 
-/** `bundle.js` at a given progress (0–1) of the build: real JS that renders `name`. */
-export function bundleJs(rng: Rng, sizes: BuildSizes, name: string, progress: number): string {
+/** The site's script, about `bytes` long: real JS that renders `name`. */
+export function siteJs(rng: Rng, sizes: BuildSizes, name: string, bytes: number): string {
   const head =
-    `const r=document.createElement('div');` +
+    `const r=document.createElement('div');r.className='app';` +
     `r.style.cssText='font:56px sans-serif;padding:48px;min-height:100vh;box-sizing:border-box;` +
     `color:#fff;background:hsl(${String(sizes.hue)},65%,40%)';` +
     `r.textContent=${JSON.stringify(name)};document.body.style.margin='0';document.body.appendChild(r);` +
     (sizes.readySignal ? `requestAnimationFrame(()=>window.buildRoulette?.ready());` : '');
-  const target = Math.round(sizes.bundle * (0.3 + 0.7 * progress));
-  const pad = filler(rng, Math.max(0, target - head.length - 40));
+  const pad = filler(rng, Math.max(0, bytes - head.length - 40));
   return `${head}\nconst __pad=${JSON.stringify(pad)};void __pad;\n`;
 }
 
-export function bundleCss(rng: Rng, sizes: BuildSizes, progress: number): string {
-  const target = Math.round(sizes.css * (0.3 + 0.7 * progress));
-  const rules: string[] = [];
-  let n = 0;
-  while (n < target) {
+function siteCss(rng: Rng, bytes: number): string {
+  const rules: string[] = ['.app{display:block}'];
+  let n = rules[0]?.length ?? 0;
+  while (n < bytes) {
     const r = `.c${String(rng.int(0, 99999))}{margin:${String(rng.int(0, 40))}px;color:#${rng
       .int(0, 0xffffff)
       .toString(16)
@@ -123,20 +116,39 @@ export function bundleCss(rng: Rng, sizes: BuildSizes, progress: number): string
   return rules.join('\n');
 }
 
-export function sourceJson(rng: Rng, sizes: BuildSizes, progress: number): string {
-  const target = Math.round(sizes.source * (0.3 + 0.7 * progress));
-  const app = filler(rng, Math.max(0, target - 200));
-  return JSON.stringify({
-    version: 1,
-    template: 'react-ts',
-    entry: 'src/main.tsx',
-    files: { 'src/main.tsx': `import React from 'react';\n${app}`, 'src/styles.css': 'body{}' },
-  });
-}
+const encoder = new TextEncoder();
 
-export const MANIFEST_JSON = JSON.stringify({
-  dependencies: { react: '19.2.0', 'react-dom': '19.2.0' },
-});
+/**
+ * `site.bin` of one import at a given progress (0–1) of the build: `index.html` and its
+ * hashed script and stylesheet under `/assets/`, about the drawn size (later imports are
+ * bigger).
+ */
+export function sitePack(
+  rng: Rng,
+  sizes: BuildSizes,
+  name: string,
+  progress: number,
+): Uint8Array<ArrayBuffer> {
+  const target = Math.round(sizes.site * (0.6 + 0.4 * progress));
+  const hash = rng.int(0, 0xffffff).toString(16).padStart(6, '0');
+  const html =
+    `<!doctype html><html lang="en"><head><meta charset="UTF-8">` +
+    `<title>${name.replace(/[<&"]/g, '')}</title>` +
+    `<script type="module" crossorigin src="/assets/index-${hash}.js"></script>` +
+    `<link rel="stylesheet" crossorigin href="/assets/index-${hash}.css"></head>` +
+    `<body><div id="root"></div></body></html>`;
+  const css = siteCss(rng, Math.round(target * 0.05));
+  // The pack's own header and file list are a few hundred bytes.
+  const js = siteJs(rng, sizes, name, Math.max(0, target - html.length - css.length - 300));
+  const files: [string, string][] = [
+    ['index.html', html],
+    [`assets/index-${hash}.js`, js],
+    [`assets/index-${hash}.css`, css],
+  ];
+  return packSite(
+    files.map(([path, text]) => ({ path, type: contentTypeOf(path), bytes: encoder.encode(text) })),
+  );
+}
 
 /** A WebP-looking blob of the drawn size (RIFF/WEBP header + filler; never decoded here). */
 export function thumbWebp(rng: Rng, sizes: BuildSizes): Uint8Array<ArrayBuffer> {

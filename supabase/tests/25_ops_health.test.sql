@@ -125,8 +125,8 @@ insert into public.jobs (kind, ref_id, status, attempts, run_after, last_error, 
   ('destroy', :'X1', 'done', 1, now(), null,
    now() - interval '6 minutes', now() - interval '5 minutes');
 insert into storage.objects (bucket_id, name, created_at) values
-  ('ephemeral-builds', :'T1' || '/' || :'ana_id' || '/bundle.js', now() - interval '30 hours'),
-  ('ephemeral-builds', :'X1' || '/' || :'ana_id' || '/bundle.js', now() - interval '3 hours');
+  ('ephemeral-builds', :'T1' || '/' || :'ana_id' || '/site.bin', now() - interval '30 hours'),
+  ('ephemeral-builds', :'X1' || '/' || :'ana_id' || '/site.bin', now() - interval '3 hours');
 -- A cron job that never fires (31 February), with three runs.
 select cron.schedule('zz-health-probe', '0 0 31 2 *', 'select 1') as probe \gset
 -- runid is given (the API roles cannot use cron's sequence), far ahead of the scheduler's.

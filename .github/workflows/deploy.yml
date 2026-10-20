@@ -15,7 +15,7 @@
 # Settings (repository → Settings → Secrets and variables → Actions; DEPLOY.md lists where each
 # value comes from):
 #   variables  CLOUDFLARE_ACCOUNT_ID (account A), CLOUDFLARE_SANDBOX_ACCOUNT_ID (account B),
-#              SUPABASE_URL; optional APP_URL, PKG_CDN_URL, TURNSTILE_SITE_KEY, CF_WEB_WORKER,
+#              SUPABASE_URL; optional APP_URL, TURNSTILE_SITE_KEY, CF_WEB_WORKER,
 #              CF_SANDBOX_WORKER, CF_WORKERS_SUBDOMAIN, CF_SANDBOX_WORKERS_SUBDOMAIN,
 #              NEXT_PUBLIC_SENTRY_DSN, NEXT_PUBLIC_POSTHOG_KEY, NEXT_PUBLIC_POSTHOG_HOST
 #   secrets    CLOUDFLARE_API_TOKEN (account A), CLOUDFLARE_SANDBOX_API_TOKEN (account B),
@@ -96,15 +96,16 @@ jobs:
           CLOUDFLARE_SANDBOX_ACCOUNT_ID: ${{ vars.CLOUDFLARE_SANDBOX_ACCOUNT_ID }}
           SUPABASE_URL: ${{ vars.SUPABASE_URL }}
           APP_URL: ${{ vars.APP_URL }}
-          PKG_CDN_URL: ${{ vars.PKG_CDN_URL }}
           TURNSTILE_SITE_KEY: ${{ vars.TURNSTILE_SITE_KEY }}
           CF_WEB_WORKER: ${{ vars.CF_WEB_WORKER }}
           CF_SANDBOX_WORKER: ${{ vars.CF_SANDBOX_WORKER }}
           CF_WORKERS_SUBDOMAIN: ${{ vars.CF_WORKERS_SUBDOMAIN }}
           CF_SANDBOX_WORKERS_SUBDOMAIN: ${{ vars.CF_SANDBOX_WORKERS_SUBDOMAIN }}
-          # Read only to warn that they are not used any more (Pages, before T-043).
+          # Read only to warn that they are not used any more (Pages, before T-043; the package
+          # CDN, before import mode in M6).
           CF_PAGES_WEB_PROJECT: ${{ vars.CF_PAGES_WEB_PROJECT }}
           CF_PAGES_SHELL_PROJECT: ${{ vars.CF_PAGES_SHELL_PROJECT }}
+          PKG_CDN_URL: ${{ vars.PKG_CDN_URL }}
           NEXT_PUBLIC_SENTRY_DSN: ${{ vars.NEXT_PUBLIC_SENTRY_DSN }}
           NEXT_PUBLIC_POSTHOG_KEY: ${{ vars.NEXT_PUBLIC_POSTHOG_KEY }}
           NEXT_PUBLIC_POSTHOG_HOST: ${{ vars.NEXT_PUBLIC_POSTHOG_HOST }}

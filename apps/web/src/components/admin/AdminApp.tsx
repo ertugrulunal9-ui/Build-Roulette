@@ -80,7 +80,7 @@ export function AdminApp() {
     return (
       <>
         {neutral}
-        <NotFoundView testId="admin-not-found" />
+        <NotFoundView testId="admin-not-found" picker={false} />
       </>
     );
   }

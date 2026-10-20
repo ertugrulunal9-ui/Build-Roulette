@@ -2,7 +2,7 @@
  * The sandbox shell's Worker (T-043; Cloudflare Workers with static assets, `wrangler.jsonc`):
  * the capture gate in front of the static shell. scripts/build.ts bundles it into
  * `dist/worker.js` (kept out of the uploaded assets by `dist/.assetsignore`). The config's
- * `run_worker_first: ["/v1/capture"]` sends only the capture path here; every other path is a
+ * `run_worker_first: ["/v2/capture"]` sends only the capture path here; every other path is a
  * static asset with the `_headers` rules and invokes no Worker.
  *
  * The HMAC secret is the Worker secret `CAPTURE_HMAC_SECRET` (`wrangler deploy

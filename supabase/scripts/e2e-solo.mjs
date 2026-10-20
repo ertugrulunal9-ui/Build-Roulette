@@ -140,8 +140,9 @@ const ok2xx = (res) => res.status >= 200 && res.status < 300;
 const storageStatus = (res) => (ok2xx(res) ? String(res.status) : String(res.body?.statusCode));
 const deniedByRls = (res) =>
   storageStatus(res) === '403' && /row-level security/.test(res.body?.message ?? '');
-const SOURCE = JSON.stringify({ files: { 'src/main.ts': 'console.log("hi")' } });
-const BUNDLE = 'document.body.textContent = "Snack Overflow";';
+// A stand-in for a site pack (@br/site): Storage never looks inside one, so any bytes do.
+const SITE = 'BRSITE1\n(a stand-in site pack: Snack Overflow)';
+const PACK = 'application/octet-stream';
 
 // ═════════════════════════════════════════════════════════════════════════
 const alice = await signUpAnonymously();
@@ -165,7 +166,7 @@ console.log(`# alice ${alice.id}, bob ${bob.id}`);
 // ─── alice: start, spin, build ───────────────────────────────────────────
 const start = await rpc(alice, 'start_solo_battle', {
   p_display_name: 'alice',
-  p_time_limit_seconds: 300,
+  p_time_limit_seconds: 600,
 });
 check(
   'start_solo_battle returns a battle id',
@@ -184,13 +185,16 @@ const prefix = `${battle}/${alice.id}`;
       again.body?.details === battle,
     again,
   );
-  const early = await upload(
-    alice,
-    'ephemeral-builds',
-    `${prefix}/autosave/bundle.js`,
-    BUNDLE,
-    'text/javascript',
+  const oldLimit = await rpc(alice, 'start_solo_battle', {
+    p_display_name: 'alice',
+    p_time_limit_seconds: 180,
+  });
+  check(
+    'the old 3-minute limit is refused (10, 15, 20, 30 or 45 minutes now)',
+    oldLimit.status === 400 && oldLimit.body?.message === 'invalid_time_limit',
+    oldLimit,
   );
+  const early = await upload(alice, 'ephemeral-builds', `${prefix}/autosave/site.bin`, SITE, PACK);
   check('no uploads while SPINNING', deniedByRls(early), early);
 
   const snap = await rpc(alice, 'get_battle_snapshot', { p_battle_id: battle });
@@ -216,20 +220,14 @@ const prefix = `${battle}/${alice.id}`;
 
 // ─── alice: storage while BUILDING ───────────────────────────────────────
 {
-  const put = await upload(
-    alice,
-    'ephemeral-builds',
-    `${prefix}/autosave/bundle.js`,
-    BUNDLE,
-    'text/javascript',
-  );
-  check('the owner uploads an autosave', ok2xx(put), put);
+  const put = await upload(alice, 'ephemeral-builds', `${prefix}/autosave/site.bin`, SITE, PACK);
+  check('the owner uploads an autosave (autosave/site.bin)', ok2xx(put), put);
   const again = await upload(
     alice,
     'ephemeral-builds',
-    `${prefix}/autosave/bundle.js`,
-    BUNDLE + '//2',
-    'text/javascript',
+    `${prefix}/autosave/site.bin`,
+    SITE + '/2',
+    PACK,
   );
   check(
     'a plain re-upload of an existing file is refused (no upsert)',
@@ -239,51 +237,57 @@ const prefix = `${battle}/${alice.id}`;
   const upsert = await upload(
     alice,
     'ephemeral-builds',
-    `${prefix}/autosave/bundle.js`,
-    BUNDLE + '//2',
-    'text/javascript',
+    `${prefix}/autosave/site.bin`,
+    SITE + '/2',
+    PACK,
     {
       upsert: true,
     },
   );
   check('an upsert overwrites the autosave', ok2xx(upsert), upsert);
-  const read = await download(alice, 'ephemeral-builds', `${prefix}/autosave/bundle.js`);
+  const read = await download(alice, 'ephemeral-builds', `${prefix}/autosave/site.bin`);
   check(
     'the owner reads the overwritten file',
-    read.status === 200 && read.body === BUNDLE + '//2',
+    read.status === 200 && read.body === SITE + '/2',
     read,
   );
 
-  const html = await upload(
+  const js = await upload(
     alice,
     'ephemeral-builds',
-    `${prefix}/bundle.js`,
-    '<h1>x</h1>',
-    'text/html',
+    `${prefix}/site.bin`,
+    'document.title = 1;',
+    'text/javascript',
   );
-  check('a MIME type outside the bucket list is refused', storageStatus(html) === '415', html);
+  check(
+    'a MIME type outside the bucket list (text/javascript, no longer allowed) is refused',
+    storageStatus(js) === '415',
+    js,
+  );
   const big = await upload(
     alice,
     'ephemeral-builds',
-    `${prefix}/bundle.js`,
+    `${prefix}/site.bin`,
     'x'.repeat(5 * 1024 * 1024 + 1),
-    'text/javascript',
+    PACK,
   );
   check('a file over 5 MB is refused', storageStatus(big) === '413', big);
-  const evil = await upload(alice, 'ephemeral-builds', `${prefix}/index.html`, 'x', 'text/css');
+  const evil = await upload(alice, 'ephemeral-builds', `${prefix}/index.html`, 'x', PACK);
   check('a file name outside the allowed list is refused', deniedByRls(evil), evil);
+  const old = await upload(alice, 'ephemeral-builds', `${prefix}/bundle.js`, 'x', PACK);
+  check('the editor-era bundle.js is refused (T-046)', deniedByRls(old), old);
   const foreign = await upload(
     alice,
     'ephemeral-builds',
-    `${battle}/${bob.id}/bundle.js`,
-    BUNDLE,
-    'text/javascript',
+    `${battle}/${bob.id}/site.bin`,
+    SITE,
+    PACK,
   );
   check("writing under another user's folder is refused", deniedByRls(foreign), foreign);
   const shot = await upload(alice, 'screenshots', `${battle}/fake.webp`, 'x', 'image/webp');
   check('a client cannot write screenshots', deniedByRls(shot), shot);
 
-  const bobRead = await download(bob, 'ephemeral-builds', `${prefix}/autosave/bundle.js`);
+  const bobRead = await download(bob, 'ephemeral-builds', `${prefix}/autosave/site.bin`);
   check(
     "another player cannot read alice's files (hidden: 404)",
     storageStatus(bobRead) === '404',
@@ -292,9 +296,9 @@ const prefix = `${battle}/${alice.id}`;
   const bobWrite = await upload(
     bob,
     'ephemeral-builds',
-    `${battle}/${bob.id}/bundle.js`,
-    BUNDLE,
-    'text/javascript',
+    `${battle}/${bob.id}/site.bin`,
+    SITE,
+    PACK,
   );
   check(
     "a player not on the roster cannot write into alice's battle",
@@ -302,8 +306,8 @@ const prefix = `${battle}/${alice.id}`;
     bobWrite,
   );
 
-  const del = await removeObjects(alice, 'ephemeral-builds', [`${prefix}/autosave/bundle.js`]);
-  const still = await download(alice, 'ephemeral-builds', `${prefix}/autosave/bundle.js`);
+  const del = await removeObjects(alice, 'ephemeral-builds', [`${prefix}/autosave/site.bin`]);
+  const still = await download(alice, 'ephemeral-builds', `${prefix}/autosave/site.bin`);
   check(
     'the owner cannot delete files (nothing deleted, the file is still there)',
     ok2xx(del) && Array.isArray(del.body) && del.body.length === 0 && still.status === 200,
@@ -320,36 +324,32 @@ let buildId;
     p_stats: {},
   });
   check(
-    'ship_build without the final files: files_missing',
+    'ship_build without site.bin (only the autosave): files_missing',
     missing.body?.message === 'files_missing',
     missing,
   );
 
-  const src = await upload(
-    alice,
-    'ephemeral-builds',
-    `${prefix}/source.json`,
-    SOURCE,
-    'application/json',
-  );
-  const js = await upload(
-    alice,
-    'ephemeral-builds',
-    `${prefix}/bundle.js`,
-    BUNDLE,
-    'text/javascript',
-  );
-  check('the final source.json and bundle.js upload', ok2xx(src) && ok2xx(js), { src, js });
+  const site = await upload(alice, 'ephemeral-builds', `${prefix}/site.bin`, SITE, PACK);
+  check('the final site.bin uploads', ok2xx(site), site);
 
   const ship = await rpc(alice, 'ship_build', {
     p_battle_id: battle,
     p_name: 'Snack Overflow',
-    p_stats: { files: 2, lines: 1, deps: ['canvas-confetti'] },
+    p_stats: { files: 3, bundle_bytes: SITE.length, imports: 2 },
   });
   check(
     'ship_build ships and the solo battle goes straight to RESULTS',
     ship.body?.build?.status === 'shipped' && ship.body?.battle?.phase === 'results',
     ship,
+  );
+  const stats = ship.body?.build?.stats ?? {};
+  check(
+    'the stats keep files, bundle_bytes and imports',
+    Object.keys(stats).length === 3 &&
+      stats.files === 3 &&
+      stats.bundle_bytes === SITE.length &&
+      stats.imports === 2,
+    stats,
   );
   buildId = ship.body?.build?.id;
 
@@ -383,11 +383,11 @@ const shotPath = `${battle}/${buildId}.webp`;
     job.body?.ref_id === buildId && job.body?.status === 'running',
     job,
   );
-  const bundle = await download(service, 'ephemeral-builds', `${prefix}/bundle.js`);
+  const pack = await download(service, 'ephemeral-builds', `${prefix}/site.bin`);
   check(
-    'the service role reads the shipped bundle',
-    bundle.status === 200 && bundle.body === BUNDLE,
-    bundle,
+    'the service role reads the shipped site pack',
+    pack.status === 200 && pack.body === SITE,
+    pack,
   );
 
   const webp = new Uint8Array([0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50]);
@@ -428,11 +428,11 @@ const shotPath = `${battle}/${buildId}.webp`;
   const job = await rpc(service, 'claim_job', { p_kind: 'destroy' });
   check('the destroy worker claims the job', job.body?.ref_id === battle, job);
 
-  const paths = ['source.json', 'bundle.js', 'autosave/bundle.js'].map((f) => `${prefix}/${f}`);
+  const paths = ['site.bin', 'autosave/site.bin'].map((f) => `${prefix}/${f}`);
   const del = await removeObjects(service, 'ephemeral-builds', paths);
   check(
     'the service role deletes the ephemeral files through the Storage API',
-    ok2xx(del) && del.body?.length === 3,
+    ok2xx(del) && del.body?.length === 2,
     del,
   );
   const done = await rpc(service, 'complete_destroy', { p_battle_id: battle });
@@ -456,48 +456,28 @@ const shotPath = `${battle}/${buildId}.webp`;
 {
   const start2 = await rpc(bob, 'start_solo_battle', {
     p_display_name: 'bob',
-    p_time_limit_seconds: 180,
+    p_time_limit_seconds: 2700,
   });
   const b2 = start2.body;
-  check('bob starts a battle', ok2xx(start2), start2);
+  check('bob starts a 45-minute battle', ok2xx(start2), start2);
   sql(`update public.battles set phase_ends_at = now() - interval '1 second' where id = '${b2}'`);
   const building = await waitForPhase(bob, b2, 'building', 20_000);
   check('pg_cron moves SPINNING → BUILDING', building?.battle?.phase === 'building', building);
 
   const p2 = `${b2}/${bob.id}`;
-  const a1 = await upload(
-    bob,
-    'ephemeral-builds',
-    `${p2}/autosave/source.json`,
-    SOURCE,
-    'application/json',
-  );
-  const a2 = await upload(
-    bob,
-    'ephemeral-builds',
-    `${p2}/autosave/bundle.js`,
-    BUNDLE,
-    'text/javascript',
-  );
-  check('bob autosaves', ok2xx(a1) && ok2xx(a2), { a1, a2 });
+  const a1 = await upload(bob, 'ephemeral-builds', `${p2}/autosave/site.bin`, SITE, PACK);
+  check('bob autosaves (one import)', ok2xx(a1), a1);
 
   // The build deadline passes; nobody nudges. The sweep enters SHIPPING with the 15 s grace;
   // move that deadline too instead of waiting it out.
-  sql(`update public.battles set building_started_at = now() - interval '200 seconds',
+  sql(`update public.battles set building_started_at = now() - interval '2720 seconds',
          building_ends_at = now() - interval '20 seconds', phase_ends_at = now() - interval '20 seconds'
        where id = '${b2}'`);
   const shipping = await waitForPhase(bob, b2, 'shipping', 20_000);
   check('pg_cron moves BUILDING → SHIPPING', shipping?.battle?.phase === 'shipping', shipping);
-  const late = await upload(
-    bob,
-    'ephemeral-builds',
-    `${p2}/autosave/bundle.js`,
-    BUNDLE,
-    'text/javascript',
-    {
-      upsert: true,
-    },
-  );
+  const late = await upload(bob, 'ephemeral-builds', `${p2}/autosave/site.bin`, SITE, PACK, {
+    upsert: true,
+  });
   check(
     'after the deadline + grace, the autosave can no longer be overwritten',
     deniedByRls(late),
@@ -509,7 +489,7 @@ const shotPath = `${battle}/${buildId}.webp`;
     'pg_cron moves SHIPPING → RESULTS and auto-ships the autosave',
     results?.battle?.phase === 'results' &&
       results?.builds?.[0]?.status === 'auto_shipped' &&
-      results?.builds?.[0]?.completion_ms === 180_000,
+      results?.builds?.[0]?.completion_ms === 2_700_000,
     results,
   );
 }

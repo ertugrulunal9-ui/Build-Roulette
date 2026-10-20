@@ -160,7 +160,7 @@ export class FakeDocument extends FakeEventTarget {
   }
 }
 
-export const SHELL_URL = 'https://b1.usercontent.example/v1/';
+export const SHELL_URL = 'https://b1.usercontent.example/v2/';
 export const SHELL_ORIGIN = 'https://b1.usercontent.example';
 
 export function helloFrom(source: unknown, origin = SHELL_ORIGIN) {

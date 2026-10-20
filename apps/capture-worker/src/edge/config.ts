@@ -5,8 +5,10 @@
  * prints.
  *
  * Set by Supabase:   SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
- * Required secrets:  JOBS_CRON_SECRET, CAPTURE_SHELL_URL, CAPTURE_HMAC_SECRET, PKG_CDN_URL,
+ * Required secrets:  JOBS_CRON_SECRET, CAPTURE_SHELL_URL, CAPTURE_HMAC_SECRET,
  *                    BROWSER_RENDERING_ACCOUNT_ID, BROWSER_RENDERING_API_TOKEN
+ * No longer read:    PKG_CDN_URL (import mode, T-046: a site pack needs no import map; a
+ *                    secret still set is ignored)
  * Optional:          see `OPTIONAL` below (defaults fit Workers Free and Supabase Free).
  */
 import { CAPTURE_MIN_SECRET_LENGTH } from '@br/sandbox-shell/capture-sig';
@@ -117,7 +119,7 @@ export function loadFunctionConfig(env: Record<string, string | undefined>): Fun
   if (shellCaptureUrl && URL.canParse(shellCaptureUrl.replaceAll('{build}', 'b'))) {
     const u = new URL(shellCaptureUrl.replaceAll('{build}', 'b'));
     if (!u.pathname.endsWith('/capture') || u.search || u.hash) {
-      problems.push('CAPTURE_SHELL_URL must be the capture page URL (…/v1/capture, no query)');
+      problems.push('CAPTURE_SHELL_URL must be the capture page URL (…/v2/capture, no query)');
     }
   }
   const hmacSecret = str('CAPTURE_HMAC_SECRET');
@@ -126,7 +128,6 @@ export function loadFunctionConfig(env: Record<string, string | undefined>): Fun
       `CAPTURE_HMAC_SECRET must be at least ${String(CAPTURE_MIN_SECRET_LENGTH)} characters`,
     );
   }
-  const pkgCdnUrl = url('PKG_CDN_URL', str('PKG_CDN_URL'));
   const accountId = str('BROWSER_RENDERING_ACCOUNT_ID');
   if (accountId && !/^[0-9A-Za-z_-]{1,64}$/.test(accountId)) {
     problems.push('BROWSER_RENDERING_ACCOUNT_ID is not an account id');
@@ -176,7 +177,6 @@ export function loadFunctionConfig(env: Record<string, string | undefined>): Fun
     capture: {
       shellCaptureUrl,
       hmacSecret,
-      pkgCdnUrl,
       signedUrlTtlSeconds,
       captureTimeoutMs,
       viewport: { ...FUNCTION_VIEWPORT },
@@ -194,7 +194,6 @@ export function describeFunctionConfig(c: FunctionConfig): Record<string, unknow
     supabaseUrl: c.supabaseUrl,
     publicSupabaseUrl: c.publicSupabaseUrl,
     shellCaptureUrl: c.capture.shellCaptureUrl,
-    pkgCdnUrl: c.capture.pkgCdnUrl,
     browserRendering: c.browserRendering.apiUrl,
     minIntervalMs: c.browserRendering.minIntervalMs,
     budgetMsPerDay: c.budget.limitMs,

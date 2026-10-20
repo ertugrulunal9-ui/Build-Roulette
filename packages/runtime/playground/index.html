@@ -11,31 +11,8 @@
           13px/1.4 system-ui,
           sans-serif;
         display: grid;
-        grid-template-columns: 1fr 1fr;
-        height: 100vh;
-      }
-      #left {
-        overflow: auto;
-        padding: 8px;
-        border-right: 1px solid #ccc;
-      }
-      #right {
-        display: grid;
         grid-template-rows: auto 1fr 180px;
-        min-height: 0;
-      }
-      .file label {
-        font-weight: 600;
-        display: block;
-        margin-top: 8px;
-      }
-      .file textarea {
-        width: 100%;
-        box-sizing: border-box;
-        height: 160px;
-        font:
-          12px/1.4 ui-monospace,
-          monospace;
+        height: 100vh;
       }
       #preview-container {
         min-height: 0;
@@ -62,25 +39,21 @@
         gap: 6px;
         align-items: center;
         flex-wrap: wrap;
+        border-bottom: 1px solid #ccc;
       }
     </style>
   </head>
   <body>
-    <div id="left">
-      <div id="files"></div>
-      <h3>Diagnostics</h3>
-      <pre id="diagnostics"></pre>
+    <div id="toolbar">
+      <label
+        >Import a built site (dist folder): <input id="folder" type="file" webkitdirectory multiple
+      /></label>
+      <button id="reset">Reset storage</button>
+      <button id="restart">Restart preview</button>
+      <span id="status">booting…</span>
     </div>
-    <div id="right">
-      <div id="toolbar">
-        <button id="build">Build</button>
-        <button id="reset">Reset storage</button>
-        <button id="restart">Restart preview</button>
-        <span id="status">booting…</span>
-      </div>
-      <div id="preview-container"></div>
-      <pre id="console"></pre>
-    </div>
+    <div id="preview-container"></div>
+    <pre id="console"></pre>
     <script type="module" src="/playground.js"></script>
   </body>
 </html>

@@ -2,7 +2,23 @@
 
 Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 
-## Current milestone: M5 Hardening + free-tier deploy (all tasks merged; **deployed** 2026-10-16 at https://build-roulette-web.build-roulette.workers.dev, reachable from Turkey; sign-off waits on the runbook drills, DEPLOY.md §7)
+## Current milestone: M6 Import mode: bring your own build ([docs/09](09-import-mode.md)) — all tasks merged; **deployed 2026-10-17** (Deploy run 5 from `claude/intelligent-maxwell-ddael3`: migration 20261016120000 applied, jobs function, shell v2 and app deployed, `PKG_CDN_URL` removed, deploy-check 32 passed incl. `/v2/sw.js`). Open: play a real battle to confirm Browser Rendering runs the capture page's service worker (runbook capture-backlog step 7)
+
+**User decision (2026-10-16):** players build locally with their own AI tools and import the built static site (`dist/` folder or `.zip`, option B). The in-browser editor is removed. After the import path works: a welcome screen that explains how the game works.
+
+| ID | Task | Scope | Status | Notes |
+|---|---|---|---|---|
+| T-044 | `@br/site`: site pack format (pack/unpack), folder/zip import, site-root detection, "this is source, build it first" detection, limits, content types; unit tests | `packages/site/` (new) | done | Hub-built; 29 unit tests |
+| T-045 | Shell v2 + runtime: Service Worker serves the imported site (live, reveal, capture), protocol v2 `load {site}`, v2 capture page, CSP; runtime `PreviewHandle.load({site})`; bundler and package warm-up removed from the shell/runtime; runtime e2e on fixture sites | `apps/sandbox-shell/`, `packages/protocol/`, `packages/runtime/` | done | Merged; runtime e2e 35/35, shell 108 + runtime 58 unit tests. apps/web, capture-worker, jobs function, deploy scripts break until T-046–T-048 |
+| T-046 | Storage, DB and capture: `site.bin` / `autosave/site.bin` allowlist and mime, ship / auto-ship / reveal paths, `imports` stat; build time limits 10/15/20/30/45 min (solo random 10/15/20); jobs function and capture worker on the v2 capture URL; tests | `supabase/`, `apps/capture-worker/` | done | Merged; pgTAP 1353, DB e2e scripts all green, capture 135 unit + 13 integration + 11 function. Risk: Browser Rendering must run service workers (unverified) |
+| T-047 | The app: import-first BUILD stage (solo and rooms), autosave of the pack, ship, reveal and last look from `site.bin`, `/try` replaces `/playground`; editor, paste-import, templates, bundler worker removed; e2e on fixture sites | `apps/web/` | done | Merged (worker interrupted by a container restart after its last commit; hub ran the verification): web 445 unit, /try + static 15, solo 5, moderation 8, multi 5, telemetry 7, chaos 3+2+4 |
+| T-048 | Removals and docs: `@br/workspace`, `apps/pkg-cdn`, esm.sh/CDN settings, compat CI, deploy script; README, docs/01, 03, 05, 06, 07, 08, DEPLOY | repo-wide | done | Merged; root format/lint/typecheck/test/build green, check-runbooks 51/51. To re-measure: reveal egress, storage, Presence (docs/07, 08) |
+| T-049 | Onboarding: welcome screen / How it works, per-tool tips, in-BUILD import help, `/try` as practice | `apps/web/` | done | Merged; web 467 unit, default e2e 20 (5 onboarding), solo 5, multi 5 |
+| T-050 | English / Turkish: English default, a language picker (remembered per browser), every app string translated; server text (cards, names) stays as is | `apps/web/` | done | Merged; web 495 unit, default e2e 25, solo 6, multi 6, moderation 8, telemetry 7, chaos 3+2+4; glossary in apps/web/README |
+
+**User decisions (2026-10-16):** build time limits 10/15/20/30/45 minutes; UI in English with Turkish selectable; importing from a GitHub repo or a published URL comes later (not in M6).
+
+## Previous milestone: M5 Hardening + free-tier deploy (all tasks merged; **deployed** 2026-10-16 at https://build-roulette-web.build-roulette.workers.dev, reachable from Turkey; sign-off waits on the runbook drills, DEPLOY.md §7)
 
 | ID | Task | Scope | Status | Notes |
 |---|---|---|---|---|

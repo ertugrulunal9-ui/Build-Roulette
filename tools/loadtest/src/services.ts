@@ -1,7 +1,7 @@
 /**
  * The capture side of the test: `apps/web/scripts/solo-services.ts` (the same local
- * services the rooms e2e use) starts the sandbox shell with its capture gate, the mock
- * package CDN and `@br/capture-worker` (Playwright Chromium) polling the job queue. Its
+ * services the rooms e2e use) starts the sandbox shell with its capture gate and site worker,
+ * and `@br/capture-worker` (Playwright Chromium) polling the job queue. Its
  * output is parsed for the worker's JSON log lines (`job.end`, `capture.rendered`,
  * `capture.captured`).
  */
@@ -59,7 +59,6 @@ export class CaptureServices {
           ANON_KEY: this.env.ANON_KEY,
           SERVICE_ROLE_KEY: this.env.SERVICE_ROLE_KEY,
           SHELL_PORT: '4351',
-          CDN_PORT: '4352',
           CAPTURE_CONCURRENCY: String(this.concurrency),
           WORKER_IDLE_MIN_MS: '500',
           WORKER_IDLE_MAX_MS: '2000',

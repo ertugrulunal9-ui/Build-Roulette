@@ -2,7 +2,8 @@
  * What the solo game needs from the backend, as an interface so the controller can be unit
  * tested with a fake. `SupabaseSoloApi` implements it with supabase-js: the RPCs from
  * supabase/README.md and the `ephemeral-builds` bucket (paths and content types as in
- * supabase/scripts/e2e-solo.mjs). Every method throws a `GameError`.
+ * supabase/scripts/e2e-solo.mjs; import mode, docs/09 §9.4: one site pack per build). Every
+ * method throws a `GameError`.
  */
 import type { BattlePhase } from '@br/game';
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -10,28 +11,16 @@ import { EPHEMERAL_BUCKET } from '../supabase/config';
 import { toGameError } from './errors';
 import type { AdvanceResult, BattleSnapshot, BuildStats, ShipResult } from './types';
 
-/** The files a player may write under `{battle}/{uid}/` (storage RLS allowlist). */
-export type BuildFile =
-  | 'source.json'
-  | 'bundle.js'
-  | 'bundle.css'
-  | 'manifest.json'
-  | 'thumb.webp'
-  | 'autosave/source.json'
-  | 'autosave/bundle.js'
-  | 'autosave/bundle.css'
-  | 'autosave/manifest.json';
+/**
+ * The files a player may write under `{battle}/{uid}/` (storage RLS allowlist): the site pack
+ * at SHIP, its thumbnail, and the site pack of every import during BUILD (the auto-ship).
+ */
+export type BuildFile = 'site.bin' | 'thumb.webp' | 'autosave/site.bin';
 
 export const CONTENT_TYPES: Record<BuildFile, string> = {
-  'source.json': 'application/json',
-  'bundle.js': 'text/javascript',
-  'bundle.css': 'text/css',
-  'manifest.json': 'application/json',
+  'site.bin': 'application/octet-stream',
   'thumb.webp': 'image/webp',
-  'autosave/source.json': 'application/json',
-  'autosave/bundle.js': 'text/javascript',
-  'autosave/bundle.css': 'text/css',
-  'autosave/manifest.json': 'application/json',
+  'autosave/site.bin': 'application/octet-stream',
 };
 
 export interface SoloApi {
@@ -44,9 +33,18 @@ export interface SoloApi {
   shipBuild(battleId: string, name: string, stats: BuildStats): Promise<ShipResult>;
   getSnapshot(battleId: string): Promise<BattleSnapshot>;
   /** Upserts one of the player's files (`{battle}/{uid}/{file}`) with its content type. */
-  upload(battleId: string, userId: string, file: BuildFile, body: Blob | string): Promise<void>;
+  upload(
+    battleId: string,
+    userId: string,
+    file: BuildFile,
+    body: Blob | Uint8Array<ArrayBuffer>,
+  ): Promise<void>;
   /** Reads one of the player's own files; null when it does not exist. */
-  download(battleId: string, userId: string, file: BuildFile): Promise<string | null>;
+  download(
+    battleId: string,
+    userId: string,
+    file: BuildFile,
+  ): Promise<Uint8Array<ArrayBuffer> | null>;
   /** The phase of each battle the user may see (`battles` RLS); others are left out. */
   battlePhases(battleIds: string[]): Promise<Record<string, BattlePhase>>;
 }
@@ -111,10 +109,10 @@ export class SupabaseSoloApi implements SoloApi {
     battleId: string,
     userId: string,
     file: BuildFile,
-    body: Blob | string,
+    body: Blob | Uint8Array<ArrayBuffer>,
   ): Promise<void> {
     const contentType = CONTENT_TYPES[file];
-    const blob = typeof body === 'string' ? new Blob([body], { type: contentType }) : body;
+    const blob = body instanceof Blob ? body : new Blob([body], { type: contentType });
     let res;
     try {
       res = await this.supabase.storage
@@ -126,7 +124,11 @@ export class SupabaseSoloApi implements SoloApi {
     if (res.error) throw toGameError(res.error);
   }
 
-  async download(battleId: string, userId: string, file: BuildFile): Promise<string | null> {
+  async download(
+    battleId: string,
+    userId: string,
+    file: BuildFile,
+  ): Promise<Uint8Array<ArrayBuffer> | null> {
     let res;
     try {
       res = await this.supabase.storage
@@ -142,7 +144,11 @@ export class SupabaseSoloApi implements SoloApi {
       if (status === '404' || status === '400' || /not found/i.test(err.message)) return null;
       throw toGameError(res.error);
     }
-    return res.data.text();
+    try {
+      return new Uint8Array(await res.data.arrayBuffer());
+    } catch (e) {
+      throw toGameError(e);
+    }
   }
 
   async battlePhases(battleIds: string[]): Promise<Record<string, BattlePhase>> {

@@ -1,7 +1,8 @@
 import { startFakeIngest, type FakeIngest } from '@br/telemetry/testing';
 import { expect, test } from '@playwright/test';
 import { watchCsp } from './csp';
-import { openFile, openPlayground, replaceEditorText } from './helpers';
+import { buildFrame, clickRouted, openTry } from './helpers';
+import { importZip, sourceProject, viteSite } from './sites';
 import { seedAdmin } from './stack';
 import {
   INGEST_PORT,
@@ -137,30 +138,42 @@ test('Do Not Track / Global Privacy Control: no analytics, errors without a user
   await ctx.close();
 });
 
-test('nothing from the sandbox: its errors, console output and build code stay in the iframe', async ({
+test('nothing from the sandbox: its errors, console output and site code stay in the iframe', async ({
   page,
 }) => {
-  await openPlayground(page);
+  await openTry(page);
   await sentryLoaded(page);
-  await replaceEditorText(
+  await importZip(
     page,
-    "export function App() {\n  console.error('SANDBOX_SECRET_CONSOLE');\n  throw new Error('SANDBOX_SECRET_THROW');\n}\n",
+    viteSite('SANDBOX_SECRET_TITLE', 'rgb(10, 10, 10)', {
+      extraJs: `console.error('SANDBOX_SECRET_CONSOLE');
+const s = document.createElement('script');
+s.src = '/assets/SANDBOX_SECRET_FILE.js';
+document.head.appendChild(s);
+setTimeout(() => { throw new Error('SANDBOX_SECRET_THROW'); }, 0);`,
+    }),
+    'SANDBOX_SECRET_ARCHIVE.zip',
   );
-  await expect(page.getByTestId('error-message')).toContainText('SANDBOX_SECRET_THROW');
+  await expect(buildFrame(page).locator('h1')).toHaveText('SANDBOX_SECRET_TITLE');
+  await expect(page.getByTestId('problem-count')).toHaveText('(2)');
+  await clickRouted(page.getByTestId('problems-toggle'));
+  await expect(page.getByTestId('problems')).toContainText('SANDBOX_SECRET_THROW');
+  await expect(page.getByTestId('problems')).toContainText('SANDBOX_SECRET_FILE');
+  await clickRouted(page.getByRole('tab', { name: /Console/ }));
   await expect(page.getByTestId('console')).toContainText('SANDBOX_SECRET_CONSOLE');
-  // A build error quotes the source.
-  await replaceEditorText(page, 'export const SANDBOX_SECRET_SYNTAX = <;\n');
-  await expect(page.getByTestId('build-status')).not.toHaveText(/^Built in/);
+  // A refused import quotes nothing either.
+  await importZip(page, sourceProject(), 'SANDBOX_SECRET_PROJECT.zip');
+  await expect(page.getByTestId('import-error-title')).toBeVisible();
   await page.waitForTimeout(3_000);
   expect(allBodies()).not.toContain('SANDBOX_SECRET');
   // Reporting is live on this page: the app's own error does arrive.
-  await throwInPage(page, 'an app error on the playground');
+  await throwInPage(page, 'an app error on /try');
   await expect.poll(() => sentry().length).toBe(1);
-  expect(sentry()[0]?.exception?.values?.[0]?.value).toBe('an app error on the playground');
+  expect(sentry()[0]?.exception?.values?.[0]?.value).toBe('an app error on /try');
   expect(allBodies()).not.toContain('SANDBOX_SECRET');
 });
 
-test('a preview watchdog crash arrives as preview_crash (T-031): restarted, no build code or names', async ({
+test('imports arrive as site_import (outcome and error code only), a watchdog crash as preview_crash (T-031): restarted, no site code or names', async ({
   page,
 }) => {
   test.setTimeout(120_000);
@@ -173,15 +186,20 @@ test('a preview watchdog crash arrives as preview_crash (T-031): restarted, no b
   await expect(page).toHaveURL(/[?&]battle=[0-9a-f-]{36}/);
   const battleId = new URL(page.url()).searchParams.get('battle');
   await expect(page.getByTestId('spin')).toBeHidden({ timeout: 30_000 });
-  await expect(page.getByTestId('build-status')).toHaveText(/^Built in \d+ ms$/, {
-    timeout: 30_000,
-  });
+  await expect(page.getByTestId('drop-zone')).toBeVisible({ timeout: 30_000 });
 
-  // A build that loops half a second after it started (after its `ready`).
-  await openFile(page, 'src/App.tsx');
-  await replaceEditorText(
+  // Source code instead of the build: refused.
+  await importZip(page, sourceProject(), 'SANDBOX_SECRET_PROJECT.zip');
+  await expect(page.getByTestId('import-error-title')).toHaveText(
+    'This is source code, not the built site',
+  );
+  // A site that loops half a second after it started (after its `ready`).
+  await importZip(
     page,
-    "setTimeout(() => {\n  console.log('SANDBOX_SECRET_LOOP');\n  for (;;) {}\n}, 500);\nexport function App() {\n  return <h1>SANDBOX_SECRET_TITLE</h1>;\n}\n",
+    viteSite('SANDBOX_SECRET_TITLE', 'rgb(1, 1, 1)', {
+      extraJs: "setTimeout(() => { console.log('SANDBOX_SECRET_LOOP'); for (;;) {} }, 500);",
+    }),
+    'SANDBOX_SECRET_SITE.zip',
   );
   const crashed = page.getByTestId('preview-crashed');
   await expect(crashed).toBeVisible({ timeout: 20_000 });
@@ -216,8 +234,21 @@ test('a preview watchdog crash arrives as preview_crash (T-031): restarted, no b
   expect(wall).toBeGreaterThanOrEqual(silent);
   expect(p['stalled_ms']).toBe(wall - silent);
   expect(typeof p['longest_stall_ms']).toBe('number');
+
+  // The two imports: how they went, nothing about what was in them.
+  const imports = posthog().filter((e) => e.event === 'site_import');
+  expect(imports.map((e) => e.properties)).toEqual([
+    expect.objectContaining({
+      battle_id: battleId,
+      via: 'zip',
+      outcome: 'error',
+      error: 'not_built',
+      path: '/play',
+    }),
+    expect.objectContaining({ battle_id: battleId, via: 'zip', outcome: 'ok', error: null }),
+  ]);
   const raw = allBodies();
-  for (const secret of ['SANDBOX_SECRET', 'Loopy Secretname', 'for (;;)', 'setTimeout']) {
+  for (const secret of ['SANDBOX_SECRET', 'Loopy Secretname', 'for (;;)', 'setTimeout', '.zip']) {
     expect(raw, secret).not.toContain(secret);
   }
 });

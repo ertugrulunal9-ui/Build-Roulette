@@ -8,8 +8,10 @@
  * behind a host rewrite (T-037).
  */
 import { useEffect, useState } from 'react';
+import { useT } from '../../lib/i18n/context';
 
 export function MyHistoryLink({ className }: { className?: string }) {
+  const t = useT();
   const [userId, setUserId] = useState<string | null>(null);
   useEffect(() => {
     let live = true;
@@ -26,7 +28,7 @@ export function MyHistoryLink({ className }: { className?: string }) {
   if (!userId) return null;
   return (
     <a href={`/u/${userId}`} className={className} data-testid="my-history-link">
-      Your battle history
+      {t.common.myHistory}
     </a>
   );
 }

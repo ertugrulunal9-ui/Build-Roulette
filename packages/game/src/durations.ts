@@ -15,8 +15,19 @@ export const DEFAULT_PHASE_DURATIONS = {
   results: 60,
 } as const;
 
-/** Allowed build time limits in minutes (docs/04-state-machine.md §4.3). */
-export const BUILD_TIME_LIMITS_MINUTES = [3, 5, 10, 15, 20, 30] as const;
+/**
+ * Allowed build time limits in minutes (docs/04-state-machine.md §4.3, docs/09-import-mode.md
+ * §9.7: players build with their own tools, run the build and import it, so 10–45 minutes).
+ */
+export const BUILD_TIME_LIMITS_MINUTES = [10, 15, 20, 30, 45] as const;
+
+/**
+ * The limits the server draws from when nobody chose one (a solo start without a limit,
+ * every room battle): `private.random_build_time_limits_seconds()`.
+ */
+export const RANDOM_BUILD_TIME_LIMITS_MINUTES = [
+  10, 15, 20,
+] as const satisfies readonly BuildTimeLimitMinutes[];
 
 export type BuildTimeLimitMinutes = (typeof BUILD_TIME_LIMITS_MINUTES)[number];
 

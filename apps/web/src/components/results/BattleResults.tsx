@@ -1,15 +1,15 @@
+'use client';
+
 import Link from 'next/link';
-import {
-  CAPTURE_TEXT,
-  STATUS_TEXT,
-  awardsOf,
-  formatCompletion,
-  formatTimeLimit,
-  isWinner,
-} from '../../lib/solo/format';
+import { useI18n } from '../../lib/i18n/context';
+import { formatDateTime } from '../../lib/i18n/format';
+import { awardsOf, formatCompletion, formatTimeLimit, isWinner } from '../../lib/solo/format';
 import type { PublicBattle } from '../../lib/solo/types';
+import { statsPhrases } from '../../lib/solo/stats';
 import { screenshotUrl } from '../../lib/supabase/config';
-import { REMOVED_TEXT, RemovedCard } from '../moderation/Removed';
+import { LanguagePicker } from '../i18n/LanguagePicker';
+import { RemovedCard } from '../moderation/Removed';
+import { Rich } from '../i18n/Rich';
 import { ReportButton } from '../moderation/ReportButton';
 import { MyHistoryLink } from './MyHistoryLink';
 import { AwardBadges, ChallengeCards, VoteTally } from './ResultPieces';
@@ -23,6 +23,8 @@ import { AwardBadges, ChallengeCards, VoteTally } from './ResultPieces';
  * build does not become the winner.
  */
 export function BattleResults({ data }: { data: PublicBattle }) {
+  const { locale, t } = useI18n();
+  const page = t.battlePage;
   const { battle, challenge, builds, awards } = data;
   const when = battle.finished_at ?? battle.created_at;
   const voted = builds.some((b) => b.votes !== null && b.votes !== undefined);
@@ -30,12 +32,15 @@ export function BattleResults({ data }: { data: PublicBattle }) {
   return (
     <main className="mx-auto flex min-h-dvh max-w-4xl flex-col gap-8 px-4 py-10">
       <header className="flex flex-col gap-2">
-        <Link href="/" className="text-sm font-semibold text-zinc-500 hover:underline">
-          Build Roulette
-        </Link>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <Link href="/" className="text-sm font-semibold text-zinc-500 hover:underline">
+            Build Roulette
+          </Link>
+          <LanguagePicker />
+        </div>
         <p className="text-sm font-semibold tracking-widest text-zinc-500 uppercase">
-          {battle.mode === 'solo' ? 'Solo battle' : 'Battle'} results ·{' '}
-          <time dateTime={when}>{new Date(when).toUTCString().replace(' GMT', ' UTC')}</time>
+          {battle.mode === 'solo' ? page.soloEyebrow : page.roomEyebrow} ·{' '}
+          <time dateTime={when}>{formatDateTime(when, locale)}</time>
         </p>
         <h1 className="text-4xl font-black tracking-tight" data-testid="battle-title">
           {challenge.build.text}
@@ -44,18 +49,17 @@ export function BattleResults({ data }: { data: PublicBattle }) {
 
       <ChallengeCards challenge={challenge} />
       <p className="-mt-4 text-sm text-zinc-500">
-        Time limit: {formatTimeLimit(challenge.time_limit_seconds)} ·{' '}
-        {voted
-          ? 'ranked by the players’ votes (Best Build, then all votes, then the earlier ship); one winner per award category (a tie goes to more votes in all, then the earlier ship)'
-          : 'ranked by completion time'}
+        {page.timeLimit(formatTimeLimit(challenge.time_limit_seconds, t))} ·{' '}
+        {voted ? page.rankedVotes : page.rankedTime}
       </p>
 
-      <ol className="flex flex-col gap-6" aria-label="Builds">
+      <ol className="flex flex-col gap-6" aria-label={page.builds}>
         {builds.map((b) => {
           const shipped = b.status === 'shipped' || b.status === 'auto_shipped';
           const removed = b.taken_down === true;
           const buildAwards = awardsOf(awards, b);
           const winner = isWinner(b);
+          const stats = statsPhrases(b.stats, t, locale);
           return (
             <li
               key={b.id}
@@ -75,7 +79,7 @@ export function BattleResults({ data }: { data: PublicBattle }) {
                   className="absolute top-3 left-3 z-10 rounded-full bg-amber-400 px-3 py-0.5 text-xs font-black tracking-widest text-amber-950 uppercase shadow"
                   data-testid="public-winner"
                 >
-                  🏆 Winner
+                  {t.common.winner}
                 </span>
               )}
               <div className="relative aspect-[16/10] bg-zinc-100 dark:bg-zinc-800">
@@ -85,13 +89,13 @@ export function BattleResults({ data }: { data: PublicBattle }) {
                   // eslint-disable-next-line @next/next/no-img-element -- a public Supabase Storage URL
                   <img
                     src={screenshotUrl(b.screenshot_path)}
-                    alt={`Screenshot of ${b.name ?? 'the build'}`}
+                    alt={t.common.screenshotOf(b.name ?? t.common.theBuild)}
                     data-testid="public-screenshot"
                     className="absolute inset-0 h-full w-full object-cover object-top"
                   />
                 ) : (
                   <p className="absolute inset-0 grid place-items-center p-6 text-center text-sm text-zinc-500">
-                    {shipped ? CAPTURE_TEXT[b.capture_status] : 'Nothing was shipped.'}
+                    {shipped ? t.capture[b.capture_status] : page.nothingShipped}
                   </p>
                 )}
               </div>
@@ -105,8 +109,8 @@ export function BattleResults({ data }: { data: PublicBattle }) {
                       <span className="mr-2 text-zinc-400">#{b.final_rank}</span>
                     )}
                     {removed
-                      ? REMOVED_TEXT
-                      : (b.name ?? (b.status === 'dnf' ? 'Did not finish' : 'Untitled build'))}
+                      ? t.moderation.removed
+                      : (b.name ?? (b.status === 'dnf' ? t.common.didNotFinish : page.untitled))}
                   </h2>
                   {shipped && b.completion_ms !== null && (
                     <p className="font-mono text-lg font-bold" data-testid="public-completion">
@@ -115,22 +119,24 @@ export function BattleResults({ data }: { data: PublicBattle }) {
                   )}
                 </div>
                 <p className="text-zinc-600 dark:text-zinc-400">
-                  by <span className="font-semibold">{b.builder_name}</span> ·{' '}
-                  {STATUS_TEXT[b.status]}
+                  <Rich
+                    text={t.reveal.byName}
+                    slots={{ name: <span className="font-semibold">{b.builder_name}</span> }}
+                  />{' '}
+                  · {t.status[b.status]}
                 </p>
                 <AwardBadges awards={buildAwards} />
                 {voted && shipped && <VoteTally votes={b.votes} total={b.total_votes} />}
-                {b.stats.deps && b.stats.deps.length > 0 && (
-                  <p className="text-sm text-zinc-500">
-                    {b.stats.files ?? 0} files · {b.stats.lines ?? 0} lines · made with{' '}
-                    {b.stats.deps.join(', ')}
+                {stats.length > 0 && (
+                  <p className="text-sm text-zinc-500" data-testid="public-build-stats">
+                    {stats.join(' · ')}
                   </p>
                 )}
                 {shipped && !removed && (
                   <div className="flex justify-end">
                     <ReportButton
                       buildId={b.id}
-                      buildLabel={`${b.name ? `“${b.name}”` : 'A build'} by ${b.builder_name}`}
+                      buildLabel={t.common.buildLabel(b.name, b.builder_name)}
                     />
                   </div>
                 )}
@@ -142,15 +148,13 @@ export function BattleResults({ data }: { data: PublicBattle }) {
 
       <footer className="flex flex-col items-center gap-3 border-t border-zinc-200 pt-6 text-center dark:border-zinc-800">
         <p className="text-sm text-zinc-500">
-          {battle.destroyed_at
-            ? 'The builds were destroyed after the battle. Builds are temporary. Results are permanent.'
-            : 'Builds are temporary. Results are permanent.'}
+          {battle.destroyed_at ? page.destroyedNote : page.tagline}
         </p>
         <Link
           href="/play"
           className="rounded-lg bg-emerald-600 px-5 py-3 text-sm font-semibold text-white hover:bg-emerald-700"
         >
-          Play solo
+          {page.playSolo}
         </Link>
         <MyHistoryLink className="text-sm font-semibold underline" />
       </footer>

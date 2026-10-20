@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 import { snapshotRequestBody } from '../src/browser-rendering';
 import { parseSnapshotRequest } from '../src/stand-in';
 
-const URL_ = 'http://127.0.0.1:4321/v1/capture?src=x&exp=1&sig=y';
+const URL_ = 'http://127.0.0.1:4321/v2/capture?src=x&exp=1&sig=y';
 
 describe('stand-in request validation', () => {
   it("accepts exactly the function's request and reads it like Puppeteer would", () => {

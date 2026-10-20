@@ -74,7 +74,7 @@ reset role;
 insert into storage.objects (bucket_id, name)
 select 'ephemeral-builds', :'b' || '/' || u || '/' || f
 from unnest(array[:'ana_id', :'ben_id', :'cy_id', :'dee_id']) u,
-     unnest(array['source.json', 'bundle.js']) f;
+     unnest(array['site.bin']) f;
 set local role authenticated;
 select set_config('request.jwt.claims', :'ana', true);
 select public.ship_build(:'b', 'Ana App', '{}');
@@ -113,15 +113,15 @@ set local role authenticated;
 select set_config('request.jwt.claims', :'eli', true);
 select public.get_reveal_builds(:'b') as rb \gset
 select public.get_battle_snapshot(:'b') as snap \gset
-select ok(not public.can_read_revealed_object(:'b' || '/' || :'o2_builder' || '/bundle.js'),
-  'storage: its bundle is no longer readable by members');
-select ok(public.can_read_revealed_object(:'b' || '/' || :'o1_builder' || '/bundle.js'),
+select ok(not public.can_read_revealed_object(:'b' || '/' || :'o2_builder' || '/site.bin'),
+  'storage: its site pack is no longer readable by members');
+select ok(public.can_read_revealed_object(:'b' || '/' || :'o1_builder' || '/site.bin'),
   'the other builds still are');
 reset role;
 select is((select jsonb_build_object('pos', e -> 'position', 'down', e -> 'taken_down', 'name', e -> 'name',
                                      'files', e -> 'files')
            from jsonb_array_elements(:'rb'::jsonb) e where e ->> 'build_id' = :'o2'),
-  '{"pos": 1, "down": true, "name": null, "files": {"js": null, "css": null, "manifest": null, "thumb": null}}'::jsonb,
+  '{"pos": 1, "down": true, "name": null, "files": {"site": null, "thumb": null}}'::jsonb,
   'get_reveal_builds: o2 keeps its position, flagged, without files');
 select is(jsonb_array_length(:'rb'::jsonb), 4, 'get_reveal_builds still lists 4 positions');
 select is((select jsonb_build_object('down', e -> 'taken_down', 'status', e -> 'status', 'name', e -> 'name')
@@ -291,7 +291,7 @@ select is((select jsonb_build_object('name', e -> 'name', 'shot', e -> 'screensh
   '{"name": null, "shot": null, "down": true}'::jsonb, 'get_battle_snapshot: the same');
 select is((select jsonb_build_object('name', name, 'shot', screenshot_path) from public.builds where id = :'o1'),
   '{"name": null, "shot": null}'::jsonb, 'and the builds table itself (RLS read) has neither');
-select ok(not public.can_read_revealed_object(:'b' || '/' || :'o1_builder' || '/bundle.js'),
+select ok(not public.can_read_revealed_object(:'b' || '/' || :'o1_builder' || '/site.bin'),
   'the last look in RESULTS cannot load it either');
 reset role;
 select is((select status::text from public.jobs where kind = 'takedown' and ref_id = :'o1'), 'queued',

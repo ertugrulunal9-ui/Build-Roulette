@@ -44,11 +44,17 @@ export interface Challenge {
   time_limit_seconds: number;
 }
 
+/**
+ * Display-only stats (stats.ts). Import mode (docs/09) sends `files`, `bundle_bytes` (the site
+ * pack's size) and `imports`; builds from the editor (before M6) may have `lines`, `deps`,
+ * `rebuilds` and `pastes`.
+ */
 export interface BuildStats {
   files?: number;
+  bundle_bytes?: number;
+  imports?: number;
   lines?: number;
   deps?: string[];
-  bundle_bytes?: number;
   rebuilds?: number;
   pastes?: number;
 }
@@ -214,10 +220,9 @@ export interface RevealBuild {
   status: BuildStatus;
   /** T-024: removed by moderators: no files, no name; the reveal skips its slot. */
   taken_down?: boolean;
+  /** The site pack (`site.bin`, or `autosave/site.bin` when auto-shipped) and the thumbnail. */
   files: {
-    js: string | null;
-    css: string | null;
-    manifest: string | null;
+    site: string | null;
     thumb: string | null;
   };
 }

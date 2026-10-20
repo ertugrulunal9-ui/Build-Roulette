@@ -7,7 +7,8 @@
  *
  * One list, two consumers: `scripts/pages-config.ts` writes it into `out/_redirects` (rewrites,
  * status 200: the URL in the address bar stays `/battles/{id}`), and `next.config.ts`
- * turns it into rewrites for `next dev`, so the dev server behaves like the host.
+ * turns it into rewrites for `next dev`, so the dev server behaves like the host. The same
+ * goes for the few paths that moved (`REDIRECTS`).
  */
 
 export interface Shell {
@@ -26,13 +27,33 @@ export const SHELLS: readonly Shell[] = [
   { source: '/u/:id', destination: '/u' },
 ];
 
+/** A path that moved: the host answers it with a redirect. */
+export interface Redirect {
+  source: string;
+  destination: string;
+  /** 301: moved for good. */
+  status: 301;
+}
+
+export const REDIRECTS: readonly Redirect[] = [
+  // The editor's playground became the import practice page (M6, docs/09 §9.5).
+  { source: '/playground', destination: '/try', status: 301 },
+];
+
 /**
- * The `_redirects` file of the static assets: one rewrite (status 200, served from the
- * destination without a redirect) per shell. Workers static assets read the same format as
- * Pages did (https://developers.cloudflare.com/workers/static-assets/redirects/).
+ * The `_redirects` file of the static assets: the redirects first, then one rewrite (status
+ * 200, served from the destination without a redirect) per shell. Workers static assets read
+ * the same format as Pages did (https://developers.cloudflare.com/workers/static-assets/redirects/).
  */
-export function pagesRedirects(shells: readonly Shell[] = SHELLS): string {
-  return `${shells.map((s) => `${s.source} ${s.destination} 200`).join('\n')}\n`;
+export function pagesRedirects(
+  shells: readonly Shell[] = SHELLS,
+  redirects: readonly Redirect[] = REDIRECTS,
+): string {
+  const lines = [
+    ...redirects.map((r) => `${r.source} ${r.destination} ${String(r.status)}`),
+    ...shells.map((s) => `${s.source} ${s.destination} 200`),
+  ];
+  return `${lines.join('\n')}\n`;
 }
 
 /**

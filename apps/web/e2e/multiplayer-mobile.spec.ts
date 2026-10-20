@@ -4,6 +4,7 @@ import {
   battleOf,
   createRoom,
   expectNoHorizontalScroll,
+  importApp,
   joinByLink,
   member,
   newPhone,
@@ -13,7 +14,6 @@ import {
   ship,
   vote,
   waitForBuild,
-  writeApp,
   type Player,
 } from './rooms';
 import { ephemeralObjects, sql } from './stack';
@@ -24,7 +24,7 @@ import { ephemeralObjects, sql } from './stack';
  * players, against the real local stack with Realtime and the capture worker.
  *
  * - The room's host is on a phone: creates the room, changes the reveal/vote settings,
- *   readies up and starts; during BUILD sees the "building needs a desktop browser" notice
+ *   readies up and starts; during BUILD sees the "building needs a computer" notice
  *   with the battle state (nothing autosaves there, so the build ends DNF); a second phone
  *   joins mid-BUILD and spectates.
  * - REVEAL on the phones: each build is a screenshot or thumbnail first, runs live only after
@@ -136,9 +136,9 @@ test('phones in a room: join, host from a phone, watch the reveal (still first, 
   await expectNoHorizontalScroll(sam.page);
 
   // The desktops build and ship; the deadline passes for Pia (nothing to auto-ship).
-  await writeApp(ada.page, 'Ada Rocket', 'rgb(220, 38, 38)');
+  await importApp(ada.page, 'Ada Rocket', 'rgb(220, 38, 38)');
   await ship(ada.page, 'Ada Rocket');
-  await writeApp(bob.page, 'Bob Turtle', 'rgb(30, 64, 175)');
+  await importApp(bob.page, 'Bob Turtle', 'rgb(30, 64, 175)');
   await ship(bob.page, 'Bob Turtle');
   await expect(pia.page.locator('[data-testid=progress-player][data-state=shipped]')).toHaveCount(
     2,

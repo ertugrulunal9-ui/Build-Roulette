@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { watchCsp } from './csp';
-import { buildFrame, openPlayground } from './helpers';
+import { buildFrame, openTry } from './helpers';
+import { importZip, viteSite } from './sites';
 
 /**
  * The static site as Cloudflare serves it (T-037; a Worker with static assets since T-043),
@@ -21,7 +22,8 @@ test('every page is a file: the shells keep their URL, unknown paths get the 404
   for (const path of [
     '/',
     '/play',
-    '/playground',
+    '/try',
+    '/how-it-works',
     '/r',
     '/battles',
     '/u',
@@ -68,8 +70,11 @@ test('the headers of _headers: CSP without inline scripts, no framing, long cach
     const csp = h['content-security-policy'] ?? '';
     expect(csp, path).toContain("frame-ancestors 'none'");
     expect(csp, path).toContain("object-src 'none'");
-    expect(csp, path).toMatch(/script-src 'self' 'wasm-unsafe-eval' 'sha256-/);
-    expect(csp, path).not.toMatch(/script-src[^;]*'unsafe-(inline|eval)'/);
+    // No 'wasm-unsafe-eval' any more: the app builds no code (docs/09).
+    expect(csp, path).toMatch(/script-src 'self' 'sha256-/);
+    expect(csp, path).not.toMatch(/script-src[^;]*'(unsafe-inline|unsafe-eval|wasm-unsafe-eval)'/);
+    // No package CDN either.
+    expect(csp, path).not.toContain('localhost:4322');
     expect(h['x-frame-options'], path).toBe('DENY');
     expect(h['x-content-type-options'], path).toBe('nosniff');
     expect(h['referrer-policy'], path).toBe('strict-origin-when-cross-origin');
@@ -121,13 +126,14 @@ test('the CSP is enforced: an injected inline script does not run (and is report
   expect(violations[0]).toContain("script-src 'self'");
 });
 
-test('no Content-Security-Policy violation on any page (the playground runs a build)', async ({
+test('no Content-Security-Policy violation on any page (/try runs an imported site)', async ({
   page,
 }) => {
   const violations = watchCsp(page);
   for (const path of [
     '/',
     '/play',
+    '/how-it-works',
     `/battles/${MALFORMED}`,
     `/u/${MALFORMED}`,
     '/admin',
@@ -137,8 +143,9 @@ test('no Content-Security-Policy violation on any page (the playground runs a bu
     await page.goto(path);
     await page.waitForLoadState('networkidle');
   }
-  // The playground: the bundler worker (esbuild.wasm), the cross-site preview iframe.
-  await openPlayground(page);
-  await expect(buildFrame(page).locator('h1')).toHaveText('Hello, Build Roulette!');
+  // /try: the import (a .zip read in the page) and the cross-site preview iframe.
+  await openTry(page);
+  await importZip(page, viteSite('CSP check', 'rgb(1, 2, 3)'));
+  await expect(buildFrame(page).locator('h1')).toHaveText('CSP check');
   expect(violations).toEqual([]);
 });

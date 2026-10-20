@@ -174,7 +174,7 @@ export class User {
   async startBuilding(): Promise<string> {
     const battle = (await this.rpc('start_solo_battle', {
       p_display_name: 'capture-test',
-      p_time_limit_seconds: 300,
+      p_time_limit_seconds: 600,
     })) as string;
     this.stack.expirePhase(battle);
     const snap = await this.advance(battle);

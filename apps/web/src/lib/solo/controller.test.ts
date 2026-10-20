@@ -1,23 +1,33 @@
 /**
- * SoloController with a fake API, a fake workspace and vitest's fake timers (which also
- * drive Date.now()). Covers phase handling, the countdown and deadline nudges, autosave
- * scheduling, the ship flow, results and destroy, and the error mapping.
+ * SoloController with a fake API, fake local storage, real site packs and vitest's fake timers
+ * (which also drive Date.now()). Covers phase handling, the countdown and deadline nudges,
+ * the import → autosave → ship flow, the restore after a reload, results and destroy, and the
+ * error mapping.
  */
+import { unpackSite } from '@br/site';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { battleSiteKey } from '../site/local-sites';
 import type { AnalyticsEventName } from '../telemetry/analytics';
-import { SoloController, battleWorkspaceId, realClock, type SoloState } from './controller';
+import { SoloController, realClock, type SoloState } from './controller';
 import { GameError } from './errors';
-import { BATTLE, FakeApi, FakeBridge, FakeLocalWorkspaces, USER, snapshotAt } from './test-support';
+import {
+  BATTLE,
+  FakeApi,
+  FakeLocalSites,
+  FakePreviewBridge,
+  USER,
+  fakeSite,
+  snapshotAt,
+} from './test-support';
 
 let api: FakeApi;
-let local: FakeLocalWorkspaces;
+let local: FakeLocalSites;
 let battleChanges: (string | null)[];
 
 function controller(random = 0): SoloController {
   return new SoloController({
     api,
-    cdnBaseUrl: 'https://pkg.test',
-    localWorkspaces: local,
+    localSites: local,
     clock: { ...realClock, random: () => random },
     onBattleChange: (id) => battleChanges.push(id),
   });
@@ -42,7 +52,7 @@ const state = (c: SoloController): SoloState => c.getSnapshot();
 beforeEach(() => {
   vi.useFakeTimers({ now: new Date('2026-10-06T12:00:00Z') });
   api = new FakeApi();
-  local = new FakeLocalWorkspaces();
+  local = new FakeLocalSites();
   battleChanges = [];
 });
 afterEach(() => {
@@ -63,24 +73,22 @@ describe('start and resume', () => {
     c.dispose();
   });
 
-  it('cleans up stale battle workspaces only: over on the server, or untouched for 24 h', async () => {
+  it('cleans up stale battle sites only: over on the server, or untouched for 24 h', async () => {
     const running = '44444444-4444-4444-8444-444444444444'; // another tab plays it
     const destroyed = '55555555-5555-4555-8555-555555555555';
     const unknown = '66666666-6666-4666-8666-666666666666'; // the server does not say
     const ancient = '77777777-7777-4777-8777-777777777777';
     for (const id of [BATTLE, running, destroyed, unknown]) {
-      local.stored.set(battleWorkspaceId(id), Date.now() - 60_000);
+      local.storeAt(battleSiteKey(id), Date.now() - 60_000);
     }
-    local.stored.set(battleWorkspaceId(ancient), Date.now() - 25 * 60 * 60 * 1000);
+    local.storeAt(battleSiteKey(ancient), Date.now() - 25 * 60 * 60 * 1000);
     api.phases = { [running]: 'building', [destroyed]: 'destroyed', [ancient]: 'building' };
     const c = controller();
     await c.start('Turbo Otter');
     await flush();
-    expect(local.deleted.sort()).toEqual(
-      [battleWorkspaceId(destroyed), battleWorkspaceId(ancient)].sort(),
-    );
+    expect(local.deleted.sort()).toEqual([battleSiteKey(destroyed), battleSiteKey(ancient)].sort());
     expect([...local.stored.keys()].sort()).toEqual(
-      [BATTLE, running, unknown].map(battleWorkspaceId).sort(),
+      [BATTLE, running, unknown].map(battleSiteKey).sort(),
     );
     // Only the recent ones were asked about (the open battle never).
     expect(api.calls.find((call) => call[0] === 'battlePhases')).toEqual([
@@ -262,110 +270,138 @@ describe('clock and countdown', () => {
   });
 });
 
-describe('autosave', () => {
-  it('uploads the last good build and the workspace every 30 s, only when something changed', async () => {
+/** The autosave on the server, unpacked: its `index.html` text. */
+function autosavedIndex(): string | null {
+  const pack = api.files.get(`${BATTLE}/${USER}/autosave/site.bin`);
+  if (!(pack instanceof Uint8Array)) return null;
+  const index = unpackSite(pack).get('index.html');
+  return index ? new TextDecoder().decode(index.bytes) : null;
+}
+
+describe('import and autosave', () => {
+  it('an import becomes the build: kept on this device and uploaded as autosave/site.bin', async () => {
     const c = await openIn();
-    const bridge = new FakeBridge();
-    c.attachWorkspace(bridge);
-    await vi.advanceTimersByTimeAsync(29_999);
-    expect(api.uploadsOf('autosave/bundle.js')).toBe(0);
-    await vi.advanceTimersByTimeAsync(1);
+    expect(c.canImport()).toBe(true);
+    const site = fakeSite('First');
+    expect(c.importSite(site)).toBe(true);
+    expect(state(c)).toMatchObject({ site, imports: 1 });
+    expect(state(c).autosave.status).toBe('saving');
+    await flush();
     expect(api.calls.filter((x) => x[0] === 'upload').map((x) => x[1])).toEqual([
-      'autosave/bundle.js',
-      'autosave/bundle.css',
-      'autosave/source.json',
-      'autosave/manifest.json',
+      'autosave/site.bin',
     ]);
-    // The manifest has the pinned dependencies only (others read it during REVEAL).
-    expect(JSON.parse(api.files.get(`${BATTLE}/${USER}/autosave/manifest.json`) as string)).toEqual(
-      {
-        dependencies: {
-          react: expect.any(String) as string,
-          'react-dom': expect.any(String) as string,
-        },
-      },
-    );
-    expect(api.files.get(`${BATTLE}/${USER}/autosave/bundle.js`)).toBe('dev-js');
-    expect(api.files.get(`${BATTLE}/${USER}/autosave/bundle.css`)).toBe('dev-css');
-    const source = JSON.parse(
-      api.files.get(`${BATTLE}/${USER}/autosave/source.json`) as string,
-    ) as {
-      files: Record<string, string>;
-      manifest: { entry: string };
-    };
-    expect(source.manifest.entry).toBe('src/main.tsx');
-    expect(Object.keys(source.files)).toContain('src/App.tsx');
+    expect(api.files.get(`${BATTLE}/${USER}/autosave/site.bin`)).toBe(site.pack);
     expect(state(c).autosave).toMatchObject({ status: 'saved', error: null });
+    expect(local.stored.get(battleSiteKey(BATTLE))).toMatchObject({ site, imports: 1 });
 
-    // Nothing changed: no upload.
-    await vi.advanceTimersByTimeAsync(30_000);
-    expect(api.uploadsOf('autosave/bundle.js')).toBe(1);
-    // An edit that built: the next tick uploads it (the manifest only when the
-    // dependencies changed).
-    bridge.edit('edited-js');
-    await vi.advanceTimersByTimeAsync(30_000);
-    expect(api.uploadsOf('autosave/bundle.js')).toBe(2);
-    expect(api.files.get(`${BATTLE}/${USER}/autosave/bundle.js`)).toBe('edited-js');
-    expect(api.uploadsOf('autosave/manifest.json')).toBe(1);
-    bridge.ws = {
-      ...bridge.ws,
-      manifest: {
-        ...bridge.ws.manifest,
-        dependencies: { ...bridge.ws.manifest.dependencies, zustand: '4.5.2' },
-      },
-    };
-    bridge.edit('with-zustand');
-    await vi.advanceTimersByTimeAsync(30_000);
-    expect(api.uploadsOf('autosave/manifest.json')).toBe(2);
-    expect(
-      JSON.parse(api.files.get(`${BATTLE}/${USER}/autosave/manifest.json`) as string),
-    ).toMatchObject({ dependencies: { zustand: '4.5.2' } });
-    c.dispose();
-  });
+    // Importing again replaces it (and counts).
+    const second = fakeSite('Second');
+    c.importSite(second);
+    await flush();
+    expect(state(c)).toMatchObject({ site: second, imports: 2 });
+    expect(api.uploadsOf('autosave/site.bin')).toBe(2);
+    expect(autosavedIndex()).toContain('Second');
+    expect(local.stored.get(battleSiteKey(BATTLE))?.imports).toBe(2);
 
-  it('saves when the tab is hidden', async () => {
-    const c = await openIn();
-    c.attachWorkspace(new FakeBridge());
+    // Nothing new: hiding the tab or the final autosave upload nothing more.
     c.onHidden();
     await flush();
-    expect(api.uploadsOf('autosave/source.json')).toBe(1);
+    expect(api.uploadsOf('autosave/site.bin')).toBe(2);
     c.dispose();
   });
 
-  it('does nothing before the first successful build, or without a workspace', async () => {
+  it('a newer import during an upload is uploaded right after it', async () => {
     const c = await openIn();
-    c.onHidden();
-    const bridge = new FakeBridge();
-    bridge.last = null;
-    c.attachWorkspace(bridge);
+    let release: () => void = () => undefined;
+    api.onUpload = () =>
+      new Promise<void>((resolve) => {
+        release = resolve;
+      });
+    c.importSite(fakeSite('One'));
+    await flush();
+    c.importSite(fakeSite('Two'));
+    api.onUpload = () => undefined;
+    release();
+    await flush();
+    expect(api.uploadsOf('autosave/site.bin')).toBe(2);
+    expect(autosavedIndex()).toContain('Two');
+    expect(state(c).autosave.status).toBe('saved');
+    c.dispose();
+  });
+
+  it('a failed upload says so and is retried after 5, 10, 20, then every 30 s until it lands', async () => {
+    const c = await openIn();
+    let failures = 4;
+    api.onUpload = () => {
+      if (failures-- > 0) throw new GameError('network', 'Failed to fetch');
+    };
+    c.importSite(fakeSite('Flaky'));
+    await flush();
+    expect(state(c).autosave).toMatchObject({ status: 'error' });
+    expect(state(c).autosave.error?.code).toBe('network');
+    for (const wait of [5_000, 10_000, 20_000]) {
+      await vi.advanceTimersByTimeAsync(wait - 1);
+      const before = api.uploadsOf('autosave/site.bin');
+      await vi.advanceTimersByTimeAsync(1);
+      expect(api.uploadsOf('autosave/site.bin')).toBe(before + 1);
+      expect(state(c).autosave.status).toBe('error');
+    }
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(api.uploadsOf('autosave/site.bin')).toBe(5);
+    expect(state(c).autosave.status).toBe('saved');
+    // Saved: no more retries.
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(api.uploadsOf('autosave/site.bin')).toBe(5);
+    c.dispose();
+  });
+
+  it('nothing to save before the first import; imports are refused outside BUILDING', async () => {
+    const c = await openIn(snapshotAt('spinning', { endsInMs: 6_000, version: 1 }));
     c.onHidden();
     await flush();
     expect(api.count('upload')).toBe(0);
+    expect(c.canImport()).toBe(false);
+    expect(c.importSite(fakeSite())).toBe(false);
+    expect(state(c).site).toBeNull();
     c.dispose();
+
+    const shipping = await openIn(snapshotAt('shipping', { endsInMs: 10_000, version: 3 }));
+    expect(shipping.importSite(fakeSite())).toBe(false);
+    shipping.dispose();
   });
 
-  it('runs a final autosave 3 s before the build deadline', async () => {
+  it('a final try 3 s before the deadline when the import is not saved yet', async () => {
     const c = await openIn(snapshotAt('building', { endsInMs: 20_000, version: 2 }));
-    c.attachWorkspace(new FakeBridge());
-    await vi.advanceTimersByTimeAsync(16_999);
-    expect(api.uploadsOf('autosave/bundle.js')).toBe(0);
-    await vi.advanceTimersByTimeAsync(1);
-    expect(api.uploadsOf('autosave/bundle.js')).toBe(1);
+    api.onUpload = () => {
+      throw new GameError('network', 'offline');
+    };
+    c.importSite(fakeSite('Late'));
+    await flush();
+    // The retries (5, 10 s) fail too; the network is back for the final one at 17 s.
+    await vi.advanceTimersByTimeAsync(16_000);
+    const before = api.uploadsOf('autosave/site.bin');
+    api.onUpload = () => undefined;
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(api.uploadsOf('autosave/site.bin')).toBe(before + 1);
+    expect(state(c).autosave.status).toBe('saved');
     c.dispose();
   });
 
-  it('saves once more during the SHIPPING grace, then the server auto-ships', async () => {
+  it('the SHIPPING grace uploads an import that is not saved yet, then the server auto-ships it', async () => {
     const c = await openIn(snapshotAt('building', { endsInMs: 1_000, version: 2 }));
-    const bridge = new FakeBridge();
-    c.attachWorkspace(bridge);
-    bridge.edit('last-second-edit');
+    api.onUpload = () => {
+      throw new GameError('network', 'offline');
+    };
+    c.importSite(fakeSite('Last second'));
+    await flush();
+    api.onUpload = () => undefined;
     api.onAdvance = (v) => {
       api.snapshot = snapshotAt('shipping', { version: v + 1, endsInMs: 15_000 });
       return { changed: true, version: v + 1, phase: 'shipping', phase_ends_at: null };
     };
     await vi.advanceTimersByTimeAsync(1_000);
     expect(state(c).snapshot?.battle.phase).toBe('shipping');
-    expect(api.files.get(`${BATTLE}/${USER}/autosave/bundle.js`)).toBe('last-second-edit');
+    expect(autosavedIndex()).toContain('Last second');
     api.onAdvance = (v) => {
       api.snapshot = snapshotAt('results', {
         version: v + 2,
@@ -377,14 +413,23 @@ describe('autosave', () => {
     await vi.advanceTimersByTimeAsync(15_000);
     expect(state(c).snapshot?.builds[0]?.status).toBe('auto_shipped');
     expect(state(c).autosave.status).toBe('closed');
-    // The last-look preview comes from the autosave files.
-    expect(state(c).reveal).toMatchObject({ status: 'ready', build: { js: 'last-second-edit' } });
+    // The last look runs the autosaved pack.
+    expect(state(c).reveal.status).toBe('ready');
+    expect(state(c).reveal.build?.site).toEqual(
+      api.files.get(`${BATTLE}/${USER}/autosave/site.bin`),
+    );
+    // The restore looked for an autosave when the battle opened; the last look read it.
+    expect(api.calls.filter((x) => x[0] === 'download').map((x) => x[1])).toEqual([
+      'autosave/site.bin',
+      'autosave/site.bin',
+    ]);
     c.dispose();
   });
 
   it('a refused upload after the deadline closes autosave quietly; earlier it is an error', async () => {
     const c = await openIn(snapshotAt('building', { endsInMs: 300_000, version: 2 }));
-    c.attachWorkspace(new FakeBridge());
+    c.importSite(fakeSite());
+    await flush();
     api.onUpload = () => {
       throw new GameError('network', 'Failed to fetch');
     };
@@ -403,80 +448,164 @@ describe('autosave', () => {
   });
 });
 
-describe('ship', () => {
-  it('thumbnail → production build → uploads → ship_build with stats → RESULTS', async () => {
+describe('restore after a reload', () => {
+  it('brings the last import back from this device and uploads it again', async () => {
+    const site = fakeSite('Kept');
+    local.stored.set(battleSiteKey(BATTLE), { site, imports: 3, updatedAt: Date.now() });
     const c = await openIn();
-    const bridge = new FakeBridge();
-    c.attachWorkspace(bridge);
+    await flush();
+    expect(state(c)).toMatchObject({ site, imports: 3, restoring: false });
+    expect(api.count('download')).toBe(0);
+    expect(api.files.get(`${BATTLE}/${USER}/autosave/site.bin`)).toBe(site.pack);
+    expect(state(c).autosave.status).toBe('saved');
+    // The next import counts on.
+    c.importSite(fakeSite('Fourth'));
+    expect(state(c).imports).toBe(4);
+    c.dispose();
+  });
+
+  it('falls back to the remote autosave (another device) and keeps it on this one', async () => {
+    const site = fakeSite('Remote');
+    api.files.set(`${BATTLE}/${USER}/autosave/site.bin`, site.pack);
+    const c = await openIn();
+    await flush();
+    expect(state(c).site).toMatchObject({ files: 1, root: '', skipped: 0 });
+    expect(state(c).site?.pack).toEqual(site.pack);
+    expect(state(c).imports).toBe(1);
+    expect(state(c).autosave.status).toBe('saved');
+    // It is on the server already: not uploaded again.
+    expect(api.count('upload')).toBe(0);
+    expect(local.stored.get(battleSiteKey(BATTLE))?.site.pack).toEqual(site.pack);
+    c.dispose();
+  });
+
+  it('a shipped player gets the shipped site back; garbage or nothing leaves the drop zone', async () => {
+    const site = fakeSite('Shipped');
+    api.files.set(`${BATTLE}/${USER}/site.bin`, site.pack);
+    const shipped = await openIn(
+      snapshotAt('building', { endsInMs: 300_000, version: 4, status: 'shipped' }),
+    );
+    await flush();
+    expect(state(shipped).site?.pack).toEqual(site.pack);
+    expect(api.count('upload')).toBe(0);
+    shipped.dispose();
+
+    local.stored.clear(); // the shipped one was kept on this device
+    api.files.set(`${BATTLE}/${USER}/autosave/site.bin`, new TextEncoder().encode('not a pack'));
+    const garbage = await openIn();
+    await flush();
+    expect(state(garbage)).toMatchObject({ site: null, imports: 0, restoring: false });
+    garbage.dispose();
+  });
+
+  it('an import made while the restore runs wins; SPINNING restores nothing', async () => {
+    let answer: (v: null) => void = () => undefined;
+    local.get = () =>
+      new Promise((resolve) => {
+        answer = resolve;
+      });
+    const c = await openIn();
+    expect(state(c).restoring).toBe(true);
+    const mine = fakeSite('Mine');
+    c.importSite(mine);
+    answer(null);
+    await flush();
+    expect(state(c).site).toBe(mine);
+    expect(api.count('download')).toBe(0);
+    c.dispose();
+
+    const spinning = await openIn(snapshotAt('spinning', { endsInMs: 6_000, version: 1 }));
+    expect(state(spinning).restoring).toBe(false);
+    expect(api.count('download')).toBe(0);
+    spinning.dispose();
+  });
+
+  it('blocked storage on this device: the remote autosave still restores', async () => {
+    local.broken = true;
+    const site = fakeSite('Remote only');
+    api.files.set(`${BATTLE}/${USER}/autosave/site.bin`, site.pack);
+    const c = await openIn();
+    await flush();
+    expect(state(c).site?.pack).toEqual(site.pack);
+    c.importSite(fakeSite('Still works'));
+    await flush();
+    expect(autosavedIndex()).toContain('Still works');
+    c.dispose();
+  });
+});
+
+describe('ship', () => {
+  it('thumbnail → uploads site.bin + thumb.webp → ship_build with stats → RESULTS', async () => {
+    const c = await openIn();
+    const bridge = new FakePreviewBridge();
+    c.attachPreview(bridge);
+    const site = fakeSite('Snack', { 'assets/app.js': 'console.log(1)' });
+    c.importSite(site);
+    c.importSite(site);
+    await flush();
     const seen: string[] = [];
     c.subscribe(() => {
       const s = state(c).ship.status;
       if (seen.at(-1) !== s) seen.push(s);
     });
     await c.ship('  Snack Overflow  ');
-    expect(seen).toEqual(['thumbnail', 'building', 'uploading', 'shipping', 'done']);
+    expect(seen).toEqual(['thumbnail', 'uploading', 'shipping', 'done']);
     expect(bridge.thumbnailCalls).toBe(1);
     const uploaded = api.calls.filter((x) => x[0] === 'upload').map((x) => x[1]);
-    expect(uploaded.sort()).toEqual([
-      'bundle.css',
-      'bundle.js',
-      'manifest.json',
-      'source.json',
+    expect(uploaded.filter((f) => f !== 'autosave/site.bin').sort()).toEqual([
+      'site.bin',
       'thumb.webp',
     ]);
-    expect(
-      Object.keys(JSON.parse(api.files.get(`${BATTLE}/${USER}/manifest.json`) as string) as object),
-    ).toEqual(['dependencies']);
-    expect(api.files.get(`${BATTLE}/${USER}/bundle.js`)).toBe('prod-js');
-    expect(api.files.get(`${BATTLE}/${USER}/bundle.css`)).toBe('prod-css');
+    expect(api.files.get(`${BATTLE}/${USER}/site.bin`)).toBe(site.pack);
     const ship = api.calls.find((x) => x[0] === 'shipBuild');
     expect(ship?.slice(0, 3)).toEqual(['shipBuild', BATTLE, 'Snack Overflow']);
-    expect(ship?.[3]).toEqual({
-      files: 3,
-      lines: expect.any(Number) as number,
-      deps: ['react', 'react-dom'],
-      bundle_bytes: 'prod-js'.length + 'prod-css'.length,
-      rebuilds: 7,
-      pastes: 1,
-    });
+    expect(ship?.[3]).toEqual({ files: 2, bundle_bytes: site.pack.byteLength, imports: 2 });
     expect(state(c).snapshot?.battle.phase).toBe('results');
     await flush();
-    // The last-look preview loads the shipped bundle back, with React from the CDN.
+    // The last look loads the shipped pack back.
     expect(state(c).reveal.status).toBe('ready');
-    expect(state(c).reveal.build?.js).toBe('prod-js');
-    expect(state(c).reveal.build?.importMap.imports['react']).toBe('https://pkg.test/react@19.3.0');
+    expect(state(c).reveal.build?.site).toBe(site.pack);
+    // (The first download: the restore looked for an autosave when the battle opened.)
+    expect(api.calls.filter((x) => x[0] === 'download').map((x) => x[1])).toEqual([
+      'autosave/site.bin',
+      'site.bin',
+    ]);
     c.dispose();
   });
 
-  it('ships without a thumbnail when the preview cannot make one', async () => {
+  it('nothing imported: nothing to ship', async () => {
     const c = await openIn();
-    const bridge = new FakeBridge();
+    await c.ship('Empty');
+    expect(state(c).ship.status).toBe('error');
+    expect(state(c).ship.error?.code).toBe('nothing_built');
+    expect(api.count('upload')).toBe(0);
+    expect(api.count('shipBuild')).toBe(0);
+    c.dispose();
+  });
+
+  it('ships without a thumbnail when the preview cannot make one, or is not mounted', async () => {
+    const c = await openIn();
+    const bridge = new FakePreviewBridge();
     bridge.thumb = null;
-    c.attachWorkspace(bridge);
+    const detach = c.attachPreview(bridge);
+    c.importSite(fakeSite());
     await c.ship('No thumb');
     expect(api.uploadsOf('thumb.webp')).toBe(0);
     expect(state(c).ship.status).toBe('done');
+    detach();
     c.dispose();
-  });
 
-  it('a failing production build can ship the last working preview instead', async () => {
-    const c = await openIn();
-    const bridge = new FakeBridge();
-    bridge.prod = { ok: false, errorCount: 2, js: '', css: '', importMap: { imports: {} } };
-    c.attachWorkspace(bridge);
-    await c.ship('Broken');
-    expect(state(c).ship).toMatchObject({ status: 'error', canShipLastGood: true });
-    expect(state(c).ship.error?.code).toBe('build_failed');
-    expect(api.count('shipBuild')).toBe(0);
-    await c.ship('Broken', { useLastGood: true });
-    expect(api.files.get(`${BATTLE}/${USER}/bundle.js`)).toBe('dev-js');
-    expect(state(c).ship.status).toBe('done');
-    c.dispose();
+    api.snapshot = snapshotAt('building', { endsInMs: 300_000, version: 2 });
+    const unmounted = await openIn();
+    unmounted.importSite(fakeSite());
+    await unmounted.ship('No preview');
+    expect(state(unmounted).ship.status).toBe('done');
+    unmounted.dispose();
   });
 
   it('retries without stats when the server rejects them', async () => {
     const c = await openIn();
-    c.attachWorkspace(new FakeBridge());
+    c.importSite(fakeSite());
     const ship = api.onShip;
     api.onShip = (name, stats) => {
       if (Object.keys(stats).length > 0) throw new GameError('invalid_stats');
@@ -484,7 +613,7 @@ describe('ship', () => {
     };
     await c.ship('Stats');
     expect(api.calls.filter((x) => x[0] === 'shipBuild').map((x) => x[3])).toEqual([
-      expect.objectContaining({ files: 3 }),
+      expect.objectContaining({ files: 1, imports: 1 }),
       {},
     ]);
     expect(state(c).ship.status).toBe('done');
@@ -497,7 +626,7 @@ describe('ship', () => {
     ['files_missing', 'upload did not finish'],
   ] as const)('%s: an error the player can read, and a resync', async (code, text) => {
     const c = await openIn();
-    c.attachWorkspace(new FakeBridge());
+    c.importSite(fakeSite());
     api.onShip = () => {
       throw new GameError(code);
     };
@@ -514,7 +643,7 @@ describe('ship', () => {
 
   it('already_shipped (a double click) counts as shipped', async () => {
     const c = await openIn();
-    c.attachWorkspace(new FakeBridge());
+    c.importSite(fakeSite());
     api.onShip = () => {
       api.snapshot = snapshotAt('results', { version: 5, endsInMs: 60_000, status: 'shipped' });
       throw new GameError('already_shipped');
@@ -525,21 +654,27 @@ describe('ship', () => {
     c.dispose();
   });
 
-  it('an upload refused by storage is reported', async () => {
+  it('an upload refused by storage is reported; no import while a ship runs', async () => {
     const c = await openIn();
-    c.attachWorkspace(new FakeBridge());
+    c.importSite(fakeSite());
+    await flush();
     api.onUpload = (f) => {
-      if (f === 'bundle.js') throw new GameError('file_too_large');
+      if (f === 'site.bin') throw new GameError('file_too_large');
     };
-    await c.ship('Huge');
+    const shipping = c.ship('Huge');
+    expect(c.canImport()).toBe(false);
+    expect(c.importSite(fakeSite('During'))).toBe(false);
+    await shipping;
     expect(state(c).ship.error?.code).toBe('file_too_large');
     expect(api.count('shipBuild')).toBe(0);
+    // After the error the player may import again.
+    expect(c.canImport()).toBe(true);
     c.dispose();
   });
 });
 
 describe('results and destroy', () => {
-  it('RESULTS → DESTROYED: the destroy moment, then the local workspace is wiped', async () => {
+  it('RESULTS → DESTROYED: the destroy moment, then the local site is wiped', async () => {
     const c = await openIn(
       snapshotAt('results', {
         version: 5,
@@ -565,7 +700,8 @@ describe('results and destroy', () => {
     await vi.advanceTimersByTimeAsync(2_400);
     expect(state(c).destroy).toBe('done');
     expect(state(c).reveal).toEqual({ status: 'destroyed', build: null });
-    expect(local.deleted).toEqual([battleWorkspaceId(BATTLE)]);
+    expect(state(c).site).toBeNull();
+    expect(local.deleted).toEqual([battleSiteKey(BATTLE)]);
     expect(state(c).sourceDestroyed).toBe(false);
 
     // The destroy worker deletes the ephemeral files: destroyed_at shows up, polling stops.
@@ -590,7 +726,7 @@ describe('results and destroy', () => {
     );
     expect(state(c).destroy).toBe('done');
     await flush();
-    expect(local.deleted).toEqual([battleWorkspaceId(BATTLE)]);
+    expect(local.deleted).toEqual([battleSiteKey(BATTLE)]);
     c.dispose();
   });
 
@@ -614,8 +750,7 @@ describe('external mode (multiplayer)', () => {
     const refetches: number[] = [];
     const c = new SoloController({
       api,
-      cdnBaseUrl: 'https://pkg.test',
-      localWorkspaces: local,
+      localSites: local,
       clock: { ...realClock, random: () => 0 },
       external: {
         refetch: () => {
@@ -629,7 +764,7 @@ describe('external mode (multiplayer)', () => {
 
   it('a room battle opening keeps a solo battle that another tab is playing', async () => {
     const solo = '44444444-4444-4444-8444-444444444444';
-    local.stored.set(battleWorkspaceId(solo), Date.now() - 5_000);
+    local.storeAt(battleSiteKey(solo), Date.now() - 5_000);
     api.phases = { [solo]: 'building' };
     const { c } = external();
     c.openExternal(snapshotAt('building', { version: 2, endsInMs: 300_000 }), 0);
@@ -639,7 +774,7 @@ describe('external mode (multiplayer)', () => {
     api.phases = { [solo]: 'destroyed' };
     c.openExternal(snapshotAt('building', { version: 2, endsInMs: 300_000 }), 0);
     await flush();
-    expect(local.deleted).toEqual([battleWorkspaceId(solo)]);
+    expect(local.deleted).toEqual([battleSiteKey(solo)]);
     c.dispose();
   });
 
@@ -701,7 +836,7 @@ describe('external mode (multiplayer)', () => {
   it('a ship refetches through the engine', async () => {
     const { c, refetches } = external();
     c.openExternal(snapshotAt('building', { version: 2, endsInMs: 300_000 }), 0);
-    c.attachWorkspace(new FakeBridge());
+    c.importSite(fakeSite());
     await c.ship('Snack Overflow');
     expect(api.count('shipBuild')).toBe(1);
     expect(state(c).ship.status).toBe('done');
@@ -712,20 +847,22 @@ describe('external mode (multiplayer)', () => {
 
   it('the last look loads once a later snapshot shows the build auto-shipped', async () => {
     const { c } = external();
-    api.files.set(`${BATTLE}/${USER}/autosave/bundle.js`, 'auto-js');
-    api.files.set(`${BATTLE}/${USER}/autosave/source.json`, '{"manifest":{"dependencies":{}}}');
+    const site = fakeSite('Auto');
+    api.files.set(`${BATTLE}/${USER}/autosave/site.bin`, site.pack);
     // The `phase` event (applied at once) still has the draft; the refetch has auto_shipped.
     c.openExternal(snapshotAt('shipping', { version: 4 }), 0);
+    await flush(); // (SHIPPING: the restore brings the autosave back for the BUILD screen)
+    expect(api.count('download')).toBe(1);
     c.receive(snapshotAt('results', { version: 5, endsInMs: 60_000, status: 'draft' }));
     expect(state(c).reveal.status).toBe('unavailable');
     c.receive(snapshotAt('results', { version: 5, endsInMs: 60_000, status: 'auto_shipped' }));
     await flush();
-    expect(state(c).reveal).toMatchObject({ status: 'ready', build: { js: 'auto-js' } });
-    expect(api.count('download')).toBe(3);
+    expect(state(c).reveal).toMatchObject({ status: 'ready', build: { site: site.pack } });
+    expect(api.count('download')).toBe(2);
     // Only once.
     c.receive(snapshotAt('results', { version: 6, endsInMs: 60_000, status: 'auto_shipped' }));
     await flush();
-    expect(api.count('download')).toBe(3);
+    expect(api.count('download')).toBe(2);
     c.dispose();
   });
 
@@ -739,27 +876,12 @@ describe('external mode (multiplayer)', () => {
   });
 });
 
-describe('restoreWorkspace', () => {
-  it('reads the remote autosave back, and ignores garbage', async () => {
-    const c = await openIn();
-    const bridge = new FakeBridge();
-    c.attachWorkspace(bridge);
-    expect(await c.restoreWorkspace()).toBeNull();
-    await c.autosaveNow();
-    expect(await c.restoreWorkspace()).toEqual(bridge.ws);
-    api.files.set(`${BATTLE}/${USER}/autosave/source.json`, '{"files": {"a": 1}}');
-    expect(await c.restoreWorkspace()).toBeNull();
-    c.dispose();
-  });
-});
-
 describe('analytics (T-030)', () => {
   let events: [AnalyticsEventName, Record<string, unknown>][];
   const tracked = (): SoloController =>
     new SoloController({
       api,
-      cdnBaseUrl: 'https://pkg.test',
-      localWorkspaces: local,
+      localSites: local,
       clock: { ...realClock, random: () => 0 },
       track: (name, props) => {
         events.push([name, props as Record<string, unknown>]);
@@ -777,7 +899,7 @@ describe('analytics (T-030)', () => {
     ]);
     api.snapshot = snapshotAt('building', { endsInMs: 300_000, version: 2 });
     c.receive(api.snapshot); // the battle moves on to BUILDING
-    c.attachWorkspace(new FakeBridge());
+    c.importSite(fakeSite());
     await c.ship('Snack Overflow');
     await flush();
     expect(events.slice(1)).toEqual([

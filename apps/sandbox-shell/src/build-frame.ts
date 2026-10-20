@@ -1,18 +1,22 @@
 /**
- * The build's document, shared by the preview shell (`shell.ts`) and the capture page
+ * The site's child frame, shared by the preview shell (`shell.ts`) and the capture page
  * (`capture.ts`).
  *
- * Fresh document per load: a NEW same-origin child iframe (about:blank), then
- * `document.open()` + `document.write()` for a standards-mode document, then, in order and
- * synchronously, the import map, the CSS and a `<script type="module" src="blob:...">`.
- * Because no module has started loading in that brand-new realm yet, the import map always
- * applies before user code runs. Removing the frame destroys the build's realm.
+ * Fresh frame per load: a NEW same-origin child iframe navigated to `/?__br_site=<id>`, which
+ * the site worker serves (`sw.ts`). Removing the frame destroys the site's realm: its timers,
+ * rAF loops, audio, workers and DOM go with it.
+ *
+ * Every HTML document the worker serves starts with the bootstrap (`bootstrap.ts`), which
+ * calls the attach hook the page defines here (`defineAttachHook`) with the document's
+ * window, before any of the site's own scripts run: console and error forwarding, and
+ * `window.buildRoulette`, for every document of the site (an in-site navigation to
+ * `/about.html` gets them too).
  */
-import type { ImportMap } from '@br/protocol';
+import { ATTACH_HOOK } from './site-protocol';
 
 /**
- * The API a build can call as `window.buildRoulette` (documented for templates in the
- * sandbox-shell README). Templates should call it as `window.buildRoulette?.ready()`.
+ * The API a build can call as `window.buildRoulette` (documented in the sandbox-shell
+ * README). Sites should call it as `window.buildRoulette?.ready()`.
  */
 export interface BuildRouletteApi {
   /**
@@ -23,48 +27,31 @@ export interface BuildRouletteApi {
   ready(): void;
 }
 
+export type SiteWindow = Window & typeof globalThis;
+
 /**
- * Creates the child iframe and appends it to the body (or the root element while there is no
- * body yet). Fullscreen is delegated via `allow` only.
+ * Creates the child iframe, appends it to the body (or the root element while there is no
+ * body yet) and navigates it to `src`. Fullscreen is delegated via `allow` only.
  */
-export function createChildFrame(doc: Document, allow: string, cssText: string): HTMLIFrameElement {
+export function createChildFrame(
+  doc: Document,
+  allow: string,
+  cssText: string,
+  src: string,
+): HTMLIFrameElement {
   const f = doc.createElement('iframe');
   // Adding the legacy `allowfullscreen` too makes Chromium warn that `allow` takes precedence.
   f.setAttribute('allow', allow);
   f.title = 'Build';
   f.style.cssText = cssText;
+  f.src = src;
   const body = doc.body as HTMLElement | null;
   (body ?? doc.documentElement).appendChild(f);
   return f;
 }
 
-/**
- * Opens a standards-mode document in `f`. `prepare` runs right after `document.open()`
- * (which erases listeners) and before anything else, to install hooks and the build API.
- * Returns null when the frame has no window or document.
- */
-export function openBuildDocument(
-  f: HTMLIFrameElement,
-  prepare: (w: Window & typeof globalThis) => void,
-): { window: Window & typeof globalThis; document: Document } | null {
-  const w = f.contentWindow as (Window & typeof globalThis) | null;
-  const d = f.contentDocument;
-  if (!w || !d) return null;
-  d.open();
-  prepare(w);
-  // document.write is deprecated for parser-inserted content in normal pages, but writing
-  // into a document we just opened is the one reliable way to get a standards-mode
-  // document (an about:blank initial document is in quirks mode).
-  // eslint-disable-next-line @typescript-eslint/no-deprecated
-  d.write(
-    '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head><body><div id="root"></div></body></html>',
-  );
-  d.close();
-  return { window: w, document: d };
-}
-
-/** Defines `window.buildRoulette` in the build's realm (read-only, not enumerable). */
-export function installBuildApi(w: Window & typeof globalThis, onReady: () => void): void {
+/** Defines `window.buildRoulette` in a site realm (read-only, not enumerable). */
+export function installBuildApi(w: SiteWindow, onReady: () => void): void {
   const api: BuildRouletteApi = Object.freeze({
     ready: () => {
       onReady();
@@ -78,42 +65,82 @@ export function installBuildApi(w: Window & typeof globalThis, onReady: () => vo
       configurable: false,
     });
   } catch {
-    // Already defined in this realm (cannot happen for a fresh frame): keep the old one.
+    // Already defined in this realm: keep the first one.
   }
-}
-
-export interface BuildPayload {
-  js: string;
-  css: string;
-  importMap: ImportMap;
 }
 
 /**
- * Appends the import map, the CSS and the module script (in that order) to `d`. Returns the
- * blob URL of the module, which the caller revokes when the frame goes away.
+ * Defines the attach hook (`window.__brAttach`) the bootstrap calls on `parent`. `attach`
+ * runs at most once per document, and only for the window `currentFrame()` shows: a nested
+ * frame of the site, or build code calling the hook with something else, is ignored.
+ * Build code can call it (it is same-origin): that only attaches its own document again,
+ * which is a no-op.
  */
-export function injectBuild(
-  d: Document,
-  payload: BuildPayload,
-  handlers: { onLoad: () => void; onError: () => void },
-): string {
-  const importMap = d.createElement('script');
-  importMap.type = 'importmap';
-  importMap.textContent = JSON.stringify(payload.importMap);
-  d.head.appendChild(importMap);
+export function defineAttachHook(
+  host: Window,
+  currentFrame: () => HTMLIFrameElement | null,
+  attach: (w: SiteWindow) => void,
+): (w: unknown) => void {
+  const attached = new WeakSet<Document>();
+  const hook = (w: unknown): void => {
+    const f = currentFrame();
+    if (!f || w === null || w !== f.contentWindow) return;
+    const sw = w as SiteWindow;
+    let doc: Document;
+    try {
+      doc = sw.document;
+    } catch {
+      return; // navigated to another origin
+    }
+    if (attached.has(doc)) return;
+    attached.add(doc);
+    attach(sw);
+  };
+  Object.defineProperty(host, ATTACH_HOOK, {
+    value: hook,
+    writable: false,
+    enumerable: false,
+    configurable: false,
+  });
+  return hook;
+}
 
-  if (payload.css) {
-    const style = d.createElement('style');
-    style.textContent = payload.css;
-    d.head.appendChild(style);
-  }
+/** The URL of a script or stylesheet element that failed to load, if `target` is one. */
+function failedResource(target: EventTarget | null): string | null {
+  const el = target as { tagName?: unknown; src?: unknown; href?: unknown; rel?: unknown } | null;
+  if (!el || typeof el.tagName !== 'string') return null;
+  if (el.tagName === 'SCRIPT' && typeof el.src === 'string' && el.src) return el.src;
+  if (
+    el.tagName === 'LINK' &&
+    typeof el.rel === 'string' &&
+    /\bstylesheet\b/i.test(el.rel) &&
+    typeof el.href === 'string'
+  )
+    return el.href;
+  return null;
+}
 
-  const url = URL.createObjectURL(new Blob([payload.js], { type: 'text/javascript' }));
-  const script = d.createElement('script');
-  script.type = 'module';
-  script.src = url;
-  script.addEventListener('load', handlers.onLoad);
-  script.addEventListener('error', handlers.onError);
-  d.head.appendChild(script);
-  return url;
+/**
+ * Calls `report` with the URL (its path, on the site's own origin) of every `<script src>`
+ * or stylesheet `<link>` of the site that fails to load, e.g. a 404 from the site worker.
+ * Resource errors do not bubble, so this listens in the capture phase.
+ */
+export function onResourceError(w: SiteWindow, report: (url: string) => void): void {
+  w.addEventListener(
+    'error',
+    (ev: Event) => {
+      if (ev.target === w) return;
+      const url = failedResource(ev.target);
+      if (url === null) return;
+      let shown = url;
+      try {
+        const u = new URL(url);
+        if (u.origin === w.location.origin) shown = u.pathname;
+      } catch {
+        // keep the URL as it is
+      }
+      report(shown);
+    },
+    true,
+  );
 }

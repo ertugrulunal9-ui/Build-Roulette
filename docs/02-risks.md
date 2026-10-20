@@ -5,7 +5,7 @@ validate it early. The roadmap ([06](06-roadmap.md)) is ordered to retire the to
 
 | # | Risk | Impact | Uncertainty | Retired in |
 |---|------|--------|-------------|-----------|
-| R1 | In-browser runtime is fast and compatible enough with real-world frontend packages | Critical | High | M1 |
+| R1 | ~~In-browser runtime is fast and compatible enough with real-world frontend packages~~ | — | — | M1; no longer applies since M6 (no in-browser bundler) |
 | R2 | Running untrusted builds safely in other players' browsers | Critical | Medium | M1 (design), M5 (hardening) |
 | R3 | Permanent screenshots are faithful, authentic and reliable | High | High | M2 |
 | R4 | Phase/timer consistency without a game server (disconnects, clock skew, races) | High | Medium | M3 |
@@ -14,69 +14,22 @@ validate it early. The roadmap ([06](06-roadmap.md)) is ordered to retire the to
 | R7 | Device and browser variance (Safari, mobile, low-RAM Chromebooks) | Medium | High | M1 |
 | R8 | Realtime limits and cost at scale | Medium | Low | M5 |
 | R9 | Abuse: offensive builds or names, phishing, crypto-mining, vote stuffing | Medium | Medium | M5 |
-| R10 | Third-party dependency outage mid-battle (package CDN, Supabase, Browser Rendering) | Medium | Low | M5 |
+| R10 | Third-party dependency outage mid-battle (Supabase, Browser Rendering) | Medium | Low | M5 |
+| R11 | Service Worker support: the site worker in players' browsers and in Browser Rendering | High | Medium | M6 |
+| R12 | Players import their project's source (or a site that needs a server) instead of a static build | Medium | High | M6 |
+| R13 | Cheating with a site made before the battle | Medium | High | M6 (accepted) |
 
 ---
 
-### R1: In-browser runtime speed and package compatibility
-> **Status (M1): retired.** In T-003 and T-006, measured on localhost:
-> - worker cold start ~200 ms, rebuild + preview p50 ~124 ms;
-> - compatibility suite: **54/55 cases (98.2%) after T-007** (52/55 in T-006), against our own CDN with
->   real npm packages. The hub reproduced this on an empty cache.
->
-> Known failures:
-> - pixi.js passes now that the shell CSP allows `'unsafe-eval'` (T-007);
-> - matter-js named imports fail (a UMD build, so it needs `import Matter from 'matter-js'`).
->
-> See `apps/pkg-cdn/compat/RESULTS.md`. T-035 added two cases that check one instance across
-> the import map (react-dom's `flushSync`, fiber's `three`): 56/57 on our CDN.
->
-> **esm.sh (CI run 60): 52/57, then T-040.** esm.sh imports a package's own dependencies by
-> range, which gave two chart.js under react-chartjs-2, two three under fiber, and React DOM's
-> `scheduler` cached for 10 minutes only. T-040 externalizes every manifest package in every
-> other package's URL, maps each one to its pinned URL (prefix entries for subpaths), and
-> pins `scheduler` in the template. A dependency the manifest does not list stays a range (a
-> contract note, not a problem). Known failures:
-> - p5 on esm.sh: esm.sh builds `@davepagurek/bezier-path` from its `browser` export, a global
->   script without exports;
-> - matter-js named imports on both CDNs.
->
-> pixi.js timed out while esm.sh built its ~130 modules on first request; the suite now
-> probes the whole graph first. Our CDN: 57/58 with T-040's URLs (one new variant case), 0
-> unexpected failures. The esm.sh rerun is pending in CI.
->
-> **Production CDN on the free plan (T-035): the public esm.sh**, a third party (R10). The same
-> suite runs against it in GitHub CI (`workflow_dispatch` with `compat_cdn=https://esm.sh`;
-> this container cannot reach esm.sh), with a CDN contract check on every URL (no redirect,
-> long cache, CORS, same-origin imports). Its result is `RESULTS-esm.sh.md` in the job's
-> artifact. esm.sh evaluates CommonJS on its server, so the matter-js named-imports case may
-> pass there.
-
-**Why it's hard.** The npm ecosystem assumes Node and a bundler. Some packages are CJS-only,
-expect `process.env`, import CSS or assets, have peer dependency trees, or end up with two
-copies of React (which breaks hooks with "Invalid hook call"). esbuild-wasm is several MB and
-has to start in under a few seconds.
-
-**Mitigations**
-- The bundler only bundles *local* files. Bare imports are rewritten to ESM CDN URLs
-  (esm.sh already converts CJS to ESM and resolves the dependency tree on the server).
-- A single import map in the shell pins `react`, `react-dom`, `react/jsx-runtime` and React
-  DOM's `scheduler`. Every CDN package is requested with `?external=react,react-dom`, so
-  there is exactly one React. Since T-040 every package of the manifest is external in every
-  other package's URL and mapped once, so each manifest package is one instance too.
-- Package CSS (`import 'x/dist/x.css'`) is fetched by the worker and inlined.
-- `process.env.NODE_ENV` is defined at build time. Node built-ins are not supported, and
-  the error says so clearly.
-- esbuild-wasm is preloaded during the lobby and cached by HTTP (content-hashed,
-  `immutable`; no Service Worker, see R10). The worker is reused across rebuilds and
-  incremental contexts are kept warm.
-- A compatibility test suite renders a smoke test for the top ~100 frontend packages (state,
-  animation, charts, 3D, audio, utility) in CI against the shell.
-
-**Validate (M1 spike).** Cold start under 3 s on a mid-range laptop. Rebuild under 300 ms
-for a 10-file project. At least 90% of the curated package list passes the smoke test.
-**Fallback.** If esbuild-wasm is too heavy on low-end devices, transpile per file with
-Sucrase (about 200 KB) and use native ESM plus import maps without bundling.
+### R1: In-browser runtime speed and package compatibility (no longer applies)
+> **Status: retired in M1, then made moot by M6.** M1–M5 bundled each build in the browser
+> (esbuild-wasm in a Web Worker) and loaded npm packages as ES modules from a package CDN (our
+> own `@br/pkg-cdn`, then the public esm.sh on the free plan). T-003 and T-006 measured a
+> ~200 ms worker cold start and a ~124 ms rebuild + preview p50; the package compatibility
+> suite passed 54/55 cases on our CDN (T-007) and 52/57 on esm.sh (CI run 60). Import mode (M6, [09](09-import-mode.md))
+> removed the editor, the bundler and the package CDN: players build with their own tools, and
+> a built site carries its own packages. What replaces this risk is whether a built site runs
+> unchanged in the sandbox (R11) and whether players import a build at all (R12).
 
 ### R2: Running untrusted builds safely in other players' browsers
 **Why it's hard.** During REVEAL every player runs every other player's code. A malicious
@@ -110,7 +63,8 @@ could run. Full Chromium with site isolation kept the app responsive (worst time
 mitigations:
 - reveal shows a "Skip build" control *outside* the iframe that also works after a reload;
 - mobile viewers see screenshots by default and open a live build by tapping;
-- a future option is a loop-guard transform in the bundler (CodePen-style) as defence in depth.
+- a loop-guard transform (CodePen-style) is not possible any more: since M6 the game never
+  transforms a player's code, it serves the built files as they are.
 
 **The opposite failure, false crashes (T-027, T-031):** on a starved machine the watchdog
 used to report healthy builds as frozen. That happened during a slow load (T-027: a 15 s
@@ -131,9 +85,10 @@ screen look boring.
 
 **Mitigations**
 - The **canonical screenshot** comes from a server-side headless Chromium render of the
-  exact frozen bundle, with a fixed 1280×800 viewport and deterministic fonts.
-- The shell runs in *capture mode*. It reports `ready` when the app calls
-  `window.buildRoulette.ready()` (optional, documented in the template), and otherwise
+  exact shipped site pack, with a fixed 1280×800 viewport and deterministic fonts. The capture
+  page loads the site through the same site worker as the preview (R11).
+- The shell runs in *capture mode*. It reports `ready` when the site calls
+  `window.buildRoulette.ready()` (optional), and otherwise
   after network-idle + 2 s, capped at 6 s. WebGL is created with `preserveDrawingBuffer`
   where the shell can patch `getContext`.
 - A client thumbnail is captured at ship time as a **fallback** and flagged as such
@@ -165,21 +120,24 @@ at T+0.2 s). The host may leave mid-battle.
   forced disconnects and clock skew.
 
 ### R5: No lost work
-**Mitigations.** IndexedDB is written on every change (debounced 300 ms). Remote autosave
-of source and the last good bundle happens every 30 s and on `visibilitychange`, so if a
-player is offline at T-0 the server can **auto-ship** the last autosaved bundle
-(`status = 'auto_shipped'`). Auto-ship also runs client-side at T-0. A reconnect restores
-the workspace from IndexedDB first and from remote autosave second.
+**Mitigations.** Since M6 the work itself lives on the player's computer, in their own
+project; the game only holds the last import. Every import is stored in IndexedDB at once and
+uploaded as `autosave/site.bin` (retried with backoff until it lands), so if a player is
+offline at T-0 the server can **auto-ship** the last uploaded import
+(`status = 'auto_shipped'`). A reload restores the import from IndexedDB first and from the
+remote autosave second. A player who imports nothing before the deadline ends DNF.
 
 ### R6: Destroy is actually complete
-**Where copies of a build exist:** the player's IndexedDB, the ephemeral bucket, voters'
-memory and the sandbox-origin storage, Browser Rendering's session, and CDN caches of
-signed URLs.
+**Where copies of a build exist:** the player's own project on their computer (theirs, not
+ours to delete), the player's IndexedDB (the last import), the ephemeral bucket, voters'
+memory, the sandbox-origin storage (the site worker keeps the few most recent sites in Cache
+Storage), Browser Rendering's session, and CDN caches of signed URLs.
 
 **Mitigations.** We delete by prefix (`ephemeral-builds/{battle_id}/`), not file by file.
 Signed URLs are short-lived and sent with `Cache-Control: no-store`, so nothing is
 CDN-cached. Browser Rendering sessions are closed after each capture. The shell wipes its
-origin's storage on every load and on `reset`. The hourly TTL sweep removes anything older
+origin's storage (the site worker's registration and Cache Storage included) on every load
+and on `reset`. The hourly TTL sweep removes anything older
 than 24 h, including orphans. Source never goes into Postgres, so database backups don't
 keep it.
 
@@ -187,14 +145,14 @@ keep it.
 memory only (or in sandbox-origin storage, which the next load of that origin wipes).
 
 ### R7: Device and browser variance
-Desktop Chromium, Firefox and Safari are the build targets. Mobile is **reveal and vote
-only** in v1, because building on a phone is a poor experience. Mobile players can join as
-spectators or voters. Because we use a plain worker and iframe instead of WebContainers, we
-avoid COOP/COEP and the SharedArrayBuffer requirements that are most fragile on Safari.
-A device check in the lobby warns about low memory or unsupported browsers before the spin.
+Desktop Chromium, Firefox and Safari are the targets. Building needs a computer (the
+player's own tools); phones **watch and vote**. Because we use an iframe and a Service Worker
+instead of WebContainers, we avoid COOP/COEP and the SharedArrayBuffer requirements that are
+most fragile on Safari. Service Workers have their own gaps (R11).
 
 ### R8: Realtime limits and cost
-Presence pulses are throttled (≤1 per 2 s per player) and coalesced. Broadcast payloads are
+Presence activity goes out only during BUILDING and only on an import (≤1 per 15 s per
+player, T-029; `{imported, imports}` since M6). Broadcast payloads are
 tiny `{type, version}` hints. Each player uses one channel per battle. We load-test 50
 concurrent rooms × 8 players in M5 and map the results to plan quotas.
 
@@ -208,44 +166,72 @@ with screenshot takedown. Anonymous sign-ups are rate-limited with Turnstile.
 **Vote stuffing:** only players on the roster when BUILDING started can vote (a frozen
 eligibility snapshot). Late joiners are spectators and can't vote (a non-ranking "crowd favorite"
 for spectators is a post-v1 idea).
-**Pre-built code:** a player who pastes code they wrote beforehand is inherently possible
-and part of the vibe. Random rules make this less useful, and stats such as edit and
-paste counts are shown for fun, not as enforcement.
+**Pre-built code:** see R13.
 
 ### R10: Third-party outage mid-battle
-**The package CDN is a third party on the free plan (T-035): the public esm.sh**, because our
-own `@br/pkg-cdn` would need Cloudflare Containers (paid). esm.sh is free and community-run,
-with no SLA, and no rate limits documented that we know of; we assume our use is fair use (a
-player loads React once, then the packages of their own builds, mostly from the browser's
-cache).
-What protects a battle from an esm.sh outage is the browser side below, which works the same
-with both CDNs; the edge side, when we run our own CDN again, is `@br/pkg-cdn` behind the
-Cloudflare cache (exact-version URLs are `immutable`, so the edge keeps serving packages
-already requested while the origin container is down; `apps/pkg-cdn/README.md` "Origin
-outages"). Switching CDNs is one base URL in the app, shell and capture worker settings
-(docs/03 "The package CDN"); run the compatibility suite against the new one first.
+**No package CDN since M6.** M1–M5 loaded every build's npm packages from a package CDN (the
+public esm.sh on the free plan), and T-032 kept a browser-side warm-up so a CDN outage did not
+stop a battle. Import mode removed that dependency: a built site carries its own packages. A
+site may still load scripts from public CDNs itself (the Tailwind play CDN, unpkg); while such
+a CDN is down, only that site breaks, and its capture falls back to the client thumbnail.
 
-**In the browser (T-032):** the template's packages (React) are fetched into the
-browser's HTTP cache in the room lobby (desktop) and by the preview that runs during SPIN,
-including the template's other React entry points and, on esm.sh, the modules behind each
-entry URL (T-035). Since T-040 the whole template is pinned on esm.sh too (React DOM's
-`scheduler` was a range URL cached 10 minutes). A non-template package's own dependencies that
-the manifest does not list are esm.sh range URLs, so they outlast an esm.sh outage by 10
-minutes only (listing one in the manifest pins it). With the CDN down, edits, preview restarts, reloads,
-autosave, ship and the last look keep working (measured and covered by e2e). A package the
-browser never loaded fails within about a second with "Package server unreachable: x@1.2.3"
-instead of a blank preview. In REVEAL such a build shows its screenshot.
-- **Decision: no Service Worker or Cache Storage**, for security. Build code runs on the
-  shell origin and can write to that origin's Cache Storage, IndexedDB and Service Worker
-  registrations. A module cache there would let one build poison React for every build a
-  viewer sees next, so the shell keeps wiping them. Page script can't write the HTTP cache,
-  only the CDN's responses land there.
-- **Residual:** another player's non-template packages, and React for a browser that never
-  warmed it (a phone spectator, a solo player whose CDN was down before SPIN), can't load
-  while the CDN is down: the screenshot shows instead.
-  Screenshots fall back to the client thumbnail, because the renderer has no cache. Details
-  and limits: [03-sandbox](03-sandbox.md) "Package cache and CDN outages".
+The T-032 decision "no Service Worker or Cache Storage" no longer stands: the shell now serves
+every imported site from a Service Worker that keeps the most recent sites in Cache Storage.
+Why that is safe enough, and what build code can and cannot do to it, is in
+[03-sandbox](03-sandbox.md) §3.9 "The site worker".
 
-A Supabase blip has no effect on editing and preview, which are fully local. Ship retries
-with backoff, and auto-ship covers the deadline. If Browser Rendering is down, the client
-fallback thumbnail is used.
+A Supabase blip has no effect on building (local) or on the preview of an import (local).
+An import's upload, the ship and the votes retry with backoff, and auto-ship covers the
+deadline. If Browser Rendering is down, the client fallback thumbnail is used.
+
+### R11: Service Worker support
+**Why it's hard.** A built site needs a static host: root-relative URLs, lazy chunks,
+`fetch('/data.json')`, a client-side router that expects `/`. The shell gives it one with a
+Service Worker on the sandbox origin (docs/09 §9.3). That needs Service Workers in a
+cross-site iframe in every browser that previews, and in the headless browser that captures.
+
+**Mitigations**
+- Current Chromium, Firefox and Safari run Service Workers in a cross-site iframe with
+  storage partitioning. Where they are off (Firefox private windows), the preview says so
+  clearly, and REVEAL shows the screenshot instead.
+- The worker keeps its sites and its client → site map in Cache Storage, so a browser that
+  stops an idle worker does not lose the site; the shell registers it again on every load.
+- **Browser Rendering must run Service Workers** for the v2 capture page. The Playwright
+  stand-in (full Chromium) does; Cloudflare's REST API is not verified yet. If it does not,
+  every capture falls back to the client thumbnail: the game still works, the screenshots are
+  lower fidelity. DEPLOY.md "Deploying M6" and the capture-backlog runbook (step 7) say how to
+  see it; the self-hosted capture worker is the way out.
+
+**Validate (M6).** The runtime and web e2e suites run imported sites through the site worker
+in Chromium; the first production battle after the deploy shows whether Browser Rendering
+captures them (Health → "Screenshots, last 24 h").
+
+### R12: Importing source instead of a build
+**Why it's hard.** Vibe coders often do not know what "the built site" is. The likely
+mistakes: dropping the project folder before running the build (Vite's unbuilt `index.html`
+points at `.tsx`), a Next.js project without a static export, or a site that needs its own
+server (an API route, server-side rendering).
+
+**Mitigations**
+- The import recognizes the common cases and says what to do: unbuilt source → "run
+  `npm run build` (or ask your AI tool to build it) and drop the `dist` folder"; `.next/`
+  without `out/` → set `output: 'export'`. It prefers known output folders (`dist/`,
+  `build/`, `out/`, …) when the whole project is dropped (docs/09 §9.2).
+- `/try` lets a player check an import before a battle; the onboarding (T-049, planned) will explain
+  the four steps and give per-tool tips.
+- A site that needs a server runs as far as its static part goes; its requests to its own
+  API fail inside the preview only.
+
+**Residual.** A player who never manages a build ends DNF. Time limits start at 10 minutes
+so that building and importing fit.
+
+### R13: Cheating with a site made before the battle
+**Why it's hard.** The game cannot see how a site was made. A player can import a site they
+built before the battle, or someone else's.
+
+**Mitigations.** None that enforce it, by design: it is a party game among people who share a
+room link. The random BUILD, RULE and STYLE cards make a ready-made site a poor fit, players
+vote on what they see, and the host can kick. Stats (`imports`, the completion time) are
+shown for fun, not as proof.
+
+**Residual (accepted).** A determined player can always cheat this way.

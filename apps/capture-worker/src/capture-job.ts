@@ -1,11 +1,12 @@
 /**
- * One capture job (docs/01 §1.5 "Ship → capture → destroy", docs/03 §3.7). Shared by the
- * self-hosted worker (Playwright + sharp) and the `jobs` Edge Function (Browser Rendering's
- * REST API + plain WebP, T-034): the renderer, the imaging and the budget are injected.
+ * One capture job (docs/01 §1.5 "Ship → capture → destroy", docs/03 §3.7, docs/09 §9.4).
+ * Shared by the self-hosted worker (Playwright + sharp) and the `jobs` Edge Function (Browser
+ * Rendering's REST API + plain WebP, T-034): the renderer, the imaging and the budget are
+ * injected.
  *
- *   build row ─► signed Storage URLs (bundle.js, bundle.css if any; short TTL)
- *             ─► import map from the build's manifest (source.json)
- *             ─► signed capture page URL (HMAC, short expiry)
+ *   build row ─► one signed Storage URL of the site pack (shipped: site.bin, auto-shipped:
+ *                autosave/site.bin; short TTL)
+ *             ─► signed v2 capture page URL (HMAC over src + exp, short expiry)
  *             ─► [budget: reserve browser time, or fall back]
  *             ─► renderer ─► imaging: usable? ─► WebP ─► screenshots/{battle}/{build}.webp
  *             ─► complete_capture('captured')
@@ -16,14 +17,13 @@
  *
  * Nothing at all: `fail_job` (re-queued with backoff; at the 5th attempt SQL gives up and
  * sets capture_status = failed). One case fails at once with `complete_capture('failed')`:
- * no bundle AND no thumbnail, because retrying cannot make files appear (uploads are closed
- * once a build is shipped).
+ * no site pack AND no thumbnail, because retrying cannot make files appear (uploads are
+ * closed once a build is shipped).
  *
  * Storing a successful render (upload, complete_capture) is outside the fallback path: if
  * Storage or the RPC hiccups there, the job is retried rather than downgraded to the
  * thumbnail.
  */
-import { buildImportMap } from '@br/runtime/bundler';
 import { signCaptureUrl } from '@br/sandbox-shell/capture-sig';
 import {
   BUCKET_EPHEMERAL,
@@ -44,13 +44,11 @@ import { RenderError, type RenderResult, type Renderer } from './renderer';
 export interface CaptureConfig {
   /**
    * The capture page URL. `{build}` is replaced with the build id, for per-build sandbox
-   * origins (`https://{build}.usercontent.example/v1/capture`).
+   * origins (`https://{build}.usercontent.example/v2/capture`).
    */
   shellCaptureUrl: string;
   hmacSecret: string;
-  /** Package CDN base URL for the import map (React from the CDN, like the preview). */
-  pkgCdnUrl: string;
-  /** Lifetime of the signed Storage URLs and of the signed capture URL. */
+  /** Lifetime of the signed Storage URL and of the signed capture URL. */
   signedUrlTtlSeconds: number;
   /** Hard limit for one render. */
   captureTimeoutMs: number;
@@ -79,44 +77,8 @@ export type CaptureOutcome =
   /** Not even `fail_job` went through; the lease will expire and the job comes back. */
   | { result: 'error'; reason: string };
 
-/** Largest `source.json` the worker reads for the manifest (the bucket allows 5 MB). */
-const MAX_SOURCE_BYTES = 5 * 1024 * 1024;
-
 export function captureUrlFor(config: Pick<CaptureConfig, 'shellCaptureUrl'>, buildId: string) {
   return config.shellCaptureUrl.replaceAll('{build}', buildId);
-}
-
-/** The import map for the build's pinned React, or an empty map if the manifest is unusable. */
-export async function importMapFor(
-  backend: Backend,
-  sourcePath: string,
-  cdnUrl: string,
-  log: Logger,
-): Promise<{ imports: Record<string, string> }> {
-  try {
-    const bytes = await backend.download(BUCKET_EPHEMERAL, sourcePath);
-    if (!bytes) {
-      log.warn('capture.no_source_json');
-      return { imports: {} };
-    }
-    if (bytes.byteLength > MAX_SOURCE_BYTES) throw new Error('source.json is too large');
-    const parsed = JSON.parse(new TextDecoder().decode(bytes)) as {
-      manifest?: { dependencies?: unknown };
-    };
-    const deps = parsed.manifest?.dependencies;
-    if (typeof deps !== 'object' || deps === null || Array.isArray(deps)) {
-      throw new Error('source.json has no manifest.dependencies object');
-    }
-    const strings: Record<string, string> = {};
-    for (const [k, v] of Object.entries(deps)) if (typeof v === 'string') strings[k] = v;
-    // buildImportMap only maps exact pins of valid package names, to URLs on the CDN (T-040);
-    // anything else in a hostile manifest is ignored, and the capture page validates the map
-    // again.
-    return buildImportMap(strings, cdnUrl);
-  } catch (e) {
-    log.warn('capture.bad_manifest', { error: errorMessage(e) });
-    return { imports: {} };
-  }
 }
 
 type RenderAttempt =
@@ -167,17 +129,12 @@ async function renderBuild(
 ): Promise<RenderAttempt> {
   const { backend, config } = deps;
   const ttl = config.signedUrlTtlSeconds;
-  const src = await backend.createSignedUrl(BUCKET_EPHEMERAL, sources.js, ttl);
+  const src = await backend.createSignedUrl(BUCKET_EPHEMERAL, sources.site, ttl);
   if (!src) return { kind: 'missing' };
-  // The CSS file is optional (null when the build has none).
-  const css = await backend.createSignedUrl(BUCKET_EPHEMERAL, sources.css, ttl);
-  const map = await importMapFor(backend, sources.source, config.pkgCdnUrl, log);
   const now = deps.now ?? Date.now;
   const url = await signCaptureUrl({
     captureUrl: captureUrlFor(config, build.id),
     src,
-    css: css ?? undefined,
-    map: JSON.stringify(map),
     exp: Math.floor(now() / 1000) + ttl,
     secret: config.hmacSecret,
   });
@@ -287,7 +244,7 @@ async function runCapture(
     return { result: 'captured', path: target, ready: attempt.ready, renderMs: attempt.renderMs };
   }
   const renderFailure =
-    attempt.kind === 'missing' ? `${sources.kind} bundle.js is missing` : attempt.reason;
+    attempt.kind === 'missing' ? `${sources.kind} site.bin is missing` : attempt.reason;
   if (attempt.kind === 'no-render' && afterNoRender(attempt.why, job.attempts) === 'retry') {
     // The rendering service failed (not the build): try again before using the thumbnail.
     log.warn('capture.service_failed', { reason: renderFailure });

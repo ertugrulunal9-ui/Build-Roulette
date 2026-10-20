@@ -246,7 +246,7 @@ select is(
 select ok(position(:'bob' in :'h') = 0 and position(:'cy' in :'h') = 0,
   'no other user id appears anywhere (opponents, voters, the host)');
 select ok(position(:'ada' in :'h') = 0, 'not even the player''s own id is repeated');
-select ok(:'h' !~ '(source\.json|bundle\.js|bundle\.css|thumb\.webp|manifest\.json|autosave)',
+select ok(:'h' !~ '(site\.bin|source\.json|bundle\.js|bundle\.css|thumb\.webp|manifest\.json|autosave)',
   'no ephemeral storage path');
 select ok(:'h' !~ '"(voter_id|voted_at|ballot|votes_by)"',
   'no ballot: who voted for what never appears (only counts per category)');

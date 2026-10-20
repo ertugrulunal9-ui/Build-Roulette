@@ -12,6 +12,22 @@ deadline nudges, the heartbeat, the clock resync, the battle-topic join) and re-
 and after on the same kind of machine: §7.2.2 has the comparison, §7.4 and §7.5 the updated
 cost and bottlenecks. Numbers from the original T-025 runs are marked "T-025".
 
+**Import mode (M6, 2026-10-16) changed what a battle stores and downloads.** These runs
+used the editor-era client: autosaves every 30 s of `bundle.js`, `bundle.css` and
+`source.json`, small bundles whose packages came from a package CDN, and editing activity in
+Presence. Since M6 a player imports a built site: one site pack (`site.bin`, at most 5 MB)
+per import, uploaded at once as `autosave/site.bin`, then `site.bin` and `thumb.webp` at ship;
+REVEAL downloads one pack per build; Presence carries `{imported, imports}` and goes out
+only on an import; build time limits are 10–45 minutes; there is no package CDN. So:
+
+- **to be re-measured** with the M6 generator (`tools/loadtest`, T-048): storage uploads and
+  reveal downloads per battle (a pack carries the site's own packages, so reveal egress is
+  expected to grow), the egress lines of §7.4 and §7.8, and Presence per BUILDING minute
+  (expected to fall: one send per import instead of editing activity);
+- **unchanged**: the phase, RPC, Realtime-broadcast and capture measurements, which do not
+  depend on what a build contains;
+- **gone**: the package-CDN container ($19.72 a month in §7.4.5) and recommendation 9.
+
 ## 7.0 Summary
 
 After T-029 (measured 2026-10-08, §7.2.2):
@@ -99,8 +115,17 @@ rules given in brackets.
 | RESULTS | Every screenshot through its public URL (what the results page's `<img>` loads), again after each `capture` event. |
 | End | Back to the lobby, `set_ready`, the next battle; after the last one `leave_room`. |
 
-**Not simulated:** the sandbox preview itself (bundling, iframes, the package CDN, the
-pages of the Next.js app), spectators, kicks, refreshes and leaves mid-battle (the chaos
+**Since M6 (T-048)** the generator models imports instead (`tools/loadtest/src/session.ts`,
+an **assumed** model, 2026-10-16): the first import at 25–70 % of BUILDING, then another
+10–30 % of the build later with a 60 % chance each time; each import uploads its pack as
+`autosave/site.bin` and sends `{imported, imports}`; a ship uploads `site.bin` (the last
+import) and `thumb.webp`, then `ship_build` with `{files, bundle_bytes, imports}`; REVEAL
+prefetches `site.bin`. Pack sizes are log-normal, **assumed**: median 180 KB, p90 900 KB,
+3 KB–4.5 MB (a Vite-style site: `index.html`, one script, one stylesheet). The runs below
+used the table above.
+
+**Not simulated:** the sandbox preview itself (iframes, the site worker; bundling and the
+package CDN before M6, the pages of the Next.js app), spectators, kicks, refreshes and leaves mid-battle (the chaos
 e2e covers those), solo battles, reports, the admin page, Turnstile. Uploads always
 succeed on the first try unless the server refuses them.
 
@@ -393,7 +418,7 @@ Code: `tools/loadtest/src/cost.ts`; `pnpm --filter @br/loadtest cost <report.jso
 | Cloudflare Workers Paid | $5/month: 10 M requests + 30 M CPU-ms, then $0.30/M requests, $0.02/M CPU-ms | needed for Containers and Browser Rendering |
 | Cloudflare Pages | $0 | static sandbox shell, free and unlimited |
 | Browser Rendering | 10 browser-hours/month included, then $0.09/hour; 10 concurrent browsers (monthly average), then $2 each | Workers Paid |
-| Containers | $0.0000025/GiB-s memory, $0.000020/vCPU-s, $0.00000007/GB-s disk; 25 GiB-h, 375 vCPU-min, 200 GB-h included; egress $0.025/GB after 1 TB | package CDN |
+| Containers | $0.0000025/GiB-s memory, $0.000020/vCPU-s, $0.00000007/GB-s disk; 25 GiB-h, 375 vCPU-min, 200 GB-h included; egress $0.025/GB after 1 TB | package CDN (removed in M6: no container any more) |
 | R2 | $0 | was the OpenNext ISR cache; unused since T-037 (the app is a static site on Cloudflare Pages, docs/08 §2) |
 | Domain | $10.44/year | app domain (.com, at-cost registrar); the usercontent domain only in stage 2 |
 
@@ -406,7 +431,9 @@ to a client, plus every presence message a client sends (joins, replies and hear
 counted). Screenshots 100 KB. 3 battles per unique player per month (MAU). Peak-hour
 concurrency 4× the monthly average. 15 Worker requests × 10 ms CPU per player per battle.
 6 s of Browser Rendering per capture (local job p50 0.8–2.9 s; a remote session adds a
-launch). Package-CDN container always on (1 GiB, ¼ vCPU billed): the worst case.
+launch). Package-CDN container always on (1 GiB, ¼ vCPU billed): the worst case (M5; there
+is no package CDN since M6). Since M6 `tools/loadtest/src/cost.ts` assumes 15-minute builds
+(a random battle draws 10, 15 or 20 minutes); the tables below were computed with 10.
 
 ### 7.4.3 Formulas
 
@@ -459,13 +486,14 @@ not counted; about +30 messages per battle.
 | Cloudflare Workers Paid | $5.00 | $5.00 | $5.00 | $5.00 |
 | Workers requests + CPU | $0 | $0 | $0 (0.9 M req) | $1.20 |
 | Browser Rendering | $0 (1 h) | $0 (10 h) | $8.10 (100 h) | $89.10 |
-| Containers (package CDN, always on) | $19.72 | $19.72 | $19.72 | $19.72 |
+| Containers (package CDN, always on; gone since M6) | $19.72 | $19.72 | $19.72 | $19.72 |
 | Pages, R2 | $0 | $0 | $0 | $0 |
 | Domain | $0.87 | $0.87 | $0.87 | $0.87 |
 | **Total per month** | **$50.59** | **$50.59** | $137.49 → **$83.44** | $1,425.76 → **$870.69** |
 | **Per 1,000 battles** | $505.90 | **$50.59** | $13.75 → **$8.34** | $14.26 → **$8.71** |
 
-With 5-minute builds (`20261008t025551-custom`): $79.92 at 10,000 battles ($7.99 per 1,000),
+Since M6 the package CDN line is $0, and the egress line is to be re-measured with site
+packs (see the note at the top). With 5-minute builds (`20261008t025551-custom`): $79.92 at 10,000 battles ($7.99 per 1,000),
 marginal $11.67. T-025's table (its own basis run): $50.59 / $50.59 / $138.01, marginal
 $17.53.
 
@@ -567,18 +595,18 @@ the peak hour of about 37,600 battles/month at peak factor 4):
    (the tenant's `db_pool`; in the dashboard's Realtime settings as the database connection
    pool size, as far as the author knows) and raise it above 1–2 before launch. The client
    side (battle-topic joins staggered by 0–500 ms) is done (T-029).
-6. **Reveal downloads:** ship `bundle.js`, `bundle.css` and `manifest.json` as one object
-   (3× fewer Storage reads, each an RLS check), and consider serving revealed bundles
-   through signed URLs cached at the edge (they are immutable once shipped). Egress and the
-   top database statement shrink together.
+6. **Reveal downloads:** ship one object per build: **done in M6** (one `site.bin`, one RLS
+   check per read). Still open: serving revealed packs through signed URLs cached at the
+   edge (they are immutable once shipped). With packs larger than the old bundles, this
+   matters more for egress.
 7. **Screenshots:** keep WebP ≤ 100 KB (quality 70 since T-036: mean 61 KiB on 18 sample
    apps, docs/08 §6.3) and serve the RESULTS grid through Supabase image transforms at
    thumbnail size (Pro only): 34 screenshot views per battle are the largest egress item
    with the measured sizes, ahead of the reveal files.
 8. **Capture:** run Browser Rendering captures with a short per-capture session and keep
    the builds' ready signal (58 % used it in the test, half the render time).
-9. **Package CDN container:** use `sleepAfter` so it does not run 730 h/month at low volume
-   ($19.72 of the $50.59 at 1,000 battles).
+9. ~~**Package CDN container:** use `sleepAfter` so it does not run 730 h/month at low
+   volume ($19.72 of the $50.59 at 1,000 battles).~~ Moot: M6 removed the package CDN.
 10. **Report lost broadcasts** (T-026): the sync engine counts heartbeats that found the
     battle ahead of its snapshot (`stats.missed`); in production that is the signal that
     Realtime's database feed dropped (§7.2.2).
@@ -611,14 +639,17 @@ turns read-only, and a project over another quota is restricted (HTTP 402) after
 period. §7.0–§7.6 assume Pro; this section turns the Free quotas into battles. Per-battle
 figures are §7.4.4's (6 players, 10-minute build, after T-029), with the screenshot sizes
 measured in T-036 (docs/08 §6.3): WebP quality 70, mean 60.9 KiB, so egress is 4.1 MB per
-battle instead of 5.4 MB with the 100 KB assumption. "Peak factor 4" as in §7.4.2. Limits
+battle instead of 5.4 MB with the 100 KB assumption. **The egress figures are editor-era
+(M5 bundles) and are to be re-measured for M6's site packs**; the storage, database and
+Realtime rows do not depend on them, except that the ephemeral packs (one per import and
+one per ship, ≤ 5 MB each, deleted at DESTROY) briefly use more file storage. "Peak factor 4" as in §7.4.2. Limits
 marked as in docs/08 §6 (confirmed: Supabase's or Cloudflare's docs; secondary: summaries of
 the pricing page).
 
 | Resource | Free limit | Per battle | Capacity | Bites |
 |---|---|---|---|---|
 | **File storage** | 1 GB (secondary) | 347 KiB of permanent screenshots (q70; 439 KiB at q82) | **~2,750 battles in total** (2,180 at q82); about 2.8 months at 1,000 a month | **first, over time** (cumulative: results are permanent) |
-| **Egress** | 5 GB/month uncached (secondary) | 4.1 MB (5.4 MB with 100 KB screenshots) | **~1,210 battles/month** (926) | **first per month** |
+| **Egress** | 5 GB/month uncached (secondary) | 4.1 MB (5.4 MB with 100 KB screenshots); M5 bundles, to be re-measured for site packs | **~1,210 battles/month** (926), before M6 | **first per month** |
 | Browser Rendering (Cloudflare) | 10 browser-minutes/day (confirmed) | 5.7 captures × ~3 s (assumed) | ~1,000 battles/month rendered | soft: client thumbnails after that |
 | Realtime messages | 2 M/month (secondary) | 1,490 | ~1,340 battles/month | third per month |
 | Realtime Presence | 20 messages/s (confirmed) | 1.7–2.1/s per 6-player room in BUILD | ~10 rooms in BUILD at once (5–6 with 8 players); ≈ 11,000 battles/month | **first at a peak** (measured clean at 10 rooms × 6, docs/08 §6.5) |

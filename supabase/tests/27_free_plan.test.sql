@@ -91,7 +91,7 @@ select ok(jsonb_array_length((:'h0'::jsonb) #> '{usage,database,largest}') betwe
 insert into storage.objects (bucket_id, name, metadata) values
   ('screenshots', :'OLD' || '/' || :'b1' || '.webp', '{"size": 61234, "mimetype": "image/webp"}'),
   ('screenshots', :'OLD' || '/' || :'b2' || '.webp', '{"size": 20000, "mimetype": "image/webp"}'),
-  ('ephemeral-builds', :'LIVE' || '/' || :'ana_id' || '/bundle.js', '{"size": 4096}');
+  ('ephemeral-builds', :'LIVE' || '/' || :'ana_id' || '/site.bin', '{"size": 4096}');
 update auth.users set last_sign_in_at = now() where id = :'ana_id';
 set local role authenticated;
 select set_config('request.jwt.claims', :'mod', true);

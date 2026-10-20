@@ -1,4 +1,3 @@
-import { createWorkspace } from '@br/workspace';
 import { describe, expect, it } from 'vitest';
 import { CAST_VOTE_ERRORS } from '@br/game';
 import {
@@ -12,7 +11,9 @@ import {
 } from './errors';
 import { awardInfo, isVoteAward } from './format';
 import { randomDisplayName, suggestBuildName } from './names';
-import { buildStats, sourceJson } from './stats';
+import { siteStats, statsPhrases } from './stats';
+import { fakeSite } from './test-support';
+import type { BuildStats } from './types';
 
 describe('toGameError: the T-011 error contract', () => {
   it.each(RPC_ERROR_CODES)('maps a PostgREST error with message %s', (code) => {
@@ -120,25 +121,37 @@ describe('names', () => {
 });
 
 describe('stats', () => {
-  it('counts files, lines, deps and bundle bytes', () => {
-    const ws = createWorkspace();
-    ws.files['src/logo.png'] = 'data:image/png;base64,AAAA';
-    const stats = buildStats(ws, { js: 'é', css: 'ab' }, { rebuilds: 3.7, pastes: -1 });
-    expect(stats).toMatchObject({
-      files: 4,
-      deps: ['react', 'react-dom'],
-      bundle_bytes: 4, // é is 2 bytes in UTF-8
-      rebuilds: 3,
-      pastes: 0,
+  it('an import reports its files, the pack size and the number of imports', () => {
+    const site = fakeSite('Stats', { 'assets/app.js': 'x' });
+    expect(siteStats(site, 3)).toEqual({
+      files: 2,
+      bundle_bytes: site.pack.byteLength,
+      imports: 3,
     });
-    const lines = ['src/main.tsx', 'src/App.tsx', 'src/styles.css']
-      .map((p) => (ws.files[p] ?? '').trimEnd().split('\n').length)
-      .reduce((a, b) => a + b, 0);
-    expect(stats.lines).toBe(lines);
+    // At least the import being shipped.
+    expect(siteStats(site, 0).imports).toBe(1);
   });
 
-  it('source.json holds the files and the manifest', () => {
-    const ws = createWorkspace('vanilla-ts');
-    expect(JSON.parse(sourceJson(ws))).toEqual({ files: ws.files, manifest: ws.manifest });
+  it('shows what a row has: import stats, or an editor build from before M6, or nothing', () => {
+    expect(statsPhrases({ files: 12, bundle_bytes: 340 * 1024, imports: 3 })).toEqual([
+      '12 files',
+      '340 KB',
+      'imported 3 times',
+    ]);
+    expect(statsPhrases({ files: 1, bundle_bytes: 2_500_000, imports: 1 })).toEqual([
+      '1 file',
+      '2.4 MB',
+      'imported once',
+    ]);
+    expect(
+      statsPhrases({ files: 4, lines: 120, deps: ['react', 'three'], rebuilds: 9, pastes: 1 }),
+    ).toEqual(['4 files', '120 lines', 'made with react, three']);
+    expect(statsPhrases({ files: 3, lines: 1 })).toEqual(['3 files', '1 line']);
+    expect(statsPhrases({})).toEqual([]);
+    expect(statsPhrases(null)).toEqual([]);
+    // Junk from an old or hostile row is left out, never shown or thrown.
+    expect(
+      statsPhrases({ files: -1, bundle_bytes: Number.NaN, deps: 'x' } as unknown as BuildStats),
+    ).toEqual([]);
   });
 });

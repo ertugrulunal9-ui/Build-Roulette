@@ -1,57 +1,50 @@
 /**
  * Local three-origin setup for the playground and the e2e tests:
  *
- *   app (playground + bundler worker + esbuild.wasm)  http://localhost:<appPort>
- *   sandbox shell (/v1/)                              http://127.0.0.1:<shellPort>   (different site)
- *   mock package CDN                                  http://localhost:<cdnPort>
+ *   app (playground)                    http://localhost:<appPort>
+ *   sandbox shell (/v2/, site worker)   http://127.0.0.1:<shellPort>   (a different site)
+ *   other origin (files, probes)        http://localhost:<otherPort>
  *
- * Run: pnpm --filter @br/runtime playground   (ports via APP_PORT / SHELL_PORT / CDN_PORT)
+ * Run: pnpm --filter @br/runtime playground   (ports via APP_PORT / SHELL_PORT / OTHER_PORT)
  *
- * `POST /__test/cdn-outage?mode=refuse|error|hang|off` on the app origin starts or ends a
- * simulated package CDN outage (T-032 e2e, `MockCdn.setOutage`). Test support only.
- * `CDN_LAYOUT=esm.sh` makes the mock CDN answer like the public esm.sh (an entry module that
- * re-exports an internal build path, T-035; `MockCdnLayout`).
- * `GET /__test/hold?ms=N` answers after N ms (at most 60 s): a synchronous XHR to it blocks
- * the calling worker's thread for that long without using CPU (T-041 e2e). Test support only.
+ * Test support only:
+ * - `PUT /__test/site?name=N` (app origin) stores a site pack; the other origin serves it as
+ *   `GET /sites/N.bin` with CORS, like a signed Storage URL.
+ * - `GET /__test/capture-url?name=N` (app origin) answers with a signed capture URL of the
+ *   shell (`/v2/capture?src=<other>/sites/N.bin&exp=…&sig=…`). The capture secret is random
+ *   per process and never leaves it.
+ * - `GET /health` (other origin): a blank page on an origin that is neither the app nor the
+ *   sandbox (frame-ancestors e2e).
  */
+import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { createServer, type Server } from 'node:http';
-import { createRequire } from 'node:module';
+import { createServer, type IncomingMessage, type Server } from 'node:http';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import * as esbuild from 'esbuild';
+import { SITE_LIMITS } from '@br/site';
+import { signCaptureUrl } from '@br/sandbox-shell/capture-sig';
 import { startShellServer } from '@br/sandbox-shell/server';
-import {
-  parseLayout,
-  parseOutage,
-  startMockCdn,
-  type CdnOutage,
-  type MockCdnLayout,
-} from './mock-cdn';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 export interface DevServerOptions {
   appPort?: number;
   shellPort?: number;
-  cdnPort?: number;
-  cdnLayout?: MockCdnLayout;
+  otherPort?: number;
 }
 
 export interface DevServers {
   appUrl: string;
   shellUrl: string;
-  cdnUrl: string;
+  otherUrl: string;
   shellJsBytes: number;
-  setCdnOutage(outage: CdnOutage | null): Promise<void>;
+  swJsBytes: number;
   close(): Promise<void>;
 }
 
 export interface PlaygroundConfig {
   shellUrl: string;
-  cdnBaseUrl: string;
-  wasmUrl: string;
-  workerUrl: string;
 }
 
 async function bundleForBrowser(
@@ -85,12 +78,62 @@ function listen(server: Server, port: number, host: string): Promise<number> {
   });
 }
 
-export async function startDevServers(opts: DevServerOptions = {}): Promise<DevServers> {
-  const cdn = await startMockCdn({
-    port: opts.cdnPort ?? 0,
-    host: 'localhost',
-    layout: opts.cdnLayout ?? 'bundle',
+function readBody(req: IncomingMessage, max: number): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    req.on('data', (c: Buffer) => {
+      size += c.byteLength;
+      if (size > max) {
+        reject(new Error('body too large'));
+        req.destroy();
+        return;
+      }
+      chunks.push(c);
+    });
+    req.on('end', () => {
+      resolve(Buffer.concat(chunks));
+    });
+    req.on('error', reject);
   });
+}
+
+function close(server: Server): Promise<void> {
+  return new Promise((resolve) => {
+    server.closeAllConnections();
+    server.close(() => {
+      resolve();
+    });
+  });
+}
+
+export async function startDevServers(opts: DevServerOptions = {}): Promise<DevServers> {
+  const packs = new Map<string, Buffer>();
+
+  // The other origin: site packs with CORS (what a signed Storage URL is), and a blank page.
+  const other = createServer((req, res) => {
+    const url = new URL(req.url ?? '/', 'http://other.local');
+    const m = /^\/sites\/([\w-]+)\.bin$/.exec(url.pathname);
+    const body = m?.[1] === undefined ? undefined : packs.get(m[1]);
+    if (body) {
+      res.writeHead(200, {
+        'Content-Type': 'application/octet-stream',
+        'Access-Control-Allow-Origin': '*',
+        'Cache-Control': 'no-store',
+      });
+      res.end(body);
+      return;
+    }
+    if (url.pathname === '/health') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end('<!doctype html><title>other origin</title>');
+      return;
+    }
+    res.writeHead(404, { 'Access-Control-Allow-Origin': '*' });
+    res.end();
+  });
+  const otherPort = await listen(other, opts.otherPort ?? 0, 'localhost');
+  const otherOrigin = `http://localhost:${String(otherPort)}`;
 
   // The app origin must be known before the shell is built (frame-ancestors, hello target),
   // so bind the app server first and fill in its handler afterwards.
@@ -104,38 +147,27 @@ export async function startDevServers(opts: DevServerOptions = {}): Promise<DevS
   const appPort = await listen(app, opts.appPort ?? 0, 'localhost');
   const appOrigin = `http://localhost:${String(appPort)}`;
 
+  const captureSecret = randomBytes(32).toString('hex');
   const shell = await startShellServer({
     port: opts.shellPort ?? 0,
     host: '127.0.0.1',
     appOrigins: [appOrigin],
-    cdnOrigin: cdn.url,
+    // The capture page fetches site packs from the other origin (plain http locally).
+    extraConnectSrc: [otherOrigin],
+    captureSecret,
   });
 
-  const config: PlaygroundConfig = {
-    shellUrl: shell.shellUrl,
-    cdnBaseUrl: cdn.url,
-    wasmUrl: '/esbuild.wasm',
-    workerUrl: '/bundler.worker.js',
-  };
-  const [playgroundJs, workerJs] = await Promise.all([
-    bundleForBrowser(path.join(ROOT, 'playground/main.ts'), {
-      __PLAYGROUND_CONFIG__: JSON.stringify(config),
-    }),
-    bundleForBrowser(path.join(ROOT, 'src/worker/bundler.worker.ts')),
-  ]);
+  const config: PlaygroundConfig = { shellUrl: shell.shellUrl };
+  const playgroundJs = await bundleForBrowser(path.join(ROOT, 'playground/main.ts'), {
+    __PLAYGROUND_CONFIG__: JSON.stringify(config),
+  });
   const html = readFileSync(path.join(ROOT, 'playground/index.html'), 'utf8');
-  const require = createRequire(import.meta.url);
-  const wasm = readFileSync(
-    path.join(path.dirname(require.resolve('esbuild-wasm/package.json')), 'esbuild.wasm'),
-  );
 
   const routes: Record<string, { type: string; body: string | Buffer }> = {
     '/': { type: 'text/html; charset=utf-8', body: html },
     '/playground.js': { type: 'text/javascript; charset=utf-8', body: playgroundJs },
-    '/bundler.worker.js': { type: 'text/javascript; charset=utf-8', body: workerJs },
-    '/esbuild.wasm': { type: 'application/wasm', body: wasm },
-    // Policy e2e: a classic script on the app origin, which is NOT in the shell's
-    // script-src. A build that adds <script src> for it must not run it.
+    // Policy e2e: a classic script on the app origin (plain http), which is NOT in the site
+    // CSP's script-src. A site that adds <script src> for it must not run it.
     '/csp-probe.js': {
       type: 'text/javascript; charset=utf-8',
       body: 'window.__cspProbeRan = true;\n',
@@ -143,25 +175,31 @@ export async function startDevServers(opts: DevServerOptions = {}): Promise<DevS
   };
   handler = (req, res) => {
     const url = new URL(req.url ?? '/', appOrigin);
-    if (url.pathname === '/__test/cdn-outage' && req.method === 'POST') {
-      const outage = parseOutage(url.searchParams.get('mode'));
-      if (outage === undefined) {
-        res.writeHead(400, { 'Content-Type': 'text/plain' });
-        res.end('mode must be refuse, error, hang or off');
-        return;
-      }
-      void cdn.setOutage(outage).then(() => {
-        res.writeHead(200, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' });
-        res.end(`cdn outage: ${outage ?? 'off'}\n`);
-      });
+    const name = url.searchParams.get('name') ?? '';
+    if (url.pathname === '/__test/site' && req.method === 'PUT' && /^[\w-]+$/.test(name)) {
+      void readBody(req, SITE_LIMITS.maxPackBytes).then(
+        (body) => {
+          packs.set(name, body);
+          res.writeHead(204);
+          res.end();
+        },
+        () => {
+          res.writeHead(413);
+          res.end();
+        },
+      );
       return;
     }
-    if (url.pathname === '/__test/hold' && req.method === 'GET') {
-      const ms = Math.min(60_000, Math.max(0, Number(url.searchParams.get('ms')) || 0));
-      setTimeout(() => {
+    if (url.pathname === '/__test/capture-url' && /^[\w-]+$/.test(name)) {
+      void signCaptureUrl({
+        captureUrl: shell.captureUrl,
+        src: `${otherOrigin}/sites/${name}.bin`,
+        exp: Math.floor(Date.now() / 1000) + 300,
+        secret: captureSecret,
+      }).then((signed) => {
         res.writeHead(200, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' });
-        res.end(`held ${String(ms)} ms\n`);
-      }, ms);
+        res.end(signed);
+      });
       return;
     }
     const route = routes[url.pathname];
@@ -181,19 +219,11 @@ export async function startDevServers(opts: DevServerOptions = {}): Promise<DevS
   return {
     appUrl: `${appOrigin}/`,
     shellUrl: shell.shellUrl,
-    cdnUrl: cdn.url,
+    otherUrl: otherOrigin,
     shellJsBytes: shell.shellJsBytes,
-    setCdnOutage: (outage) => cdn.setOutage(outage),
+    swJsBytes: shell.swJsBytes,
     close: async () => {
-      await Promise.all([
-        shell.close(),
-        cdn.close(),
-        new Promise<void>((resolve) => {
-          app.close(() => {
-            resolve();
-          });
-        }),
-      ]);
+      await Promise.all([shell.close(), close(other), close(app)]);
     },
   };
 }
@@ -205,12 +235,13 @@ if (isMain) {
   const servers = await startDevServers({
     appPort: Number(env['APP_PORT'] ?? 4310),
     shellPort: Number(env['SHELL_PORT'] ?? 4311),
-    cdnPort: Number(env['CDN_PORT'] ?? 4312),
-    cdnLayout: parseLayout(env['CDN_LAYOUT']),
+    otherPort: Number(env['OTHER_PORT'] ?? 4312),
   });
   console.log(`playground  ${servers.appUrl}`);
-  console.log(`shell       ${servers.shellUrl} (shell.js ${String(servers.shellJsBytes)} B)`);
-  console.log(`mock CDN    ${servers.cdnUrl} (${parseLayout(env['CDN_LAYOUT'])} layout)`);
+  console.log(
+    `shell       ${servers.shellUrl} (shell.js ${String(servers.shellJsBytes)} B, sw.js ${String(servers.swJsBytes)} B)`,
+  );
+  console.log(`other       ${servers.otherUrl}`);
   const stop = () => {
     void servers.close().then(() => process.exit(0));
   };

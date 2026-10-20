@@ -4,10 +4,10 @@ import { redactUrls } from '../src/playwright-renderer';
 describe('redactUrls', () => {
   it('keeps origin and path, drops queries (signed URLs carry tokens)', () => {
     const msg =
-      'page.goto: net::ERR_HTTP_RESPONSE_CODE_FAILURE at http://127.0.0.1:4331/v1/capture?exp=1&src=http%3A%2F%2Fdb%2Fsign%3Ftoken%3Dsecret&sig=abc';
+      'page.goto: net::ERR_HTTP_RESPONSE_CODE_FAILURE at http://127.0.0.1:4331/v2/capture?exp=1&src=http%3A%2F%2Fdb%2Fsign%3Ftoken%3Dsecret&sig=abc';
     const out = redactUrls(msg);
     expect(out).toBe(
-      'page.goto: net::ERR_HTTP_RESPONSE_CODE_FAILURE at http://127.0.0.1:4331/v1/capture?…',
+      'page.goto: net::ERR_HTTP_RESPONSE_CODE_FAILURE at http://127.0.0.1:4331/v2/capture?…',
     );
     expect(out).not.toContain('token');
     expect(out).not.toContain('sig=');

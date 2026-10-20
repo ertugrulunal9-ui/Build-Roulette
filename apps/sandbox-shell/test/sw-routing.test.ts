@@ -42,10 +42,21 @@ const live = (c: Classified): Exclude<Classified, { kind: 'pass' }> => {
 
 describe('isReservedPath', () => {
   it('reserves the shell versions /v1 and /v2 only', () => {
-    for (const p of ['/v1', '/v1/', '/v1/reset', '/v2/', '/v2/capture', '/v2/sw.js', '/v2']) {
+    for (const p of [
+      '/v1',
+      '/v1/',
+      '/v1/reset',
+      '/v2/',
+      '/v2/capture',
+      '/v2/sw.js',
+      '/v2',
+      // Later shell versions: a surviving v2 worker must let them load.
+      '/v3/',
+      '/v10/capture',
+    ]) {
       expect(isReservedPath(p), p).toBe(true);
     }
-    for (const p of ['/', '/v3/', '/v10/', '/v2x', '/about', '/assets/v2/x.js', '/V2/']) {
+    for (const p of ['/', '/v', '/v2x', '/vx/', '/about', '/assets/v2/x.js', '/V2/']) {
       expect(isReservedPath(p), p).toBe(false);
     }
   });

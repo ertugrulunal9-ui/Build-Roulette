@@ -762,12 +762,6 @@ async function functions(ctx) {
   } else {
     ctx.step('Function secrets', 'unchanged', Object.keys(wanted).join(', '));
   }
-  // Secrets the function no longer reads (import mode, M6: no package CDN, no import map).
-  const stale = OLD_FUNCTION_SECRETS.filter((name) => existing.has(name));
-  if (stale.length) {
-    await ctx.sb.deleteSecrets(stale);
-    ctx.step('Old function secrets', 'deleted', stale.join(', '));
-  }
   await ctx.must(
     ctx.cli([
       'functions',
@@ -781,6 +775,14 @@ async function functions(ctx) {
     'supabase functions deploy jobs',
   );
   ctx.step('Edge Function jobs', 'deployed', `${s.supabaseUrl}/functions/v1/jobs`);
+  // Secrets the function no longer reads (import mode, M6: no package CDN, no import map).
+  // Deleted only after the new function is deployed: the bundle still running before that
+  // refuses to start without them, so a failed deploy must leave them in place.
+  const stale = OLD_FUNCTION_SECRETS.filter((name) => existing.has(name));
+  if (stale.length) {
+    await ctx.sb.deleteSecrets(stale);
+    ctx.step('Old function secrets', 'deleted', stale.join(', '));
+  }
 }
 
 async function shell(ctx) {

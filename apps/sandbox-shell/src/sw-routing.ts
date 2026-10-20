@@ -24,9 +24,13 @@ import { SITE_ID_RE, SITE_PARAM } from './site-protocol';
 /** The site's entry document, and the SPA fallback for unknown navigations. */
 export const INDEX_FILE = 'index.html';
 
-/** Paths of the shell's own versions. Navigations there always go to the network. */
+/**
+ * Paths of the shell's versions (`/v1/`, `/v2/`, and every later `/vN/`). Navigations there
+ * always go to the network: a worker of this version survives in returning browsers, so it
+ * must let a newer shell (`/v3/` after the next protocol bump) load and install its own.
+ */
 export function isReservedPath(pathname: string): boolean {
-  return /^\/v[12](?:\/|$)/.test(pathname);
+  return /^\/v\d+(?:\/|$)/.test(pathname);
 }
 
 export interface RequestFacts {

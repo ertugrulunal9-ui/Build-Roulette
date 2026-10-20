@@ -71,7 +71,7 @@ on screen (call it as `window.buildRoulette?.ready()`); it does nothing in the p
 
 **Which site a request belongs to:**
 
-- a navigation to a reserved shell path (`/v1/…`, `/v2/…`) is never intercepted;
+- a navigation to a reserved shell path (`/v1/…`, `/v2/…`, every `/vN/…`, so a later shell version can load in a browser that still runs this worker) is never intercepted;
 - a navigation with `__br_site=<id>`: that site, and the document it creates
   (`FetchEvent.resultingClientId`) is mapped to it. An id the worker does not hold is a 404,
   never another site;

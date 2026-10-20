@@ -1697,6 +1697,17 @@ describe('deploy: target all', () => {
     assert.doesNotMatch(again.summary, /Old function secrets/);
   });
 
+  it('keeps the package CDN function secret when the function deploy fails (the old bundle needs it)', async () => {
+    const w = world({
+      fail: (cmd, args) => cmd === 'npx' && args.slice(2, 4).join(' ') === 'functions deploy',
+    });
+    w.st.fnSecrets.set('PKG_CDN_URL', 'https://esm.sh');
+    const res = await run(w);
+    assert.equal(res.code, 1);
+    assert.equal(w.st.fnSecrets.has('PKG_CDN_URL'), true);
+    assert.doesNotMatch(res.summary, /Old function secrets/);
+  });
+
   it('turns CAPTCHA on only with both keys, and only after the web deploy', async () => {
     const w = world();
     const res = await run(w, {

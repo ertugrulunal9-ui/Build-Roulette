@@ -16,7 +16,7 @@
     "typecheck": "NEXT_TELEMETRY_DISABLED=1 next typegen && tsc --noEmit",
     "test": "vitest run",
     "test:e2e": "pnpm run build && playwright test",
-    "test:e2e:solo": "pnpm run build && playwright test -c playwright.solo.config.ts",
+    "test:e2e:solo": "NEXT_PUBLIC_IMPORT_URL_TEST_ORIGINS=http://host.docker.internal:4330 pnpm run build && playwright test -c playwright.solo.config.ts",
     "test:e2e:moderation": "pnpm run build && playwright test -c playwright.moderation.config.ts",
     "test:e2e:multi": "pnpm run build && playwright test -c playwright.multi.config.ts",
     "test:e2e:mobile": "pnpm run build && playwright test -c playwright.multi.config.ts multiplayer-mobile",

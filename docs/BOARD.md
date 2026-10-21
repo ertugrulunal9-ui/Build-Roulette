@@ -2,7 +2,7 @@
 
 Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 
-## Current milestone: M6 Import mode: bring your own build ([docs/09](09-import-mode.md)) — all tasks merged; **deployed 2026-10-17** (Deploy run 5 from `claude/intelligent-maxwell-ddael3`: migration 20261016120000 applied, jobs function, shell v2 and app deployed, `PKG_CDN_URL` removed, deploy-check 32 passed incl. `/v2/sw.js`). Open: play a real battle to confirm Browser Rendering runs the capture page's service worker (runbook capture-backlog step 7)
+## Current milestone: M6 Import mode: bring your own build ([docs/09](09-import-mode.md)) — all tasks merged; **deployed 2026-10-17** (Deploy run 5 from `claude/intelligent-maxwell-ddael3`: migration 20261016120000 applied, jobs function, shell v2 and app deployed, `PKG_CDN_URL` removed, deploy-check 32 passed incl. `/v2/sw.js`). Shell redeployed 2026-10-20 (Deploy run 6, review fixes). **Verified in production 2026-10-21:** a solo battle imported a Vite site, the preview ran through the site worker, Browser Rendering captured a full screenshot (R11 closed), and the build was destroyed
 
 **User decision (2026-10-16):** players build locally with their own AI tools and import the built static site (`dist/` folder or `.zip`, option B). The in-browser editor is removed. After the import path works: a welcome screen that explains how the game works.
 

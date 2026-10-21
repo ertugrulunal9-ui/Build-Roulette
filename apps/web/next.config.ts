@@ -40,6 +40,8 @@ export default function config(phase: string): NextConfig {
       NEXT_PUBLIC_SENTRY_ENVIRONMENT: process.env.NEXT_PUBLIC_SENTRY_ENVIRONMENT ?? '',
       NEXT_PUBLIC_POSTHOG_KEY: process.env.NEXT_PUBLIC_POSTHOG_KEY ?? '',
       NEXT_PUBLIC_POSTHOG_HOST: process.env.NEXT_PUBLIC_POSTHOG_HOST ?? '',
+      // The link import's test-only origins (src/lib/site/link-config.ts): e2e builds only.
+      NEXT_PUBLIC_IMPORT_URL_TEST_ORIGINS: process.env.NEXT_PUBLIC_IMPORT_URL_TEST_ORIGINS ?? '',
     },
     // `next dev` only: the shells' rewrites (`/battles/{id}` → the `/battles` page, …) and
     // the moved paths' redirects, which the host does with `out/_redirects` in production

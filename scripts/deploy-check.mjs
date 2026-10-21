@@ -3,8 +3,8 @@
 // (a Cloudflare Worker with static assets since T-043: headers and CSP, real 404s, the shells,
 // the link-preview Worker on /battles/*), the sandbox shell (its own Worker on a second
 // account: its CSP, the site worker /v2/sw.js, the capture gate, its code not served), and Supabase (the API, anonymous
-// sign-ins, the keep-alive RPC, the jobs Edge Function). Read-only, except that it pings
-// keep_alive like the daily workflow does. Node 22, no dependencies.
+// sign-ins, the keep-alive RPC, the jobs and import-url Edge Functions). Read-only, except that
+// it pings keep_alive like the daily workflow does. Node 22, no dependencies.
 //
 //   node scripts/deploy-check.mjs \
 //     --app https://build-roulette-web.<subdomain A>.workers.dev \
@@ -615,6 +615,67 @@ export async function runChecks(cfg, fetchImpl = fetch) {
       out.push(
         fail('supabase: the jobs function runs', `HTTP ${run.status}: ${run.body.slice(0, 300)}`),
       );
+    return out;
+  });
+  await step('supabase import-url function', async () => {
+    const url = `${cfg.supabase}/functions/v1/import-url`;
+    // Without a session: the app's key alone (a legacy anon key also goes in Authorization,
+    // which reaches PostgREST through the function and is refused there). Nothing is copied.
+    const r = await request(fetchImpl, url, {
+      method: 'POST',
+      headers: { ...supabaseHeaders(cfg.anonKey), 'content-type': 'application/json' },
+      body: JSON.stringify({ url: 'https://deploy-check.lovable.app/' }),
+    });
+    const name = 'supabase: the import-url function';
+    if (r.status === 404)
+      return fail(name, '404: not deployed (supabase functions deploy import-url)');
+    if (r.status === 540) return fail(name, 'the project is PAUSED');
+    if (r.status === 500 && /"code"\s*:\s*"internal"/.test(r.body))
+      return fail(
+        name,
+        'HTTP 500 without a session (want 401): it cannot reach the database as the caller; the function log (Supabase → Edge Functions → import-url → Logs) names the problem',
+      );
+    if (r.status !== 401) return fail(name, `HTTP ${r.status} without a session (want 401)`);
+    // Ours answers {"code":"unauthenticated"}; the gateway's own 401 means it was deployed WITH
+    // JWT verification, which also refuses the browser's preflight (CORS).
+    if (!/"code"\s*:\s*"unauthenticated"/.test(r.body))
+      return fail(
+        name,
+        `the gateway refused the call (${r.body.slice(0, 120)}): deploy it with --no-verify-jwt`,
+      );
+    const out = [
+      pass(
+        'supabase: the import-url function is deployed and refuses a call without a session (401)',
+      ),
+    ];
+    // The app's origin may call it (APP_ORIGINS, a function secret set by the deploy).
+    const origin = new URL(cfg.app).origin;
+    const pre = await request(fetchImpl, url, {
+      method: 'OPTIONS',
+      headers: {
+        origin,
+        'access-control-request-method': 'POST',
+        'access-control-request-headers': 'authorization, apikey, content-type, x-client-info',
+      },
+    });
+    const allowed = pre.headers.get('access-control-allow-origin');
+    if (pre.status < 300 && allowed === origin) {
+      out.push(pass(`supabase: import-url allows the app's origin ${origin} (CORS)`));
+    } else if (/"code"\s*:\s*"origin-not-allowed"/.test(pre.body)) {
+      out.push(
+        fail(
+          "supabase: import-url allows the app's origin (CORS)",
+          `${origin} is not in the APP_ORIGINS function secret: run the deploy again (target supabase)`,
+        ),
+      );
+    } else {
+      out.push(
+        warn(
+          "supabase: import-url allows the app's origin (CORS)",
+          `the preflight answered HTTP ${pre.status} with Access-Control-Allow-Origin ${allowed ?? '(none)'}`,
+        ),
+      );
+    }
     return out;
   });
   return results;

@@ -2,7 +2,7 @@
   "name": "@br/site",
   "version": "0.0.0",
   "private": true,
-  "description": "Imported sites (docs/09): the site pack format shared by the app, the sandbox shell and the capture page, and the import of a built site from a folder or a .zip.",
+  "description": "Imported sites (docs/09, docs/10): the site pack format shared by the app, the sandbox shell and the capture page, the import of a built site from a folder or a .zip, and the copy of a published site from its link (the import-url Edge Function).",
   "type": "module",
   "sideEffects": false,
   "exports": {
@@ -11,15 +11,20 @@
   },
   "scripts": {
     "lint": "eslint . --max-warnings=0",
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p scripts && tsc --noEmit -p integration",
+    "test": "vitest run",
+    "build:function": "tsx scripts/build-function.ts",
+    "test:function": "vitest run --config vitest.function.config.ts"
   },
   "dependencies": {
     "fflate": "0.8.2"
   },
   "devDependencies": {
     "@br/config": "workspace:*",
+    "@types/node": "22.20.5",
+    "esbuild": "0.28.2",
     "eslint": "9.39.5",
+    "tsx": "4.23.15",
     "typescript": "6.0.3",
     "vite": "8.3.2",
     "vitest": "5.0.3"

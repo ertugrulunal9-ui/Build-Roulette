@@ -25,3 +25,6 @@ cpu-results/
 
 # Generated: the jobs Edge Function bundle (apps/capture-worker build:function, T-034)
 supabase/functions/jobs/core.js
+
+# Generated: the import-url Edge Function bundle (packages/site build:function, T-051)
+supabase/functions/import-url/core.js

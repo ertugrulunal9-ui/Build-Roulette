@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // One-command deploy of the free setup (T-042; T-043: Workers on workers.dev, two Cloudflare
-// accounts; DEPLOY.md, "Deploy with GitHub Actions"): what DEPLOY.md §2.2, §3.2–§3.8, §4 and
+// accounts; DEPLOY.md, "Deploy with GitHub Actions"): what DEPLOY.md §2.2, §3.2–§3.9, §4 and
 // §6.1 do by hand, idempotently. Run by .github/workflows/deploy.yml on GitHub's runners; runs
 // the same way locally:
 //

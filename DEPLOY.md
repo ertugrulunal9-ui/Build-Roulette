@@ -45,7 +45,7 @@ There are two ways to do it:
 
 - **From a browser, with GitHub Actions** (recommended, next section): you create the
   accounts and tokens, paste them into GitHub, and click **Run workflow**. The workflow runs
-  §2.2, §3.2–§3.8, §4 and §6.1 for you.
+  §2.2, §3.2–§3.9, §4 and §6.1 for you.
 - **From your own machine** (§0–§4): the same steps, command by command.
 
 §5–§8 (keep-alive, smoke checks, runbooks, later) apply to both.
@@ -61,7 +61,7 @@ runs on GitHub's servers. One run does, in this order:
 3. it pushes the schema and checks it (§3.2, §3.3);
 4. it generates the two secrets (§3.8) and keeps them in Supabase Vault;
 5. it sets the Auth settings (§3.6);
-6. it deploys the `jobs` function with its secrets (§3.8);
+6. it deploys the `jobs` and `import-url` functions with their secrets (§3.8, §3.9);
 7. it builds and deploys the sandbox shell (account B, with its secret) and the web app
    (account A) as Workers, and makes sure each one's workers.dev address is on (§4);
 8. it turns on CAPTCHA when Turnstile is set (§3.6);
@@ -514,6 +514,25 @@ Project Settings → **Realtime** (or Realtime → Settings):
    curl -sS -o /dev/null -w '%{http_code}\n' -X POST "$SUPABASE_URL/functions/v1/jobs"   # → 401
    ```
 
+### 3.9 Import from a link (the `import-url` Edge Function)
+
+The function that copies a player's published site from its link (docs/10, M7;
+`supabase/README.md` → "Import from a link"). It needs one secret, the app's origins for CORS,
+and the same `--no-verify-jwt` as `jobs` (it checks the session itself, and the browser's
+preflight carries no token):
+
+```sh
+npx -y supabase@2.119.0 secrets set APP_ORIGINS="$APP_URL"   # comma-separated with a custom domain:
+                                                             # https://play.example.com,https://build-roulette-web.<subdomain A>.workers.dev
+npx -y supabase@2.119.0 functions deploy import-url --no-verify-jwt --use-api
+curl -sS -X POST "$SUPABASE_URL/functions/v1/import-url" -H 'content-type: application/json' \
+  -d '{"url":"https://x.lovable.app/"}'          # → 401 {"code":"unauthenticated"}
+```
+
+Its rate limit (`import_url`, 20 links per 10 minutes per player) comes with `db push`. Never
+set `IMPORT_URL_TEST_HOSTS` here: it is for local test runs, a hosted function ignores it, and
+the Deploy workflow deletes it.
+
 ## 4. Cloudflare Workers
 
 ### 4.1 The sandbox shell, on account B (first: the app's build needs its address)
@@ -613,7 +632,8 @@ day and fails (GitHub emails you) when the project is paused, restricted or read
 1. **Automatic checks** (headers and CSP, real 404s, the shells, the link-preview Worker and
    its Supabase call, the shell's CSP, its site worker `/v2/sw.js`, its capture gate and that
    its Worker code is not served,
-   Auth with anonymous sign-ins, `keep_alive`, the `jobs` function with its secrets):
+   Auth with anonymous sign-ins, `keep_alive`, the `jobs` function with its secrets, the
+   `import-url` function refusing a call without a session and allowing the app's origin):
    ```sh
    set -a; . ./.env.deploy; set +a
    node scripts/deploy-check.mjs --app "$APP_URL" --shell "$SHELL_URL" --supabase "$SUPABASE_URL"
@@ -687,10 +707,18 @@ workflow's target **all**; by hand: `db push`, `functions deploy jobs`, §4.1, �
 - Delete the `PKG_CDN_URL` variable and function secret if they are still set (the Deploy
   workflow deletes the secret and warns about the variable).
 
+### Deploying M7 (import from a link)
+
+The database (the `import_url` rate limit) and the new `import-url` function, with its
+`APP_ORIGINS` secret: the Deploy workflow's target **all** or **supabase** does both (§3.9 by
+hand). Nothing else changes until the app's link field (T-052) ships; deploy-check then
+checks that the function answers 401 without a session and allows the app's origin.
+
 - **Redeploying** after a code change: with the workflow, Actions → Deploy → Run workflow,
   target **all** ("Deploy with GitHub Actions" → F). By hand: `npx -y supabase@2.119.0 db push`
   (new migrations, always first), `functions deploy jobs --no-verify-jwt --use-api` when
-  `supabase/functions/jobs` changed, then the shell (§4.1) if `apps/sandbox-shell` changed,
+  `supabase/functions/jobs` changed (`functions deploy import-url …` when
+  `supabase/functions/import-url` changed), then the shell (§4.1) if `apps/sandbox-shell` changed,
   then the app (§4.2). Re-run `scripts/deploy-check.mjs`.
 - **Rollback** of a Worker (the app on account A, the shell on account B): Workers & Pages →
   the Worker → Deployments → an older version → Rollback (instant; or `wrangler rollback` in
@@ -730,6 +758,7 @@ you set only the GitHub variables and secrets (the last rows); it sets everythin
 | `CAPTURE_SHELL_URL` | function secret | `https://build-roulette-sandbox.<subdomain B>.workers.dev/v2/capture` |
 | `BROWSER_RENDERING_ACCOUNT_ID`, `BROWSER_RENDERING_API_TOKEN` | function secrets | account A's id; the token of §2.3 |
 | `BROWSER_BUDGET_MS_PER_DAY`, `BROWSER_RENDERING_MIN_INTERVAL_MS`, `BROWSER_RESERVE_MS`, `CAPTURE_TIMEOUT_MS`, `CAPTURE_SIGNED_URL_TTL_S`, `JOBS_RUN_WINDOW_MS`, `JOBS_RUN_HARD_STOP_MS`, `JOBS_PUBLIC_SUPABASE_URL`, `BROWSER_RENDERING_API_URL`, `LOG_LEVEL` | function secrets, optional | defaults fit the free plans (`apps/capture-worker/src/edge/config.ts`) |
+| `APP_ORIGINS` | function secret (import-url, §3.9) | the app's origin(s), comma-separated, like `BR_APP_ORIGINS` |
 | `br_jobs_function_url` | Vault | `https://<ref>.supabase.co/functions/v1/jobs` |
 | `SUPABASE_URL` | GitHub variable (keep-alive and Deploy) | `https://<ref>.supabase.co` |
 | `SUPABASE_ANON_KEY` | GitHub secret (keep-alive and Deploy) | the publishable or anon key |
@@ -742,6 +771,9 @@ you set only the GitHub variables and secrets (the last rows); it sets everythin
 Not used by the free setup: `SENTRY_DSN` and the other settings of the self-hosted capture
 worker (`apps/capture-worker/.env.example`); the `jobs` function logs to Supabase (Edge
 Functions → `jobs` → Logs) and reports nothing to Sentry.
+
+Never in production: `IMPORT_URL_TEST_HOSTS` (the import-url function's test-only host
+override; honored only on a local stack, and the Deploy workflow deletes the secret).
 
 No longer used since import mode (M6): `PKG_CDN_URL` (GitHub variable and function secret),
 `BR_PKG_CDN_URL` (shell build) and `NEXT_PUBLIC_PKG_CDN_URL` (web build). Values left behind

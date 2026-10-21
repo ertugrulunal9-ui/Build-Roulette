@@ -1261,14 +1261,15 @@ describe('deploy: target all', () => {
     assert.match(capture, /^[0-9a-f]{64}$/);
     assert.notEqual(cron, capture);
     assert.equal(w.st.vault.get(VAULT.functionUrl), `https://${REF}.supabase.co/functions/v1/jobs`);
-    // The function's secrets: the shell's capture page on account B's subdomain; Browser
-    // Rendering stays on account A.
+    // The functions' secrets: the shell's capture page on account B's subdomain; Browser
+    // Rendering stays on account A; import-url's CORS origins are the app's address.
     assert.deepEqual(Object.fromEntries(w.st.fnSecrets), {
       JOBS_CRON_SECRET: cron,
       CAPTURE_SHELL_URL: `${SHELL}capture`,
       CAPTURE_HMAC_SECRET: capture,
       BROWSER_RENDERING_ACCOUNT_ID: ACCOUNT,
       BROWSER_RENDERING_API_TOKEN: T.br,
+      APP_ORIGINS: APP,
     });
     // The Workers: the app on account A, the shell on account B with the same capture secret,
     // set with its version through a private file (mode 600), and both routes on.
@@ -1300,13 +1301,15 @@ describe('deploy: target all', () => {
       'supabase migration list',
       'supabase db push',
       'supabase functions deploy',
+      'supabase functions deploy',
       'pnpm --filter @br/sandbox-shell build',
       'pnpm --filter @br/sandbox-shell workers:deploy --name build-roulette-sandbox --secrets-file <file>',
       'pnpm --filter @br/web build',
       'pnpm --filter @br/web workers:deploy --name build-roulette-web',
       `node /repo/scripts/deploy-check.mjs --app ${APP} --shell ${SHELL} --supabase https://${REF}.supabase.co --json`,
     ]);
-    const [link, list, push, fn, shellBuild, shellDeploy, webBuild, webDeploy, check] = runs(w);
+    const [link, list, push, fn, importFn, shellBuild, shellDeploy, webBuild, webDeploy, check] =
+      runs(w);
     for (const r of [link, list, push]) {
       assert.equal(r.env.SUPABASE_ACCESS_TOKEN, '<secret:SUPABASE_ACCESS_TOKEN>');
       assert.equal(r.env.SUPABASE_DB_PASSWORD, '<secret:SUPABASE_DB_PASSWORD>');
@@ -1316,16 +1319,29 @@ describe('deploy: target all', () => {
       );
     }
     assert.deepEqual(push.args.slice(2), ['db', 'push', '--linked', '--yes', '--skip-vault']);
-    assert.deepEqual(fn.args.slice(2), [
-      'functions',
-      'deploy',
-      'jobs',
-      '--no-verify-jwt',
-      '--use-api',
-      '--project-ref',
-      REF,
-    ]);
-    assert.equal(fn.env.SUPABASE_DB_PASSWORD, undefined);
+    // jobs first, then import-url (docs/10 §10.3), both without the gateway's JWT check.
+    for (const [r, name] of [
+      [fn, 'jobs'],
+      [importFn, 'import-url'],
+    ]) {
+      assert.deepEqual(r.args.slice(2), [
+        'functions',
+        'deploy',
+        name,
+        '--no-verify-jwt',
+        '--use-api',
+        '--project-ref',
+        REF,
+      ]);
+      assert.equal(r.env.SUPABASE_DB_PASSWORD, undefined);
+    }
+    assert.match(
+      res.summary,
+      new RegExp(
+        `\\| Edge Function import-url \\| deployed \\| https://${REF}\\.supabase\\.co/functions/v1/import-url \\|`,
+      ),
+    );
+    assert.doesNotMatch(res.summary, /Test-only function secrets/);
     assert.equal(shellBuild.env.BR_APP_ORIGINS, APP);
     assert.equal(shellBuild.env.BR_PKG_CDN_URL, undefined, 'no package CDN since M6');
     // Each wrangler deploy gets its own account's token and id, and nothing else.
@@ -1697,6 +1713,32 @@ describe('deploy: target all', () => {
     assert.doesNotMatch(again.summary, /Old function secrets/);
   });
 
+  it('deletes the test-only import-url secret before deploying the functions', async () => {
+    const w = world();
+    w.st.fnSecrets.set('IMPORT_URL_TEST_HOSTS', 'host.docker.internal:4321');
+    let atDeploy = null;
+    // Records what the secrets were when the first functions deploy ran (fails nothing).
+    w.st.fail = (cmd, args) => {
+      if (cmd === 'npx' && args.slice(2, 4).join(' ') === 'functions deploy' && atDeploy === null)
+        atDeploy = w.st.fnSecrets.has('IMPORT_URL_TEST_HOSTS');
+      return null;
+    };
+    const res = await run(w, { argv: ['--target', 'supabase'] });
+    assert.equal(res.code, 0, res.summary);
+    assert.equal(atDeploy, false, 'gone before the first functions deploy');
+    assert.equal(w.st.fnSecrets.has('IMPORT_URL_TEST_HOSTS'), false);
+    assert.match(res.summary, /Test-only function secrets \| deleted \| IMPORT_URL_TEST_HOSTS/);
+    const again = await run(w, { argv: ['--target', 'supabase'] });
+    assert.doesNotMatch(again.summary, /Test-only function secrets/);
+  });
+
+  it('APP_ORIGINS lists the custom domain and the workers.dev address', async () => {
+    const w = world();
+    const res = await run(w, { env: { APP_URL: 'https://play.example.com' } });
+    assert.equal(res.code, 0, res.summary);
+    assert.equal(w.st.fnSecrets.get('APP_ORIGINS'), `https://play.example.com,${APP}`);
+  });
+
   it('keeps the package CDN function secret when the function deploy fails (the old bundle needs it)', async () => {
     const w = world({
       fail: (cmd, args) => cmd === 'npx' && args.slice(2, 4).join(' ') === 'functions deploy',
@@ -1937,8 +1979,10 @@ describe('deploy: partial targets', () => {
       'supabase migration list',
       'supabase db push',
       'supabase functions deploy',
+      'supabase functions deploy',
     ]);
     assert.equal(w.st.fnSecrets.get('CAPTURE_SHELL_URL'), `${SHELL}capture`);
+    assert.equal(w.st.fnSecrets.get('APP_ORIGINS'), APP);
     assert.equal(w.st.auth.site_url, APP);
     assert.equal(w.st.scripts.size, 0);
     assert.match(res.summary, /Create the moderator/);

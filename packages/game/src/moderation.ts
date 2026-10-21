@@ -33,6 +33,7 @@ export const RATE_LIMIT_ACTIONS = [
   'report_build',
   'start_solo_battle',
   'cast_vote',
+  'import_url',
 ] as const;
 export type RateLimitAction = (typeof RATE_LIMIT_ACTIONS)[number];
 
@@ -51,6 +52,11 @@ export const RATE_LIMITS: Record<RateLimitAction, { max: number; windowSeconds: 
   start_solo_battle: { max: 30, windowSeconds: 3600 },
   /** Votes cast, revotes included: against floods only. */
   cast_vote: { max: 120, windowSeconds: 60 },
+  /**
+   * Links the `import-url` Edge Function starts to copy (T-051, docs/10 §10.3), a failed copy
+   * included; a link refused before copying is not counted.
+   */
+  import_url: { max: 20, windowSeconds: 600 },
 };
 
 /**

@@ -132,6 +132,14 @@ thumbnails still fill in: check `/admin` → Health → "Screenshots, last 24 h"
 function's logs (`capture.render_unusable`, `capture.fallback`), and see
 `docs/runbooks/capture-backlog.md` step 7.
 
+### Import from a link (M7)
+
+The app's "paste the link of your published site" import (T-052) calls the Supabase Edge
+Function `import-url` (`supabase/functions/import-url`, docs/10 §10.3). Nothing is set in the
+web build for it: the function lives at `NEXT_PUBLIC_SUPABASE_URL/functions/v1/import-url`, and
+its `APP_ORIGINS` secret must list this app's origin(s) or browsers are refused (CORS). The
+Deploy workflow sets it; by hand, `DEPLOY.md` §3.9.
+
 ## The link-preview Worker (T-038)
 
 Nothing to configure for it to work; four things to know:

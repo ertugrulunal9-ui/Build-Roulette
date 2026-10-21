@@ -191,6 +191,7 @@ function standIns() {
       readOnly: false,
       anonymous: true,
       jobs: 'ours',
+      importUrl: 'ours',
       requests: [],
     });
   };
@@ -275,6 +276,23 @@ function standIns() {
         res
           .writeHead(ok ? 200 : 401)
           .end(ok ? '{"run":"r1","jobs":[]}' : '{"error":"unauthorized"}');
+      } else if (url.pathname === '/functions/v1/import-url') {
+        const origin = req.headers.origin;
+        const app = new URL(cfg().app).origin;
+        if (state.importUrl === 'missing') res.writeHead(404).end('{"code":"NOT_FOUND"}');
+        else if (state.importUrl === 'jwt')
+          res.writeHead(401).end('{"code":401,"message":"Missing authorization header"}');
+        else if (state.importUrl === 'internal') res.writeHead(500).end('{"code":"internal"}');
+        else if (origin && (origin !== app || state.importUrl === 'no-origins'))
+          res.writeHead(403).end('{"code":"origin-not-allowed"}');
+        else if (req.method === 'OPTIONS')
+          res
+            .writeHead(204, {
+              'access-control-allow-origin': origin,
+              'access-control-allow-methods': 'POST, OPTIONS',
+            })
+            .end();
+        else res.writeHead(401).end('{"code":"unauthenticated"}');
       } else if (url.pathname.startsWith('/storage/v1/object/public/screenshots/')) {
         res.writeHead(200, { 'content-type': 'image/webp' }).end('RIFF');
       } else {
@@ -338,6 +356,22 @@ describe('runChecks against stand-ins', () => {
     assert.equal(auth.headers.apikey, KEY);
     assert.equal(auth.headers.authorization, `Bearer ${KEY}`);
     assert.ok(s.state.requests.every((r) => !r.path.includes(KEY)));
+    // import-url: called once without a session (401), and its preflight from the app.
+    const fn = s.state.requests.filter((r) => r.path === '/functions/v1/import-url');
+    assert.deepEqual(
+      fn.map((r) => r.method),
+      ['POST', 'OPTIONS'],
+    );
+    assert.equal(fn[1].headers.origin, new URL(cfg.app).origin);
+    assert.ok(
+      results.some(
+        (r) =>
+          r.level === 'PASS' &&
+          /import-url function is deployed and refuses a call without a session \(401\)/.test(
+            r.name,
+          ),
+      ),
+    );
   });
 
   it('a publishable key goes in apikey only', async () => {
@@ -385,6 +419,22 @@ describe('runChecks against stand-ins', () => {
     ['anonymous sign-ins are off', { anonymous: false }, /anonymous sign-ins/],
     ['the jobs function is not deployed', { jobs: 'missing' }, /not deployed/],
     ['the jobs function verifies JWTs', { jobs: 'jwt' }, /--no-verify-jwt/],
+    [
+      'the import-url function is not deployed',
+      { importUrl: 'missing' },
+      /import-url.*deploy import-url/,
+    ],
+    ['the import-url function verifies JWTs', { importUrl: 'jwt' }, /import-url.*--no-verify-jwt/],
+    [
+      'the import-url function cannot reach the database',
+      { importUrl: 'internal' },
+      /import-url.*HTTP 500 without a session/,
+    ],
+    [
+      "the import-url function does not list the app's origin",
+      { importUrl: 'no-origins' },
+      /CORS.*not in the APP_ORIGINS function secret/,
+    ],
   ];
   for (const [what, change, message] of broken) {
     it(`fails when ${what}`, async () => {

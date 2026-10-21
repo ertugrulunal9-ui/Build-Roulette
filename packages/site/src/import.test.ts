@@ -8,6 +8,7 @@ import {
   type ImportErrorCode,
   type ImportSource,
 } from './import';
+import type { CopyErrorCode, UrlImportErrorCode } from './copy';
 import { SITE_LIMITS } from './limits';
 import { unpackSite } from './pack';
 
@@ -295,5 +296,41 @@ describe('describeImportError', () => {
     }
     expect(describeImportError({ code: 'too-large', detail: '7340032' }).hint).toContain('7.0 MB');
     expect(describeImportError({ code: 'not-built' }).hint).toContain('npm run build');
+  });
+
+  it('has a title and a hint for every error of a copied link (copySite, import-url)', () => {
+    const codes: (UrlImportErrorCode | CopyErrorCode)[] = [
+      'url-invalid',
+      'url-host-not-allowed',
+      'url-unreachable',
+      'url-not-html',
+      'url-private',
+      'url-timeout',
+      'rate-limited',
+      'too-many-files',
+      'too-large',
+    ];
+    const titles = new Set<string>();
+    for (const code of codes) {
+      const d = describeImportError({ code });
+      expect(d.title.length, code).toBeGreaterThan(5);
+      expect(d.hint.length, code).toBeGreaterThan(10);
+      titles.add(d.title);
+    }
+    expect(titles.size).toBe(codes.length);
+    expect(describeImportError({ code: 'url-host-not-allowed' }).hint).toContain('*.lovable.app');
+    expect(describeImportError({ code: 'url-private' }).title).toBe('That site is private');
+    expect(describeImportError({ code: 'url-not-html' }).title).toBe("That link isn't a web page");
+    expect(describeImportError({ code: 'url-unreachable', detail: '404' }).hint).toContain('(404)');
+    expect(describeImportError({ code: 'rate-limited', detail: '45' }).hint).toMatch(
+      /^Wait 45 seconds/,
+    );
+    expect(describeImportError({ code: 'rate-limited', detail: '541' }).hint).toMatch(
+      /^Wait 10 minutes/,
+    );
+    expect(describeImportError({ code: 'rate-limited' }).hint).toMatch(/^Wait a few minutes/);
+    expect(describeImportError({ code: 'too-many-files', detail: 'more than 300' }).hint).toContain(
+      'this one has more than 300',
+    );
   });
 });

@@ -191,6 +191,14 @@ jobs:
         if: ${{ !cancelled() && steps.capture-integration.outcome != 'skipped' }}
         run: pnpm --filter @br/capture-worker test:function
 
+      # The import-url Edge Function (T-051) in the local Edge Runtime: sessions and the
+      # import_url rate limit through PostgREST (401, 429 after 20), the host allowlist (400),
+      # and copies of a fixture site from a static server on the runner (allowed by the
+      # test-only IMPORT_URL_TEST_HOSTS, which the function honors on a local stack only).
+      - name: Run the import-url function integration tests
+        if: ${{ !cancelled() && steps.capture-integration.outcome != 'skipped' }}
+        run: pnpm --filter @br/site test:function
+
       # The solo game end to end on the same stack: the static export and its link-preview
       # Worker (pnpm build) served by `wrangler dev` like Cloudflare serves the Worker with
       # static assets (apps/web/e2e/app-server.ts),

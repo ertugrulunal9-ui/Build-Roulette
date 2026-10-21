@@ -93,3 +93,36 @@ is wall time, the parsing is a few hundred ms at most for 5 MB).
 
 T-051 (copier + `import-url` function + rate limit + deploy) and T-052 (the link field in
 BUILD and `/try`, English and Turkish copy, the guide's web-builder tab, e2e). See the board.
+
+## 10.6 As built (T-051)
+
+Where the implementation differs from or adds to the plan above:
+
+- **Types.** `copySite` returns `CopyResult` with a `CopyError` (`UrlImportErrorCode` plus
+  `too-large` / `too-many-files`): the same `{ok, site}` / `{ok: false, error}` shape and the
+  same `ImportedSite` as `importSite`, but the new codes are not added to `ImportErrorCode`,
+  because the app's Turkish catalog is typed by it and T-052 words them.
+  `describeImportError` takes both. `rate-limited` is one of the copy codes (its `detail` is
+  the wait in seconds). For a copy, `ImportedSite.root` is the copied address
+  (`https://my-app.lovable.app/`).
+- **More discovery.** Besides §10.2: `<a href>` and `<iframe src>` to same-origin pages
+  (`….html`, `…/`, so a hand-written multi-page site comes along), `<base href>`, `srcset` /
+  `imagesrcset`, `poster`, `style` attributes, inline module scripts, `twitter:image`,
+  `new URL("…", import.meta.url)`, and manifest `screenshots`.
+- **Missing files.** A 404 (any 4xx) for a file the page references is skipped and counted in
+  `skipped` instead of failing the copy (a missing favicon should not block an import); a 5xx
+  fails it (`url-unreachable`). A guess that hangs or fails is skipped. A non-HTML path that a
+  host answers with HTML (the single-page-app fallback) is not a file and is skipped.
+- **Private sites.** A redirect to a known login host (`LOGIN_HOSTS`: vercel.com, lovable.dev,
+  netlify.com, Cloudflare Access, …) is `url-private`, not `url-host-not-allowed`. A redirect to
+  `http:` is `url-invalid`.
+- **The function's own codes.** `unauthenticated` (401), `origin-not-allowed` (403, a browser
+  `Origin` not in `APP_ORIGINS`), `method-not-allowed` (405), `internal` (500). It logs one line
+  per request, preflights included.
+- **Auth and the rate limit in one call.** `public.claim_import_url()` is called as the user
+  through PostgREST, which verifies the JWT; `verify_jwt` is off so the CORS preflight reaches
+  the function. A link refused by the host rules costs no slot.
+- **Known limit.** A site published in a folder (a GitHub Pages project site,
+  `https://me.github.io/repo/`) is stored relative to that folder and runs at `/` in the
+  sandbox: root-relative links to `/repo/…` (Vite's `base: '/repo/'`) miss there. Sites at the
+  host's root (every web builder's default) are not affected.

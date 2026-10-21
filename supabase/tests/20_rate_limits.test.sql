@@ -34,8 +34,9 @@ $$;
 -- ─── The configuration (2) ────────────────────────────────────────────────
 select results_eq(
   $$ select action, max_count, window_s from private.rate_limits order by action $$,
-  $$ values ('cast_vote', 120, 60), ('create_room', 10, 3600), ('join_room_failed', 20, 600),
-            ('report_build', 20, 3600), ('start_solo_battle', 30, 3600) $$,
+  $$ values ('cast_vote', 120, 60), ('create_room', 10, 3600), ('import_url', 20, 600),
+            ('join_room_failed', 20, 600), ('report_build', 20, 3600),
+            ('start_solo_battle', 30, 3600) $$,
   'the default limits (mirrored by @br/game RATE_LIMITS)');
 select ok(not has_table_privilege('service_role', 'private.rate_limits', 'SELECT')
           and not has_table_privilege('authenticated', 'private.rate_events', 'SELECT'),

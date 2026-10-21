@@ -240,12 +240,12 @@ test('imports arrive as site_import (outcome and error code only), a watchdog cr
   expect(imports.map((e) => e.properties)).toEqual([
     expect.objectContaining({
       battle_id: battleId,
-      via: 'zip',
+      source: 'zip',
       outcome: 'error',
       error: 'not_built',
       path: '/play',
     }),
-    expect.objectContaining({ battle_id: battleId, via: 'zip', outcome: 'ok', error: null }),
+    expect.objectContaining({ battle_id: battleId, source: 'zip', outcome: 'ok', error: null }),
   ]);
   const raw = allBodies();
   for (const secret of ['SANDBOX_SECRET', 'Loopy Secretname', 'for (;;)', 'setTimeout', '.zip']) {

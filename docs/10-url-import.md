@@ -126,3 +126,21 @@ Where the implementation differs from or adds to the plan above:
   `https://me.github.io/repo/`) is stored relative to that folder and runs at `/` in the
   sandbox: root-relative links to `/repo/…` (Vite's `base: '/repo/'`) miss there. Sites at the
   host's root (every web builder's default) are not affected.
+
+## 10.7 As built (T-052)
+
+- The link form sits under *Choose folder* / *Choose .zip* in BUILD and `/try`, and in
+  **Import again** ("Copy again from <host>", "Paste a link…"). A copied site takes the same
+  path as a dropped folder (preview, IndexedDB, `autosave/site.bin`, ship).
+- `/try` signs in anonymously only when a link is imported; folder imports there still make
+  no Supabase request (e2e). The link field is hidden when the build has no Supabase URL.
+- The last link is remembered per battle and on `/try` (localStorage).
+- `site_import` telemetry now has `source` (`drop` / `folder` / `zip` / `link`; it was
+  `via`) and the outcome `cancelled`; never the link or its host.
+- Cancel stops the browser's request only: the function finishes its copy, so a cancelled
+  copy still counts against the 20-per-10-minutes limit.
+- A copy holds only the files the pages reference, so it can have fewer files than the same
+  site dropped as a folder (an unused `vite.svg` is not copied).
+- Test-only origins: `NEXT_PUBLIC_IMPORT_URL_TEST_ORIGINS` is set only by the e2e and
+  `dev:solo` builds; `scripts/pages-config.ts` fails a build that sets it with a non-local
+  Supabase, or that ships `host.docker.internal` without it.

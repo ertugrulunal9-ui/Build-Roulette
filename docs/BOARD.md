@@ -2,14 +2,14 @@
 
 Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 
-## Current milestone: M7 Import from a published link ([docs/10](10-url-import.md))
+## Current milestone: M7 Import from a published link ([docs/10](10-url-import.md)) — all tasks merged; needs a deploy (target `all`: migration 20261021120000, the `import-url` function with `APP_ORIGINS`, the app)
 
 **Hub decision (2026-10-21, the user left the next step to us):** players using web builders (Lovable, Bolt, v0, Replit) paste the link of their published site instead of running `npm run build` locally.
 
 | ID | Task | Scope | Status | Notes |
 |---|---|---|---|---|
 | T-051 | Copier `copySite` in `@br/site` (crawl a published static site into a site pack, host allowlist, limits); `import-url` Edge Function (auth, rate limit `import_url`, SSRF rules, returns the pack); deploy script + deploy-check; tests | `packages/site/`, `supabase/`, `packages/game/` (rate limit constant), `scripts/deploy*`, `.github/workflows/` | done | Merged; site 89 unit, pgTAP 1365, import-url function 7, jobs 11, scripts 125. Contract in docs/10 §10.6 |
-| T-052 | The link field in BUILD and `/try` (English + Turkish), errors, anonymous session on `/try`, guide's web-builder tab and welcome copy, e2e against a local static host | `apps/web/` | todo | |
+| T-052 | The link field in BUILD and `/try` (English + Turkish), errors, anonymous session on `/try`, guide's web-builder tab and welcome copy, e2e against a local static host | `apps/web/` | done | Merged; web 525 unit, default e2e 25, solo 10 (incl. link e2e), multi 6, moderation 8, telemetry 7. Analytics field `via` → `source` |
 
 ## Previous milestone: M6 Import mode: bring your own build ([docs/09](09-import-mode.md)) — all tasks merged; **deployed 2026-10-17** (Deploy run 5 from `claude/intelligent-maxwell-ddael3`: migration 20261016120000 applied, jobs function, shell v2 and app deployed, `PKG_CDN_URL` removed, deploy-check 32 passed incl. `/v2/sw.js`). Shell redeployed 2026-10-20 (Deploy run 6, review fixes). **Verified in production 2026-10-21:** a solo battle imported a Vite site, the preview ran through the site worker, Browser Rendering captured a full screenshot (R11 closed), and the build was destroyed
 

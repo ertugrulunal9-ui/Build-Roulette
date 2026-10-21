@@ -3,8 +3,8 @@
 /**
  * "How do I import?" (T-049, docs/09 §9.6): a collapsible help next to the drop zone of the
  * BUILD stage and `/try` (DropZone's `help` slot), closed by default: the key steps, where
- * the build ends up, a tip for web builders and the full guide (new tab, so a running battle
- * is not left). An import error's "How do I fix this?" opens it (`openImportHelp`).
+ * the build ends up, the link of a published site (M7, docs/10), a tip for web builders and
+ * the full guide (new tab, so a running battle is not left). An import error's "How do I fix this?" opens it (`openImportHelp`).
  */
 import { useT } from '../../lib/i18n/context';
 import { CodeText } from '../site/CodeText';
@@ -56,6 +56,10 @@ export function ImportHelp() {
             </li>
           ))}
         </ol>
+        <p data-testid="import-help-link">
+          <span aria-hidden="true">🔗 </span>
+          <CodeText text={help.link} />
+        </p>
         <div>
           <p className="font-semibold text-zinc-900 dark:text-zinc-100">{help.whereTitle}</p>
           <ul className="mt-1 flex flex-col gap-0.5" data-testid="import-help-where">

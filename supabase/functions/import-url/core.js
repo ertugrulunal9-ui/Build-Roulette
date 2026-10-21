@@ -527,6 +527,7 @@ async function copySite(link, opts) {
   const extra = opts.extraOrigins ?? [];
   const checked = checkPublicUrl(link, extra);
   if (!checked.ok) return { ok: false, error: checked.error };
+  checked.url.hash = "";
   const started = now();
   const deadline = started + limits.totalTimeoutMs;
   const all = new AbortController();

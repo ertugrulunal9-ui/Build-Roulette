@@ -116,7 +116,12 @@ describe('copySite: a plain HTML site', () => {
   });
 
   it('stores a page that is not the folder index as index.html', async () => {
-    const { result } = await copy({ [GH]: PLAIN_SITE }, `${GH}/portfolio/about.html?ref=x#top`);
+    const { result, host } = await copy(
+      { [GH]: PLAIN_SITE },
+      `${GH}/portfolio/about.html?ref=x#top`,
+    );
+    // The query goes to the host, the fragment does not.
+    expect(host.calls[0]).toBe(`${GH}/portfolio/about.html?ref=x`);
     expect(text(result, 'index.html')).toContain('./img/about.png');
     expect(files(result)).toContain('img/about.png');
     // index.html (the folder page) is the same path as the entry: not fetched again.

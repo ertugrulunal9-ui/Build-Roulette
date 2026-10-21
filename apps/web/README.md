@@ -43,7 +43,10 @@ and data loads in the browser from Supabase. Routes:
   policies, COOP, HSTS; a year's cache for `/_next/static/*`; `noindex` for `/admin`.
 - **Checks** (the build fails): `404.html` and every shell exist; no file holds a Supabase key
   other than the public anon key; the host's limits (header lines ≤ 2,000 characters, rules,
-  file count and size).
+  file count and size); the link import's test-only origins never reach a real build
+  (`NEXT_PUBLIC_IMPORT_URL_TEST_ORIGINS` with a Supabase that is not local, or a host that is
+  not a local test host, fails; so does a build without it whose files still hold
+  `host.docker.internal`, "Import from a link" below).
 - **Locally:** `pnpm --filter @br/web preview` serves `out/` and the Worker with `wrangler dev`
   (http://localhost:3000), which applies `_redirects` and `_headers` and runs the link-preview
   Worker for `/battles/*` like production. Every e2e suite uses it.
@@ -125,10 +128,12 @@ Error reporting (Sentry) and product analytics (PostHog), both **off unless conf
   this tab's preview counts for the battle: crashes, restarts, app stalls of 1 s or more and
   their total, and `preview_spared` (silences the pre-T-031 watchdog would have called a
   crash). Only the battle UUID, enums and numbers: no build code, console output or names.
-- **Imports (M6):** every import of a built site is a `site_import` event: the battle (null on
-  `/try`), `via` (`drop`, `folder` or `zip`), the `outcome` and, for a refused import, the
-  `@br/site` error code (`not_built`, `no_index`, `too_large`, …). Never a file or folder
-  name, a size or anything from the site (`src/lib/site/use-site-import.ts`).
+- **Imports (M6, M7):** every import of a built site is a `site_import` event: the battle
+  (null on `/try`), `source` (`drop`, `folder`, `zip` or `link`; `via` until T-052), the
+  `outcome` (`ok`, `error`, or `cancelled` for a link's copy the player stopped) and, for a
+  refused import, the error code (`not_built`, `no_index`, `too_large`, `url_private`,
+  `rate_limited`, …). Never a file or folder name, a link or its host, a size or anything from
+  the site (`src/lib/site/use-site-import.ts`).
 - `/admin` → Health has "Send a test error to Sentry": it throws an uncaught error from the
   page's own code, the path any app error takes (the window's handler, then Sentry with the
   page's tags); with no DSN in the build it says reporting is off.
@@ -343,6 +348,7 @@ runtime settings. The defaults are the local setup above.
 | `NEXT_PUBLIC_SENTRY_ENVIRONMENT` | `production` | Sentry environment |
 | `NEXT_PUBLIC_POSTHOG_KEY` | unset (no analytics) | PostHog project API key |
 | `NEXT_PUBLIC_POSTHOG_HOST` | `https://eu.i.posthog.com` | PostHog ingest host (`https://us.i.posthog.com` for a US project) |
+| `NEXT_PUBLIC_IMPORT_URL_TEST_ORIGINS` | unset | **Tests only.** Exact origins the link import's check accepts besides the public hosts (`http://host.docker.internal:4330`, the e2e fixture server). Set by `test:e2e:solo` and by `dev:solo` with `IMPORT_URL_TEST_HOSTS`; never in a deploy (the build refuses it unless Supabase is local). |
 | `BR_RELEASE` | the git commit | The release reported with errors and events |
 
 The web app never holds the service-role key: players sign in anonymously
@@ -351,8 +357,11 @@ reads `get_public_battle`, which the anon key may call. `/admin` calls the admin
 the moderator's own access token. `pnpm build` fails if any exported file holds a Supabase
 key other than the anon key (`scripts/pages-config.ts`).
 
-`scripts/solo-services.ts` reads: `BR_APP_ORIGINS` (app origins the shell accepts, default
-`http://localhost:3000`), `APP_PORT` (3000), `SHELL_PORT` (4321), `STAND_IN_PORT` (4325), `CAPTURE_HMAC_SECRET` (default: random per run), `BR_JOBS=worker`
+`scripts/solo-services.ts` reads: `BR_APP_ORIGINS` (app origins the shell accepts and the
+`import-url` function's `APP_ORIGINS`, default `http://localhost:3000`),
+`IMPORT_URL_TEST_HOSTS` (`host.docker.internal:4330`: a local fixture server the function may
+copy from, honored on a local stack only; with `--next` the app gets the matching
+`NEXT_PUBLIC_IMPORT_URL_TEST_ORIGINS`), `APP_PORT` (3000), `SHELL_PORT` (4321), `STAND_IN_PORT` (4325), `CAPTURE_HMAC_SECRET` (default: random per run), `BR_JOBS=worker`
 (like `--worker`), `WORKER_IDLE_MAX_MS` (2000, `--worker` only), and the stack's `API_URL` /
 `ANON_KEY` / `SERVICE_ROLE_KEY` / `DB_URL` (default: `supabase status -o env`).
 
@@ -408,6 +417,49 @@ font), it loads itself, as on any static host.
 - `/try`, `/play` and `/r/{code}` load their client code with `next/dynamic` (`ssr: false`),
   so other routes never download the import or the runtime.
 
+### Import from a link (M7, T-052)
+
+Players who build in a web builder (Lovable, Bolt, v0, Replit) publish the app there and paste
+its public link instead of dropping a folder (docs/10). The server side is T-051's `import-url`
+Edge Function (supabase/README.md "Import from a link").
+
+- **Where:** under the drop zone's pickers on BUILD and `/try` ("…or paste the link of your
+  published site", `<input type="url">`, **Import**, Enter submits; "Works with sites published
+  on Lovable, Netlify, Vercel, GitHub Pages, Replit, Bolt…" and the full `IMPORT_URL_HOSTS` list
+  on demand), and in the bar's **Import again** menu: "Copy again from <host>" (the last link,
+  one click) and "Paste a link…" (a link row under the bar). `src/components/site/LinkForm.tsx`.
+- **The check first:** `checkPublicUrl` from `@br/site` (the function's own rules): a bad link
+  or another host fails at once, with no request at all.
+- **The copy:** `src/lib/site/link-import.ts` posts the link to
+  `{SUPABASE_URL}/functions/v1/import-url` with the player's access token, checks and counts
+  the pack it answers (`unpackSite`), and hands it on as an `ImportedSite` whose `root` is the
+  copied address. From there it is exactly a dropped folder: `useSiteImport` → `onImported` →
+  the preview, and on BUILD the controller's `importSite` (IndexedDB, the autosave, the imports
+  counter). The bar says "Copied from my-app.lovable.app".
+- **While copying:** "Copying your site…" (a live status) with **Cancel** (an
+  `AbortController`); the pickers and the field wait. A newer import (a drop, a pick) stops a
+  running copy.
+- **Errors:** every code has a title and what to do in both languages (`linkErrors` in the
+  catalogs, typed by `LinkErrorCode`: the copy's codes, the function's `unauthenticated`,
+  `origin-not-allowed`, `method-not-allowed`, `internal`, and `network` for no answer), shown
+  under the field, which it describes (`aria-describedby`, `aria-invalid`).
+- **The session:** BUILD already has one. `/try` loads `lib/supabase/browser` and signs in
+  anonymously only when a link is imported (`supabaseLinkCopier`, a dynamic import): a folder
+  or a .zip on `/try` still makes no Supabase request. A build with an empty
+  `NEXT_PUBLIC_SUPABASE_URL` has no link field (`src/lib/site/link-config.ts`).
+- **The last link** is kept in localStorage (`br:import-link:battle:{id}`, only the current
+  battle's; `br:import-link:try` for `/try`; every access in try/catch,
+  `src/lib/site/link-memory.ts`): the field starts with it and **Import again** offers it.
+- **Test-only origins:** the public allowlist cannot reach a test server, so the solo e2e
+  serves fixture sites on `0.0.0.0:4330` (`e2e/link-fixture.ts`), which the function in Docker
+  reaches as `http://host.docker.internal:4330`. Both sides allow exactly that, for tests only:
+  the function through `IMPORT_URL_TEST_HOSTS` (playwright.solo.config.ts → solo-services →
+  `functions serve --env-file`; honored on a local stack only), the page through
+  `NEXT_PUBLIC_IMPORT_URL_TEST_ORIGINS` in the `test:e2e:solo` build. `pnpm build` fails when
+  that value is set for a Supabase that is not local, or when a build without it holds the
+  test host (scripts/pages-config.ts). A plain `pnpm build` (every deploy) has neither.
+- `--worker` (`BR_JOBS=worker`) runs no Edge Function, so links cannot be imported there.
+
 ## Onboarding (T-049)
 
 New players are told how the game works where they arrive (docs/09 §9.6). Its words are in
@@ -431,7 +483,8 @@ and the pictures' sample data.
 - **Lobby:** a "New here?" card until the welcome was seen to the end, a reminder to have the
   AI tool open before the spin, and the guide for phones (the lobby note and `DesktopNeeded`).
 - **"How do I import?"** (`ImportHelp.tsx`): a closed `<details>` in the drop zone's `help` slot
-  on BUILD and `/try`. An import error's "How do I fix this?" opens it, or the guide's
+  on BUILD and `/try` (since T-052 with a line for a published link; the welcome's step 3, the
+  guide's "Web builders" tab and its troubleshooting say how to import a link too). An import error's "How do I fix this?" opens it, or the guide's
   troubleshooting in a new tab where the page has none (the bar over a running preview).
 - **The e2e** starts every browser context with the welcome already seen (`e2e/welcome.ts`,
   `use.storageState` in each Playwright config); `e2e/onboarding.spec.ts` clears it.
@@ -528,6 +581,7 @@ is remembered per browser.
 | Piece | File |
 |---|---|
 | The import area shared by `/try` and BUILD (drop zone, pickers, page drop, import bar, preview, Problems) | `src/components/site/*`, `src/lib/site/use-site-import.ts` |
+| Import from a link: the field, the call to `import-url`, the remembered link, the test-only origins | `src/components/site/LinkForm.tsx`, `src/lib/site/link-import.ts`, `link-memory.ts`, `link-config.ts` |
 | Preview glue (iframe, loads, crash, console batching) | `src/lib/preview/preview-controller.ts` (`PreviewController`) |
 | The battle's last import on this device (IndexedDB) and the stale cleanup | `src/lib/site/local-sites.ts`, `src/lib/site/site-cleanup.ts` |
 | Solo game loop (plain TS, unit tested with fakes); also runs a room's battle in external mode | `src/lib/solo/controller.ts` (`SoloController`) |
@@ -625,6 +679,16 @@ pnpm --filter @br/web test:e2e:telemetry      # error reporting + analytics agai
     stylesheet (the background colour is checked in the screenshot);
   - **reload:** an import comes back after a reload (IndexedDB), and in a browser without
     that copy (the same session) from the remote autosave.
+  - **Import from a link** (`e2e/solo-link.spec.ts`, T-052; the fixture server
+    `e2e/link-fixture.ts`): on `/try` a folder makes no Supabase request, then a pasted link
+    signs in anonymously, the `import-url` function copies the fixture and the site runs
+    ("Copied from host.docker.internal:4330"); a re-published site with "Copy again from
+    <host>"; the link is remembered after a reload; a link on another host and a malformed one
+    fail at once with no request; a missing site (404) and a private one (401) get their words;
+    a slow site shows "Copying your site…" and Cancel brings the zone back; on BUILD a link is
+    imported, autosaved, shipped and in RESULTS (`imports: 1`). `LINK_SCREENSHOT_DIR=/dir`
+    saves the field, copying, an error, the copied site and the link row, in English and
+    Turkish, light, dark and at 390 px.
   - **Storage down** (`e2e/solo-outage.spec.ts`): an import runs and is kept while Storage
     refuses connections, the autosave says "Save failed, retrying", a reload restores it from
     IndexedDB, the retry lands once Storage is back, then ship; and a ship that fails while

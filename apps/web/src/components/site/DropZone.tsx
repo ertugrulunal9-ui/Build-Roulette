@@ -2,27 +2,39 @@
 
 /**
  * The big import target of the BUILD stage and `/try` before anything is imported (docs/09
- * §9.5): "Drop your built site here", the two pickers, what is going on (reading, or why the
+ * §9.5): "Drop your built site here", the two pickers, "…or paste the link of your published
+ * site" (docs/10, when the page offers it), what is going on (reading, copying, or why the
  * last import failed and what to do), the three steps, and a slot for the "How do I import?"
  * help (T-049, onboarding).
  *
  * The drop itself is handled for the whole page (usePageDrop); this box only shows it.
  */
-import type { ImportError } from '@br/site';
 import type { ReactNode } from 'react';
 import { useT } from '../../lib/i18n/context';
 import type { Messages } from '../../lib/i18n/messages/en';
-import type { ImportState } from '../../lib/site/use-site-import';
+import type { ImportErrorState, ImportState } from '../../lib/site/use-site-import';
 import { GUIDE_PATH } from '../onboarding/copy';
 import { IMPORT_HELP_ID, openImportHelp } from '../onboarding/ImportHelp';
 import { CodeText } from './CodeText';
+import { LinkForm } from './LinkForm';
 
 /**
  * Why an import failed and what to do, in the page's language: the catalogs' `importErrors`
- * (T-050; the English is `describeImportError` from `@br/site`).
+ * for a folder or a .zip (T-050; the English is `describeImportError` from `@br/site`), and
+ * `linkErrors` for a link (docs/10).
  */
-export function importErrorText(e: ImportError, m: Messages): { title: string; hint: string } {
-  return m.importErrors[e.code](e.detail);
+export function importErrorText(s: ImportErrorState, m: Messages): { title: string; hint: string } {
+  return s.via === 'link'
+    ? m.linkErrors[s.error.code](s.error.detail)
+    : m.importErrors[s.error.code](s.error.detail);
+}
+
+/** The link field's part of the import (docs/10): null when the page does not offer it. */
+export interface LinkControls {
+  onSubmit: (link: string) => void;
+  onCancel: () => void;
+  /** The last link imported here (prefilled). */
+  lastLink: string | null;
 }
 
 export interface DropZoneProps {
@@ -38,6 +50,8 @@ export interface DropZoneProps {
   restoring?: boolean;
   /** The "How do I import?" help next to the steps (onboarding, T-049: `ImportHelp`). */
   help?: ReactNode;
+  /** "…or paste the link of your published site"; absent: no link field. */
+  link?: LinkControls | null;
 }
 
 const fixLink = 'mt-1 inline-block text-sm font-semibold underline underline-offset-2';
@@ -54,11 +68,25 @@ export function DropZone({
   disabled = false,
   restoring = false,
   help,
+  link,
 }: DropZoneProps) {
   const t = useT();
   const words = t.importUi;
   const reading = state.status === 'reading';
-  const error = state.status === 'error' ? importErrorText(state.error, t) : null;
+  const copying = reading && state.via === 'link';
+  const readingFiles = reading && !copying;
+  const error = state.status === 'error' ? importErrorText(state, t) : null;
+  const showLink = Boolean(link) && !disabled;
+  // A link's error shows under the field it is about.
+  const linkError = showLink && state.status === 'error' && state.via === 'link';
+  const errorNote = error && (
+    <ImportErrorNote
+      title={error.title}
+      hint={error.hint}
+      onDismiss={onDismissError}
+      inPageHelp={help !== undefined}
+    />
+  );
   return (
     <div
       className="flex h-full min-h-0 flex-col items-center justify-center-safe gap-6 overflow-y-auto p-4 sm:p-8"
@@ -91,7 +119,7 @@ export function DropZone({
           </p>
         </div>
 
-        {reading ? (
+        {readingFiles ? (
           <p
             role="status"
             className="text-sm font-semibold text-sky-700 dark:text-sky-300"
@@ -108,6 +136,7 @@ export function DropZone({
             <button
               type="button"
               onClick={openFolder}
+              disabled={copying}
               data-testid="choose-folder"
               className={`${button} bg-zinc-900 text-white hover:bg-zinc-700 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-white`}
             >
@@ -116,6 +145,7 @@ export function DropZone({
             <button
               type="button"
               onClick={openZip}
+              disabled={copying}
               data-testid="choose-zip"
               className={`${button} border border-zinc-300 bg-white text-zinc-900 hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-zinc-800`}
             >
@@ -124,14 +154,20 @@ export function DropZone({
           </div>
         )}
 
-        {error && !reading && (
-          <ImportErrorNote
-            title={error.title}
-            hint={error.hint}
-            onDismiss={onDismissError}
-            inPageHelp={help !== undefined}
-          />
+        {link && showLink && (
+          <div className="flex w-full flex-col items-center gap-3 border-t border-zinc-200 pt-4 dark:border-zinc-800">
+            <LinkForm
+              initial={link.lastLink}
+              onSubmit={link.onSubmit}
+              onCancel={link.onCancel}
+              copying={copying}
+              disabled={readingFiles}
+              error={linkError ? errorNote : null}
+            />
+          </div>
         )}
+
+        {error && !reading && !linkError && errorNote}
       </section>
 
       <div className="flex w-full max-w-2xl flex-col gap-4 sm:flex-row sm:items-start">

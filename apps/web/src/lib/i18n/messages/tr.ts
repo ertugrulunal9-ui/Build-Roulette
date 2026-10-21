@@ -5,7 +5,7 @@
  * gösterim, the build step (`npm run build`) stays "build".
  */
 import { BUILD_TIME_LIMITS_MINUTES, ROOM_LIMITS } from '@br/game';
-import { SITE_LIMITS } from '@br/site';
+import { IMPORT_URL_HOSTS, SITE_LIMITS } from '@br/site';
 import type { Messages } from './en';
 
 const MIN_MINUTES = Math.min(...BUILD_TIME_LIMITS_MINUTES);
@@ -22,6 +22,20 @@ const megabytes = (bytes: number) => `${oneDecimal.format(bytes / (1024 * 1024))
 
 /** "9 minutes" → "9 dakika" (the server's rate-limit sentence is English). */
 const UNITS: Record<string, string> = { second: 'saniye', minute: 'dakika', hour: 'saat' };
+
+/** `*.lovable.app, *.netlify.app, …`: the hosts a link may be on (`@br/site`). */
+const LINK_HOSTS = IMPORT_URL_HOSTS.map((h) => `*.${h}`).join(', ');
+
+/** `45 sn`, `3 dk`. */
+const waitTr = (seconds: number) =>
+  seconds <= 90 ? `${s(seconds)} sn` : `${s(Math.ceil(seconds / 60))} dk`;
+
+const statusOf = (detail?: string) => (detail && /^\d{3}$/.test(detail) ? detail : null);
+
+const serverDown = () => ({
+  title: 'Oyunun sunucusuna ulaşılamadı',
+  hint: 'Bağlantını kontrol et ve birazdan tekrar dene ya da build’i alınmış klasörü bırak.',
+});
 
 export const tr: Messages = {
   language: {
@@ -121,7 +135,7 @@ export const tr: Messages = {
     },
     drop: {
       title: 'Build al ve bırak',
-      text: 'Projenin build’ini al (`npm run build`), sonra `dist` klasörünü (ya da bir .zip) oyuna bırak. İstediğin kadar tekrar bırakabilirsin; süre bitmeden önceki son bırakma sayılır.',
+      text: 'Projenin build’ini al (`npm run build`), sonra `dist` klasörünü (ya da bir .zip) oyuna bırak veya yayınladığın sitenin linkini yapıştır. İstediğin kadar yeniden içe aktarabilirsin; süre bitmeden önceki son içe aktarma sayılır.',
     },
     ship: {
       title: 'Teslim et, izle, oyla',
@@ -176,6 +190,7 @@ export const tr: Messages = {
       'Build’in oluşturduğu klasörü buraya bırak ya da Klasör seç’e bas. .zip de olur.',
       'Bir şeyi mi değiştirdin? Yeniden build al ve yeniden bırak: son bırakma sayılır.',
     ],
+    link: 'Lovable, Bolt, v0 ya da Replit’te mi yaptın? Yayınla, herkese açık linkini kopyala ve bırakma alanının altına yapıştır. Yeniden mi yayınladın? Aynı linki yeniden içe aktar.',
     whereTitle: 'Build’im nerede?',
     where: [
       'Vite (React, Vue, Svelte…) → `dist`',
@@ -185,7 +200,7 @@ export const tr: Messages = {
     ],
     webBuildersTitle: 'Lovable, Bolt, v0 mı?',
     webBuilders:
-      'Projeyi .zip olarak indir, zip’i aç, o klasörde `npm install` ve `npm run build` çalıştır, sonra `dist` klasörünü bırak.',
+      'Yayınladığın linki yapıştır. Herkese açık bir linkin yok mu? Projeyi .zip olarak indir, zip’i aç, o klasörde `npm install` ve `npm run build` çalıştır, sonra `dist` klasörünü bırak.',
     guide: 'Rehberin tamamı',
     howToFix: 'Bunu nasıl düzeltirim?',
   },
@@ -247,12 +262,11 @@ export const tr: Messages = {
         tab: 'Web araçları',
         tools: 'Lovable, Bolt, v0, Replit',
         steps: [
-          'Uygulamayı her zamanki gibi tarayıcıda yap. Bu araçlar sana build’i alınmış bir site değil, kaynak kod verir.',
-          'İndirme / dışa aktarma seçeneğiyle projeyi .zip olarak al ve zip’i aç.',
-          'O klasörde bir terminal aç ve önce `npm install`, sonra `npm run build` çalıştır.',
-          '`dist` klasörünü oyuna bırak.',
+          'Uygulamayı her zamanki gibi tarayıcıda yap.',
+          'Uygulamanı araçta yayınla (Publish ya da Deploy düğmesi) ve herkese açık linkini kopyala, örneğin `https://my-app.lovable.app`.',
+          'Linki oyunda bırakma alanının altına yapıştır ve İçe aktar’a bas. Bir şeyi mi değiştirdin? Yeniden yayınla ve aynı linki yeniden içe aktar.',
         ],
-        note: 'Bunun için bilgisayarında Node.js olmalı. Doğrudan bir linkten içe aktarma ileride geliyor.',
+        note: `Linkler şu adreslerde yayınlanmış siteler için çalışır: ${LINK_HOSTS}. Herkese açık bir linkin yok mu, ya da site kendi sunucusunu mu istiyor? Projeyi .zip olarak indir, o klasörde \`npm install\` ve \`npm run build\` çalıştır (bunun için bilgisayarında Node.js olmalı), sonra \`dist\` klasörünü bırak.`,
       },
       plain: {
         tab: 'Framework yok',
@@ -328,6 +342,26 @@ export const tr: Messages = {
         fix: 'Tarayıcıda taklit et: veriyi `localStorage` içinde tut, sahte veri kullan ya da anahtar istemeyen herkese açık bir API çağır.',
       },
       {
+        problem: '"Bu site gizli"',
+        fix: 'Link giriş yapmanı istiyor. Siteyi aracında herkese açık yap (linke sahip herkes açabilsin), yeniden yayınla, sonra linki yapıştır.',
+      },
+      {
+        problem: '"Bu sitenin adresi desteklenmiyor"',
+        fix: `Linkler şu adreslerde yayınlanmış siteler için çalışır: ${LINK_HOSTS}. Siteyi oralardan birinde yayınla ya da kodu indir, build al ve \`dist\` klasörünü bırak.`,
+      },
+      {
+        problem: '"Bu site yüklenemedi" ya da "Bu link bir web sayfası değil"',
+        fix: 'Linki tarayıcında aç: siten görünmeli. Editörün ya da bir dosyanın değil, yayınlanmış sitenin kendi adresini yapıştır.',
+      },
+      {
+        problem: 'Kopyalanan site boş ya da gezinince bozuluyor',
+        fix: 'Site kendi sunucusunu istiyor (sunucu tarafında oluşturma, API yolları), kopya bunu getiremez. Aracından statik bir site iste ya da kodu indir, build al ve `dist` klasörünü bırak.',
+      },
+      {
+        problem: '"Çok fazla içe aktarma"',
+        fix: 'Birkaç dakikada çok fazla link içe aktarıldı. Söylenen süre kadar bekle ya da build’i alınmış klasörü bırak.',
+      },
+      {
         problem: 'Firefox gizli penceresinde önizleme hiç başlamıyor',
         fix: 'Firefox’un gizli pencereleri, önizlemenin ihtiyaç duyduğu service worker’ları kapatır. Normal bir pencere kullan.',
       },
@@ -392,6 +426,20 @@ export const tr: Messages = {
     froze: (seconds) =>
       `Siten ${s(seconds)} sn boyunca yanıt vermedi, büyük ihtimalle sonsuz bir döngü var. Düzelt, yeniden build al ve içe aktar ya da önizlemeyi yeniden başlat.`,
     restart: 'Önizlemeyi yeniden başlat',
+    or: 'ya da',
+    linkLabel: '…ya da yayınladığın sitenin linkini yapıştır',
+    linkPlaceholder: 'https://my-app.lovable.app',
+    linkImport: 'İçe aktar',
+    linkCopying: 'Siten kopyalanıyor…',
+    linkCancel: 'Vazgeç',
+    linkHint:
+      'Lovable, Netlify, Vercel, GitHub Pages, Replit, Bolt… üzerinde yayınlanmış sitelerle çalışır',
+    linkHostsShow: 'Listeyi göster',
+    linkHostsHide: 'Listeyi gizle',
+    linkHostsTitle: 'Linkler şu adreslerdeki siteler için çalışır',
+    copiedFrom: 'Kopyalandığı yer:',
+    copyAgainFrom: (host) => `${host} adresinden yeniden kopyala`,
+    pasteLink: 'Link yapıştır…',
   },
 
   importErrors: {
@@ -439,6 +487,59 @@ export const tr: Messages = {
       title: 'Bazı dosyalar okunamadı',
       hint: 'Tekrar dene ya da build klasörünü zip’leyip .zip’i bırak.',
     }),
+  },
+
+  linkErrors: {
+    'url-invalid': () => ({
+      title: 'Bu link kullanılamıyor',
+      hint: 'Yayınladığın sitenin https:// ile başlayan tam adresini yapıştır, örneğin `https://my-app.lovable.app`.',
+    }),
+    'url-host-not-allowed': () => ({
+      title: 'Bu sitenin adresi desteklenmiyor',
+      hint: `Linkler şu adreslerde yayınlanmış siteler için çalışır: ${LINK_HOSTS}. Siteyi oralardan birinde yayınlayıp o linki yapıştır ya da kodu indir, build al ve \`dist\` klasörünü bırak.`,
+    }),
+    'url-unreachable': (detail) => {
+      const status = statusOf(detail);
+      return {
+        title: 'Bu site yüklenemedi',
+        hint: `${status ? `Site ${status} yanıtını verdi. ` : ''}Linkin tarayıcında açıldığından ve sitenin yayında olduğundan emin ol, sonra tekrar dene.`,
+      };
+    },
+    'url-not-html': () => ({
+      title: 'Bu link bir web sayfası değil',
+      hint: 'Bir dosyanın ya da API’nin değil, yayınlanmış sitenin kendi linkini (tarayıcında açılan sayfayı) yapıştır.',
+    }),
+    'url-private': () => ({
+      title: 'Bu site gizli',
+      hint: 'Siteyi aracında herkese açık yap ve yeniden yayınla, sonra linki yapıştır.',
+    }),
+    'url-timeout': () => ({
+      title: 'Site çok geç yanıt verdi',
+      hint: 'Zamanında kopyalanamayacak kadar yavaş yanıt verdi. Birazdan tekrar dene ya da build’i alınmış klasörü bırak.',
+    }),
+    'rate-limited': (detail) => {
+      const seconds = Number(detail);
+      return {
+        title: 'Çok fazla içe aktarma',
+        hint:
+          Number.isFinite(seconds) && seconds > 0
+            ? `${waitTr(Math.ceil(seconds))} sonra tekrar dene ya da build’i alınmış klasörü bırak.`
+            : 'Birkaç dakika sonra tekrar dene ya da build’i alınmış klasörü bırak.',
+      };
+    },
+    'too-large': () => ({
+      title: 'Site çok büyük',
+      hint: `Bir site en fazla ${s(MAX_MB)} MB olabilir. Büyük görselleri, videoları ya da fontları küçült, yeniden yayınla ve linki yapıştır.`,
+    }),
+    'too-many-files': () => ({
+      title: 'Çok fazla dosya',
+      hint: `Bir sitede en fazla ${s(MAX_FILES)} dosya olabilir. Daha küçük bir site yayınla ya da kodu indir, build al ve \`dist\` klasörünü bırak.`,
+    }),
+    unauthenticated: serverDown,
+    'origin-not-allowed': serverDown,
+    'method-not-allowed': serverDown,
+    internal: serverDown,
+    network: serverDown,
   },
 
   try: {

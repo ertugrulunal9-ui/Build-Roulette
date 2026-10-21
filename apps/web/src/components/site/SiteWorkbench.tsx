@@ -4,7 +4,9 @@
  * The main area of the BUILD stage and of `/try` (docs/09 §9.5): before the first import a
  * large drop zone, afterwards the live preview of the imported site under a bar that says
  * what was imported, with "Import again". Files dropped anywhere on the page are imported
- * too, with a full-screen overlay while they are dragged.
+ * too, with a full-screen overlay while they are dragged. With Supabase in the build, the
+ * player can also paste the link of a published site (docs/10): the `import-url` function
+ * copies it, and the copy takes the same path as a dropped folder (`onImported`).
  *
  * The site itself is the caller's (`site`, `onImported`): the battle's controller (autosave,
  * ship) on the BUILD stage, plain component state on `/try`. This component owns the preview
@@ -12,11 +14,14 @@
  * every new `site` into it.
  */
 import type { ImportedSite } from '@br/site';
-import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { previewConfig } from '../../lib/preview/config';
 import { PreviewController } from '../../lib/preview/preview-controller';
 import { useT } from '../../lib/i18n/context';
-import { useSiteImport, type ImportVia } from '../../lib/site/use-site-import';
+import { linkImportAvailable, linkTestOrigins } from '../../lib/site/link-config';
+import { supabaseLinkCopier } from '../../lib/site/link-import';
+import { useSiteImport, type ImportVia, type LinkImport } from '../../lib/site/use-site-import';
+import { supabaseConfig } from '../../lib/supabase/config';
 import { PreviewHealth } from '../../lib/telemetry/sandbox-health';
 import { DropZone } from './DropZone';
 import { ImportBar } from './ImportBar';
@@ -26,6 +31,16 @@ import { usePageDrop } from './use-page-drop';
 
 const noopSubscribe = () => () => undefined;
 const initialSnapshot = () => PreviewController.initialSnapshot;
+
+/**
+ * The app's link import: the `import-url` function with the player's session (signed in
+ * anonymously on first use: `/try` asks Supabase nothing until a link is imported). Null
+ * when the build has no Supabase.
+ */
+export function defaultLinkImport(): LinkImport | null {
+  if (!linkImportAvailable) return null;
+  return { copy: supabaseLinkCopier(supabaseConfig.url), extraOrigins: linkTestOrigins };
+}
 
 export interface SiteWorkbenchProps {
   /** The imported site (what the preview runs), or null before the first import. */
@@ -44,6 +59,8 @@ export interface SiteWorkbenchProps {
   onPreview?: (preview: PreviewController | null) => void;
   /** The "How do I import?" help next to the drop zone's steps (T-049). */
   help?: ReactNode;
+  /** The link import (docs/10); default `defaultLinkImport()`, null hides the link field. */
+  linkImport?: LinkImport | null;
 }
 
 export function SiteWorkbench({
@@ -55,6 +72,7 @@ export function SiteWorkbench({
   overlay,
   onPreview,
   help,
+  linkImport,
 }: SiteWorkbenchProps) {
   const t = useT();
   const frameTitle = t.importUi.frameTitle;
@@ -103,7 +121,14 @@ export function SiteWorkbench({
     initialSnapshot,
   );
 
-  const importer = useSiteImport({ onImported, battleId, disabled: locked });
+  const link = useMemo(
+    () => (linkImport === undefined ? defaultLinkImport() : linkImport),
+    [linkImport],
+  );
+  const importer = useSiteImport({ onImported, battleId, disabled: locked, link });
+  const linkControls = importer.linkEnabled
+    ? { onSubmit: importer.fromLink, onCancel: importer.cancel, lastLink: importer.lastLink }
+    : null;
   const pickers = useFilePickers(importer.fromFiles, locked);
   const { dragging } = usePageDrop(importer.fromDrop, !locked);
 
@@ -118,6 +143,7 @@ export function SiteWorkbench({
           openZip={pickers.openZip}
           onDismissError={importer.clearError}
           disabled={locked}
+          link={linkControls}
         />
       )}
       <div className="relative min-h-0 flex-1">
@@ -141,6 +167,7 @@ export function SiteWorkbench({
                 disabled={locked}
                 restoring={restoring}
                 help={help}
+                link={linkControls}
               />
             </div>
           )}

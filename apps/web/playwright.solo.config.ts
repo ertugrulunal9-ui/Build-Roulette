@@ -1,5 +1,6 @@
 import { defineConfig } from '@playwright/test';
 import { APP_SERVER_ENV, appServerCommand } from './e2e/app-server';
+import { LINK_FIXTURE_HOST } from './e2e/link-fixture';
 import { welcomeSeen } from './e2e/welcome';
 
 /**
@@ -10,7 +11,8 @@ import { welcomeSeen } from './e2e/welcome';
  * tests, and commit their data.
  *
  * scripts/solo-services.ts starts the sandbox shell (with the capture gate) and
- * the jobs Edge Function with its Browser Rendering stand-in (`--worker`: the Node worker);
+ * the jobs Edge Function with its Browser Rendering stand-in (`--worker`: the Node worker) and
+ * the `import-url` function (the link import, `e2e/solo-link.spec.ts`);
  * Playwright serves the static export with `wrangler dev` (e2e/app-server.ts). The production build uses the default (local) Supabase URL and anon
  * key. `E2E_REUSE_SERVERS=1` reuses servers already running (e.g. `tsx
  * scripts/solo-services.ts` + `wrangler dev --port 3100 --ip localhost`) while
@@ -44,7 +46,9 @@ export default defineConfig({
     {
       command: 'tsx scripts/solo-services.ts',
       url: 'http://127.0.0.1:4321/v2/',
-      env: { BR_APP_ORIGINS: APP_ORIGIN },
+      // The link import's fixture server (e2e/link-fixture.ts), allowed for this suite only;
+      // the build lists it too (`test:e2e:solo` in package.json).
+      env: { BR_APP_ORIGINS: APP_ORIGIN, IMPORT_URL_TEST_HOSTS: LINK_FIXTURE_HOST },
       // SIGTERM, so solo-services removes its pg_cron schedule and Vault secrets (and a
       // --worker hands its job back) before it exits.
       gracefulShutdown: { signal: 'SIGTERM', timeout: 40_000 },

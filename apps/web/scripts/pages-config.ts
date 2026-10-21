@@ -14,8 +14,11 @@
  *   holds a Supabase key that is not the public anon key (a service-role or user JWT, an
  *   `sb_secret_` key, or the value of `SUPABASE_SERVICE_ROLE_KEY` / `SERVICE_ROLE_KEY` /
  *   `SUPABASE_SECRET_KEY` from this environment; the worker is checked too), a host limit is
- *   exceeded (header lines, rules, redirects, file count and size), or `out/` holds a
- *   `_worker.js` (wrangler refuses to upload one as an asset).
+ *   exceeded (header lines, rules, redirects, file count and size), `out/` holds a
+ *   `_worker.js` (wrangler refuses to upload one as an asset), or the link import's test-only
+ *   origins leak: `NEXT_PUBLIC_IMPORT_URL_TEST_ORIGINS` is set for a Supabase that is not
+ *   local or lists a host that is not a local test host, or a build without it still holds
+ *   the test fixture host (`host.docker.internal`; src/lib/site/link-config.ts).
  * - Prints the export's size and the worker's.
  *
  *   tsx scripts/pages-config.ts [outDir]     (default: out; the worker goes to dist/worker.js)
@@ -35,6 +38,7 @@ import {
 } from '../src/lib/hosting/pages-config';
 import { REDIRECTS, SHELLS, pagesRedirects } from '../src/lib/hosting/shells';
 import { previewConfig } from '../src/lib/preview/config';
+import { linkTestOrigins } from '../src/lib/site/link-config';
 import { supabaseConfig } from '../src/lib/supabase/config';
 import { turnstileSiteKey } from '../src/lib/supabase/turnstile';
 import { errorReportingEnabled, telemetryConfig } from '../src/lib/telemetry/config';
@@ -109,6 +113,41 @@ for (const f of [...all, workerPath]) {
   for (const found of secretKeysIn(text)) problems.push(`${name} contains ${found}`);
   for (const s of secrets)
     if (text.includes(s)) problems.push(`${name} contains a secret key from the environment`);
+}
+
+// ─── The link import's test-only origins (e2e builds only) ───────────────────────
+// The e2e serves fixture sites to the `import-url` function at this host (the function runs in
+// Docker); the stack suites' builds list it in NEXT_PUBLIC_IMPORT_URL_TEST_ORIGINS.
+const TEST_FIXTURE_HOST = 'host.docker.internal';
+const LOCAL_HOSTS = new Set([TEST_FIXTURE_HOST, 'localhost', '127.0.0.1']);
+const hostOf = (u: string) => {
+  try {
+    return new URL(u).hostname;
+  } catch {
+    return '';
+  }
+};
+if (linkTestOrigins.length > 0) {
+  if (!LOCAL_HOSTS.has(hostOf(supabaseConfig.url))) {
+    problems.push(
+      `NEXT_PUBLIC_IMPORT_URL_TEST_ORIGINS is for local test builds only, but Supabase is ${supabaseConfig.url}`,
+    );
+  }
+  for (const o of linkTestOrigins) {
+    if (!LOCAL_HOSTS.has(hostOf(o))) {
+      problems.push(
+        `NEXT_PUBLIC_IMPORT_URL_TEST_ORIGINS lists ${o}, which is not a local test host`,
+      );
+    }
+  }
+  console.log(`pages-config: TEST build, link import also accepts ${linkTestOrigins.join(', ')}`);
+} else {
+  for (const f of all) {
+    if (!textual.test(f)) continue;
+    if (readFileSync(f, 'utf8').includes(TEST_FIXTURE_HOST)) {
+      problems.push(`${rel(f)} contains the link import's test-only host ${TEST_FIXTURE_HOST}`);
+    }
+  }
 }
 
 // ─── Size ────────────────────────────────────────────────────────────────────────

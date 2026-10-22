@@ -2,7 +2,7 @@
 
 Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 
-## Current milestone: M7 Import from a published link ([docs/10](10-url-import.md)) — all tasks merged; needs a deploy (target `all`: migration 20261021120000, the `import-url` function with `APP_ORIGINS`, the app)
+## Current milestone: M7 Import from a published link ([docs/10](10-url-import.md)) — all tasks merged; **deployed 2026-10-22** (Deploy run 7 from `claude/intelligent-maxwell-ddael3`: migration 20261021120000, `import-url` function with `APP_ORIGINS`, shell and app; deploy-check 34 passed incl. the import-url 401 and preflight checks). Open: a real published link imported in production
 
 **Hub decision (2026-10-21, the user left the next step to us):** players using web builders (Lovable, Bolt, v0, Replit) paste the link of their published site instead of running `npm run build` locally.
 

@@ -15,7 +15,7 @@ validate it early. The roadmap ([06](06-roadmap.md)) is ordered to retire the to
 | R8 | Realtime limits and cost at scale | Medium | Low | M5 |
 | R9 | Abuse: offensive builds or names, phishing, crypto-mining, vote stuffing | Medium | Medium | M5 |
 | R10 | Third-party dependency outage mid-battle (Supabase, Browser Rendering) | Medium | Low | M5 |
-| R11 | Service Worker support: the site worker in players' browsers and in Browser Rendering | High | Medium | M6 |
+| R11 | Service Worker support: the site worker in players' browsers and in Browser Rendering | High | Low (Browser Rendering verified 2026-10-21) | M6 |
 | R12 | Players import their project's source (or a site that needs a server) instead of a static build | Medium | High | M6 |
 | R13 | Cheating with a site made before the battle | Medium | High | M6 (accepted) |
 
@@ -197,14 +197,15 @@ cross-site iframe in every browser that previews, and in the headless browser th
 - The worker keeps its sites and its client → site map in Cache Storage, so a browser that
   stops an idle worker does not lose the site; the shell registers it again on every load.
 - **Browser Rendering must run Service Workers** for the v2 capture page. The Playwright
-  stand-in (full Chromium) does; Cloudflare's REST API is not verified yet. If it does not,
-  every capture falls back to the client thumbnail: the game still works, the screenshots are
-  lower fidelity. DEPLOY.md "Deploying M6" and the capture-backlog runbook (step 7) say how to
+  stand-in (full Chromium) does, and so does Cloudflare's REST API: verified 2026-10-21 on the
+  first production solo battle after the M6 deploy (a full 1280×800 render of an imported
+  Vite site, not the client thumbnail). If that ever changes, every capture falls back to the
+  client thumbnail: the game still works, the screenshots are lower fidelity. DEPLOY.md "Deploying M6" and the capture-backlog runbook (step 7) say how to
   see it; the self-hosted capture worker is the way out.
 
 **Validate (M6).** The runtime and web e2e suites run imported sites through the site worker
-in Chromium; the first production battle after the deploy shows whether Browser Rendering
-captures them (Health → "Screenshots, last 24 h").
+in Chromium; the first production battle after the deploy showed that Browser Rendering
+captures them (2026-10-21). Health → "Screenshots, last 24 h" keeps watching it.
 
 ### R12: Importing source instead of a build
 **Why it's hard.** Vibe coders often do not know what "the built site" is. The likely

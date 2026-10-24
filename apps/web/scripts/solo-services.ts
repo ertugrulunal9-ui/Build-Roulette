@@ -6,7 +6,9 @@
  *   sandbox shell            http://127.0.0.1:4321/v2/          (preview, a different site)
  *     + capture page         http://127.0.0.1:4321/v2/capture   (HMAC gate, same shell)
  *   jobs (capture, destroy, takedown), as in production (T-034):
- *     the `jobs` Edge Function   `supabase functions serve` (supabase/functions/jobs)
+ *     the `jobs` Edge Function   `supabase functions serve` (supabase/functions/jobs; the same
+ *                                serve runs `import-url`, the link import of docs/10, with
+ *                                APP_ORIGINS = the app origins)
  *     started by pg_cron         every 2 s through pg_net (`e2e-jobs-run`, the production
  *                                schedule `br-jobs-run` is every minute), with the URL and
  *                                the cron secret in Vault, as in production
@@ -29,7 +31,9 @@
  * stack's API_URL / ANON_KEY / SERVICE_ROLE_KEY / DB_URL (default: `supabase status -o
  * env`), and BR_SERVICES_LOG (a file that also gets every line, each prefixed with an ISO
  * timestamp: the rooms e2e attach the lines of a failed test's time window, see
- * e2e/diagnostics.ts).
+ * e2e/diagnostics.ts), and IMPORT_URL_TEST_HOSTS (`host.docker.internal:4330`: a local
+ * fixture server the `import-url` function may copy from; the function honors it on a local
+ * stack only, and `--next` gives the app the matching NEXT_PUBLIC_IMPORT_URL_TEST_ORIGINS).
  */
 import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -63,6 +67,11 @@ const appOrigins = (env['BR_APP_ORIGINS'] ?? `http://localhost:${String(appPort)
   .map((s) => s.trim())
   .filter(Boolean);
 const shellPort = Number(env['SHELL_PORT'] ?? 4321);
+/** `host:port` pairs the `import-url` function may copy from (local test fixtures only). */
+const importUrlTestHosts = (env['IMPORT_URL_TEST_HOSTS'] ?? '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter((s) => /^[a-z0-9.-]+:\d{1,5}$/i.test(s));
 const standInPort = Number(env['STAND_IN_PORT'] ?? 4325);
 
 const logFd = (() => {
@@ -275,6 +284,11 @@ async function startJobsFunction(): Promise<void> {
       BROWSER_RENDERING_API_URL: standIn.urlFor('host.docker.internal'),
       JOBS_PUBLIC_SUPABASE_URL: stackEnv.API_URL,
       BROWSER_RENDERING_MIN_INTERVAL_MS: '0',
+      // import-url (docs/10): the browsers that may call it, and the test fixture hosts.
+      APP_ORIGINS: appOrigins.join(','),
+      ...(importUrlTestHosts.length > 0
+        ? { IMPORT_URL_TEST_HOSTS: importUrlTestHosts.join(',') }
+        : {}),
     })
       .map(([k, v]) => `${k}=${v}`)
       .join('\n'),
@@ -329,6 +343,11 @@ async function startJobsFunction(): Promise<void> {
          delete from vault.secrets where name in ('br_jobs_function_url', 'br_jobs_cron_secret');`);
   });
   log(`jobs          the Edge Function ${url}, started by pg_cron every 2 s`);
+  log(
+    `import-url    ${stackEnv.API_URL}/functions/v1/import-url${
+      importUrlTestHosts.length > 0 ? ` (test hosts: ${importUrlTestHosts.join(', ')})` : ''
+    }`,
+  );
 }
 
 // The shell last: its URL is what the e2e configs wait for, so everything is up by then.
@@ -354,6 +373,13 @@ if (args.has('--next')) {
       NEXT_PUBLIC_SUPABASE_URL: env.NEXT_PUBLIC_SUPABASE_URL ?? stackEnv.API_URL,
       NEXT_PUBLIC_SUPABASE_ANON_KEY: env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? stackEnv.ANON_KEY,
       NEXT_PUBLIC_SANDBOX_SHELL_URL: shell.shellUrl,
+      ...(importUrlTestHosts.length > 0
+        ? {
+            NEXT_PUBLIC_IMPORT_URL_TEST_ORIGINS: importUrlTestHosts
+              .map((h) => `http://${h}`)
+              .join(','),
+          }
+        : {}),
     },
     webDir,
   );

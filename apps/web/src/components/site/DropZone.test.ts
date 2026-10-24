@@ -184,7 +184,7 @@ describe('useSiteImport', () => {
     expect(onImported).toHaveBeenCalledWith(site.ok ? site.site : null, 'folder');
     expect(track).toHaveBeenCalledWith('site_import', {
       battle_id: '9d8e7f6a-5b4c-4d3e-8f2a-1b0c9d8e7f6a',
-      via: 'folder',
+      source: 'folder',
       outcome: 'ok',
       error: null,
     });
@@ -206,7 +206,7 @@ describe('useSiteImport', () => {
     expect(track).toHaveBeenCalledWith(
       'site_import',
       expect.objectContaining({
-        via: 'drop',
+        source: 'drop',
         outcome: 'error',
         error: 'not_built',
       }),

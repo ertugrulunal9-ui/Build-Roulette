@@ -10,6 +10,8 @@
  *    files and packs them.
  */
 import { contentTypeOf } from './content-types';
+import type { CopyError } from './copy';
+import { IMPORT_URL_HOSTS } from './hosts';
 import { SITE_LIMITS } from './limits';
 import { SITE_ENTRY, SitePackError, packSite, type SiteFile } from './pack';
 import { baseName, dirOf, normalizeInputPath } from './paths';
@@ -84,10 +86,15 @@ export type PlanResult = { ok: true; plan: SitePlan } | { ok: false; error: Impo
 
 export interface ImportedSite {
   pack: Uint8Array<ArrayBuffer>;
+  /**
+   * Where the site came from: its folder in the drop (`dist/`), or for a copied link
+   * (`copySite`) the site's address without a query (`https://my-app.lovable.app/`).
+   */
   root: string;
   files: number;
   /** Sum of the files' sizes (without the pack header). */
   bytes: number;
+  /** Files left out: not part of the site in a drop; referenced but not found in a copy. */
   skipped: number;
 }
 
@@ -305,11 +312,18 @@ function megabytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function waitText(seconds: number): string {
+  return seconds < 120
+    ? `${String(seconds)} seconds`
+    : `${String(Math.ceil(seconds / 60))} minutes`;
+}
+
 /**
  * What to tell the player: a short title and what to do next. Plain text; the UI may style
- * the `code` spans (backticks) itself.
+ * the `code` spans (backticks) itself. Covers the errors of a drop (`importSite`) and of a
+ * copied link (`copySite` and the `import-url` function).
  */
-export function describeImportError(e: ImportError): { title: string; hint: string } {
+export function describeImportError(e: ImportError | CopyError): { title: string; hint: string } {
   switch (e.code) {
     case 'empty':
       return {
@@ -363,5 +377,46 @@ export function describeImportError(e: ImportError): { title: string; hint: stri
         title: "Some files couldn't be read",
         hint: 'Try again, or zip the built folder and drop the .zip.',
       };
+    case 'url-invalid':
+      return {
+        title: "That link can't be used",
+        hint: 'Paste the full https:// address of your published site, like `https://my-app.lovable.app`.',
+      };
+    case 'url-host-not-allowed':
+      return {
+        title: "That site's host isn't supported",
+        hint: `Links work from ${IMPORT_URL_HOSTS.map((h) => `*.${h}`).join(', ')}. Publish your site there and paste that link, or drop the built folder instead.`,
+      };
+    case 'url-unreachable':
+      return {
+        title: "That site couldn't be loaded",
+        hint: `Check that the link opens in your browser and that the site is published, then try again${e.detail ? ` (${e.detail.slice(0, 60)})` : ''}.`,
+      };
+    case 'url-not-html':
+      return {
+        title: "That link isn't a web page",
+        hint: 'Paste the link of the published site itself (the page that opens in your browser), not a file or an API.',
+      };
+    case 'url-private':
+      return {
+        title: 'That site is private',
+        hint: 'Publish it publicly first (anyone with the link can open it), then paste the link again.',
+      };
+    case 'url-timeout':
+      return {
+        title: 'The site took too long',
+        hint: 'It answered too slowly to copy in time. Try again in a moment, or drop the built folder instead.',
+      };
+    case 'rate-limited': {
+      const seconds = Number(e.detail);
+      const wait =
+        Number.isFinite(seconds) && seconds > 0
+          ? `Wait ${waitText(Math.ceil(seconds))}`
+          : 'Wait a few minutes';
+      return {
+        title: 'Too many links imported',
+        hint: `${wait} and try again, or drop the built folder instead.`,
+      };
+    }
   }
 }

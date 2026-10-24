@@ -26,7 +26,8 @@ import {
   type ReportReason,
   type VoteCategory,
 } from '@br/game';
-import { SITE_LIMITS, describeImportError, type ImportErrorCode } from '@br/site';
+import { IMPORT_URL_HOSTS, SITE_LIMITS, describeImportError, type ImportErrorCode } from '@br/site';
+import type { LinkErrorCode } from '../../site/link-import';
 import { BATTLE_TITLE_EN } from '../../solo/battle-meta';
 import type { ErrorCode } from '../../solo/errors';
 import {
@@ -68,6 +69,80 @@ const importErrors = Object.fromEntries(
     (detail) => describeImportError(detail === undefined ? { code } : { code, detail }),
   ]),
 ) as Record<ImportErrorCode, ImportErrorText>;
+
+/** `*.lovable.app, *.netlify.app, …`: the hosts a link may be on (`@br/site`). */
+const LINK_HOSTS = IMPORT_URL_HOSTS.map((h) => `*.${h}`).join(', ');
+
+/** A wait in seconds as people say it: `45 s`, `3 min`. */
+const waitEn = (seconds: number) =>
+  seconds <= 90 ? `${s(seconds)} s` : `${s(Math.ceil(seconds / 60))} min`;
+
+/** A status code worth showing (`404`), from a copy error's detail. */
+const statusOf = (detail?: string) => (detail && /^\d{3}$/.test(detail) ? detail : null);
+
+/** What went wrong with the server itself: the same words for each such code. */
+const serverDown = () => ({
+  title: "Couldn't reach the game's server",
+  hint: 'Check your connection and try again in a moment, or drop the built folder instead.',
+});
+
+/**
+ * One title and what to do per link error (docs/10): the copy's codes (`@br/site`), the
+ * `import-url` function's own and `network`. Typed by `LinkErrorCode`, so a new code fails
+ * to compile until it is worded here and in tr.ts.
+ */
+const linkErrors: Record<LinkErrorCode, (detail?: string) => { title: string; hint: string }> = {
+  'url-invalid': () => ({
+    title: "That link can't be used",
+    hint: 'Paste the full address of your published site, starting with https://, like `https://my-app.lovable.app`.',
+  }),
+  'url-host-not-allowed': () => ({
+    title: "That site's host isn't supported",
+    hint: `Links work for sites published on ${LINK_HOSTS}. Publish it there and paste that link, or download the code, build it and drop the \`dist\` folder.`,
+  }),
+  'url-unreachable': (detail) => {
+    const status = statusOf(detail);
+    return {
+      title: "That site couldn't be loaded",
+      hint: `${status ? `It answered ${status}. ` : ''}Check that the link opens in your browser and that the site is published, then try again.`,
+    };
+  },
+  'url-not-html': () => ({
+    title: "That link isn't a web page",
+    hint: 'Paste the link of the published site itself (the page that opens in your browser), not a file or an API.',
+  }),
+  'url-private': () => ({
+    title: 'That site is private',
+    hint: 'Make the site public in your builder and publish again, then paste the link.',
+  }),
+  'url-timeout': () => ({
+    title: 'The site took too long',
+    hint: 'It answered too slowly to copy in time. Try again in a moment, or drop the built folder instead.',
+  }),
+  'rate-limited': (detail) => {
+    const seconds = Number(detail);
+    return {
+      title: 'Too many imports',
+      hint:
+        Number.isFinite(seconds) && seconds > 0
+          ? `Try again in ${waitEn(Math.ceil(seconds))}, or drop the built folder instead.`
+          : 'Try again in a few minutes, or drop the built folder instead.',
+    };
+  },
+  'too-large': () => ({
+    title: 'The site is too large',
+    hint: `A site can be at most ${s(MAX_MB)} MB. Shrink big images, videos or fonts, publish again and paste the link.`,
+  }),
+  'too-many-files': () => ({
+    title: 'Too many files',
+    hint: `A site can have at most ${s(MAX_FILES)} files. Publish a smaller site, or download the code, build it and drop the \`dist\` folder.`,
+  }),
+  unauthenticated: serverDown,
+  'origin-not-allowed': serverDown,
+  'method-not-allowed': serverDown,
+  internal: serverDown,
+  network: serverDown,
+};
 
 const phases: Record<BattlePhase, string> = { ...PHASE_LABELS };
 
@@ -245,7 +320,7 @@ export const en = {
     },
     drop: {
       title: 'Build & drop',
-      text: "Run your project's build (`npm run build`), then drop the `dist` folder (or a .zip) into the game. Drop again as often as you like; the last drop before time runs out counts.",
+      text: "Run your project's build (`npm run build`), then drop the `dist` folder (or a .zip) into the game, or paste your published link. Import again as often as you like; the last import before time runs out counts.",
     },
     ship: {
       title: 'Ship, reveal, vote',
@@ -300,6 +375,7 @@ export const en = {
       'Drop the folder the build wrote here, or press Choose folder. A .zip works too.',
       'Changed something? Build again and drop again: the last drop counts.',
     ],
+    link: 'Built in Lovable, Bolt, v0 or Replit? Publish it, copy its public link and paste it under the drop zone. Published again? Import the same link again.',
     whereTitle: 'Where is my build?',
     where: [
       'Vite (React, Vue, Svelte…) → `dist`',
@@ -309,7 +385,7 @@ export const en = {
     ],
     webBuildersTitle: 'Lovable, Bolt, v0?',
     webBuilders:
-      'Download the project as a .zip, unzip it, run `npm install` and `npm run build` in that folder, then drop `dist`.',
+      'Paste the published link. No public link? Download the project as a .zip, unzip it, run `npm install` and `npm run build` in that folder, then drop `dist`.',
     guide: 'Full guide',
     howToFix: 'How do I fix this?',
   },
@@ -371,12 +447,11 @@ export const en = {
         tab: 'Web builders',
         tools: 'Lovable, Bolt, v0, Replit',
         steps: [
-          'Build the app in the browser as usual. These tools give you source code, not a built site.',
-          'Use its download / export option to get the project as a .zip, and unzip it.',
-          'Open a terminal in that folder and run `npm install`, then `npm run build`.',
-          'Drop the `dist` folder into the game.',
+          'Build the app in the browser as usual.',
+          'Publish your app in the builder (its Publish or Deploy button) and copy its public link, like `https://my-app.lovable.app`.',
+          'Paste the link into the game, under the drop zone, and press Import. Changed something? Publish again and import the same link again.',
         ],
-        note: 'This needs Node.js on your computer. Importing straight from a link is planned for later.',
+        note: `Links work for sites published on ${LINK_HOSTS}. No public link, or a site that needs its own server? Download the project as a .zip, run \`npm install\` and \`npm run build\` in that folder (this needs Node.js on your computer), then drop the \`dist\` folder.`,
       },
       plain: {
         tab: 'No framework',
@@ -451,6 +526,26 @@ export const en = {
         fix: 'Fake it in the browser: keep data in `localStorage`, use mock data, or call a public API that needs no key.',
       },
       {
+        problem: '"That site is private"',
+        fix: 'The link asks for a sign-in. Make the site public in your builder (anyone with the link can open it), publish again, then paste the link.',
+      },
+      {
+        problem: '"That site\'s host isn\'t supported"',
+        fix: `Links work for sites published on ${LINK_HOSTS}. Publish it there, or download the code, build it and drop the \`dist\` folder.`,
+      },
+      {
+        problem: '"That site couldn\'t be loaded" or "That link isn\'t a web page"',
+        fix: 'Open the link in your browser: it must show your site. Paste the address of the published site itself, not the editor’s or a file’s.',
+      },
+      {
+        problem: 'A copied site is blank or breaks when you click around',
+        fix: 'It needs its own server (server rendering, API routes), which a copy cannot bring along. Ask your builder for a static site, or download the code, build it and drop the `dist` folder.',
+      },
+      {
+        problem: '"Too many imports"',
+        fix: 'Many links were imported in a few minutes. Wait the time it says, or drop the built folder instead.',
+      },
+      {
         problem: 'The preview never starts in a Firefox private window',
         fix: 'Private windows in Firefox turn off service workers, which the preview needs. Use a normal window.',
       },
@@ -515,9 +610,23 @@ export const en = {
     froze: (seconds: number) =>
       `Your site stopped responding for ${s(seconds)} s, probably an infinite loop. Fix it, build again and import it, or restart the preview.`,
     restart: 'Restart preview',
+    or: 'or',
+    linkLabel: '…or paste the link of your published site',
+    linkPlaceholder: 'https://my-app.lovable.app',
+    linkImport: 'Import',
+    linkCopying: 'Copying your site…',
+    linkCancel: 'Cancel',
+    linkHint: 'Works with sites published on Lovable, Netlify, Vercel, GitHub Pages, Replit, Bolt…',
+    linkHostsShow: 'Show the list',
+    linkHostsHide: 'Hide the list',
+    linkHostsTitle: 'Links work for sites on',
+    copiedFrom: 'Copied from',
+    copyAgainFrom: (host: string) => `Copy again from ${host}`,
+    pasteLink: 'Paste a link…',
   },
 
   importErrors,
+  linkErrors,
 
   try: {
     title: 'Try an import',

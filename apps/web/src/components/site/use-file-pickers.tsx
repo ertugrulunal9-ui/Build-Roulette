@@ -7,7 +7,7 @@
  * input is emptied after a pick, so the same folder can be picked again after a rebuild.
  */
 import { useCallback, useRef, type ReactNode } from 'react';
-import type { ImportVia } from '../../lib/site/use-site-import';
+import type { FileVia } from '../../lib/site/use-site-import';
 
 export interface FilePickers {
   /** The hidden inputs: render once. */
@@ -17,13 +17,13 @@ export interface FilePickers {
 }
 
 export function useFilePickers(
-  onFiles: (files: File[], via: ImportVia) => void,
+  onFiles: (files: File[], via: FileVia) => void,
   disabled = false,
 ): FilePickers {
   const folderRef = useRef<HTMLInputElement | null>(null);
   const zipRef = useRef<HTMLInputElement | null>(null);
 
-  const onChange = (via: ImportVia) => (e: React.ChangeEvent<HTMLInputElement>) => {
+  const onChange = (via: FileVia) => (e: React.ChangeEvent<HTMLInputElement>) => {
     const input = e.currentTarget;
     const files = Array.from(input.files ?? []);
     input.value = '';

@@ -102,10 +102,17 @@ export interface PreviewCrashProps {
 export interface SiteImportProps {
   /** The battle being built; null outside a battle (`/try`). */
   battle_id: string | null;
-  /** `drop`: dragged onto the page; `folder` / `zip`: one of the two pickers. */
-  via: 'drop' | 'folder' | 'zip';
-  outcome: 'ok' | 'error';
-  /** The import error (`@br/site`'s code, `-` as `_`: `not_built`), null on success. */
+  /**
+   * `drop`: dragged onto the page; `folder` / `zip`: one of the two pickers; `link`: the link
+   * of a published site (M7). Never the link itself or its host.
+   */
+  source: 'drop' | 'folder' | 'zip' | 'link';
+  /** `cancelled`: the player stopped a link's copy. */
+  outcome: 'ok' | 'error' | 'cancelled';
+  /**
+   * The import error (`@br/site`'s code or the link's, `-` as `_`: `not_built`,
+   * `url_private`), null otherwise.
+   */
   error: string | null;
 }
 

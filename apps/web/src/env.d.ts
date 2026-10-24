@@ -27,6 +27,11 @@ declare namespace NodeJS {
     readonly NEXT_PUBLIC_POSTHOG_KEY?: string;
     /** PostHog ingest host (default https://eu.i.posthog.com). */
     readonly NEXT_PUBLIC_POSTHOG_HOST?: string;
+    /**
+     * Test-only origins the link import's check accepts (src/lib/site/link-config.ts): set by
+     * the stack e2e builds only, refused by scripts/pages-config.ts unless Supabase is local.
+     */
+    readonly NEXT_PUBLIC_IMPORT_URL_TEST_ORIGINS?: string;
     /** The release (set by next.config.ts from `BR_RELEASE` or the commit). */
     readonly NEXT_PUBLIC_BR_RELEASE?: string;
     /** Set by Next.js per compilation: `nodejs` or `edge` (src/instrumentation.ts). */

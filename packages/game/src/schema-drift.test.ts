@@ -774,7 +774,11 @@ describe('schema drift: vote ranks and awards (T-022)', () => {
 
 // ─── Moderation (T-024) ───────────────────────────────────────────────────────────────
 
-/** The rows of the last `insert into private.rate_limits (...) values ...`. */
+/**
+ * The rows of every `insert into private.rate_limits (...) values ... on conflict (action) do
+ * nothing` across the migrations, in order: a later migration adds actions (T-051:
+ * `import_url`), and an action seeded again keeps its first row (the `do nothing`).
+ */
 function rateLimitSeed(files: readonly { name: string; sql: string }[]) {
   const pattern =
     /\binsert\s+into\s+private\.rate_limits\s*\(([^)]*)\)\s*values\s*([\s\S]*?)(?:\bon\s+conflict\b|;)/gi;
@@ -785,13 +789,13 @@ function rateLimitSeed(files: readonly { name: string; sql: string }[]) {
       const ia = columns.indexOf('action');
       const im = columns.indexOf('max_count');
       const iw = columns.indexOf('window_s');
-      rows = {};
+      rows ??= {};
       for (const t of (match[2] ?? '').matchAll(new RegExp(String.raw`\(([^()]*)\)`, 'g'))) {
         const values = [...(t[1] ?? '').matchAll(new RegExp(String.raw`${LITERAL}|\d+`, 'g'))].map(
           (v) => v[0],
         );
         const action = unquote(values[ia] ?? "''");
-        rows[action] = { max: Number(values[im]), windowSeconds: Number(values[iw]) };
+        rows[action] ??= { max: Number(values[im]), windowSeconds: Number(values[iw]) };
       }
     }
   }
@@ -851,6 +855,7 @@ describe('schema drift: moderation (T-024)', () => {
     expect(pub('start_solo_battle')).toMatch(/private\.rate_limit\('start_solo_battle'/);
     expect(pub('cast_vote')).toMatch(/private\.rate_limit\('cast_vote'/);
     expect(pub('report_build')).toMatch(/private\.rate_limit\('report_build'/);
+    expect(pub('claim_import_url')).toMatch(/private\.rate_limit\('import_url'/);
     expect(pub('create_room')).toMatch(/private\.check_display_name\(/);
     expect(pub('start_solo_battle')).toMatch(/private\.check_display_name\(/);
     expect(pub('ship_build')).toMatch(/private\.check_name_allowed\(v_name, 'build'\)/);
@@ -870,11 +875,18 @@ describe('schema drift: moderation (T-024)', () => {
                 ('two', 2, 60, 'it''s')
               on conflict (action) do nothing;`,
       },
+      {
+        name: '2.sql',
+        sql: `insert into private.rate_limits (action, max_count, window_s, label) values
+                ('three', 3, 600, 'threes'), ('one', 99, 1, 'again')
+              on conflict (action) do nothing;`,
+      },
     ];
     expect(reportReasonCheck(files)).toEqual(['a', 'b']);
     expect(rateLimitSeed(files)).toEqual({
       one: { max: 10, windowSeconds: 3600 },
       two: { max: 2, windowSeconds: 60 },
+      three: { max: 3, windowSeconds: 600 },
     });
   });
 });

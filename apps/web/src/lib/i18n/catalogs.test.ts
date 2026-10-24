@@ -32,6 +32,8 @@ const SAME_IN_BOTH = new Set([
   'Angular',
   'Vite (React, Vue, Svelte…) → `dist`',
   'Create React App → `build`',
+  // The link field's example address (docs/10).
+  'https://my-app.lovable.app',
 ]);
 
 /**

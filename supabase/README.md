@@ -44,13 +44,17 @@ supabase/
 │   │                                                    Rendering budget, pg_net, pg_cron br-jobs-run → Vault
 │   ├── 20261010120000_free_plan.sql                   Supabase Free (T-036): keep_alive (anon), plan usage in
 │   │                                                    admin_ops_health, ops_settings, the event-log retention
-│   └── 20261016120000_import_mode.sql                 import mode (T-046, M6): one site pack per import
-│                                                        (site.bin, thumb.webp, autosave/site.bin), ship and
-│                                                        auto-ship from it, REVEAL {site, thumb}, stats `imports`,
-│                                                        build limits 10–45 min (random 10/15/20)
+│   ├── 20261016120000_import_mode.sql                 import mode (T-046, M6): one site pack per import
+│   │                                                    (site.bin, thumb.webp, autosave/site.bin), ship and
+│   │                                                    auto-ship from it, REVEAL {site, thumb}, stats `imports`,
+│   │                                                    build limits 10–45 min (random 10/15/20)
+│   └── 20261021120000_import_url.sql                  the import-url function's rate limit (T-051, M7):
+│                                                        `import_url` 20 per 10 min, claim_import_url
 ├── functions/
-│   └── jobs/                    the `jobs` Edge Function (T-034): index.ts (Deno entry) + core.js (GENERATED from
-│                                apps/capture-worker/src/edge by `pnpm --filter @br/capture-worker build:function`)
+│   ├── jobs/                    the `jobs` Edge Function (T-034): index.ts (Deno entry) + core.js (GENERATED from
+│   │                            apps/capture-worker/src/edge by `pnpm --filter @br/capture-worker build:function`)
+│   └── import-url/              the `import-url` Edge Function (T-051): index.ts (Deno entry) + core.js (GENERATED
+│                                from packages/site/src/import-url by `pnpm --filter @br/site build:function`)
 ├── tests/                       pgTAP tests (*.test.sql), one transaction each, rolled back
 │   ├── 00_schema.test.sql       tables/enums exist, RLS on every table, policies, table privileges
 │   ├── 01_constraints.test.sql  room codes, time limits, one build per player, vote PK, cascades
@@ -93,10 +97,12 @@ supabase/
 │   ├── 26_jobs_function.test.sql  the jobs function's SQL (T-034): budget reserve/settle (limit, refusals, 429s,
 │   │                            stale reservations, the UTC day), run_jobs_function (due jobs, Vault, the pg_net
 │   │                            request), grants
-│   └── 27_free_plan.test.sql    keep_alive (anon only, one write a minute, read-only answer), the usage section
-│                                (buckets, database, MAU, keep-alive, 80 % warnings), prune_event_logs (old logs of
-│                                finished battles and finished jobs go; every result, ballot, award, screenshot
-│                                and the public pages stay identical) (T-036)
+│   ├── 27_free_plan.test.sql    keep_alive (anon only, one write a minute, read-only answer), the usage section
+│   │                            (buckets, database, MAU, keep-alive, 80 % warnings), prune_event_logs (old logs of
+│   │                            finished battles and finished jobs go; every result, ballot, award, screenshot
+│   │                            and the public pages stay identical) (T-036)
+│   └── 28_import_url.test.sql   the import_url limit through claim_import_url: 20 then rate_limited with its hint,
+│                                per user, the window, anon refused, not_authenticated (T-051)
 └── scripts/
     ├── e2e-solo.mjs             the solo loop through the real HTTP APIs (Auth, PostgREST, Storage, pg_cron)
     ├── e2e-multiplayer.mjs      a 3-player battle + late spectator through supabase-js, with Realtime reception
@@ -299,6 +305,56 @@ tasks need it). Calling it by hand:
 ```sh
 curl -sS -X POST 'http://127.0.0.1:54321/functions/v1/jobs?wait=1' -H "x-br-cron-secret: $JOBS_CRON_SECRET"
 # → {"run":"…","ms":…,"stoppedBy":"empty","hardStopped":false,"jobs":[…]}
+```
+
+## Import from a link (M7, T-051): the `import-url` Edge Function
+
+A player can paste the link of their published site (Lovable, Netlify, Vercel, …) instead of
+dropping the built folder (docs/10). Browsers cannot read another site's files, so the copy
+runs server-side in `supabase/functions/import-url`: the copier `copySite` and the handler
+live in `@br/site` (`packages/site/src/copy.ts`, `src/import-url/handler.ts`, unit-tested
+there) and are bundled into `core.js` by `pnpm --filter @br/site build:function` (committed; a
+unit test fails when it is stale). It stores nothing.
+
+- **Request:** `POST /functions/v1/import-url`, `Authorization: Bearer <the user's access
+  token>` (an anonymous session is fine), JSON `{"url": "https://my-app.lovable.app/"}`.
+- **Answer:** `200 application/octet-stream`, the site pack (≤ 5 MB), with `X-Site-Files`,
+  `X-Site-Bytes`, `X-Site-Skipped`, `X-Site-Root`; or JSON `{code, detail?}`: 400
+  `url-invalid` / `url-host-not-allowed`, 401 `unauthenticated`, 403 `origin-not-allowed`, 405,
+  422 `url-unreachable` / `url-not-html` / `url-private` / `too-large` / `too-many-files`, 429
+  `rate-limited` (+ `retry_after` seconds and `Retry-After`), 500 `internal`, 504
+  `url-timeout`. `describeImportError` in `@br/site` words every copy code.
+- **Order:** the Authorization header (401), the link against the host allowlist
+  (`IMPORT_URL_HOSTS`, `checkPublicUrl`; 400, nothing fetched, no slot used), then
+  `public.claim_import_url()` **as the user** through PostgREST (apikey = `SUPABASE_ANON_KEY`,
+  Authorization = the user's token): PostgREST verifies the JWT and the function takes an
+  `import_url` slot (`20261021120000_import_url.sql`, see "Rate limits"), so one round trip is
+  both the session check and the rate limit. Only then does the copy start: every redirect hop
+  and file is checked against the host rules again, 4 requests at a time, 10 s each, 45 s in all.
+- **`verify_jwt = false`** (`config.toml`): the browser's CORS preflight carries no
+  Authorization header and must reach the function; the session is verified as above.
+- **CORS:** `APP_ORIGINS` (a function secret, comma-separated; set by `scripts/deploy` from the
+  app's addresses). Without it no browser may call the function (a request with another
+  `Origin` gets 403). Locally the gateway (Kong) adds its own `Access-Control-Allow-Origin: *`
+  to every route; a hosted project's gateway leaves CORS to the function.
+- **Logs:** one JSON line per request (`svc: "import-url"`): outcome, status, the link's host,
+  files, bytes, skipped, ms. Never the full link, a token or a user id.
+
+**The test-only host override.** The allowlist only has public hosts, so the integration test
+(`pnpm --filter @br/site test:function`, needs the stack with the Edge Runtime) copies from a
+static server on the machine through `IMPORT_URL_TEST_HOSTS=host.docker.internal:<port>` (the
+function runs in Docker; `host.docker.internal` is how the jobs tests reach their stand-ins
+too). The function honors it **only when `SUPABASE_URL` is a local stack** (`http://kong:8000`,
+`http://127.0.0.1:…`). A hosted project's `SUPABASE_URL` is `https://<ref>.supabase.co`, set by
+Supabase, and secrets starting with `SUPABASE_` cannot be set, so production ignores the
+override even if the secret were set by mistake; the first log line then says
+`testHostsIgnored`. `scripts/deploy` also deletes an `IMPORT_URL_TEST_HOSTS` secret before it
+deploys the functions.
+
+```sh
+# by hand, locally (supabase functions serve --env-file <file with APP_ORIGINS=http://localhost:3000>)
+curl -sS -X POST http://127.0.0.1:54321/functions/v1/import-url -H 'content-type: application/json' \
+  -H "authorization: Bearer $ACCESS_TOKEN" -d '{"url":"https://my-app.lovable.app/"}' -o site.bin -D -
 ```
 
 ## Rooms and multiplayer (M3, T-016)
@@ -669,6 +725,7 @@ Per user (`auth.uid()`), sliding windows, in Postgres (`20261008120100_rate_limi
 | `report_build` | 20 per hour | reports filed |
 | `start_solo_battle` | 30 per hour | solo battles started |
 | `cast_vote` | 120 per minute | votes (revotes too): floods only |
+| `import_url` | 20 per 10 min | links the `import-url` function starts to copy (a failed copy too; a link refused before copying is not counted). `20261021120000_import_url.sql` |
 
 - One helper: `private.rate_limit(action, user)` = `rate_limit_check` (raises
   `rate_limited`, PT429 → HTTP 429, `details` "… Try again in 9 minutes.", `hint`

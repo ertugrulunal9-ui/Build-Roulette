@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // One-command deploy of the free setup (T-042; T-043: Workers on workers.dev, two Cloudflare
-// accounts; DEPLOY.md, "Deploy with GitHub Actions"): what DEPLOY.md §2.2, §3.2–§3.8, §4 and
+// accounts; DEPLOY.md, "Deploy with GitHub Actions"): what DEPLOY.md §2.2, §3.2–§3.9, §4 and
 // §6.1 do by hand, idempotently. Run by .github/workflows/deploy.yml on GitHub's runners; runs
 // the same way locally:
 //
@@ -11,11 +11,11 @@
 // email also from DEPLOY_TARGET and ADMIN_EMAIL). A second run with nothing changed creates
 // nothing and keeps every generated secret: they live in Supabase Vault.
 //
-//   all       preflight, workers.dev subdomains, schema, Vault, Auth, the jobs function, shell,
-//             web, CAPTCHA, moderator, deploy-check
+//   all       preflight, workers.dev subdomains, schema, Vault, Auth, the jobs and import-url
+//             functions, shell, web, CAPTCHA, moderator, deploy-check
 //   check     preflight only: settings, tokens, the project's status, the database password
-//   supabase  preflight, workers.dev subdomains (for the URLs), schema, Vault, Auth, the jobs
-//             function, moderator
+//   supabase  preflight, workers.dev subdomains (for the URLs), schema, Vault, Auth, the jobs and
+//             import-url functions, moderator
 //   shell     preflight, workers.dev subdomains, the sandbox shell (its secret from Vault)
 //   web       preflight, workers.dev subdomains, the web app, CAPTCHA
 //
@@ -67,6 +67,19 @@ export const SUPABASE_CLI = 'supabase@2.119.0';
 export const SHELL_PATH = '/v2/';
 /** Function secrets an earlier version set and the jobs function no longer reads. */
 export const OLD_FUNCTION_SECRETS = ['PKG_CDN_URL'];
+/**
+ * The Edge Functions, deployed in this order (both without the gateway's JWT check: `jobs` is
+ * called by pg_cron with its secret, `import-url` checks the session itself and must answer the
+ * browser's CORS preflight; supabase/config.toml).
+ */
+export const FUNCTIONS = ['jobs', 'import-url'];
+/**
+ * Function secrets for local test runs only (supabase/README.md "Import from a link"): the
+ * import-url function honors IMPORT_URL_TEST_HOSTS only when SUPABASE_URL is a local stack, so
+ * a hosted project ignores it anyway; a deploy still deletes it, before deploying, so that a
+ * secret set by mistake never lingers.
+ */
+export const TEST_ONLY_FUNCTION_SECRETS = ['IMPORT_URL_TEST_HOSTS'];
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 /** deploy-check: the first try at once, then after 10, 20 and 30 s (a new version spreading). */
 export const SMOKE_DELAYS_MS = [10_000, 20_000, 30_000];
@@ -89,7 +102,7 @@ const TITLES = {
   schema: 'Supabase schema (db push)',
   vault: 'Generated secrets (Supabase Vault)',
   auth: 'Auth settings',
-  functions: 'The jobs function: secrets and deploy',
+  functions: 'The jobs and import-url functions: secrets and deploy',
   shell: 'Sandbox shell',
   web: 'Web app',
   captcha: 'CAPTCHA (Turnstile)',
@@ -748,6 +761,8 @@ async function functions(ctx) {
     CAPTURE_HMAC_SECRET: ctx.secrets.capture,
     BROWSER_RENDERING_ACCOUNT_ID: s.accountId,
     BROWSER_RENDERING_API_TOKEN: s.brToken,
+    // import-url: the browser origins that may call it (CORS), the app's addresses.
+    APP_ORIGINS: ctx.urls.appOrigins.join(','),
   };
   // The list holds digests (assumed: SHA-256 hex of the value, as the dashboard shows them).
   // A digest we cannot match only means the secret is set again with the same value.
@@ -762,19 +777,30 @@ async function functions(ctx) {
   } else {
     ctx.step('Function secrets', 'unchanged', Object.keys(wanted).join(', '));
   }
-  await ctx.must(
-    ctx.cli([
-      'functions',
-      'deploy',
-      'jobs',
-      '--no-verify-jwt',
-      '--use-api',
-      '--project-ref',
-      s.ref,
-    ]),
-    'supabase functions deploy jobs',
-  );
-  ctx.step('Edge Function jobs', 'deployed', `${s.supabaseUrl}/functions/v1/jobs`);
+  const testOnly = TEST_ONLY_FUNCTION_SECRETS.filter((name) => existing.has(name));
+  if (testOnly.length) {
+    await ctx.sb.deleteSecrets(testOnly);
+    ctx.step(
+      'Test-only function secrets',
+      'deleted',
+      `${testOnly.join(', ')} (local test runs only; a hosted function ignores it)`,
+    );
+  }
+  for (const name of FUNCTIONS) {
+    await ctx.must(
+      ctx.cli([
+        'functions',
+        'deploy',
+        name,
+        '--no-verify-jwt',
+        '--use-api',
+        '--project-ref',
+        s.ref,
+      ]),
+      `supabase functions deploy ${name}`,
+    );
+    ctx.step(`Edge Function ${name}`, 'deployed', `${s.supabaseUrl}/functions/v1/${name}`);
+  }
   // Secrets the function no longer reads (import mode, M6: no package CDN, no import map).
   // Deleted only after the new function is deployed: the bundle still running before that
   // refuses to start without them, so a failed deploy must leave them in place.

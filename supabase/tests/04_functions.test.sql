@@ -87,6 +87,8 @@ select set_eq(
     'public.admin_action_log(p_limit integer)',
     -- operations health for /admin and the runbooks (T-030, 25_ops_health.test.sql)
     'public.admin_ops_health(p_grace_s integer)',
+    -- the import-url Edge Function's rate limit, called as the user (T-051, 28_import_url.test.sql)
+    'public.claim_import_url()',
     -- RLS helpers called by table, storage and realtime.messages policies
     'public.is_room_member(p_room_id uuid)',
     'public.is_battle_member(p_battle_id uuid)',

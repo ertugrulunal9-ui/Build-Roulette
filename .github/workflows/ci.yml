@@ -191,13 +191,23 @@ jobs:
         if: ${{ !cancelled() && steps.capture-integration.outcome != 'skipped' }}
         run: pnpm --filter @br/capture-worker test:function
 
+      # The import-url Edge Function (T-051) in the local Edge Runtime: sessions and the
+      # import_url rate limit through PostgREST (401, 429 after 20), the host allowlist (400),
+      # and copies of a fixture site from a static server on the runner (allowed by the
+      # test-only IMPORT_URL_TEST_HOSTS, which the function honors on a local stack only).
+      - name: Run the import-url function integration tests
+        if: ${{ !cancelled() && steps.capture-integration.outcome != 'skipped' }}
+        run: pnpm --filter @br/site test:function
+
       # The solo game end to end on the same stack: the static export and its link-preview
       # Worker (pnpm build) served by `wrangler dev` like Cloudflare serves the Worker with
       # static assets (apps/web/e2e/app-server.ts),
       # the sandbox shell with the capture gate and the jobs Edge Function started by pg_cron,
       # rendering through the Browser Rendering stand-in (apps/web/scripts/solo-services.ts).
       # Players import fixture sites (apps/web/e2e/sites.ts): ship path to the permanent page,
-      # the auto-ship path, a reload restoring the import, and Storage down mid-BUILD. Same
+      # the auto-ship path, a reload restoring the import, and Storage down mid-BUILD. Links
+      # (T-052, solo-link.spec.ts) go through the import-url Edge Function, which copies from
+      # a local fixture host (e2e/link-fixture.ts) allowed by IMPORT_URL_TEST_HOSTS. Same
       # Chromium as above (Playwright 1.56.1). Needs psql.
       - name: Run the solo game e2e
         if: ${{ !cancelled() && steps.capture-integration.outcome != 'skipped' }}

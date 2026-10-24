@@ -109,6 +109,19 @@ Where the implementation differs from or adds to the plan above:
   (`….html`, `…/`, so a hand-written multi-page site comes along), `<base href>`, `srcset` /
   `imagesrcset`, `poster`, `style` attributes, inline module scripts, `twitter:image`,
   `new URL("…", import.meta.url)`, and manifest `screenshots`.
+- **Where a file is stored.** A reference is fetched where a browser on the host finds it
+  (against the page's `<base href>` and the referencing file's address after redirects), but
+  stored where the copied site asks for it in the sandbox: relative to the referencing file's
+  stored path, without the base. The sandbox ignores `<base>` (the site CSP has
+  `base-uri 'none'`, docs/03 §3.5), so `<base href="/static/">` + `href="a.css"` loads `/a.css`
+  there, and the copy stores the host's `/static/a.css` as `a.css`. This also copies a deep link
+  of a single-page app with `<base href="/">` (Angular's default; `/admin/users` loads
+  `/main.js` on the host and `main.js` next to the page in the sandbox), and a file referenced
+  by a redirected file lands next to the redirected file's stored path. The page's HTML is
+  stored unchanged. A dropped folder whose page has a `<base href>` other than its own folder
+  misses those files in the sandbox, for the same reason (the import does not rewrite pages).
+- **Frames.** `<iframe src>` pages are copied, but the site CSP has no `frame-src`
+  (`default-src 'none'`), so a site's own frames do not load in the sandbox.
 - **Missing files.** A 404 (any 4xx) for a file the page references is skipped and counted in
   `skipped` instead of failing the copy (a missing favicon should not block an import); a 5xx
   fails it (`url-unreachable`). A guess that hangs or fails is skipped. A non-HTML path that a

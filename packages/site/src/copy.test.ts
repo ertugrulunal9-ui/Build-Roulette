@@ -128,17 +128,52 @@ describe('copySite: a plain HTML site', () => {
     expect(text(result, 'index.html')).not.toContain('Projects');
   });
 
-  it('honors <base href>', async () => {
-    const { result } = await copy(
+  it('fetches against <base href>, and stores where the sandbox (which ignores it) asks', async () => {
+    const { result, host } = await copy(
       {
         [GH]: {
-          '/': '<html><head><base href="/static/"><link rel="stylesheet" href="a.css"></head></html>',
-          '/static/a.css': 'a{}',
+          '/': `<html><head><base href="/static/"><link rel="stylesheet" href="a.css">
+<script type="module" src="/static/main.js"></script></head></html>`,
+          '/static/a.css': 'body{background:url(img/bg.png)}',
+          '/static/img/bg.png': 'png',
+          '/static/main.js': 'import("./chunk.js")',
+          '/static/chunk.js': 'chunk',
         },
       },
       `${GH}/`,
     );
-    expect(files(result)).toEqual(['index.html', 'static/a.css']);
+    expect(host.calls).toContain(`${GH}/static/a.css`);
+    expect(host.calls).toContain(`${GH}/static/img/bg.png`);
+    // The sandbox asks for /a.css, and then for img/bg.png next to it; a root-relative
+    // reference (and what it imports) is the same path either way.
+    expect(files(result)).toEqual([
+      'a.css',
+      'img/bg.png',
+      'index.html',
+      'static/chunk.js',
+      'static/main.js',
+    ]);
+    expect(text(result, 'a.css')).toBe('body{background:url(img/bg.png)}');
+    expect(result.ok && result.site.skipped).toBe(0);
+  });
+
+  it('copies a deep link of a single-page app with <base href="/"> from the host root', async () => {
+    // Angular's default: relative script paths and <base href="/">, so a page at
+    // /admin/users loads /main.js on the host, and main.js next to the page in the sandbox.
+    const { result, host } = await copy(
+      {
+        [GH]: {
+          '/': '<html><head><base href="/"><script type="module" src="main.js"></script></head></html>',
+          '/main.js': 'app',
+        },
+      },
+      `${GH}/admin/users`,
+      { spa: true },
+    );
+    expect(result.ok && result.site.root).toBe(`${GH}/admin/`);
+    expect(files(result)).toEqual(['index.html', 'main.js']);
+    expect(text(result, 'main.js')).toBe('app');
+    expect(host.calls).toContain(`${GH}/main.js`);
   });
 
   it('decodes stored paths the way the site worker looks them up', async () => {
@@ -240,6 +275,24 @@ describe('copySite: redirects', () => {
     expect(text(result, 'b.png')).toBe('b');
     expect(result.ok && result.site.skipped).toBe(1);
     expect(host.calls.some((c) => c.includes('cdn.example.com'))).toBe(false);
+  });
+
+  it('stores what a redirected file references next to where the file is stored', async () => {
+    const { result, host } = await copy(
+      {
+        [APP]: {
+          '/': '<html><link rel="stylesheet" href="/b.css"></html>',
+          '/b.css': { status: 302, headers: { location: '/real/b.css' } },
+          '/real/b.css': 'a{background:url(x.png)}',
+          '/real/x.png': 'x',
+        },
+      },
+      `${APP}/`,
+    );
+    // The sandbox serves b.css at /b.css, so it asks for /x.png.
+    expect(files(result)).toEqual(['b.css', 'index.html', 'x.png']);
+    expect(text(result, 'x.png')).toBe('x');
+    expect(host.calls).toContain(`${APP}/real/x.png`);
   });
 });
 

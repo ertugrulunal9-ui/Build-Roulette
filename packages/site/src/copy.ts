@@ -10,7 +10,10 @@
  * 2. Breadth-first over what the files reference (`discover.ts`), same origin and inside the
  *    root only: cross-origin URLs (CDNs, fonts, APIs) are left alone, the sandbox loads them
  *    itself. Query strings are dropped from stored paths (`app.js?v=3` → `app.js`), and each
- *    stored path is fetched once.
+ *    stored path is fetched once. A reference is fetched where a browser on the host finds it
+ *    (against the document's `<base href>` and the file's address after redirects), and stored
+ *    where the copied site will ask for it in the sandbox: against the file's own stored path,
+ *    without the base, which the sandbox ignores (its site CSP has `base-uri 'none'`).
  * 3. Limits: `maxFiles` files and `maxBytes` bytes (the pack limits), `concurrency` requests at
  *    a time, `requestTimeoutMs` per request (redirects included), `totalTimeoutMs` for the whole
  *    copy. The copy stops at the first limit it reaches.
@@ -116,7 +119,10 @@ class Skip extends Error {
 }
 
 interface Task {
+  /** Where the file is fetched. */
   url: URL;
+  /** Where the copied site asks for it in the sandbox (on the site's origin): `path`'s address. */
+  at: URL;
   path: string;
   kind: 'sure' | 'guess';
   as?: 'page' | 'manifest';
@@ -355,32 +361,47 @@ export async function copySite(link: string | URL, opts: CopyOptions): Promise<C
     const queue: Task[] = [];
     const rootUrl = new URL(root, origin);
 
-    const enqueue = (refs: readonly FoundRef[], fileUrl: URL, base: URL | null) => {
+    /**
+     * `fileUrl`: where the referencing file was fetched (after redirects); `fileAt`: its
+     * address in the sandbox; `base`: its `<base href>` on the host. See the file comment.
+     */
+    const enqueue = (refs: readonly FoundRef[], fileUrl: URL, fileAt: URL, base: URL | null) => {
       for (const r of refs) {
         let url: URL;
+        let at: URL;
         try {
           url = new URL(r.ref, r.base === 'root' ? rootUrl : (base ?? fileUrl));
+          at = new URL(r.ref, r.base === 'root' ? rootUrl : fileAt);
         } catch {
           continue;
         }
         if (url.origin !== origin) continue; // cross-origin: the sandbox loads it itself
         url.hash = '';
-        const path = sitePathOf(url, root);
+        at.hash = '';
+        const path = sitePathOf(at, root);
         if (path === null) {
           if (r.kind === 'sure') skipped++;
           continue;
         }
         if (queued.has(path)) continue;
         queued.add(path);
-        queue.push(r.as ? { url, path, kind: r.kind, as: r.as } : { url, path, kind: r.kind });
+        queue.push(
+          r.as ? { url, at, path, kind: r.kind, as: r.as } : { url, at, path, kind: r.kind },
+        );
       }
     };
 
     const decoder = new TextDecoder();
-    const discover = (path: string, data: Uint8Array, url: URL, as?: 'page' | 'manifest') => {
+    const discover = (
+      path: string,
+      data: Uint8Array,
+      url: URL,
+      at: URL,
+      as?: 'page' | 'manifest',
+    ) => {
       const ext = path.slice(path.lastIndexOf('.') + 1).toLowerCase();
       if (as === 'manifest' || ext === 'webmanifest') {
-        enqueue(discoverManifest(decoder.decode(data)), url, null);
+        enqueue(discoverManifest(decoder.decode(data)), url, at, null);
       } else if (ext === 'html' || ext === 'htm') {
         const { refs, base } = discoverHtml(decoder.decode(data));
         let baseUrl: URL | null = null;
@@ -391,14 +412,14 @@ export async function copySite(link: string | URL, opts: CopyOptions): Promise<C
             baseUrl = null;
           }
         }
-        enqueue(refs, url, baseUrl);
+        enqueue(refs, url, at, baseUrl);
       } else if (ext === 'css') {
-        enqueue(discoverCss(decoder.decode(data)), url, null);
+        enqueue(discoverCss(decoder.decode(data)), url, at, null);
       } else if (ext === 'js' || ext === 'mjs') {
-        enqueue(discoverJs(decoder.decode(data)), url, null);
+        enqueue(discoverJs(decoder.decode(data)), url, at, null);
       }
     };
-    discover(SITE_ENTRY, entry.bytes, entry.url);
+    discover(SITE_ENTRY, entry.bytes, entry.url, new URL(SITE_ENTRY, rootUrl));
 
     const fetchFile = async (t: Task) => {
       // A file redirected off the site is not a file of the site.
@@ -432,7 +453,7 @@ export async function copySite(link: string | URL, opts: CopyOptions): Promise<C
           throw new Skip(false);
         }
         store(t.path, got.bytes);
-        discover(t.path, got.bytes, got.url, t.as);
+        discover(t.path, got.bytes, got.url, t.at, t.as);
       } catch (e) {
         if (e instanceof Skip) {
           if (e.counted) skipped++;

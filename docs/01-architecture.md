@@ -29,10 +29,12 @@ These decide most of the trade-offs below.
 ```mermaid
 flowchart LR
   subgraph Local["Player's computer"]
-    TOOL["Own AI tool + build<br/>(Cursor, Claude Code, Lovable, …)"]
+    TOOL["Own AI tool + build<br/>(Cursor, Claude Code, …)"]
     DIST[("dist/ folder<br/>or .zip")]
     TOOL --> DIST
   end
+
+  PUB["Published site (M7)<br/>web builder's static host<br/>*.lovable.app, *.vercel.app, …"]
 
   subgraph Player["Player's browser"]
     UI["Next.js app UI<br/>(app origin)"]
@@ -56,6 +58,7 @@ flowchart LR
     RT["Realtime<br/>Broadcast + Presence"]
     ST[("Storage<br/>ephemeral-builds (private, TTL)<br/>screenshots (public)")]
     EF["Edge Function jobs<br/>capture / destroy / takedown"]
+    IU["Edge Function import-url<br/>copies a published site<br/>into a site pack (M7)"]
     CRON["pg_cron<br/>deadline + TTL sweeps"]
   end
 
@@ -67,6 +70,8 @@ flowchart LR
   UI -->|"RPC (supabase-js)"| PG
   UI <-->|"WebSocket"| RT
   UI -->|"upload site.bin, thumb.webp"| ST
+  IMP -->|"paste a link"| IU
+  IU -->|"fetch (allowlisted hosts)"| PUB
   UI --> NX
   IF -->|"load shell + site worker"| SB
   PG -->|"broadcast on change"| RT
@@ -98,7 +103,7 @@ static site ([08-free-tier](08-free-tier.md) §2).
 | Route | Rendering | Purpose |
 |---|---|---|
 | `/` | static file + client | Landing page, "Create room", "Join with code" |
-| `/play`, `/try` | static file + client-heavy | Solo game; `/try` imports a built site and runs it without a game (the practice step; `/playground`, the old editor page, redirects to it) |
+| `/play`, `/try` | static file + client-heavy | Solo game; `/try` imports a built site (or a published link) and runs it without a game (the practice step; `/playground`, the old editor page, redirects to it) |
 | `/r/[code]` | one static shell for every room (a `_redirects` rewrite `/r/:code → /r`; the code is read in the browser) | Room: lobby, spin, BUILD (import), reveal, vote, results |
 | `/battles/[id]` | one static shell (rewrite `/battles/:id → /battles`); `get_public_battle` in the browser on every load | Permanent results page (shareable). Reads only persisted data. The Worker (T-038; a Pages Function until T-043) serves the shell with each battle's own `og:*` tags and a real 404 for an unknown battle |
 | `/u/[id]` | one static shell (rewrite `/u/:id → /u`); `get_player_history` in the browser | Player history (builds, awards), paginated in the query string |
@@ -113,7 +118,9 @@ headers, a year's cache for hashed assets) are written at build time
 Game logic lives in Postgres functions, so there is a single transactional authority, and the
 web app has no server to keep thin. Anything that needs a secret the browser can't hold
 lives elsewhere: Turnstile verification in Supabase Auth, screenshots and destroys in the
-capture worker. Per-battle link previews will be the one piece of code at the edge (T-038).
+capture worker. The same goes for what a browser may not do: reading another site's files
+(CORS) for an import from a link happens in the `import-url` Edge Function (M7). Per-battle
+link previews are the one piece of code at the edge (T-038).
 
 ### Supabase
 - **Auth:** anonymous sign-ins, protected by Cloudflare Turnstile. A player can link GitHub
@@ -139,9 +146,17 @@ capture worker. Per-battle link previews will be the one piece of code at the ed
     than 24 h.
   - `screenshots` is a public bucket with unguessable paths `{battle_id}/{build_id}.webp`.
     It is written only by the service role. This is the only permanent binary data.
-- **Edge Functions:** the `jobs` function (T-034) takes capture, destroy and takedown jobs
-  from the Postgres `jobs` table. pg_cron calls it through `pg_net` every minute while a job
-  is due; failed jobs are retried with backoff.
+- **Edge Functions:**
+  - `jobs` (T-034) takes capture, destroy and takedown jobs from the Postgres `jobs` table.
+    pg_cron calls it through `pg_net` every minute while a job is due; failed jobs are retried
+    with backoff.
+  - `import-url` (T-051, M7, [10-url-import](10-url-import.md)) copies a player's published
+    site from its link into a site pack and returns it; it stores nothing. Only signed-in users
+    (anonymous sessions too) may call it (in a browser, only from the app's origins), at most
+    20 links per 10 minutes (`claim_import_url()`). It fetches only `https:` subdomains of an
+    allowlist of static hosts (`*.lovable.app`, `*.netlify.app`, `*.vercel.app`,
+    `*.github.io`, …), re-checks every redirect and file, and stops at the pack limits (5 MB,
+    300 files) and 45 s.
 - **pg_cron:**
   - `sweep_deadlines()` every few seconds advances any battle whose `phase_ends_at` has
     passed (this is the backstop, because clients normally nudge first).
@@ -196,7 +211,7 @@ results or votes.
 | **Timers** | Shows countdown using `phase_ends_at` and the measured clock offset. Nudges `advance_battle` when the deadline passes. | Enforces deadlines in RPC guards (`now()` checks) and via the pg_cron sweep | — |
 | **Challenge spin** | Plays the spin animation, which lands on the server's result | Picks the cards (weighted random, server-side), writes the `challenges` row | — |
 | **Building** | Not in the game: the player's own computer and AI tools, then their project's build (`npm run build`) | — | — |
-| **Import** | Reads the dropped `dist/` folder or `.zip`, finds the site root, refuses unbuilt source with a hint, packs it (`@br/site`, ≤ 5 MB, ≤ 300 files) | — | — |
+| **Import** | Reads the dropped `dist/` folder or `.zip`, finds the site root, refuses unbuilt source with a hint, packs it (`@br/site`, ≤ 5 MB, ≤ 300 files). For a link, sends it to `import-url` and takes the pack it returns | `import-url` (M7): copies a published site on an allowlisted host into a site pack (auth, rate limit, same limits); never runs it | — |
 | **Import persistence** | IndexedDB (the last import, survives refresh) | `autosave/site.bin` on every import (survives device loss; the deadline auto-ships it) | — |
 | **Executing user code** | **Never** | Only in Browser Rendering for screenshots (isolated, vendor-managed) | **Always.** The site worker serves the site; the shell captures console and errors and sends heartbeats |
 | **Ship** | Uploads `site.bin` (the last import) and `thumb.webp`, calls `ship_build` | Storage RLS allows uploads only before the deadline. `ship_build` checks phase, deadline and that `site.bin` exists, then stamps `shipped_at` with `now()` | — |
@@ -226,7 +241,9 @@ stage is a drop zone plus the preview.
 2. The player builds with their own tool and runs their project's build.
 3. They drop the `dist/` folder (or a `.zip`) on the BUILD stage. The app normalizes the
    paths, finds the site root, refuses unbuilt source with a hint (docs/09 §9.2) and packs
-   the site into one `site.bin`.
+   the site into one `site.bin`. Or (M7) they publish it from their web builder and paste
+   the link: the `import-url` Edge Function copies the published site into the same pack
+   (docs/10 §10.2–§10.3).
 4. The preview runs it at once: the shell hands the files to the site worker and opens a
    fresh frame on `/?__br_site=<id>`. The pack goes up as `autosave/site.bin`, the room sees
    `{imported, imports}` in Presence. Importing again replaces it.
@@ -273,7 +290,7 @@ sequenceDiagram
 
 | Decision | Choice | Rejected alternatives and why |
 |---|---|---|
-| Where players build | On their own computer with their own AI tools; the game imports the built static site (M6, user decision 2026-10-16, [09-import-mode](09-import-mode.md)) | **The in-browser editor + bundler + package CDN** (M1–M5: CodeMirror 6, esbuild-wasm, `@br/pkg-cdn` / esm.sh): vibe coders build with their own agents, and the way each player drives their tool is the game. The editor, the bundler and the CDN were removed in M6. **Importing from a GitHub repository or a published URL**: later, not in M6 (§9.7). |
+| Where players build | On their own computer with their own AI tools; the game imports the built static site (M6, user decision 2026-10-16, [09-import-mode](09-import-mode.md)) | **The in-browser editor + bundler + package CDN** (M1–M5: CodeMirror 6, esbuild-wasm, `@br/pkg-cdn` / esm.sh): vibe coders build with their own agents, and the way each player drives their tool is the game. The editor, the bundler and the CDN were removed in M6. **Importing from a GitHub repository**: later (a repository holds source, and building it needs a build server). A **published link** is imported since M7 ([10-url-import](10-url-import.md)). |
 | Sandbox runtime | A cross-site iframe whose shell serves the imported site from a Service Worker (shell v2) | **A blob URL or a `document.write` document**: cannot serve a multi-file site with root-relative URLs, lazy chunks and a client-side router. **WebContainers**: a commercial license, COOP/COEP for the whole app, and a static site needs no Node. **Sandpack**: its preview lives on a third-party origin; we want control over the shell (heartbeat, capture mode, storage wipe). See [03-sandbox](03-sandbox.md) and [09-import-mode](09-import-mode.md) §9.3. |
 | Game authority | Postgres RPCs with a version CAS | **A Node game server**: an always-on process we would have to scale and keep available. **Next.js API routes**: no transactional gain, and adds an extra hop. |
 | Realtime | Broadcast from DB triggers + Presence | **Postgres Changes**: RLS is evaluated per subscriber per change and doesn't scale as well. **Self-hosted WebSockets**: we'd have to operate them. |
@@ -310,13 +327,14 @@ apps/
 packages/
   runtime/             PreviewHandle: the cross-site preview iframe, bridge and watchdog
   protocol/            Typed postMessage protocol shared by web ↔ shell (zod schemas, versioned)
-  site/                The site pack (pack/unpack) and the import of a built site (folder or .zip)
+  site/                The site pack (pack/unpack), the import of a built site (folder or .zip), the copier of a published site and the import-url function's code
   game/                Shared types and pure helpers: phase metadata, countdown math, vote rules
   telemetry/           Error and analytics reporting with scrubbing
   config/              Shared lint and TypeScript settings
 supabase/
   migrations/          SQL DDL, RLS, RPCs, triggers, cron
   functions/jobs/      The jobs Edge Function (screenshots, destroys, takedowns)
+  functions/import-url/ The import-url Edge Function (a published site → a site pack; bundled from @br/site)
   tests/               pgTAP tests for RPC guards and transitions
 tools/loadtest/        The load generator (scripted players)
 docs/                  These design docs

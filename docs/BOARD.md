@@ -2,7 +2,7 @@
 
 Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 
-## Current milestone: M7 Import from a published link ([docs/10](10-url-import.md)) — all tasks merged; **deployed 2026-10-22** (Deploy run 7 from `claude/intelligent-maxwell-ddael3`: migration 20261021120000, `import-url` function with `APP_ORIGINS`, shell and app; deploy-check 34 passed incl. the import-url 401 and preflight checks). Open: a real published link imported in production
+## Current milestone: M7 Import from a published link ([docs/10](10-url-import.md)) — all tasks merged; **deployed 2026-10-22** (Deploy run 7 from `claude/intelligent-maxwell-ddael3`: migration 20261021120000, `import-url` function with `APP_ORIGINS`, shell and app; deploy-check 34 passed incl. the import-url 401 and preflight checks). **Merged** into `claude/build-roulette-architecture-9dl8zr` on 2026-10-24 (PR #2), so the default branch matches what is deployed. Open: a real published link imported in production. Next: M8 Polish and launch ([docs/06](06-roadmap.md))
 
 **Hub decision (2026-10-21, the user left the next step to us):** players using web builders (Lovable, Bolt, v0, Replit) paste the link of their published site instead of running `npm run build` locally.
 
@@ -81,16 +81,17 @@ Step-by-step: **[DEPLOY.md](../DEPLOY.md)** (free plans; T-036).
 
 | Item | Needed for |
 |---|---|
-| **Cloudflare, free plan.** Two Pages projects (`build-roulette-web`, `build-roulette-sandbox`) and a Browser Rendering API token. Turnstile is optional (DEPLOY.md §2, §4). | App, sandbox shell, screenshots |
-| **Supabase project, Free plan.** `db push`; Auth settings (anonymous sign-ins, URL configuration); the `jobs` function and its secrets; the two Vault secrets (DEPLOY.md §3). | Database, auth, storage, Realtime, jobs |
+| **Cloudflare, free plan** (in place since Deploy run 3). Two accounts, each with a workers.dev subdomain and a Workers deploy token: A for the app's Worker (`build-roulette-web`), B for the sandbox shell's (`build-roulette-sandbox`), so the two are different sites (T-043); a Browser Rendering API token on A. Turnstile is optional (DEPLOY.md §2, §4). | App, sandbox shell, screenshots |
+| **Supabase project, Free plan** (in place since Deploy run 2). `db push`; Auth settings (anonymous sign-ins, URL configuration); the `jobs` and `import-url` functions and their secrets (the deploy script sets `APP_ORIGINS`); the two Vault secrets (DEPLOY.md §3). | Database, auth, storage, Realtime, jobs, imports from a link |
 | **GitHub:** the variable `SUPABASE_URL` and the secret `SUPABASE_ANON_KEY` for the daily keep-alive (DEPLOY.md §5). The repository is public, so Actions minutes are unlimited and CI's nightly run can stay. | Keeping the Free project awake (7-day pause) |
 | **First admin(s):** Auth → Add user, then the SQL insert (DEPLOY.md §3.5). | Moderation (`/admin`) |
 | Optional: Turnstile keys, with CAPTCHA turned on in Supabase after the app is built with the site key. | Bot protection |
 | Optional: Sentry (`NEXT_PUBLIC_SENTRY_DSN`) and PostHog at the web build. The jobs function logs to Supabase. | Errors, analytics |
 | Optional: Realtime authorization pool to ~10, if the Free dashboard allows it (unconfirmed). The T-029 join stagger works without it. | Join latency |
-| Optional: one domain. The app runs on `*.pages.dev`. | Public launch |
+| Optional: one domain. The app runs on `build-roulette-web.<subdomain A>.workers.dev`. | Public launch |
 | **Watch, then decide:** Supabase Pro ($25) when the storage meter reaches 80 % (~2,250 battles; screenshots are permanent), egress passes ~4 GB/month, Realtime messages pass ~1.6M/month, or more than ~8 rooms are regularly in BUILD at once (docs/07 §7.8; Health shows the meters). The spend-cap question applies only on Pro. | Growth |
 | **M5 exit criterion:** rehearse every runbook once (DEPLOY.md §7 has a drill for each). | M5 sign-off |
+| **M7 exit criterion:** import one real published link (e.g. a `*.lovable.app` or `*.netlify.app` site) in a battle on the deployed copy, through SHIP to the screenshot (the development container cannot reach production). | M7 sign-off |
 | Later: a second usercontent domain + PSL entry (F1). | Per-build isolation |
 
 **User decisions (2026-10-04):** option A, so everything is hosted on Cloudflare and Vercel is dropped. The sandbox starts on `*.pages.dev` (already on the PSL), so there is no second domain at launch. Package CDN runs on Cloudflare Containers. Continue M2 locally.

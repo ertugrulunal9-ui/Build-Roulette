@@ -1215,7 +1215,7 @@ egress row.
 | Realtime Presence 20 messages/s | confirmed | 1.7–2.1/s per 6-player room in BUILD | ~10 rooms in BUILD at once ≈ 11,000 a month at a peak factor of 4 | measured: 10 rooms × 6 players on the Free quotas, 0 channels closed (below) |
 | Realtime connections 200 | confirmed | 6 (one socket per player) | 33 battles at once ≈ 18,900 a month at a peak factor of 4 | |
 | Realtime messages/s 100, joins/s 100 | confirmed | | not reached | the compressed run peaked at 144 inbound/s across 60 clients, no closes |
-| Edge Function invocations 500,000 | secondary | 2–4 runs | never | pg_cron starts the `jobs` function at most once a minute: ≤ 43,200 a month |
+| Edge Function invocations 500,000 | secondary | 2–4 runs, plus up to 2 per link import (M7) | never | pg_cron starts the `jobs` function at most once a minute: ≤ 43,200 a month; the `import-url` function runs once per link import, plus a CORS preflight (cached 10 min), and each player has at most 20 links per 10 minutes (docs/10 §10.3) |
 | MAU 50,000 | secondary | 2 new players | ~25,000 | 3 battles per player a month (docs/07 §7.4.2); anonymous sign-ins count |
 | Workers Free 100,000 Worker requests/day (Cloudflare; Pages Functions before T-043) | confirmed (§3.5) | one per results-page view | not reached | since T-043: Cloudflare's 429 page on `/battles/*` until 00:00 UTC (§2.7) |
 

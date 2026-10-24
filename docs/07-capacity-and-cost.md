@@ -656,7 +656,7 @@ the pricing page).
 | Database | 500 MB, then read-only (confirmed) | ~42 KB kept (55 KB before the T-036 sweep) | ~10,000 battles in total (~7,700 without the sweep); ~10 months at 1,000 a month | over time, after storage |
 | Realtime connections | 200 (confirmed) | 6 | 33 battles at once ≈ 18,900 battles/month | no |
 | MAU | 50,000 (secondary) | 2 new players (3 battles per player a month) | ~25,000 battles/month | no |
-| Edge Function invocations | 500,000/month (secondary) | 2–4 runs of `jobs` | ≤ 43,200/month by construction | never |
+| Edge Function invocations | 500,000/month (secondary) | 2–4 runs of `jobs`; since M7, up to 2 per link import (the request and its CORS preflight, cached 10 min) | `jobs` ≤ 43,200/month by construction; the rest leaves room for ~200,000 link imports a month (each player at most 20 per 10 min) | never at these volumes |
 | Pages Functions (Cloudflare) | 100,000 requests/day (confirmed) | one per results-page view | ~3 M views/month | no (fails open) |
 | Project pause | 7 days without user activity (confirmed) | — | the daily keep-alive workflow (docs/08 §6.2) | only if the keep-alive stops |
 

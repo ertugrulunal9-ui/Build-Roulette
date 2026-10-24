@@ -5,15 +5,17 @@ Each milestone ends with something you can play and a list of exit criteria. Not
 later milestone starts until the current milestone's exit criteria are met.
 
 ```
-M0 Foundations ─► M1 Sandbox spike ─► M2 Solo loop + capture/destroy ─► M3 Rooms + state machine ─► M4 Reveal/vote/results ─► M5 Hardening ─► M6 Import mode ─► M7 Polish + launch
-   ~1 wk            ~2 wk                 ~2 wk                              ~2 wk                       ~2 wk                    ~2 wk           ~1 wk             ~2 wk
+M0 Foundations ─► M1 Sandbox spike ─► M2 Solo loop + capture/destroy ─► M3 Rooms + state machine ─► M4 Reveal/vote/results ─► M5 Hardening ─► M6 Import mode ─► M7 Link import ─► M8 Polish + launch
+   ~1 wk            ~2 wk                 ~2 wk                              ~2 wk                       ~2 wk                    ~2 wk           ~1 wk             ~1 wk             ~2 wk
 ```
-(Rough effort for one experienced engineer, about 14 weeks in total. These are estimates, not dates.)
+(Rough effort for one experienced engineer, about 15 weeks in total. These are estimates, not dates.)
 
 M6 was "Polish and launch" until the user decision of 2026-10-16: players build with their own
 tools and import the built site, so the in-browser editor goes. Import mode became M6, and
 the polish moved to M7. M1's editor, bundler and package CDN scope below is history: M6
-removed it ([09-import-mode](09-import-mode.md)).
+removed it ([09-import-mode](09-import-mode.md)). On 2026-10-21 the user left the next step
+to the hub, which chose the import from a published link for players of web builders
+([10-url-import](10-url-import.md)): that became M7, and the polish moved to M8.
 
 ---
 
@@ -129,7 +131,28 @@ there's a written cost per 1,000 battles. Every runbook has been rehearsed once 
 - On the deployed copy, Browser Rendering captures an imported site through the site worker
   (otherwise the thumbnail fallback is documented as the expected result)
 
-### M7: Polish and launch
+### M7: Import from a published link (lowers R12 for web builders)
+**Scope** ([10-url-import](10-url-import.md); tasks T-051–T-052 on the [board](BOARD.md))
+- `copySite` in `@br/site`: crawl a published static site into the same site pack as a dropped
+  folder (same origin only, the pack limits, request and total timeouts, redirects re-checked);
+  the host allowlist `checkPublicUrl` (T-051)
+- The `import-url` Edge Function: signed-in users only (anonymous sessions too), the rate limit
+  `import_url` (20 per 10 minutes, `claim_import_url()`), CORS for the app's origins; the deploy
+  script deploys it and deploy-check checks it (T-051)
+- The app: "…or paste the link of your published site" in BUILD and `/try`, every error worded
+  in English and Turkish, `/try` signs in anonymously only for a link, the guide's web-builder
+  tab (T-052)
+
+**Exit criteria**
+- A site published on an allowed host runs from its link in the preview, in REVEAL and in the
+  screenshot, like a dropped folder
+- A link that cannot be copied (a host that is not allowed, a private site, not a web page, too
+  large) is refused with a message that says what to do
+- The link import → SHIP → results passes the solo e2e against a local static host; CI and the
+  deploy scripts match the code
+- On the deployed copy, a real published link is imported
+
+### M8: Polish and launch
 **Scope**
 - Sounds and haptics for spin, ship and destroy; a first-time tooltip tour beyond M6's welcome screen
 - A curated deck with weights and tag-based combo filtering
@@ -141,8 +164,8 @@ there's a written cost per 1,000 battles. Every runbook has been rehearsed once 
 ---
 
 ## Later (explicitly not v1)
-- Importing from a GitHub repository or a published URL (for web builders such as Lovable,
-  Bolt and v0, which give source code, not a build; docs/09 §9.7)
+- Importing from a GitHub repository (a repository holds source, and building it needs a build
+  server the free plan does not have; the published link came in M7, docs/10)
 - **Full-stack mode** for builds that need a backend (WebContainers or a hosted runtime)
 - Public matchmaking, tournaments, daily challenge with a global leaderboard
 - Spectator mode at scale (streamers): a read-only Realtime fan-out channel

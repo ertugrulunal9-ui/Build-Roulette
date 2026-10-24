@@ -218,8 +218,11 @@ server (an API route, server-side rendering).
   `npm run build` (or ask your AI tool to build it) and drop the `dist` folder"; `.next/`
   without `out/` → set `output: 'export'`. It prefers known output folders (`dist/`,
   `build/`, `out/`, …) when the whole project is dropped (docs/09 §9.2).
-- `/try` lets a player check an import before a battle; the onboarding (T-049, planned) will explain
-  the four steps and give per-tool tips.
+- `/try` lets a player check an import before a battle; the onboarding (T-049) explains the
+  four steps and gives per-tool tips.
+- Players of web builders (Lovable, Bolt, v0, Replit) need no local build at all since M7: they
+  publish the site and paste its link, and the `import-url` Edge Function copies it
+  ([10-url-import](10-url-import.md)).
 - A site that needs a server runs as far as its static part goes; its requests to its own
   API fail inside the preview only.
 

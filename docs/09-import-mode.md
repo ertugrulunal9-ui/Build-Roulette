@@ -177,7 +177,9 @@ the site** as if it were a static host.
   (a language picker, remembered per browser). Dynamic text from the server (cards, names)
   is not translated.
 - **Later, not in M6:** importing from a GitHub repository or a published URL (useful for
-  web builders such as Lovable, Bolt and v0, which give source code, not a build).
+  web builders such as Lovable, Bolt and v0, which give source code, not a build). The
+  published link came in M7 ([10-url-import](10-url-import.md)); a GitHub repository is still
+  later.
 
 ## 9.8 Tasks
 

@@ -10,7 +10,10 @@
  * 2. Breadth-first over what the files reference (`discover.ts`), same origin and inside the
  *    root only: cross-origin URLs (CDNs, fonts, APIs) are left alone, the sandbox loads them
  *    itself. Query strings are dropped from stored paths (`app.js?v=3` → `app.js`), and each
- *    stored path is fetched once.
+ *    stored path is fetched once. A reference is fetched from where the host resolves it and
+ *    stored where the sandbox will request it, which differ after a `<base href>` (the
+ *    sandbox's CSP has `base-uri 'none'`, so the browser ignores it) or a redirect (the sandbox
+ *    serves each file at its stored path): see `Task.at`.
  * 3. Limits: `maxFiles` files and `maxBytes` bytes (the pack limits), `concurrency` requests at
  *    a time, `requestTimeoutMs` per request (redirects included), `totalTimeoutMs` for the whole
  *    copy. The copy stops at the first limit it reaches.
@@ -116,7 +119,13 @@ class Skip extends Error {
 }
 
 interface Task {
+  /** Where the file is fetched from. */
   url: URL;
+  /**
+   * Where the sandbox requests it, as a URL on the site's origin (`path` is its path inside the
+   * root). The file's own references are stored relative to it.
+   */
+  at: URL;
   path: string;
   kind: 'sure' | 'guess';
   as?: 'page' | 'manifest';
@@ -355,33 +364,51 @@ export async function copySite(link: string | URL, opts: CopyOptions): Promise<C
     const queue: Task[] = [];
     const rootUrl = new URL(root, origin);
 
-    const enqueue = (refs: readonly FoundRef[], fileUrl: URL, base: URL | null) => {
+    /**
+     * `fileUrl`: where the file was fetched from (after redirects), `fileAt`: where the sandbox
+     * serves it. A reference is fetched from where the host resolves it (against the page's
+     * `<base href>`, if any) and stored where the sandbox resolves it (against `fileAt`).
+     */
+    const enqueue = (refs: readonly FoundRef[], fileUrl: URL, fileAt: URL, base: URL | null) => {
       for (const r of refs) {
         let url: URL;
+        let at: URL;
         try {
           url = new URL(r.ref, r.base === 'root' ? rootUrl : (base ?? fileUrl));
+          at = new URL(r.ref, r.base === 'root' ? rootUrl : fileAt);
         } catch {
           continue;
         }
-        if (url.origin !== origin) continue; // cross-origin: the sandbox loads it itself
+        if (at.origin !== origin) continue; // cross-origin: the sandbox loads it itself
         url.hash = '';
-        const path = sitePathOf(url, root);
+        at.hash = '';
+        // A `<base href>` on another origin: the sandbox requests the file here, but it is not
+        // the site's to copy.
+        const path = url.origin === origin ? sitePathOf(at, root) : null;
         if (path === null) {
           if (r.kind === 'sure') skipped++;
           continue;
         }
         if (queued.has(path)) continue;
         queued.add(path);
-        queue.push(r.as ? { url, path, kind: r.kind, as: r.as } : { url, path, kind: r.kind });
+        const t: Task = { url, at, path, kind: r.kind };
+        queue.push(r.as ? { ...t, as: r.as } : t);
       }
     };
 
     const decoder = new TextDecoder();
-    const discover = (path: string, data: Uint8Array, url: URL, as?: 'page' | 'manifest') => {
+    const discover = (
+      path: string,
+      data: Uint8Array,
+      url: URL,
+      at: URL,
+      as?: 'page' | 'manifest',
+    ) => {
       const ext = path.slice(path.lastIndexOf('.') + 1).toLowerCase();
       if (as === 'manifest' || ext === 'webmanifest') {
-        enqueue(discoverManifest(decoder.decode(data)), url, null);
+        enqueue(discoverManifest(decoder.decode(data)), url, at, null);
       } else if (ext === 'html' || ext === 'htm') {
+        // The `<base>` stays in the stored page (scripts read it); only fetching follows it.
         const { refs, base } = discoverHtml(decoder.decode(data));
         let baseUrl: URL | null = null;
         if (base !== null) {
@@ -391,14 +418,14 @@ export async function copySite(link: string | URL, opts: CopyOptions): Promise<C
             baseUrl = null;
           }
         }
-        enqueue(refs, url, baseUrl);
+        enqueue(refs, url, at, baseUrl);
       } else if (ext === 'css') {
-        enqueue(discoverCss(decoder.decode(data)), url, null);
+        enqueue(discoverCss(decoder.decode(data)), url, at, null);
       } else if (ext === 'js' || ext === 'mjs') {
-        enqueue(discoverJs(decoder.decode(data)), url, null);
+        enqueue(discoverJs(decoder.decode(data)), url, at, null);
       }
     };
-    discover(SITE_ENTRY, entry.bytes, entry.url);
+    discover(SITE_ENTRY, entry.bytes, entry.url, entry.url);
 
     const fetchFile = async (t: Task) => {
       // A file redirected off the site is not a file of the site.
@@ -424,15 +451,21 @@ export async function copySite(link: string | URL, opts: CopyOptions): Promise<C
           fail('url-unreachable', `${String(s)} ${t.path}`);
         }
         const isHtmlPath = /\.html?$/i.test(t.path);
-        // A host's SPA fallback answers any path with the page itself: not a file.
-        if (!isHtmlPath && isHtmlType(got.res.headers.get('content-type'))) {
-          throw new Skip(t.kind === 'sure');
+        const isHtml = isHtmlType(got.res.headers.get('content-type'));
+        let path = t.path;
+        if (!isHtmlPath && isHtml) {
+          // A host's SPA fallback answers any path with the page itself: not a file. But a
+          // frame's page can be at a path without `.html` (`<iframe src="/embed">`): it is
+          // stored as `embed.html`, which the site worker serves as HTML for `/embed`.
+          if (t.as !== 'page') throw new Skip(t.kind === 'sure');
+          path = `${t.path}.html`;
+          if (!isValidSitePath(path)) throw new Skip(t.kind === 'sure');
+          if (queued.has(path)) throw new Skip(false); // fetched for another reference
+          queued.add(path);
         }
-        if (isHtmlPath && t.kind === 'guess' && !isHtmlType(got.res.headers.get('content-type'))) {
-          throw new Skip(false);
-        }
-        store(t.path, got.bytes);
-        discover(t.path, got.bytes, got.url, t.as);
+        if (isHtmlPath && t.kind === 'guess' && !isHtml) throw new Skip(false);
+        store(path, got.bytes);
+        discover(path, got.bytes, got.url, t.at, t.as);
       } catch (e) {
         if (e instanceof Skip) {
           if (e.counted) skipped++;

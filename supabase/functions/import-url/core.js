@@ -648,31 +648,35 @@ async function copySite(link, opts) {
     if (entryPath !== null) queued.add(entryPath);
     const queue = [];
     const rootUrl = new URL(root, origin);
-    const enqueue = (refs, fileUrl, base) => {
+    const enqueue = (refs, fileUrl, fileAt, base) => {
       for (const r of refs) {
         let url;
+        let at;
         try {
           url = new URL(r.ref, r.base === "root" ? rootUrl : base ?? fileUrl);
+          at = new URL(r.ref, r.base === "root" ? rootUrl : fileAt);
         } catch {
           continue;
         }
-        if (url.origin !== origin) continue;
+        if (at.origin !== origin) continue;
         url.hash = "";
-        const path = sitePathOf(url, root);
+        at.hash = "";
+        const path = url.origin === origin ? sitePathOf(at, root) : null;
         if (path === null) {
           if (r.kind === "sure") skipped++;
           continue;
         }
         if (queued.has(path)) continue;
         queued.add(path);
-        queue.push(r.as ? { url, path, kind: r.kind, as: r.as } : { url, path, kind: r.kind });
+        const t = { url, at, path, kind: r.kind };
+        queue.push(r.as ? { ...t, as: r.as } : t);
       }
     };
     const decoder = new TextDecoder();
-    const discover = (path, data, url, as) => {
+    const discover = (path, data, url, at, as) => {
       const ext = path.slice(path.lastIndexOf(".") + 1).toLowerCase();
       if (as === "manifest" || ext === "webmanifest") {
-        enqueue(discoverManifest(decoder.decode(data)), url, null);
+        enqueue(discoverManifest(decoder.decode(data)), url, at, null);
       } else if (ext === "html" || ext === "htm") {
         const { refs, base } = discoverHtml(decoder.decode(data));
         let baseUrl = null;
@@ -683,14 +687,14 @@ async function copySite(link, opts) {
             baseUrl = null;
           }
         }
-        enqueue(refs, url, baseUrl);
+        enqueue(refs, url, at, baseUrl);
       } else if (ext === "css") {
-        enqueue(discoverCss(decoder.decode(data)), url, null);
+        enqueue(discoverCss(decoder.decode(data)), url, at, null);
       } else if (ext === "js" || ext === "mjs") {
-        enqueue(discoverJs(decoder.decode(data)), url, null);
+        enqueue(discoverJs(decoder.decode(data)), url, at, null);
       }
     };
-    discover(SITE_ENTRY, entry.bytes, entry.url);
+    discover(SITE_ENTRY, entry.bytes, entry.url, entry.url);
     const fetchFile = async (t) => {
       const sameOrigin = (next) => {
         if (next.origin !== origin || !checkPublicUrl(next, extra).ok) {
@@ -712,14 +716,18 @@ async function copySite(link, opts) {
           fail("url-unreachable", `${String(s)} ${t.path}`);
         }
         const isHtmlPath = /\.html?$/i.test(t.path);
-        if (!isHtmlPath && isHtmlType(got.res.headers.get("content-type"))) {
-          throw new Skip(t.kind === "sure");
+        const isHtml = isHtmlType(got.res.headers.get("content-type"));
+        let path = t.path;
+        if (!isHtmlPath && isHtml) {
+          if (t.as !== "page") throw new Skip(t.kind === "sure");
+          path = `${t.path}.html`;
+          if (!isValidSitePath(path)) throw new Skip(t.kind === "sure");
+          if (queued.has(path)) throw new Skip(false);
+          queued.add(path);
         }
-        if (isHtmlPath && t.kind === "guess" && !isHtmlType(got.res.headers.get("content-type"))) {
-          throw new Skip(false);
-        }
-        store(t.path, got.bytes);
-        discover(t.path, got.bytes, got.url, t.as);
+        if (isHtmlPath && t.kind === "guess" && !isHtml) throw new Skip(false);
+        store(path, got.bytes);
+        discover(path, got.bytes, got.url, t.at, t.as);
       } catch (e) {
         if (e instanceof Skip) {
           if (e.counted) skipped++;

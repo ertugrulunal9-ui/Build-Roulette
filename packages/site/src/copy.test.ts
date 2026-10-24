@@ -128,17 +128,79 @@ describe('copySite: a plain HTML site', () => {
     expect(text(result, 'index.html')).not.toContain('Projects');
   });
 
-  it('honors <base href>', async () => {
-    const { result } = await copy(
+  it('fetches through <base href> and stores where the sandbox requests (it ignores <base>)', async () => {
+    // The sandbox's CSP has base-uri 'none': there, `a.css` on this page is /a.css, so it is
+    // fetched from /static/a.css and stored as a.css, and so are the files it references.
+    const page =
+      '<html><head><base href="/static/"><link rel="stylesheet" href="a.css">' +
+      '<script src="/static/app.js"></script></head><body><a href="about.html">About</a></body></html>';
+    const { result, host } = await copy(
       {
         [GH]: {
-          '/': '<html><head><base href="/static/"><link rel="stylesheet" href="a.css"></head></html>',
-          '/static/a.css': 'a{}',
+          '/': page,
+          '/static/a.css': '@font-face{src:url(font.woff2)}body{background:url(/static/bg.png)}',
+          '/static/font.woff2': 'wOF2',
+          '/static/bg.png': 'png',
+          '/static/app.js': 'console.log(1)',
+          '/static/about.html': '<html><body><img src="me.png"></body></html>',
+          '/static/me.png': 'png',
         },
       },
       `${GH}/`,
     );
-    expect(files(result)).toEqual(['index.html', 'static/a.css']);
+    expect(files(result)).toEqual([
+      'a.css',
+      'about.html',
+      'font.woff2',
+      'index.html',
+      'me.png',
+      'static/app.js',
+      'static/bg.png',
+    ]);
+    expect(text(result, 'a.css')).toContain('url(font.woff2)');
+    expect(result.ok && result.site.skipped).toBe(0);
+    // The page is stored as served: scripts (Angular's router, Flutter) read its <base>.
+    expect(text(result, 'index.html')).toBe(page);
+    expect(host.calls).not.toContain(`${GH}/a.css`);
+  });
+
+  it('skips what a <base href> on another origin points at', async () => {
+    const { result, host } = await copy(
+      {
+        [GH]: {
+          '/': '<base href="https://cdn.example.com/"><link rel="stylesheet" href="a.css"><img src="https://cdn.example.com/x.png">',
+        },
+      },
+      `${GH}/`,
+    );
+    expect(files(result)).toEqual(['index.html']);
+    // a.css: the sandbox requests it from the site, but it is not the site's to copy.
+    expect(result.ok && result.site.skipped).toBe(1);
+    expect(host.calls).toEqual([`${GH}/`]);
+  });
+
+  it('copies a frame whose page has no .html extension as a page', async () => {
+    const { result } = await copy(
+      {
+        [GH]: {
+          '/': '<iframe src="/embed?theme=dark"></iframe><script src="/api/thing"></script>',
+          '/embed': {
+            body: '<html><body><img src="e.png"></body></html>',
+            headers: { 'content-type': 'text/html; charset=utf-8' },
+          },
+          '/e.png': 'png',
+          // A script that answers with HTML is still the SPA fallback, not a file.
+          '/api/thing': { body: '<!doctype html>', headers: { 'content-type': 'text/html' } },
+        },
+      },
+      `${GH}/`,
+    );
+    // The site worker serves embed.html for /embed (sw-routing.ts, resolveSitePath).
+    expect(files(result)).toEqual(['e.png', 'embed.html', 'index.html']);
+    if (!result.ok) throw new Error(result.error.code);
+    expect(unpackSite(result.site.pack).get('embed.html')?.type).toBe('text/html; charset=utf-8');
+    expect(text(result, 'embed.html')).toContain('e.png');
+    expect(result.site.skipped).toBe(1);
   });
 
   it('decodes stored paths the way the site worker looks them up', async () => {
@@ -240,6 +302,22 @@ describe('copySite: redirects', () => {
     expect(text(result, 'b.png')).toBe('b');
     expect(result.ok && result.site.skipped).toBe(1);
     expect(host.calls.some((c) => c.includes('cdn.example.com'))).toBe(false);
+  });
+
+  it('stores what a redirected file references relative to where the sandbox serves it', async () => {
+    // The sandbox serves the stylesheet at /style.css, so its url(bg.png) is /bg.png there.
+    const { result } = await copy(
+      {
+        [APP]: {
+          '/': '<link rel="stylesheet" href="/style.css">',
+          '/style.css': { status: 302, headers: { location: '/v2/style.css' } },
+          '/v2/style.css': 'body{background:url(bg.png)}',
+          '/v2/bg.png': 'png',
+        },
+      },
+      `${APP}/`,
+    );
+    expect(files(result)).toEqual(['bg.png', 'index.html', 'style.css']);
   });
 });
 

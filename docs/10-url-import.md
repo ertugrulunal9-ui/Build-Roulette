@@ -105,10 +105,24 @@ Where the implementation differs from or adds to the plan above:
   `describeImportError` takes both. `rate-limited` is one of the copy codes (its `detail` is
   the wait in seconds). For a copy, `ImportedSite.root` is the copied address
   (`https://my-app.lovable.app/`).
-- **More discovery.** Besides §10.2: `<a href>` and `<iframe src>` to same-origin pages
-  (`….html`, `…/`, so a hand-written multi-page site comes along), `<base href>`, `srcset` /
+- **More discovery.** Besides §10.2: `<a href>` to same-origin pages (`….html`, `…/`, so a
+  hand-written multi-page site comes along), `<iframe src>`, `<base href>`, `srcset` /
   `imagesrcset`, `poster`, `style` attributes, inline module scripts, `twitter:image`,
   `new URL("…", import.meta.url)`, and manifest `screenshots`.
+- **Fetched from the host's URL, stored at the sandbox's.** The sandbox's CSP has
+  `base-uri 'none'`, so the browser ignores `<base href>` and resolves a page's relative
+  references against the page itself. A file is therefore fetched from where the host resolves
+  its reference and stored where the sandbox will request it: with `<base href="/static/">`,
+  `<link href="a.css">` is fetched from `/static/a.css` and stored as `a.css`, and what
+  `a.css` references is stored relative to `a.css`. The page is stored as served, `<base>`
+  included (Angular's router and Flutter read it). The same holds after a redirect: the
+  sandbox serves a file at its own path, so what a stylesheet redirected from `/style.css` to
+  `/v2/style.css` references is stored relative to `style.css`. A `<base>` on another origin
+  points at files that are not the site's: they are skipped.
+- **Frames.** A frame's page at a path without `.html` (`<iframe src="/embed">`) is stored as
+  `embed.html`, which the site worker serves for `/embed`; the single-page-app rule below does
+  not apply to it. The site CSP has no `frame-src` (`default-src 'none'`, docs/09 §9.3), so
+  the sandbox does not show frames today; the copy keeps them as a dropped folder would.
 - **Missing files.** A 404 (any 4xx) for a file the page references is skipped and counted in
   `skipped` instead of failing the copy (a missing favicon should not block an import); a 5xx
   fails it (`url-unreachable`). A guess that hangs or fails is skipped. A non-HTML path that a
@@ -126,6 +140,11 @@ Where the implementation differs from or adds to the plan above:
   `https://me.github.io/repo/`) is stored relative to that folder and runs at `/` in the
   sandbox: root-relative links to `/repo/…` (Vite's `base: '/repo/'`) miss there. Sites at the
   host's root (every web builder's default) are not affected.
+- **Known limit (dropped folders).** `importSite` stores files at their paths in the drop and
+  reads no references, so a page whose `<base href>` points elsewhere than its own folder
+  (`<base href="/static/">` on `index.html`) misses its relative files in the sandbox, which
+  ignores the `<base>`. `<base href="/">` on the root page (Angular's and Flutter's default)
+  changes nothing. A copy from a link handles both (above).
 
 ## 10.7 As built (T-052)
 

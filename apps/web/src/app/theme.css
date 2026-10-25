@@ -81,6 +81,7 @@
 
 .br-brand img {
   flex: none;
+  width: 40px;
   object-fit: contain;
 }
 

@@ -21,12 +21,12 @@ import { describeError } from '../../lib/solo/errors';
 import { formatCountdown } from '../../lib/solo/format';
 import { suggestBuildName } from '../../lib/solo/names';
 import { ImportHelp } from '../onboarding/ImportHelp';
-import { LanguagePicker } from '../i18n/LanguagePicker';
-import { HowItWorksLink } from '../onboarding/Welcome';
-import { cardClass } from '../results/ResultPieces';
+import { AppHeader } from '../ui/AppHeader';
+import { PhaseTrack } from '../ui/PhaseTrack';
 import { SiteWorkbench } from '../site/SiteWorkbench';
 import { Countdown, LOW_TIME_MS, timeLevel } from './Countdown';
 import { ShipDialog } from './ShipDialog';
+import './solo-screens.css';
 
 interface BuildStageProps {
   controller: SoloController;
@@ -147,15 +147,10 @@ export function BuildStage({
       help={importHelp}
       overlay={
         timeUp && mine?.status === 'draft' ? (
-          <div
-            className="absolute inset-0 z-20 grid place-items-center bg-zinc-950/95 p-6 text-center text-white"
-            data-testid="times-up"
-          >
-            <div className="flex flex-col gap-2">
-              <p className="text-4xl font-black">{t.build.timesUp}</p>
-              <p className="text-sm text-zinc-300">
-                {state.site !== null ? t.build.shippingForYou : t.build.nothingToShip}
-              </p>
+          <div className="br-build-timesup" data-testid="times-up">
+            <div className="br-build-timesup__message">
+              <p>{t.build.timesUp}</p>
+              <span>{state.site !== null ? t.build.shippingForYou : t.build.nothingToShip}</span>
             </div>
           </div>
         ) : null
@@ -164,64 +159,48 @@ export function BuildStage({
   );
 
   return (
-    <main className="flex h-dvh flex-col bg-zinc-50 dark:bg-zinc-950" data-testid="build-stage">
-      <header className="flex flex-col gap-2 border-b border-zinc-200 bg-white px-3 py-2 dark:border-zinc-800 dark:bg-zinc-900">
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-          <h1 className="text-sm font-bold tracking-tight">
-            Build Roulette{' '}
-            <span className="font-normal text-zinc-500">· {subtitle ?? t.build.subtitle}</span>
-          </h1>
-          {/* A new tab: the battle keeps running here. */}
-          <HowItWorksLink
-            newTab
-            className="rounded-md border border-zinc-300 px-2.5 py-1 text-xs font-semibold hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
-          />
-          {/* Switching never interrupts the battle: nothing remounts (T-050). */}
-          <LanguagePicker />
-          {headerActions}
-          <div className="ml-auto flex flex-wrap items-center gap-3 text-xs">
-            <span
-              data-testid="autosave-status"
-              data-state={state.autosave.status}
-              className={
-                state.autosave.status === 'error'
-                  ? 'font-semibold text-red-600 dark:text-red-400'
-                  : 'text-zinc-500'
-              }
-              title={state.autosave.error ? describeError(state.autosave.error, t) : undefined}
-            >
-              {autosaveText(state, t, locale)}
-            </span>
-            <Countdown
-              getRemaining={() => controller.remainingMs()}
-              label={phase === 'building' ? t.build.countdownBuild : t.build.countdownGrace}
-            />
-            <button
-              type="button"
-              data-testid="ship-button"
-              disabled={locked || state.site === null}
-              title={state.site === null ? t.build.importFirst : undefined}
-              onClick={() => {
-                setShipOpen(true);
-              }}
-              className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-black tracking-wide text-white shadow disabled:opacity-50"
-            >
-              {t.build.ship}
-            </button>
-          </div>
+    <main className="br-build-page" data-testid="build-stage">
+      <AppHeader compact context={subtitle ?? t.build.subtitle} actions={headerActions} />
+      <PhaseTrack phase={phase} />
+      <header className="br-build-toolbar">
+        <div className="br-build-toolbar__title">
+          <p className="br-eyebrow">{t.phases[phase]}</p>
+          <h1>{t.phases.building}</h1>
         </div>
-        <ul className="grid grid-cols-1 gap-2 sm:grid-cols-3" data-testid="challenge">
+        <div className="br-build-toolbar__controls">
+          <span
+            data-testid="autosave-status"
+            data-state={state.autosave.status}
+            className={`br-build-autosave${state.autosave.status === 'error' ? ' is-error' : ''}`}
+            title={state.autosave.error ? describeError(state.autosave.error, t) : undefined}
+          >
+            {autosaveText(state, t, locale)}
+          </span>
+          <Countdown
+            getRemaining={() => controller.remainingMs()}
+            label={phase === 'building' ? t.build.countdownBuild : t.build.countdownGrace}
+          />
+          <button
+            type="button"
+            data-testid="ship-button"
+            disabled={locked || state.site === null}
+            title={state.site === null ? t.build.importFirst : undefined}
+            onClick={() => {
+              setShipOpen(true);
+            }}
+            className="br-btn br-btn--primary br-build-ship"
+          >
+            {t.build.ship}
+          </button>
+        </div>
+        <ul className="br-build-challenges" data-testid="challenge">
           {(['build', 'rule', 'style'] as const).map((k) => (
-            <li key={k} className={`rounded-md border-l-4 px-2.5 py-1 ${cardClass(k)}`}>
-              <p className="text-sm leading-tight">
-                <span className="mr-1.5 text-[10px] font-black tracking-widest opacity-70">
-                  {t.cards[k]}
-                </span>
-                <span className="font-semibold">{snapshot.challenge[k].text}</span>
+            <li key={k} className={`br-build-challenge br-build-challenge--${k}`}>
+              <p>
+                <span>{t.cards[k]}</span>
+                <strong>{snapshot.challenge[k].text}</strong>
               </p>
-              {snapshot.challenge[k].hint && (
-                <p className="text-[11px] leading-tight opacity-75">{snapshot.challenge[k].hint}</p>
-              )}
+              {snapshot.challenge[k].hint && <p>{snapshot.challenge[k].hint}</p>}
             </li>
           ))}
         </ul>
@@ -231,19 +210,13 @@ export function BuildStage({
         <p
           role="status"
           data-testid="time-toast"
-          className={`px-3 py-1.5 text-center text-sm font-bold ${
-            level === 'critical' ? 'bg-red-600 text-white' : 'bg-amber-400 text-amber-950'
-          }`}
+          className={`br-build-time-toast${level === 'critical' ? ' is-critical' : ''}`}
         >
           {toast}
         </p>
       )}
       {shipped && (
-        <p
-          role="status"
-          data-testid="shipped-banner"
-          className="border-b border-emerald-200 bg-emerald-50 px-3 py-1.5 text-center text-sm font-semibold text-emerald-900 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-200"
-        >
+        <p role="status" data-testid="shipped-banner" className="br-build-shipped">
           {t.build.shipped(
             mine?.name ?? null,
             mine?.completion_ms !== null && mine?.completion_ms !== undefined

@@ -1,18 +1,65 @@
 'use client';
 
 /** Small pieces shared by the room screens. */
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useT } from '../../lib/i18n/context';
 import { toastText, type Toast } from '../../lib/room/controller';
 
-export function Centered({ children, testId }: { children: ReactNode; testId?: string }) {
+export function Centered({
+  children,
+  testId,
+  className = '',
+}: {
+  children: ReactNode;
+  testId?: string;
+  className?: string;
+}) {
   return (
     <main
-      className="mx-auto flex min-h-dvh max-w-xl flex-col items-center justify-center gap-6 px-6 py-16 text-center"
+      className={`br-centered-screen mx-auto flex min-h-dvh max-w-xl flex-col items-center justify-center gap-6 px-6 py-16 text-center ${className}`}
       data-testid={testId}
     >
       {children}
     </main>
+  );
+}
+
+export function CopyInvite({ code }: { code: string }) {
+  const t = useT();
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) return;
+    const id = setTimeout(() => {
+      setCopied(false);
+    }, 2000);
+    return () => {
+      clearTimeout(id);
+    };
+  }, [copied]);
+  const link = typeof window === 'undefined' ? `/r/${code}` : `${window.location.origin}/r/${code}`;
+  return (
+    <div className="br-invite-link flex items-center gap-2 rounded-xl border bg-white p-1.5 pl-3">
+      <span className="hidden font-mono text-xs sm:inline" data-testid="invite-link">
+        {link}
+      </span>
+      <button
+        type="button"
+        data-testid="copy-invite"
+        onClick={() => {
+          void navigator.clipboard.writeText(link).then(
+            () => {
+              setCopied(true);
+            },
+            () => {
+              window.prompt(t.room.copyPrompt, link);
+            },
+          );
+        }}
+        className="br-invite-button rounded-lg px-3 py-1.5 text-sm font-bold"
+      >
+        {copied ? t.room.copied : t.room.copyInvite}
+      </button>
+    </div>
   );
 }
 

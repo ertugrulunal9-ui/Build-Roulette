@@ -14,6 +14,7 @@
  * every new `site` into it.
  */
 import type { ImportedSite } from '@br/site';
+import './site-workbench.css';
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { previewConfig } from '../../lib/preview/config';
 import { PreviewController } from '../../lib/preview/preview-controller';
@@ -133,7 +134,7 @@ export function SiteWorkbench({
   const { dragging } = usePageDrop(importer.fromDrop, !locked);
 
   return (
-    <div className="relative flex min-h-0 flex-1 flex-col" data-testid="site-workbench">
+    <div className="br-site-workbench" data-testid="site-workbench">
       {pickers.inputs}
       {site && (
         <ImportBar
@@ -146,7 +147,7 @@ export function SiteWorkbench({
           link={linkControls}
         />
       )}
-      <div className="relative min-h-0 flex-1">
+      <div className="br-site-workbench__preview">
         <PreviewPane
           hostRef={hostRef}
           snapshot={snapshot}
@@ -157,7 +158,7 @@ export function SiteWorkbench({
           hidePanel={!site}
         >
           {!site && (
-            <div className="absolute inset-0 z-10 bg-zinc-50 dark:bg-zinc-950">
+            <div className="br-site-workbench__drop-layer">
               <DropZone
                 state={importer.state}
                 openFolder={pickers.openFolder}
@@ -175,13 +176,8 @@ export function SiteWorkbench({
         {overlay}
       </div>
       {dragging && (
-        <div
-          data-testid="drop-overlay"
-          className="pointer-events-auto fixed inset-0 z-50 grid place-items-center bg-sky-500/20 p-6 backdrop-blur-[1px] dark:bg-sky-400/20"
-        >
-          <p className="pointer-events-none rounded-3xl border-4 border-dashed border-sky-500 bg-white/95 px-8 py-6 text-2xl font-black text-sky-900 shadow-2xl dark:border-sky-400 dark:bg-zinc-900/95 dark:text-sky-100">
-            📦 {t.importUi.dropOverlay}
-          </p>
+        <div data-testid="drop-overlay" className="br-site-drop-overlay">
+          <p className="br-site-drop-overlay__message">{t.importUi.dropOverlay}</p>
         </div>
       )}
     </div>

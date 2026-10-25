@@ -120,8 +120,11 @@ export default function SoloGame() {
 
 function Centered({ children }: { children: React.ReactNode }) {
   return (
-    <main className="grid h-dvh place-items-center px-6 text-center text-sm text-zinc-500">
-      {children}
+    <main className="br-app-loading">
+      <div className="br-app-loading__card">
+        <span aria-hidden="true" className="br-loading-dot" />
+        {children}
+      </div>
     </main>
   );
 }
@@ -129,10 +132,7 @@ function Centered({ children }: { children: React.ReactNode }) {
 function ErrorBanner({ text, onDismiss }: { text: string; onDismiss: () => void }) {
   const t = useT();
   return (
-    <div
-      role="alert"
-      className="fixed inset-x-0 bottom-0 z-50 flex items-center justify-between gap-4 bg-red-700 px-4 py-2 text-sm text-white"
-    >
+    <div role="alert" className="br-solo-error-banner">
       <span>{text}</span>
       <button type="button" onClick={onDismiss} className="font-semibold underline">
         {t.common.dismiss}

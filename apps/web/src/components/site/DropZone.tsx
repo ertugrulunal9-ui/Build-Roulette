@@ -10,6 +10,9 @@
  * The drop itself is handled for the whole page (usePageDrop); this box only shows it.
  */
 import type { ReactNode } from 'react';
+import { FileZipIcon } from '@phosphor-icons/react/dist/csr/FileZip';
+import { FolderOpenIcon } from '@phosphor-icons/react/dist/csr/FolderOpen';
+import { HourglassIcon } from '@phosphor-icons/react/dist/csr/Hourglass';
 import { useT } from '../../lib/i18n/context';
 import type { Messages } from '../../lib/i18n/messages/en';
 import type { ImportErrorState, ImportState } from '../../lib/site/use-site-import';
@@ -56,8 +59,7 @@ export interface DropZoneProps {
 
 const fixLink = 'mt-1 inline-block text-sm font-semibold underline underline-offset-2';
 
-const button =
-  'min-h-11 rounded-xl px-5 py-2.5 text-sm font-bold shadow-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500 disabled:cursor-not-allowed disabled:opacity-50';
+const button = 'br-btn';
 
 export function DropZone({
   state,
@@ -88,10 +90,7 @@ export function DropZone({
     />
   );
   return (
-    <div
-      className="flex h-full min-h-0 flex-col items-center justify-center-safe gap-6 overflow-y-auto p-4 sm:p-8"
-      data-testid="import-panel"
-    >
+    <div className="br-drop-panel" data-testid="import-panel">
       <section
         aria-label={words.panelLabel}
         aria-busy={reading}
@@ -99,63 +98,53 @@ export function DropZone({
         data-state={
           disabled ? 'disabled' : dragging ? 'dragging' : reading ? 'reading' : state.status
         }
-        className={`flex w-full max-w-2xl flex-col items-center gap-4 rounded-3xl border-4 border-dashed px-6 py-10 text-center transition-colors ${
-          dragging
-            ? 'border-sky-500 bg-sky-50 dark:border-sky-400 dark:bg-sky-950/60'
-            : error
-              ? 'border-red-300 bg-white dark:border-red-800 dark:bg-zinc-900'
-              : 'border-zinc-300 bg-white dark:border-zinc-700 dark:bg-zinc-900'
-        }`}
+        className={`br-drop-card${dragging ? ' is-dragging' : ''}${error ? ' has-error' : ''}`}
       >
-        <p aria-hidden="true" className="text-5xl">
-          {reading ? '⏳' : '📦'}
-        </p>
-        <div className="flex flex-col gap-1">
-          <h2 className="text-2xl font-black tracking-tight sm:text-3xl" data-testid="drop-title">
+        <span className="br-drop-icon" aria-hidden="true">
+          {reading ? <HourglassIcon size={32} /> : <FolderOpenIcon size={36} />}
+        </span>
+        <div className="br-drop-card__heading">
+          <h2 data-testid="drop-title">
             {restoring && !reading ? words.restoring : words.dropTitle}
           </h2>
-          <p className="text-sm text-zinc-600 dark:text-zinc-400">
+          <p>
             <CodeText text={words.dropSub} />
           </p>
         </div>
 
         {readingFiles ? (
-          <p
-            role="status"
-            className="text-sm font-semibold text-sky-700 dark:text-sky-300"
-            data-testid="import-reading"
-          >
+          <p role="status" className="br-import-reading" data-testid="import-reading">
             {words.reading}
           </p>
         ) : disabled ? (
-          <p className="text-sm font-semibold text-zinc-500" data-testid="import-locked">
+          <p className="br-import-locked" data-testid="import-locked">
             {words.locked}
           </p>
         ) : (
-          <div className="flex flex-wrap justify-center gap-3">
+          <div className="br-drop-actions">
             <button
               type="button"
               onClick={openFolder}
               disabled={copying}
               data-testid="choose-folder"
-              className={`${button} bg-zinc-900 text-white hover:bg-zinc-700 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-white`}
+              className={`${button} br-btn--primary`}
             >
-              📁 {words.chooseFolder}
+              <FolderOpenIcon size={18} aria-hidden="true" /> {words.chooseFolder}
             </button>
             <button
               type="button"
               onClick={openZip}
               disabled={copying}
               data-testid="choose-zip"
-              className={`${button} border border-zinc-300 bg-white text-zinc-900 hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-zinc-800`}
+              className={`${button} br-btn--secondary`}
             >
-              🗜 {words.chooseZip}
+              <FileZipIcon size={18} aria-hidden="true" /> {words.chooseZip}
             </button>
           </div>
         )}
 
         {link && showLink && (
-          <div className="flex w-full flex-col items-center gap-3 border-t border-zinc-200 pt-4 dark:border-zinc-800">
+          <div className="br-drop-link">
             <LinkForm
               initial={link.lastLink}
               onSubmit={link.onSubmit}
@@ -170,17 +159,13 @@ export function DropZone({
         {error && !reading && !linkError && errorNote}
       </section>
 
-      <div className="flex w-full max-w-2xl flex-col gap-4 sm:flex-row sm:items-start">
-        <section className="flex-1" aria-label={words.stepsTitle}>
-          <h3 className="mb-2 text-xs font-black tracking-widest text-zinc-500 uppercase">
-            {words.stepsTitle}
-          </h3>
-          <ol className="flex flex-col gap-1.5 text-sm text-zinc-700 dark:text-zinc-300">
+      <div className="br-drop-details">
+        <section className="br-drop-steps" aria-label={words.stepsTitle}>
+          <h3>{words.stepsTitle}</h3>
+          <ol>
             {words.steps.map((step, i) => (
-              <li key={i} className="flex gap-2">
-                <span className="grid size-5 shrink-0 place-items-center rounded-full bg-zinc-200 text-xs font-black dark:bg-zinc-800">
-                  {i + 1}
-                </span>
+              <li key={i}>
+                <span>{i + 1}</span>
                 <span>
                   <CodeText text={step} />
                 </span>
@@ -189,7 +174,7 @@ export function DropZone({
           </ol>
         </section>
         {help !== undefined && (
-          <div className="flex-1" data-testid="import-help-slot">
+          <div className="br-drop-help" data-testid="import-help-slot">
             {help}
           </div>
         )}
@@ -217,16 +202,12 @@ export function ImportErrorNote({
 }) {
   const t = useT();
   return (
-    <div
-      role="alert"
-      data-testid="import-error"
-      className="flex w-full items-start gap-3 rounded-xl border border-red-200 bg-red-50 p-3 text-left text-red-900 dark:border-red-900 dark:bg-red-950/60 dark:text-red-100"
-    >
+    <div role="alert" data-testid="import-error" className="br-import-error">
       <div className="min-w-0 flex-1">
         <p className="font-bold" data-testid="import-error-title">
           {title}
         </p>
-        <p className="text-sm" data-testid="import-error-hint">
+        <p className="br-import-error__hint" data-testid="import-error-hint">
           <CodeText text={hint} />
         </p>
         {inPageHelp ? (

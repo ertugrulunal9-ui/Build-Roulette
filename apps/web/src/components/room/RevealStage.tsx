@@ -29,6 +29,7 @@
  *   phase event arrives).
  */
 import { PreviewHandle, type PreviewBuild, type PreviewCrash } from '@br/runtime';
+import { SparkleIcon } from '@phosphor-icons/react/dist/csr/Sparkle';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useTouchPrimary } from '../../lib/device';
 import { useT } from '../../lib/i18n/context';
@@ -45,13 +46,14 @@ import type { SoloController, SoloState } from '../../lib/solo/controller';
 import { describeError } from '../../lib/solo/errors';
 import type { BattleSnapshot, RevealBuild, SnapshotBuild } from '../../lib/solo/types';
 import { screenshotUrl } from '../../lib/supabase/config';
-import { LanguagePicker } from '../i18n/LanguagePicker';
 import { Rich } from '../i18n/Rich';
 import { RemovedCard } from '../moderation/Removed';
 import { ReportButton } from '../moderation/ReportButton';
 import { ChallengeCards } from '../results/ResultPieces';
 import { Countdown } from '../solo/Countdown';
-import { Avatar } from './pieces';
+import { AppHeader } from '../ui/AppHeader';
+import { PhaseTrack } from '../ui/PhaseTrack';
+import { Avatar, CopyInvite } from './pieces';
 
 /** Reveal slots and the vote are short: amber only in their last 15 s. */
 export const SHORT_PHASE_LOW_MS = 15_000;
@@ -181,67 +183,65 @@ export function RevealStage({
 
   return (
     <main
-      className={`flex min-h-dvh flex-col bg-zinc-950 text-zinc-100 ${isHost ? 'pb-40 lg:pb-0' : ''}`}
+      className={`br-room-stage br-reveal-screen flex min-h-dvh flex-col ${isHost ? 'pb-40 lg:pb-0' : ''}`}
       data-testid="reveal-stage"
       data-index={index}
       data-build={buildId ?? ''}
       data-view={view}
     >
-      <header className="flex flex-wrap items-center gap-3 border-b border-zinc-800 px-4 py-3">
-        <h1 className="text-sm font-bold tracking-tight">
-          Build Roulette{' '}
-          <span className="font-normal text-zinc-400">· {t.common.roomCode(code)}</span>
-        </h1>
-        <span className="rounded-full bg-fuchsia-600 px-2.5 py-0.5 text-xs font-black tracking-widest text-white uppercase">
-          {rv.badge}
-        </span>
-        {!snapshot.me.is_player && (
-          <span className="rounded-full bg-zinc-800 px-2.5 py-0.5 text-xs font-black tracking-widest text-zinc-300 uppercase">
-            {rv.spectating}
-          </span>
-        )}
-        <LanguagePicker tone="dark" />
-        {headerActions}
-        <div className="ml-auto rounded-lg ring-1 ring-zinc-700">
-          <Countdown
-            getRemaining={() => battle.remainingMs()}
-            label={rv.thisBuild}
-            lowMs={SHORT_PHASE_LOW_MS}
-          />
-        </div>
-      </header>
+      <AppHeader
+        compact
+        practice={false}
+        className="br-phase-header br-phase-header--reveal"
+        context={
+          <div className="br-phase-context">
+            <h1>{t.common.roomCode(code)}</h1>
+            <span className="br-phase-pill">{rv.badge}</span>
+          </div>
+        }
+        actions={
+          <>
+            {!snapshot.me.is_player && <span className="br-role-pill">{rv.spectating}</span>}
+            <CopyInvite code={code} />
+            {headerActions}
+            <Countdown
+              getRemaining={() => battle.remainingMs()}
+              label={rv.thisBuild}
+              lowMs={SHORT_PHASE_LOW_MS}
+            />
+          </>
+        }
+      />
+      <PhaseTrack phase={snapshot.battle.phase} />
 
-      <div className="mx-auto grid w-full max-w-7xl flex-1 grid-cols-1 gap-5 px-4 py-5 lg:grid-cols-[minmax(0,1fr)_19rem]">
+      <div className="br-reveal-content mx-auto grid w-full max-w-7xl flex-1 grid-cols-1 gap-5 px-4 py-5 lg:grid-cols-[minmax(0,1fr)_19rem]">
         <section className="flex min-w-0 flex-col gap-3" aria-label={rv.spotlight}>
           <div className="flex flex-wrap items-end justify-between gap-3">
             <div className="min-w-0">
               <p
-                className="text-xs font-black tracking-[0.3em] text-fuchsia-400 uppercase"
+                className="br-reveal-position text-xs font-black tracking-[0.3em] uppercase"
                 data-testid="reveal-position"
               >
                 {rv.position(index + 1, total)}
               </p>
               <h2
-                className="truncate text-3xl font-black tracking-tight sm:text-4xl"
+                className="br-reveal-title truncate text-3xl font-black tracking-tight sm:text-4xl"
                 data-testid="reveal-title"
               >
                 {name}
               </h2>
               <p
-                className="mt-1 flex flex-wrap items-center gap-2 text-sm text-zinc-400"
+                className="br-reveal-builder mt-1 flex flex-wrap items-center gap-2 text-sm"
                 data-testid="reveal-builder"
               >
                 {builderId && <Avatar userId={builderId} name={builderName} size="sm" />}
                 <span>
-                  <Rich
-                    text={rv.byName}
-                    slots={{ name: <strong className="text-zinc-100">{builderName}</strong> }}
-                  />
+                  <Rich text={rv.byName} slots={{ name: <strong>{builderName}</strong> }} />
                 </span>
-                {mine && <span className="text-fuchsia-300">{rv.thatsYou}</span>}
+                {mine && <span className="br-reveal-you">{rv.thatsYou}</span>}
                 {autoShipped && (
                   <span
-                    className="rounded-full bg-amber-900/70 px-2 py-0.5 text-xs font-bold text-amber-200"
+                    className="br-auto-shipped rounded-full px-2 py-0.5 text-xs font-bold"
                     title={rv.autoShippedTitle}
                   >
                     {rv.autoShipped}
@@ -252,15 +252,15 @@ export function RevealStage({
           </div>
 
           {/* The user-made build, in its labelled chrome. */}
-          <div className="flex min-h-[20rem] flex-1 flex-col overflow-hidden rounded-2xl border-2 border-dashed border-amber-400/70 bg-zinc-900 shadow-2xl sm:min-h-[26rem]">
-            <div className="flex flex-wrap items-center gap-2 border-b border-amber-400/40 bg-amber-400/10 px-3 py-2 text-xs">
+          <div className="br-reveal-preview flex min-h-[20rem] flex-1 flex-col overflow-hidden rounded-2xl border sm:min-h-[26rem]">
+            <div className="br-reveal-preview__toolbar flex flex-wrap items-center gap-2 px-3 py-2 text-xs">
               <span
-                className="font-black tracking-widest text-amber-300 uppercase"
+                className="br-user-build-label font-black tracking-widest uppercase"
                 data-testid="user-build-label"
               >
                 {rv.userMade}
               </span>
-              <span className="hidden text-amber-100/80 sm:inline">
+              <span className="br-reveal-preview__note hidden sm:inline">
                 {rv.sandboxNote(builderName)}
               </span>
               <div className="ml-auto flex gap-2">
@@ -288,12 +288,12 @@ export function RevealStage({
                     onClick={() => {
                       if (buildId) show.watch(buildId);
                     }}
-                    className="min-h-9 rounded-md border border-amber-300/60 px-2.5 py-1 font-semibold text-amber-100 hover:bg-amber-400/20"
+                    className="br-watch-build min-h-9 rounded-md border px-2.5 py-1 font-semibold"
                   >
                     {rv.runAgain}
                   </button>
                 ) : view === 'still' ? (
-                  <span className="py-1 font-semibold text-amber-100/80" data-testid="still-label">
+                  <span className="br-still-label py-1 font-semibold" data-testid="still-label">
                     {rv.still}
                   </span>
                 ) : (
@@ -305,7 +305,7 @@ export function RevealStage({
                       if (buildId) show.skip(buildId);
                     }}
                     title={rv.skipTitle}
-                    className="min-h-9 rounded-md bg-amber-300 px-2.5 py-1 font-bold text-amber-950 hover:bg-amber-200"
+                    className="br-skip-build min-h-9 rounded-md px-2.5 py-1 font-bold"
                   >
                     {rv.skip}
                   </button>
@@ -330,7 +330,7 @@ export function RevealStage({
                     onClick={() => {
                       if (buildId) setTapped((t) => (t.includes(buildId) ? t : [...t, buildId]));
                     }}
-                    className="absolute inset-x-4 bottom-4 min-h-14 rounded-2xl bg-fuchsia-500 px-5 py-3 text-lg font-black text-white shadow-xl hover:bg-fuchsia-400 sm:inset-x-auto sm:right-4"
+                    className="br-tap-to-run absolute inset-x-4 bottom-4 min-h-14 rounded-2xl px-5 py-3 text-lg font-black text-white shadow-xl sm:inset-x-auto sm:right-4"
                   >
                     {rv.tapToRun}
                   </button>
@@ -382,10 +382,8 @@ export function RevealStage({
             show={show}
             showState={showState}
           />
-          <section className="rounded-2xl border border-zinc-800 bg-zinc-900 p-4">
-            <h2 className="mb-2 text-xs font-black tracking-widest text-zinc-400 uppercase">
-              {rv.challenge}
-            </h2>
+          <section className="br-reveal-challenge rounded-2xl border p-4">
+            <h2 className="mb-2 text-xs font-black tracking-widest uppercase">{rv.challenge}</h2>
             <ChallengeCards challenge={snapshot.challenge} compact stacked />
           </section>
           <p className="text-xs text-zinc-500">{rv.watchNote}</p>
@@ -520,12 +518,12 @@ function StillImage({
 export function PlaceholderCard({ name }: { name: string }) {
   return (
     <div
-      className="absolute inset-0 grid place-items-center bg-gradient-to-br from-fuchsia-900 via-zinc-900 to-sky-900 p-4 text-center"
+      className="br-placeholder-card absolute inset-0 grid place-items-center p-4 text-center"
       data-testid="placeholder-card"
     >
       <div>
-        <p className="text-3xl" aria-hidden="true">
-          🎰
+        <p className="br-placeholder-card__icon" aria-hidden="true">
+          <SparkleIcon size={30} weight="duotone" />
         </p>
         <p className="mt-1 line-clamp-2 text-sm font-black text-white">{name}</p>
       </div>
@@ -553,7 +551,7 @@ function HostPanel({
   if (!isHost) {
     return (
       <p
-        className="rounded-2xl border border-zinc-800 bg-zinc-900 p-4 text-sm text-zinc-400"
+        className="br-reveal-host-note rounded-2xl border p-4 text-sm"
         data-testid="reveal-host-note"
       >
         <Rich
@@ -568,12 +566,10 @@ function HostPanel({
   // phone); the page leaves room for it (RevealStage's bottom padding).
   return (
     <section
-      className="fixed inset-x-0 bottom-0 z-20 flex flex-col gap-2 border-t border-fuchsia-700 bg-zinc-950/95 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur lg:static lg:rounded-2xl lg:border lg:bg-fuchsia-950/40 lg:p-4"
+      className="br-reveal-host-controls fixed inset-x-0 bottom-0 z-20 flex flex-col gap-2 border-t p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur lg:static lg:rounded-2xl lg:border lg:p-4"
       data-testid="reveal-host-controls"
     >
-      <h2 className="text-xs font-black tracking-widest text-fuchsia-300 uppercase">
-        {rv.hostTitle}
-      </h2>
+      <h2 className="text-xs font-black tracking-widest uppercase">{rv.hostTitle}</h2>
       <div className="flex gap-2 lg:flex-col">
         <button
           type="button"
@@ -582,7 +578,7 @@ function HostPanel({
           onClick={() => {
             void show.next();
           }}
-          className="min-h-12 flex-1 rounded-xl bg-fuchsia-500 px-4 py-3 font-black text-white hover:bg-fuchsia-400 disabled:opacity-50"
+          className="br-host-next min-h-12 flex-1 rounded-xl px-4 py-3 font-black disabled:opacity-50"
         >
           {pending === 'next' ? rv.movingOn : last ? rv.nextVote : rv.next}
         </button>
@@ -593,7 +589,7 @@ function HostPanel({
           onClick={() => {
             void show.skipToVote();
           }}
-          className="min-h-12 flex-1 rounded-xl border border-fuchsia-400/60 px-4 py-2 text-sm font-bold text-fuchsia-100 hover:bg-fuchsia-900/60 disabled:opacity-50"
+          className="br-host-skip min-h-12 flex-1 rounded-xl border px-4 py-2 text-sm font-bold disabled:opacity-50"
         >
           {pending === 'skip' ? rv.skipping : rv.skipToVote}
         </button>
@@ -631,7 +627,7 @@ function RevealStrip({
   const order = snapshot.battle.reveal_order ?? [];
   const byId = new Map<string, RevealBuild>((showState.builds ?? []).map((b) => [b.build_id, b]));
   return (
-    <nav aria-label={t.reveal.strip} className="border-t border-zinc-800 bg-zinc-900/60 px-4 py-3">
+    <nav aria-label={t.reveal.strip} className="br-reveal-strip border-t px-4 py-3">
       <ol className="mx-auto flex max-w-7xl gap-3 overflow-x-auto" data-testid="reveal-strip">
         {order.map((id, i) => {
           const b = byId.get(id);
@@ -652,10 +648,8 @@ function RevealStrip({
               data-build={id}
               data-state={state}
               aria-current={state === 'current' ? 'true' : undefined}
-              className={`w-32 shrink-0 overflow-hidden rounded-xl border-2 sm:w-40 ${
-                state === 'current'
-                  ? 'border-fuchsia-500 shadow-[0_0_0_3px_rgba(217,70,239,0.3)]'
-                  : 'border-zinc-800'
+              className={`br-reveal-strip__item w-32 shrink-0 overflow-hidden rounded-xl border-2 sm:w-40 ${
+                state === 'current' ? 'br-reveal-strip__item--current' : ''
               } ${state === 'upcoming' ? 'opacity-60' : ''}`}
             >
               <div className="relative aspect-[16/10] bg-zinc-800">

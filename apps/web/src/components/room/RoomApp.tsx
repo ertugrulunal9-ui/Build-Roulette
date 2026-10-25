@@ -6,6 +6,12 @@
  * back to the lobby for the rematch. Every join error and end state has its own screen.
  */
 import { isTerminalPhase, type JoinRoomError } from '@br/game';
+import { LockKeyIcon } from '@phosphor-icons/react/dist/csr/LockKey';
+import { MagnifyingGlassIcon } from '@phosphor-icons/react/dist/csr/MagnifyingGlass';
+import { ProhibitIcon } from '@phosphor-icons/react/dist/csr/Prohibit';
+import { UsersThreeIcon } from '@phosphor-icons/react/dist/csr/UsersThree';
+import { HandWavingIcon } from '@phosphor-icons/react/dist/csr/HandWaving';
+import { DiceFiveIcon } from '@phosphor-icons/react/dist/csr/DiceFive';
 import Link from 'next/link';
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { useT } from '../../lib/i18n/context';
@@ -30,6 +36,7 @@ import { useTicker } from '../../lib/solo/use-ticker';
 import { ensureSignedIn, getSupabase } from '../../lib/supabase/browser';
 import { useTouchPrimary } from '../../lib/device';
 import { LanguagePicker } from '../i18n/LanguagePicker';
+import { AppHeader } from '../ui/AppHeader';
 import { HowItWorksButton } from '../onboarding/Welcome';
 import { BuildStage } from '../solo/BuildStage';
 import { DesktopNeeded } from './DesktopNeeded';
@@ -40,15 +47,9 @@ import { RevealStage } from './RevealStage';
 import { RoomResults } from './RoomResults';
 import { SpectatorStage } from './SpectatorStage';
 import { VoteStage } from './VoteStage';
-import { Centered, ConfirmDialog, ErrorBanner, Toasts } from './pieces';
+import { Centered, ConfirmDialog, CopyInvite, ErrorBanner, Toasts } from './pieces';
 
-const smallButton =
-  'rounded-md border border-zinc-300 px-2.5 py-1 text-xs font-semibold hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800';
-const bigButton =
-  'rounded-lg bg-zinc-900 px-5 py-3 font-bold text-white disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900';
-const outlineButton =
-  'rounded-lg border border-zinc-300 px-5 py-3 font-semibold hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800';
-
+const smallButton = 'br-leave-button';
 export default function RoomApp({ code }: { code: string }) {
   const t = useT();
   const createDeps = useCallback((): RoomControllerDeps => {
@@ -184,16 +185,20 @@ export default function RoomApp({ code }: { code: string }) {
 
   return (
     <>
-      <div className="mx-auto flex min-h-dvh max-w-6xl flex-col gap-6 px-4 py-8">
+      <div className="br-room-shell min-h-dvh">
         <RoomHeader state={state} code={room.room.code} leave={leave} />
-        <Lobby
-          controller={controller}
-          state={state}
-          room={room}
-          lastBattle={
-            state.sync.battle?.battle.id === room.room.current_battle_id ? state.sync.battle : null
-          }
-        />
+        <main className="br-room-content">
+          <Lobby
+            controller={controller}
+            state={state}
+            room={room}
+            lastBattle={
+              state.sync.battle?.battle.id === room.room.current_battle_id
+                ? state.sync.battle
+                : null
+            }
+          />
+        </main>
       </div>
       {overlays}
     </>
@@ -324,26 +329,32 @@ function BattleView({
 function RoomHeader({ state, code, leave }: { state: RoomState; code: string; leave: ReactNode }) {
   const t = useT();
   return (
-    <header className="flex flex-wrap items-end justify-between gap-4">
-      <div className="flex flex-col gap-1">
-        <Link href="/" className="text-sm font-semibold text-zinc-500 hover:underline">
-          Build Roulette
-        </Link>
-        <p className="text-xs font-bold tracking-widest text-zinc-500 uppercase">
-          {t.room.eyebrow}
-        </p>
-        <h1 className="font-mono text-5xl font-black tracking-widest" data-testid="room-code">
-          {code}
-        </h1>
-      </div>
-      <div className="flex flex-wrap items-center gap-2">
-        <Reconnecting state={state} />
-        <LanguagePicker />
-        <HowItWorksButton />
-        <CopyInvite code={code} />
-        {leave}
-      </div>
-    </header>
+    <AppHeader
+      className="br-room-app-header"
+      context={
+        <span className="flex flex-col gap-1">
+          <span className="text-[10px] font-bold tracking-[0.16em] uppercase">
+            {t.room.eyebrow}
+          </span>
+          <h1
+            className="br-room-code font-mono text-2xl font-black tracking-[0.16em]"
+            data-testid="room-code"
+          >
+            {code}
+          </h1>
+        </span>
+      }
+      guide={false}
+      practice={false}
+      actions={
+        <>
+          <Reconnecting state={state} />
+          <HowItWorksButton />
+          <CopyInvite code={code} />
+          {leave}
+        </>
+      }
+    />
   );
 }
 
@@ -359,45 +370,6 @@ function Reconnecting({ state }: { state: RoomState }) {
     >
       {t.room.reconnecting}
     </span>
-  );
-}
-
-function CopyInvite({ code }: { code: string }) {
-  const t = useT();
-  const [copied, setCopied] = useState(false);
-  useEffect(() => {
-    if (!copied) return;
-    const id = setTimeout(() => {
-      setCopied(false);
-    }, 2000);
-    return () => {
-      clearTimeout(id);
-    };
-  }, [copied]);
-  const link = typeof window === 'undefined' ? `/r/${code}` : `${window.location.origin}/r/${code}`;
-  return (
-    <div className="flex items-center gap-2 rounded-xl border border-zinc-200 bg-white p-1.5 pl-3 dark:border-zinc-800 dark:bg-zinc-900">
-      <span className="hidden font-mono text-xs text-zinc-500 sm:inline" data-testid="invite-link">
-        {link}
-      </span>
-      <button
-        type="button"
-        data-testid="copy-invite"
-        onClick={() => {
-          void navigator.clipboard.writeText(link).then(
-            () => {
-              setCopied(true);
-            },
-            () => {
-              window.prompt(t.room.copyPrompt, link);
-            },
-          );
-        }}
-        className="rounded-lg bg-emerald-600 px-3 py-1.5 text-sm font-bold text-white hover:bg-emerald-700"
-      >
-        {copied ? t.room.copied : t.room.copyInvite}
-      </button>
-    </div>
   );
 }
 
@@ -467,7 +439,7 @@ function NameForm({
   const [name, setName] = useState(initial);
   const trimmed = name.trim();
   return (
-    <Centered testId="room-name-form">
+    <Centered testId="room-name-form" className="br-room-entry">
       <header className="flex flex-col gap-2">
         <Link href="/" className="text-sm font-semibold text-zinc-500 hover:underline">
           Build Roulette
@@ -510,14 +482,14 @@ function NameForm({
             }}
             className="rounded-lg border border-zinc-300 px-3 text-xl hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
           >
-            🎲
+            <DiceFiveIcon size={22} weight="duotone" aria-hidden="true" />
           </button>
         </div>
         <button
           type="submit"
           data-testid="join-room"
           disabled={busy || trimmed.length === 0}
-          className="rounded-lg bg-zinc-900 px-5 py-4 text-lg font-black tracking-wide text-white disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900"
+          className="br-room-entry__action rounded-lg px-5 py-4 text-lg font-black tracking-wide disabled:opacity-50"
         >
           {busy ? t.room.joiningButton : t.room.join}
         </button>
@@ -581,9 +553,15 @@ function JoinError({
       ? JOIN_ERRORS[error.code as ShownJoinError](t, code, error)
       : undefined;
   return (
-    <Centered testId="join-error">
-      <p className="text-6xl" aria-hidden="true">
-        {error?.code === 'kicked' ? '🚫' : error?.code === 'room_full' ? '🈵' : '🔍'}
+    <Centered testId="join-error" className="br-room-entry">
+      <p className="br-room-entry__icon" aria-hidden="true">
+        {error?.code === 'kicked' ? (
+          <ProhibitIcon size={42} weight="duotone" />
+        ) : error?.code === 'room_full' ? (
+          <UsersThreeIcon size={42} weight="duotone" />
+        ) : (
+          <MagnifyingGlassIcon size={42} weight="duotone" />
+        )}
       </p>
       <h1 className="text-3xl font-black tracking-tight" data-code={error?.code ?? 'unknown'}>
         {known?.title ?? t.room.couldNotJoin}
@@ -593,11 +571,16 @@ function JoinError({
       </p>
       <div className="flex flex-wrap justify-center gap-3">
         {!known && (
-          <button type="button" onClick={onRetry} className={bigButton} data-testid="retry-join">
+          <button
+            type="button"
+            onClick={onRetry}
+            className="br-room-entry__action"
+            data-testid="retry-join"
+          >
             {t.common.tryAgain}
           </button>
         )}
-        <Link href="/" className={known ? bigButton : outlineButton}>
+        <Link href="/" className={known ? 'br-room-entry__action' : 'br-room-entry__secondary'}>
           {t.room.another}
         </Link>
       </div>
@@ -606,12 +589,12 @@ function JoinError({
   );
 }
 
-const ENDED_ICON: Record<EndReason, string> = {
-  kicked: '🚫',
-  left: '👋',
-  closed: '🔒',
-  gone: '🔍',
-};
+const ENDED_ICON = {
+  kicked: ProhibitIcon,
+  left: HandWavingIcon,
+  closed: LockKeyIcon,
+  gone: MagnifyingGlassIcon,
+} satisfies Record<EndReason, typeof MagnifyingGlassIcon>;
 
 function Ended({
   code,
@@ -627,9 +610,12 @@ function Ended({
   const t = useT();
   const info = t.room.ended[reason];
   return (
-    <Centered testId={reason === 'kicked' ? 'kicked' : 'room-ended'}>
-      <p className="text-6xl" aria-hidden="true">
-        {ENDED_ICON[reason]}
+    <Centered testId={reason === 'kicked' ? 'kicked' : 'room-ended'} className="br-room-entry">
+      <p className="br-room-entry__icon" aria-hidden="true">
+        {(() => {
+          const Icon = ENDED_ICON[reason];
+          return <Icon size={42} weight="duotone" />;
+        })()}
       </p>
       <h1 className="text-3xl font-black tracking-tight" data-reason={reason}>
         {info.title(code)}
@@ -641,13 +627,16 @@ function Ended({
             type="button"
             disabled={busy}
             onClick={onRejoin}
-            className={bigButton}
+            className="br-room-entry__action"
             data-testid="rejoin"
           >
             {t.room.rejoin}
           </button>
         )}
-        <Link href="/" className={reason === 'left' ? outlineButton : bigButton}>
+        <Link
+          href="/"
+          className={reason === 'left' ? 'br-room-entry__secondary' : 'br-room-entry__action'}
+        >
           {t.common.home}
         </Link>
       </div>

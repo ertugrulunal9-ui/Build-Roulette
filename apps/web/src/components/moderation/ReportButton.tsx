@@ -18,6 +18,8 @@ import { useT } from '../../lib/i18n/context';
 import { submitReport, type SubmitReport } from '../../lib/moderation/report';
 import { track as defaultTrack, type Track } from '../../lib/telemetry/analytics';
 import { describeError, type GameError } from '../../lib/solo/errors';
+import { FlagIcon } from '@phosphor-icons/react/dist/csr/Flag';
+import './moderation.css';
 
 type Stage =
   | { kind: 'form' }
@@ -104,9 +106,15 @@ export function ReportButton({
           setOpen(true);
         }}
         title={words.reportTitle}
-        className={trigger}
+        className={`br-report-trigger ${trigger}`}
       >
-        ⚑ {stage.kind === 'thanks' ? words.reported : words.report}
+        <FlagIcon
+          aria-hidden="true"
+          className="inline-block align-text-bottom"
+          size={14}
+          weight="fill"
+        />{' '}
+        {stage.kind === 'thanks' ? words.reported : words.report}
       </button>
       <dialog
         ref={dialogRef}
@@ -116,7 +124,7 @@ export function ReportButton({
           e.preventDefault();
           if (stage.kind !== 'sending') close();
         }}
-        className="m-auto w-[min(30rem,calc(100vw-2rem))] rounded-2xl bg-white p-0 text-zinc-900 shadow-2xl backdrop:bg-black/60 dark:bg-zinc-900 dark:text-zinc-100"
+        className="br-report-dialog m-auto w-[min(30rem,calc(100vw-2rem))] rounded-2xl bg-white p-0 text-zinc-900 shadow-2xl backdrop:bg-black/60 dark:bg-zinc-900 dark:text-zinc-100"
       >
         {stage.kind === 'thanks' ? (
           <div className="flex flex-col gap-4 p-6" data-testid="report-thanks">
@@ -242,7 +250,7 @@ export function ReportButton({
                 type="submit"
                 data-testid="report-submit"
                 disabled={reason === null || stage.kind === 'sending'}
-                className="rounded-lg bg-red-600 px-4 py-2 text-sm font-bold text-white hover:bg-red-700 disabled:opacity-50"
+                className="br-report-submit rounded-lg bg-red-600 px-4 py-2 text-sm font-bold text-white hover:bg-red-700 disabled:opacity-50"
               >
                 {stage.kind === 'sending' ? words.sending : words.send}
               </button>

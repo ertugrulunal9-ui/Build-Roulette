@@ -1,0 +1,103 @@
+.br-removed {
+  background: #edf0f7;
+  color: #46516b;
+}
+.br-removed p {
+  border: 1px solid #d9deea;
+  border-radius: 999px;
+  background: white;
+  padding: 9px 14px;
+}
+.br-report-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.br-report-dialog {
+  border: 1px solid var(--br-line);
+  border-radius: 20px;
+}
+.br-report-dialog h2 {
+  font-family: var(--br-display);
+  letter-spacing: -0.035em;
+}
+.br-report-dialog label:has(input[type='radio']:checked) {
+  border-color: var(--br-cobalt);
+  background: #f0f3ff;
+}
+.br-report-submit {
+  border-radius: 9px;
+  background: var(--br-cobalt);
+}
+.br-report-submit:hover:not(:disabled) {
+  background: var(--br-cobalt-hover);
+}
+.br-not-found {
+  gap: 18px;
+  padding-inline: 24px;
+}
+.br-not-found > p:first-child {
+  display: grid;
+  width: 116px;
+  height: 116px;
+  place-items: center;
+  border: 1px solid var(--br-line);
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, white, #edf0ff);
+  color: var(--br-cobalt);
+  font: 800 42px var(--br-display);
+}
+.br-not-found h1 {
+  max-width: 20ch;
+  font: 750 clamp(24px, 4vw, 36px)/1.1 var(--br-display);
+  letter-spacing: -0.035em;
+}
+.br-not-found > a {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  background: var(--br-cobalt);
+  padding: 10px 18px;
+  color: white;
+  text-decoration: none;
+}
+.br-error main {
+  max-width: 460px;
+  border: 1px solid var(--br-line);
+  border-radius: 24px;
+  background: white;
+  padding: clamp(26px, 5vw, 48px);
+  box-shadow: 0 24px 72px rgb(16 21 38 / 8%);
+}
+.br-error h1 {
+  font: 800 34px/1.05 var(--br-display);
+  letter-spacing: -0.04em;
+}
+.br-error p {
+  color: var(--br-muted);
+  line-height: 1.6;
+}
+.br-error button {
+  min-height: 46px;
+  border: 0;
+  border-radius: 9px;
+  background: var(--br-cobalt);
+  padding: 10px 20px;
+  color: white;
+  font-weight: 750;
+}
+.br-error button:hover {
+  background: var(--br-cobalt-hover);
+}
+
+@media (max-width: 640px) {
+  .br-report-dialog {
+    width: calc(100vw - 24px);
+  }
+  .br-not-found > p:first-child {
+    width: 92px;
+    height: 92px;
+  }
+}

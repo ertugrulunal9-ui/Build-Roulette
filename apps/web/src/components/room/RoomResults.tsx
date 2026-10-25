@@ -15,6 +15,7 @@
  * has no Winner banner, gold ring, medal or awards; nobody else becomes the winner.
  */
 import { isTerminalPhase } from '@br/game';
+import { WarningCircleIcon } from '@phosphor-icons/react/dist/csr/WarningCircle';
 import { useT } from '../../lib/i18n/context';
 import { en, type Messages } from '../../lib/i18n/messages/en';
 import { myBuild, type SoloState } from '../../lib/solo/controller';
@@ -28,12 +29,12 @@ import {
 } from '../../lib/solo/format';
 import type { BattleSnapshot, SnapshotBuild } from '../../lib/solo/types';
 import { screenshotUrl } from '../../lib/supabase/config';
-import { LanguagePicker } from '../i18n/LanguagePicker';
 import { Rich } from '../i18n/Rich';
 import { RemovedCard } from '../moderation/Removed';
 import { ReportButton } from '../moderation/ReportButton';
 import { AwardBadges, ChallengeCards, VoteTally } from '../results/ResultPieces';
 import { RevealPane } from '../solo/RevealPane';
+import { AppHeader } from '../ui/AppHeader';
 
 interface RoomResultsProps {
   state: SoloState;
@@ -112,68 +113,72 @@ export function RoomResults({ state, remaining, lostVotes }: RoomResultsProps) {
   const lost = lostVotesText(snapshot, lostVotes, t);
 
   return (
-    <main
-      className="mx-auto flex min-h-dvh max-w-6xl flex-col gap-6 px-4 py-8"
-      data-testid="results"
-    >
-      <header className="flex flex-col gap-3">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <p className="text-sm font-semibold tracking-widest text-zinc-500 uppercase">
+    <div className="br-room-results min-h-dvh">
+      <AppHeader
+        className="br-results-header"
+        context={
+          <span className="br-results-context">
             {destroyed ? t.results.eyebrowDestroy : t.results.eyebrowResults}
-          </p>
-          <LanguagePicker />
-        </div>
-        <h1 className="text-3xl font-black tracking-tight break-words sm:text-4xl">
-          {snapshot.challenge.build.text}
-        </h1>
-        <ChallengeCards challenge={snapshot.challenge} compact />
-        <p className="text-sm text-zinc-500" data-testid="ranking-rule">
-          {votedResults(snapshot) ? rr.rankedVotes : rr.rankedTime}
-        </p>
-        {lost && (
-          <p
-            role="alert"
-            data-testid="lost-votes"
-            className="rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-900 dark:border-amber-800 dark:bg-amber-950/60 dark:text-amber-100"
-          >
-            ⚠ {lost}
-          </p>
-        )}
-      </header>
-
-      <div
-        className={`grid grid-cols-1 gap-6 ${lastLook ? 'lg:grid-cols-[minmax(0,1fr)_minmax(0,0.9fr)]' : ''}`}
+          </span>
+        }
+      />
+      <main
+        className="br-results-content mx-auto flex max-w-6xl flex-col gap-6 px-4 py-8"
+        data-testid="results"
       >
-        <section className="flex flex-col gap-3" aria-label={rr.ranking}>
-          <RankedBuilds snapshot={snapshot} />
-          {!lastLook && (
-            <p className="text-sm text-zinc-500" data-testid="last-look">
-              {caption}
+        <header className="br-results-hero flex flex-col gap-3">
+          <h1 className="text-3xl font-black tracking-tight break-words sm:text-4xl">
+            {snapshot.challenge.build.text}
+          </h1>
+          <ChallengeCards challenge={snapshot.challenge} />
+          <p className="text-sm text-zinc-500" data-testid="ranking-rule">
+            {votedResults(snapshot) ? rr.rankedVotes : rr.rankedTime}
+          </p>
+          {lost && (
+            <p
+              role="alert"
+              data-testid="lost-votes"
+              className="rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-900 dark:border-amber-800 dark:bg-amber-950/60 dark:text-amber-100"
+            >
+              <WarningCircleIcon size={18} weight="fill" aria-hidden="true" /> {lost}
             </p>
           )}
-          {mine && (!shipped || mine.taken_down === true) && (
-            <p className="text-sm text-zinc-500" data-testid="no-last-look">
-              {mine.taken_down === true
-                ? rr.removedMine
-                : mine.status === 'disqualified'
-                  ? rr.disqualifiedMine
-                  : rr.didNotShip}
-            </p>
-          )}
-        </section>
-        {lastLook && (
-          <section className="flex flex-col gap-3">
-            <RevealPane
-              battleId={snapshot.battle.id}
-              build={state.reveal.build}
-              status={state.reveal.status}
-              destroy={state.destroy}
-              caption={caption}
-            />
+        </header>
+
+        <div
+          className={`br-results-layout grid grid-cols-1 gap-6 ${lastLook ? 'lg:grid-cols-[minmax(0,1fr)_minmax(0,0.9fr)]' : ''}`}
+        >
+          <section className="flex flex-col gap-3" aria-label={rr.ranking}>
+            <RankedBuilds snapshot={snapshot} />
+            {!lastLook && (
+              <p className="text-sm text-zinc-500" data-testid="last-look">
+                {caption}
+              </p>
+            )}
+            {mine && (!shipped || mine.taken_down === true) && (
+              <p className="text-sm text-zinc-500" data-testid="no-last-look">
+                {mine.taken_down === true
+                  ? rr.removedMine
+                  : mine.status === 'disqualified'
+                    ? rr.disqualifiedMine
+                    : rr.didNotShip}
+              </p>
+            )}
           </section>
-        )}
-      </div>
-    </main>
+          {lastLook && (
+            <section className="br-results-last-look flex flex-col gap-3">
+              <RevealPane
+                battleId={snapshot.battle.id}
+                build={state.reveal.build}
+                status={state.reveal.status}
+                destroy={state.destroy}
+                caption={caption}
+              />
+            </section>
+          )}
+        </div>
+      </main>
+    </div>
   );
 }
 
@@ -194,7 +199,7 @@ function RankedBuilds({ snapshot }: { snapshot: BattleSnapshot }) {
   const nameOf = (id: string) =>
     snapshot.players.find((p) => p.user_id === id)?.display_name ?? t.common.someone;
   return (
-    <ol className="flex flex-col gap-3">
+    <ol className="br-ranked-builds flex flex-col gap-3">
       {builds.map((b) => {
         const shipped = b.status === 'shipped' || b.status === 'auto_shipped';
         const removed = b.taken_down === true;
@@ -216,23 +221,19 @@ function RankedBuilds({ snapshot }: { snapshot: BattleSnapshot }) {
             data-capture={shipped ? b.capture_status : 'none'}
             data-winner={winner ? 'true' : 'false'}
             data-total-votes={voted ? b.total_votes : ''}
-            className={`relative flex gap-3 rounded-2xl border bg-white p-3 shadow-sm sm:gap-4 dark:bg-zinc-900 ${
-              winner
-                ? 'border-amber-400 bg-gradient-to-r from-amber-50 to-white ring-4 ring-amber-300/50 dark:border-amber-500 dark:from-amber-950/60 dark:to-zinc-900'
-                : isMe
-                  ? 'border-sky-400 dark:border-sky-700'
-                  : 'border-zinc-200 dark:border-zinc-800'
+            className={`br-ranked-build relative flex gap-3 sm:gap-4 ${
+              winner ? 'br-ranked-build--winner' : isMe ? 'br-ranked-build--mine' : ''
             }`}
           >
             {winner && (
               <span
-                className="absolute -top-3 left-4 rounded-full bg-amber-400 px-3 py-0.5 text-xs font-black tracking-widest text-amber-950 uppercase shadow"
+                className="br-winner-banner absolute -top-3 left-4 rounded-full px-3 py-0.5 text-xs font-black tracking-widest uppercase shadow"
                 data-testid="winner-banner"
               >
                 {t.common.winner}
               </span>
             )}
-            <div className="flex w-8 shrink-0 flex-col items-center justify-center text-center sm:w-10">
+            <div className="br-rank-marker flex w-8 shrink-0 flex-col items-center justify-center text-center sm:w-10">
               <span className="text-2xl" aria-hidden="true">
                 {rankMedal(b)}
               </span>
@@ -240,7 +241,7 @@ function RankedBuilds({ snapshot }: { snapshot: BattleSnapshot }) {
                 {b.final_rank !== null ? `#${String(b.final_rank)}` : '–'}
               </span>
             </div>
-            <div className="relative aspect-[16/10] w-24 shrink-0 self-start overflow-hidden rounded-lg bg-zinc-100 sm:w-48 sm:self-auto dark:bg-zinc-800">
+            <div className="br-ranked-build__image relative aspect-[16/10] w-24 shrink-0 self-start overflow-hidden rounded-lg sm:w-48 sm:self-auto">
               {removed ? (
                 <RemovedCard compact />
               ) : hasShot && b.screenshot_path ? (
@@ -257,9 +258,9 @@ function RankedBuilds({ snapshot }: { snapshot: BattleSnapshot }) {
                 </p>
               )}
             </div>
-            <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+            <div className="br-ranked-build__details flex min-w-0 flex-1 flex-col gap-1.5">
               <p
-                className="truncate text-base font-black sm:text-lg"
+                className="br-ranked-build__name truncate text-base font-black sm:text-lg"
                 data-testid="ranked-build-name"
               >
                 {removed

@@ -9,6 +9,9 @@
 import { useT } from '../../lib/i18n/context';
 import { CodeText } from '../site/CodeText';
 import { GUIDE_PATH } from './copy';
+import { LifebuoyIcon } from '@phosphor-icons/react/dist/csr/Lifebuoy';
+import { LinkSimpleIcon } from '@phosphor-icons/react/dist/csr/LinkSimple';
+import './onboarding.css';
 
 /** The `<details>` element's id (one drop zone per page). */
 export const IMPORT_HELP_ID = 'import-help';
@@ -34,11 +37,11 @@ export function ImportHelp() {
     <details
       id={IMPORT_HELP_ID}
       data-testid="import-help"
-      className="group rounded-xl border border-zinc-200 bg-white text-left text-sm dark:border-zinc-800 dark:bg-zinc-900"
+      className="br-import-help group rounded-xl border border-zinc-200 bg-white text-left text-sm dark:border-zinc-800 dark:bg-zinc-900"
     >
       <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-2 rounded-xl px-3 py-2 font-bold focus-visible:outline-2 focus-visible:outline-sky-500 [&::-webkit-details-marker]:hidden">
         <span>
-          <span aria-hidden="true">🛟 </span>
+          <LifebuoyIcon aria-hidden="true" className="mr-1 inline-block text-[#2850ff]" size={18} />
           {help.summary}
         </span>
         <span
@@ -48,7 +51,7 @@ export function ImportHelp() {
           ▾
         </span>
       </summary>
-      <div className="flex flex-col gap-3 border-t border-zinc-200 px-3 py-3 text-zinc-700 dark:border-zinc-800 dark:text-zinc-300">
+      <div className="br-import-help__content flex flex-col gap-3 border-t border-zinc-200 px-3 py-3 text-zinc-700 dark:border-zinc-800 dark:text-zinc-300">
         <ol className="flex list-decimal flex-col gap-1 pl-5">
           {help.steps.map((s, i) => (
             <li key={i}>
@@ -57,7 +60,11 @@ export function ImportHelp() {
           ))}
         </ol>
         <p data-testid="import-help-link">
-          <span aria-hidden="true">🔗 </span>
+          <LinkSimpleIcon
+            aria-hidden="true"
+            className="mr-1 inline-block text-[#2850ff]"
+            size={16}
+          />
           <CodeText text={help.link} />
         </p>
         <div>
@@ -70,7 +77,7 @@ export function ImportHelp() {
             ))}
           </ul>
         </div>
-        <p className="rounded-lg bg-amber-50 px-2.5 py-2 text-amber-950 dark:bg-amber-950/50 dark:text-amber-100">
+        <p className="br-import-help__tip rounded-lg bg-amber-50 px-2.5 py-2 text-amber-950 dark:bg-amber-950/50 dark:text-amber-100">
           <span className="font-semibold">{help.webBuildersTitle}</span>{' '}
           <CodeText text={help.webBuilders} />
         </p>

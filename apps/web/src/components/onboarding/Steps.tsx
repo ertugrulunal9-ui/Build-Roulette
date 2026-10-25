@@ -6,6 +6,14 @@
  * and the guide show all four as cards. Their words are the page language's (T-050).
  */
 import { useT } from '../../lib/i18n/context';
+import { ClockIcon } from '@phosphor-icons/react/dist/csr/Clock';
+import { CodeIcon } from '@phosphor-icons/react/dist/csr/Code';
+import { PackageIcon } from '@phosphor-icons/react/dist/csr/Package';
+import { RocketLaunchIcon } from '@phosphor-icons/react/dist/csr/RocketLaunch';
+import { EyeIcon } from '@phosphor-icons/react/dist/csr/Eye';
+import { ListChecksIcon } from '@phosphor-icons/react/dist/csr/ListChecks';
+import { TrophyIcon } from '@phosphor-icons/react/dist/csr/Trophy';
+import { ArrowDownIcon } from '@phosphor-icons/react/dist/csr/ArrowDown';
 import { formatTimeLimit } from '../../lib/solo/format';
 import { cardClass } from '../results/ResultPieces';
 import { CodeText } from '../site/CodeText';
@@ -22,7 +30,7 @@ export function StepArt({ id, size = 'large' }: { id: StepId; size?: 'large' | '
     <div
       aria-hidden="true"
       data-art={id}
-      className={`flex w-full items-center justify-center select-none ${large ? 'min-h-40' : 'min-h-36'}`}
+      className={`br-guide__step-illustration flex w-full items-center justify-center select-none ${large ? 'min-h-40' : 'min-h-36'}`}
     >
       {id === 'spin' && <SpinArt large={large} />}
       {id === 'build' && <BuildArt large={large} />}
@@ -34,6 +42,11 @@ export function StepArt({ id, size = 'large' }: { id: StepId; size?: 'large' | '
 
 function SpinArt({ large }: { large: boolean }) {
   const t = useT();
+  const samples = {
+    build: t.home.sampleBuild,
+    rule: t.home.sampleRule,
+    style: t.home.sampleStyle,
+  };
   const cards = (['build', 'rule', 'style'] as const).map((k, i) => (
     <div
       key={k}
@@ -47,7 +60,7 @@ function SpinArt({ large }: { large: boolean }) {
         {t.cards[k]}
       </span>
       <span className={`leading-tight font-semibold ${large ? 'text-xs' : 'text-[10px]'}`}>
-        {STEP_SAMPLES.exampleCards[k]}
+        {samples[k]}
       </span>
     </div>
   ));
@@ -59,7 +72,8 @@ function SpinArt({ large }: { large: boolean }) {
           large ? 'text-xs' : 'text-[10px]'
         }`}
       >
-        ⏱ {t.stepArt.timeLabel} · {formatTimeLimit(STEP_SAMPLES.exampleMinutes * 60, t)}
+        <ClockIcon aria-hidden="true" /> {t.stepArt.timeLabel} ·{' '}
+        {formatTimeLimit(STEP_SAMPLES.exampleMinutes * 60, t)}
       </span>
     </div>
   );
@@ -69,7 +83,11 @@ function BuildArt({ large }: { large: boolean }) {
   const tools = STEP_SAMPLES.tools;
   return (
     <div className="flex flex-col items-center gap-3">
-      <p className={large ? 'text-6xl' : 'text-4xl'}>🧑‍💻</p>
+      <p
+        className={`grid place-items-center rounded-full bg-[#e2e8ff] text-[#2850ff] ${large ? 'size-20' : 'size-14'}`}
+      >
+        <CodeIcon aria-hidden="true" size={large ? 42 : 30} weight="duotone" />
+      </p>
       <ul className="flex max-w-72 flex-wrap justify-center gap-1.5">
         {tools.map((t) => (
           <li
@@ -100,13 +118,13 @@ function DropArt({ large }: { large: boolean }) {
         </p>
         <p className="text-emerald-300">{t.stepArt.terminalResult}</p>
       </div>
-      <span className="text-zinc-400 dark:text-zinc-600">↓</span>
+      <ArrowDownIcon aria-hidden="true" className="text-[#2850ff]" size={20} />
       <div
         className={`flex w-full items-center justify-center gap-1.5 rounded-xl border-2 border-dashed border-sky-400 bg-sky-50 font-bold text-sky-900 dark:border-sky-600 dark:bg-sky-950/60 dark:text-sky-100 ${
           large ? 'px-3 py-3 text-sm' : 'px-2 py-2 text-[11px]'
         }`}
       >
-        📦 <CodeText text={t.stepArt.dropTarget} />
+        <PackageIcon aria-hidden="true" size={18} /> <CodeText text={t.stepArt.dropTarget} />
       </div>
     </div>
   );
@@ -126,7 +144,15 @@ function ShipArt({ large }: { large: boolean }) {
                   large ? 'size-12 text-2xl' : 'size-9 text-lg'
                 }`}
               >
-                {s.emoji}
+                {s.key === 'ship' ? (
+                  <RocketLaunchIcon aria-hidden="true" weight="duotone" />
+                ) : s.key === 'reveal' ? (
+                  <EyeIcon aria-hidden="true" weight="duotone" />
+                ) : s.key === 'vote' ? (
+                  <ListChecksIcon aria-hidden="true" weight="duotone" />
+                ) : (
+                  <TrophyIcon aria-hidden="true" weight="duotone" />
+                )}
               </span>
               <span
                 className={`font-bold text-zinc-600 dark:text-zinc-400 ${large ? 'text-[11px]' : 'text-[9px]'}`}
@@ -153,11 +179,11 @@ export function StepCard({ step, index }: { step: StepId; index: number }) {
   const words = useT().steps[step];
   return (
     <li
-      className="flex flex-col gap-3 rounded-2xl border border-zinc-200 bg-white p-4 text-left shadow-sm dark:border-zinc-800 dark:bg-zinc-900"
+      className="br-guide__step-card flex flex-col gap-3 rounded-2xl border border-zinc-200 bg-white p-4 text-left shadow-sm dark:border-zinc-800 dark:bg-zinc-900"
       data-testid="step-card"
       data-step={step}
     >
-      <div className="rounded-xl bg-zinc-50 py-3 dark:bg-zinc-950/60">
+      <div className="br-guide__step-art rounded-xl bg-zinc-50 py-3 dark:bg-zinc-950/60">
         <StepArt id={step} size="small" />
       </div>
       <h3 className="flex items-center gap-2 text-lg font-black tracking-tight">
@@ -178,7 +204,7 @@ export function StepCards({ label }: { label: string }) {
   return (
     <ol
       aria-label={label}
-      className="grid w-full max-w-4xl grid-cols-1 gap-4 sm:grid-cols-2"
+      className="br-guide__step-cards grid w-full max-w-4xl grid-cols-1 gap-4 sm:grid-cols-2"
       data-testid="step-cards"
     >
       {STEP_IDS.map((step, i) => (

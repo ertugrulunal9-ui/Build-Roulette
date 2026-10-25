@@ -17,6 +17,7 @@ import { previewConfig } from '../../lib/preview/config';
 import { isSiteLoadFailure } from '../../lib/preview/site-errors';
 import type { DestroyStage } from '../../lib/solo/controller';
 import { PreviewHealth } from '../../lib/telemetry/sandbox-health';
+import './solo-screens.css';
 
 interface RevealPaneProps {
   /** The battle (preview telemetry, T-031). */
@@ -98,17 +99,14 @@ export function RevealPane({ battleId, build, status, destroy, caption }: Reveal
   }, [build]);
 
   return (
-    <section className="flex min-h-[24rem] flex-col overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-      <p
-        className="border-b border-zinc-200 px-4 py-2 text-xs font-semibold tracking-wide text-zinc-500 uppercase dark:border-zinc-800"
-        data-testid="last-look"
-      >
+    <section className="br-reveal-pane">
+      <p className="br-reveal-pane__caption" data-testid="last-look">
         {caption}
       </p>
-      <div className="relative min-h-0 flex-1 bg-white">
+      <div className="br-reveal-pane__viewport">
         <div
           ref={hostRef}
-          className={`absolute inset-0 ${destroy === 'animating' ? 'br-destroying' : ''}`}
+          className={`br-reveal-pane__host ${destroy === 'animating' ? 'br-destroying' : ''}`}
           data-testid="reveal-host"
           hidden={destroy === 'done'}
         />

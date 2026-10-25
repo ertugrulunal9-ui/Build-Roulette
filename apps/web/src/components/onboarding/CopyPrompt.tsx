@@ -50,11 +50,11 @@ export function CopyPrompt({ text: given }: { text?: string }) {
   };
 
   return (
-    <div className="flex flex-col gap-2" data-testid="copy-prompt">
-      <div className="flex flex-col gap-3 rounded-xl border border-zinc-200 bg-white p-3 sm:flex-row sm:items-center dark:border-zinc-800 dark:bg-zinc-900">
+    <div className="br-guide__copy-prompt flex flex-col gap-2" data-testid="copy-prompt">
+      <div className="br-guide__copy-prompt-box flex flex-col gap-3 rounded-xl border border-zinc-200 bg-white p-3 sm:flex-row sm:items-center dark:border-zinc-800 dark:bg-zinc-900">
         <p
           ref={textRef}
-          className="flex-1 font-mono text-sm text-zinc-800 dark:text-zinc-200"
+          className="br-guide__copy-prompt-text flex-1 font-mono text-sm text-zinc-800 dark:text-zinc-200"
           data-testid="prompt-text"
         >
           {text}
@@ -65,7 +65,7 @@ export function CopyPrompt({ text: given }: { text?: string }) {
           onClick={() => {
             void copy();
           }}
-          className="min-h-11 shrink-0 rounded-lg bg-zinc-900 px-4 py-2 text-sm font-bold text-white hover:bg-zinc-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-white"
+          className="br-guide__copy-prompt-button min-h-11 shrink-0 rounded-lg bg-zinc-900 px-4 py-2 text-sm font-bold text-white hover:bg-zinc-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-white"
         >
           {state === 'copied' ? t.guide.copied : t.guide.copy}
         </button>

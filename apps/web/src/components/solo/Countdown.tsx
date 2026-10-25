@@ -18,13 +18,6 @@ export function timeLevel(remaining: number | null, lowMs = LOW_TIME_MS): TimeLe
   return 'normal';
 }
 
-const LEVEL_CLASS: Record<TimeLevel, string> = {
-  normal: 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900',
-  low: 'bg-amber-500 text-amber-950',
-  critical: 'br-pulse-red text-white',
-  up: 'bg-red-700 text-white',
-};
-
 /**
  * The BUILD countdown, from server time (docs/04 §4.5). It re-renders itself four times a
  * second; the rest of the page ticks once a second.
@@ -44,7 +37,7 @@ export function Countdown({
   const level = timeLevel(remaining, lowMs);
   return (
     <div
-      className={`flex items-baseline gap-2 rounded-lg px-3 py-1.5 font-mono tabular-nums ${LEVEL_CLASS[level]}`}
+      className="br-countdown"
       data-testid="countdown"
       data-level={level}
       role="timer"

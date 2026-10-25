@@ -42,7 +42,7 @@ export function LanguagePicker({
       aria-label={t.language.label}
       data-testid="language-picker"
       data-locale={locale}
-      className={`inline-flex shrink-0 items-center gap-0.5 rounded-full border p-0.5 text-xs font-bold ${frame} ${className}`}
+      className={`br-language inline-flex shrink-0 items-center gap-0.5 rounded-full border p-0.5 text-xs font-bold ${frame} ${className}`}
     >
       {LOCALES.map((l) => (
         <button

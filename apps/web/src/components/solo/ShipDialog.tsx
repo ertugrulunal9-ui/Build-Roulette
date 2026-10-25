@@ -5,6 +5,7 @@ import { useT } from '../../lib/i18n/context';
 import type { Messages } from '../../lib/i18n/messages/en';
 import type { ShipState } from '../../lib/solo/controller';
 import { describeError } from '../../lib/solo/errors';
+import './solo-screens.css';
 
 function progressText(status: ShipState['status'], m: Messages): string | null {
   if (status === 'thumbnail' || status === 'uploading' || status === 'shipping') {
@@ -44,18 +45,18 @@ export function ShipDialog({ open, defaultName, ship, onShip, onClose }: ShipDia
         e.preventDefault();
         if (!busy) onClose();
       }}
-      className="m-auto w-[min(28rem,calc(100vw-2rem))] rounded-2xl bg-white p-0 text-zinc-900 shadow-2xl backdrop:bg-black/60 dark:bg-zinc-900 dark:text-zinc-100"
+      className="br-ship-dialog"
     >
       <form
-        className="flex flex-col gap-4 p-6"
+        className="br-ship-dialog__form"
         onSubmit={(e) => {
           e.preventDefault();
           if (!busy && trimmed.length > 0) onShip(trimmed);
         }}
       >
         <h2 className="text-2xl font-black tracking-tight">{t.ship.title}</h2>
-        <p className="text-sm text-zinc-600 dark:text-zinc-400">{t.ship.text}</p>
-        <label className="flex flex-col gap-1 text-sm font-semibold">
+        <p className="br-ship-dialog__description">{t.ship.text}</p>
+        <label className="br-ship-dialog__label">
           {t.ship.buildName}
           <input
             data-testid="build-name"
@@ -66,31 +67,27 @@ export function ShipDialog({ open, defaultName, ship, onShip, onClose }: ShipDia
             onChange={(e) => {
               setName(e.target.value);
             }}
-            className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-base font-normal dark:border-zinc-700 dark:bg-zinc-950"
+            className="br-field"
           />
         </label>
 
         {busy && (
-          <p role="status" className="text-sm font-semibold text-sky-700 dark:text-sky-300">
+          <p role="status" className="br-import-reading">
             {progressText(ship.status, t)}
           </p>
         )}
         {ship.status === 'error' && ship.error && (
-          <p
-            role="alert"
-            className="text-sm text-red-700 dark:text-red-300"
-            data-testid="ship-error"
-          >
+          <p role="alert" className="br-ship-dialog__error" data-testid="ship-error">
             {describeError(ship.error, t)}
           </p>
         )}
 
-        <div className="flex flex-wrap justify-end gap-2">
+        <div className="br-ship-dialog__actions">
           <button
             type="button"
             disabled={busy}
             onClick={onClose}
-            className="rounded-lg border border-zinc-300 px-4 py-2 text-sm font-semibold disabled:opacity-50 dark:border-zinc-700"
+            className="br-btn br-btn--secondary"
           >
             {t.ship.keepBuilding}
           </button>
@@ -98,7 +95,7 @@ export function ShipDialog({ open, defaultName, ship, onShip, onClose }: ShipDia
             type="submit"
             data-testid="confirm-ship"
             disabled={busy || trimmed.length === 0}
-            className="rounded-lg bg-emerald-600 px-5 py-2 text-sm font-black tracking-wide text-white disabled:opacity-50"
+            className="br-btn br-btn--primary"
           >
             {ship.status === 'error' ? t.ship.tryAgain : t.ship.ship}
           </button>

@@ -97,6 +97,17 @@ describe('VoteTally', () => {
     ]);
   });
 
+  it('keeps counts for a category added by a newer server', () => {
+    render(createElement(VoteTally, { votes: { overall: 1, creativity: 2 }, total: 3 }));
+    expect(
+      screen.getAllByTestId('vote-count').map((c) => [c.dataset['category'], c.dataset['count']]),
+    ).toEqual([
+      ['overall', '1'],
+      ['creativity', '2'],
+    ]);
+    expect(screen.getByTitle('creativity: 2')).toBeTruthy();
+  });
+
   it('nothing for a battle without votes', () => {
     const { container } = render(createElement(VoteTally, { votes: null, total: 0 }));
     expect(container.innerHTML).toBe('');

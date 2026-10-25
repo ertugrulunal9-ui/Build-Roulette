@@ -10,6 +10,10 @@
  * stays.
  */
 import { useEffect, useRef, useState } from 'react';
+import { ArrowsClockwiseIcon } from '@phosphor-icons/react/dist/csr/ArrowsClockwise';
+import { FileZipIcon } from '@phosphor-icons/react/dist/csr/FileZip';
+import { FolderOpenIcon } from '@phosphor-icons/react/dist/csr/FolderOpen';
+import { LinkSimpleIcon } from '@phosphor-icons/react/dist/csr/LinkSimple';
 import { useI18n, useT } from '../../lib/i18n/context';
 import { isLinkRoot, linkHost } from '../../lib/site/link-import';
 import { formatBytes, rootLabel, type ImportedSite } from '../../lib/site/site';
@@ -29,8 +33,7 @@ export interface ImportBarProps {
   link?: LinkControls | null;
 }
 
-const smallButton =
-  'rounded-md border border-zinc-300 px-2.5 py-1 text-xs font-semibold hover:bg-zinc-100 focus-visible:outline-2 focus-visible:outline-sky-500 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800';
+const smallButton = 'br-btn br-btn--secondary br-import-small-button';
 
 export function ImportBar({
   site,
@@ -56,15 +59,17 @@ export function ImportBar({
   );
   const linkErrorInRow = rowOpen && state.status === 'error' && state.via === 'link';
   return (
-    <div className="flex flex-col gap-2 border-b border-zinc-200 bg-white px-3 py-1.5 dark:border-zinc-800 dark:bg-zinc-900">
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+    <div className="br-import-bar">
+      <div className="br-import-bar__summary-row">
         <p
-          className="min-w-0 text-zinc-700 dark:text-zinc-300"
+          className="br-import-summary"
           data-testid="import-summary"
           data-files={site.files}
           data-root={site.root}
         >
-          <span aria-hidden="true">{copiedHost !== null ? '🔗 ' : '📦 '}</span>
+          <span aria-hidden="true" className="br-import-icon">
+            {copiedHost !== null ? <LinkSimpleIcon size={15} /> : <FileZipIcon size={15} />}
+          </span>{' '}
           <span className="font-semibold">
             {copiedHost !== null ? words.copiedFrom : words.importedFrom}
           </span>{' '}
@@ -82,27 +87,19 @@ export function ImportBar({
           ) : (
             <span>{words.droppedFolder}</span>
           )}{' '}
-          <span className="text-zinc-500">
+          <span className="br-import-meta">
             · {t.units.files(site.files)} · {formatBytes(site.bytes, locale)}
             {site.skipped > 0 && ` · ${words.skipped(site.skipped)}`}
           </span>
         </p>
         {state.status === 'reading' && !copying && (
-          <span
-            role="status"
-            className="font-semibold text-sky-700 dark:text-sky-300"
-            data-testid="import-reading"
-          >
+          <span role="status" className="br-import-reading" data-testid="import-reading">
             {words.reading}
           </span>
         )}
         {copying && !rowOpen && (
           <span className="flex items-center gap-2">
-            <span
-              role="status"
-              className="font-semibold text-sky-700 dark:text-sky-300"
-              data-testid="link-copying"
-            >
+            <span role="status" className="br-import-reading" data-testid="link-copying">
               {words.linkCopying}
             </span>
             <button
@@ -226,7 +223,7 @@ function ImportAgain({
             onClick={choose(openFolder)}
             className="rounded px-3 py-2 text-left text-sm hover:bg-zinc-100 dark:hover:bg-zinc-800"
           >
-            📁 {words.chooseFolder}
+            <FolderOpenIcon size={17} aria-hidden="true" /> {words.chooseFolder}
           </button>
           <button
             type="button"
@@ -235,7 +232,7 @@ function ImportAgain({
             onClick={choose(openZip)}
             className="rounded px-3 py-2 text-left text-sm hover:bg-zinc-100 dark:hover:bg-zinc-800"
           >
-            🗜 {words.chooseZip}
+            <FileZipIcon size={17} aria-hidden="true" /> {words.chooseZip}
           </button>
           {copyAgain && (
             <button
@@ -245,7 +242,8 @@ function ImportAgain({
               onClick={choose(copyAgain.run)}
               className="rounded px-3 py-2 text-left text-sm [overflow-wrap:anywhere] hover:bg-zinc-100 dark:hover:bg-zinc-800"
             >
-              🔁 {words.copyAgainFrom(copyAgain.host)}
+              <ArrowsClockwiseIcon size={17} aria-hidden="true" />{' '}
+              {words.copyAgainFrom(copyAgain.host)}
             </button>
           )}
           {pasteLink && (
@@ -256,7 +254,7 @@ function ImportAgain({
               onClick={choose(pasteLink)}
               className="rounded px-3 py-2 text-left text-sm hover:bg-zinc-100 dark:hover:bg-zinc-800"
             >
-              🔗 {words.pasteLink}
+              <LinkSimpleIcon size={17} aria-hidden="true" /> {words.pasteLink}
             </button>
           )}
         </div>

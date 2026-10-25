@@ -6,6 +6,7 @@
  * Supabase loads only when a room is created, so the landing page stays light.
  */
 import { normalizeRoomCode } from '@br/game';
+import { ArrowRightIcon as ArrowRight } from '@phosphor-icons/react/dist/csr/ArrowRight';
 import Link from 'next/link';
 import { useState } from 'react';
 import { loadPage } from '../../lib/hosting/navigate';
@@ -15,10 +16,8 @@ import { randomDisplayName } from '../../lib/solo/names';
 
 const NAME_KEY = 'br:display-name';
 
-const buttonClass =
-  'rounded-lg px-5 py-3 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-50';
-const inputClass =
-  'min-w-0 flex-1 rounded-lg border border-zinc-300 bg-white px-3 py-2.5 text-base dark:border-zinc-700 dark:bg-zinc-900';
+const buttonClass = 'br-home__action-button';
+const inputClass = 'br-home__input';
 
 function rememberedName(): string {
   try {
@@ -87,15 +86,8 @@ export function HomeActions() {
   };
 
   return (
-    <div className="flex w-full max-w-md flex-col items-center gap-4">
-      <div className="flex flex-col gap-3 sm:flex-row">
-        <Link
-          href="/play"
-          data-testid="play-solo"
-          className={`${buttonClass} bg-emerald-600 text-white hover:bg-emerald-700`}
-        >
-          {t.home.playSolo}
-        </Link>
+    <div className="br-home__actions">
+      <div className="br-home__action-row">
         <button
           type="button"
           data-testid="create-room"
@@ -103,26 +95,37 @@ export function HomeActions() {
           onClick={() => {
             open(panel === 'create' ? 'none' : 'create');
           }}
-          className={`${buttonClass} bg-zinc-900 text-zinc-50 dark:bg-zinc-100 dark:text-zinc-900`}
+          className={`${buttonClass} br-home__action-button--primary`}
         >
-          {t.home.createRoom}
+          {t.home.heroCreateRoom}
+          <ArrowRight aria-hidden="true" />
         </button>
+        <Link
+          href="/play"
+          data-testid="play-solo"
+          className={`${buttonClass} br-home__action-button--secondary`}
+        >
+          {t.home.playSolo}
+        </Link>
+      </div>
+      <p className="br-home__join-prompt">
+        {t.home.haveCode}{' '}
         <button
           type="button"
           data-testid="join-with-code"
           aria-expanded={panel === 'join'}
+          className="br-home__join-trigger br-home__join-inline"
           onClick={() => {
             open(panel === 'join' ? 'none' : 'join');
           }}
-          className={`${buttonClass} border border-zinc-300 dark:border-zinc-700`}
         >
-          {t.home.joinWithCode}
+          {t.home.heroJoinRoom} <ArrowRight aria-hidden="true" />
         </button>
-      </div>
+      </p>
 
       {panel === 'create' && (
         <form
-          className="flex w-full flex-col gap-2 text-left"
+          className="br-home__form"
           data-testid="create-room-form"
           onSubmit={(e) => {
             e.preventDefault();
@@ -165,7 +168,7 @@ export function HomeActions() {
 
       {panel === 'join' && (
         <form
-          className="flex w-full flex-col gap-2 text-left"
+          className="br-home__form"
           data-testid="join-room-form"
           onSubmit={(e) => {
             e.preventDefault();

@@ -1,7 +1,28 @@
 @import 'tailwindcss';
+@import '@fontsource-variable/inter-tight';
+@import '@fontsource-variable/dm-sans';
+@import './theme.css';
+
+@custom-variant dark (&:where(.br-dark, .br-dark *));
+
+@theme {
+  --font-sans: 'DM Sans Variable', 'DM Sans', sans-serif;
+  --font-display: 'Inter Tight Variable', 'Inter Tight', sans-serif;
+  --color-zinc-50: #faf9f5;
+  --color-zinc-100: #f0f0ed;
+  --color-zinc-200: #e2e1dc;
+  --color-zinc-300: #c9cbd2;
+  --color-zinc-400: #8a8e9f;
+  --color-zinc-500: #69718a;
+  --color-zinc-600: #535d76;
+  --color-zinc-700: #39435d;
+  --color-zinc-800: #26314a;
+  --color-zinc-900: #151b2f;
+  --color-zinc-950: #101526;
+}
 
 :root {
-  color-scheme: light dark;
+  color-scheme: light;
 }
 
 /* ─── Solo game animations (/play) ─────────────────────────────────────────── */

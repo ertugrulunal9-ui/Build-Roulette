@@ -12,6 +12,7 @@ import { useEffect } from 'react';
 import { I18nProvider, useI18n } from '../lib/i18n/context';
 import { reportClientError } from '../lib/telemetry/error-sink';
 import './globals.css';
+import '../components/moderation/moderation.css';
 
 export default function GlobalError({ error, reset }: { error: Error; reset: () => void }) {
   useEffect(() => {
@@ -29,7 +30,7 @@ function ErrorPage({ reset }: { reset: () => void }) {
   const { locale, t } = useI18n();
   return (
     <html lang={locale}>
-      <body className="grid min-h-dvh place-items-center bg-zinc-50 px-4 font-sans text-zinc-900 antialiased dark:bg-zinc-950 dark:text-zinc-100">
+      <body className="br-app-body br-error grid min-h-dvh place-items-center px-4 antialiased">
         <main
           className="flex max-w-md flex-col items-center gap-4 text-center"
           data-testid="global-error"

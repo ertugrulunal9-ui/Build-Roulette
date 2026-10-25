@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import { MagnifyingGlassIcon } from '@phosphor-icons/react/dist/csr/MagnifyingGlass';
 import {
   historyHref,
   type HistoryBattle,
@@ -18,9 +19,9 @@ import {
   rankMedal,
 } from '../../lib/solo/format';
 import { screenshotUrl } from '../../lib/supabase/config';
-import { LanguagePicker } from '../i18n/LanguagePicker';
 import { RemovedCard } from '../moderation/Removed';
 import { AwardBadges, VoteTally } from './ResultPieces';
+import { AppHeader } from '../ui/AppHeader';
 
 /**
  * A player's history (docs/01 §1.3 `/u/[id]`): their past battles, newest first, from
@@ -48,60 +49,59 @@ export function PlayerHistory({
 }) {
   const h = useT().history;
   return (
-    <main className="mx-auto flex min-h-dvh max-w-4xl flex-col gap-8 px-4 py-10">
-      <header className="flex flex-col gap-2">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <Link href="/" className="text-sm font-semibold text-zinc-500 hover:underline">
-            Build Roulette
+    <div className="br-public-shell min-h-dvh">
+      <AppHeader
+        className="br-public-header"
+        context={<span className="br-public-context">{h.eyebrow}</span>}
+      />
+      <main className="br-history-page mx-auto flex max-w-5xl flex-col gap-8 px-4 py-10">
+        <header className="flex flex-col gap-2">
+          <h1 className="text-4xl font-black tracking-tight break-words" data-testid="player-name">
+            {data.player.display_name}
+          </h1>
+          <p className="text-sm text-zinc-500">{h.intro}</p>
+        </header>
+
+        <ol className="flex flex-col gap-5" aria-label={h.battles} data-testid="history">
+          {data.battles.map((b) => (
+            <HistoryItem key={b.battle_id} battle={b} />
+          ))}
+        </ol>
+
+        <nav className="flex flex-wrap items-center justify-between gap-3" aria-label={h.pages}>
+          {cursor ? (
+            <a
+              href={historyHref(id, null)}
+              className="text-sm font-semibold underline"
+              data-testid="history-newest"
+            >
+              {h.newest}
+            </a>
+          ) : (
+            <span />
+          )}
+          {data.next && (
+            <a
+              href={historyHref(id, data.next)}
+              className="rounded-lg border border-zinc-300 px-4 py-2 text-sm font-semibold hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+              data-testid="history-older"
+            >
+              {h.older}
+            </a>
+          )}
+        </nav>
+
+        <footer className="br-public-footer border-t pt-6 text-center text-sm">
+          <p>{h.footer}</p>
+          <Link
+            href="/"
+            className="br-primary-link mt-4 inline-block rounded-lg px-5 py-3 font-semibold"
+          >
+            {h.play}
           </Link>
-          <LanguagePicker />
-        </div>
-        <p className="text-sm font-semibold tracking-widest text-zinc-500 uppercase">{h.eyebrow}</p>
-        <h1 className="text-4xl font-black tracking-tight break-words" data-testid="player-name">
-          {data.player.display_name}
-        </h1>
-        <p className="text-sm text-zinc-500">{h.intro}</p>
-      </header>
-
-      <ol className="flex flex-col gap-5" aria-label={h.battles} data-testid="history">
-        {data.battles.map((b) => (
-          <HistoryItem key={b.battle_id} battle={b} />
-        ))}
-      </ol>
-
-      <nav className="flex flex-wrap items-center justify-between gap-3" aria-label={h.pages}>
-        {cursor ? (
-          <a
-            href={historyHref(id, null)}
-            className="text-sm font-semibold underline"
-            data-testid="history-newest"
-          >
-            {h.newest}
-          </a>
-        ) : (
-          <span />
-        )}
-        {data.next && (
-          <a
-            href={historyHref(id, data.next)}
-            className="rounded-lg border border-zinc-300 px-4 py-2 text-sm font-semibold hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
-            data-testid="history-older"
-          >
-            {h.older}
-          </a>
-        )}
-      </nav>
-
-      <footer className="border-t border-zinc-200 pt-6 text-center text-sm text-zinc-500 dark:border-zinc-800">
-        <p>{h.footer}</p>
-        <Link
-          href="/"
-          className="mt-4 inline-block rounded-lg bg-emerald-600 px-5 py-3 font-semibold text-white hover:bg-emerald-700"
-        >
-          {h.play}
-        </Link>
-      </footer>
-    </main>
+        </footer>
+      </main>
+    </div>
   );
 }
 
@@ -109,23 +109,20 @@ export function PlayerHistory({
 export function PlayerNotFound() {
   const h = useT().history;
   return (
-    <main
-      className="mx-auto flex min-h-dvh max-w-xl flex-col items-center justify-center gap-5 px-6 py-16 text-center"
-      data-testid="player-not-found"
-    >
-      <p className="text-6xl" aria-hidden="true">
-        🔍
-      </p>
-      <h1 className="text-3xl font-black tracking-tight">{h.notFoundHeading}</h1>
-      <p className="text-zinc-600 dark:text-zinc-400">{h.notFoundText}</p>
-      <Link
-        href="/"
-        className="rounded-lg bg-emerald-600 px-5 py-3 font-semibold text-white hover:bg-emerald-700"
+    <div className="br-public-shell min-h-dvh">
+      <AppHeader className="br-public-header" />
+      <main
+        className="br-public-empty mx-auto flex max-w-xl flex-col items-center justify-center gap-5 px-6 py-16 text-center"
+        data-testid="player-not-found"
       >
-        {h.play}
-      </Link>
-      <LanguagePicker />
-    </main>
+        <MagnifyingGlassIcon size={40} weight="duotone" aria-hidden="true" />
+        <h1 className="text-3xl font-black tracking-tight">{h.notFoundHeading}</h1>
+        <p className="text-zinc-600 dark:text-zinc-400">{h.notFoundText}</p>
+        <Link href="/" className="br-primary-link rounded-lg px-5 py-3 font-semibold">
+          {h.play}
+        </Link>
+      </main>
+    </div>
   );
 }
 
@@ -149,11 +146,7 @@ function HistoryItem({ battle: b }: { battle: HistoryBattle }) {
       (b.build.status === 'dnf' ? t.common.didNotFinish : t.common.buildOf(b.display_name)));
   return (
     <li
-      className={`grid grid-cols-1 overflow-hidden rounded-2xl border bg-white shadow-sm sm:grid-cols-[14rem_minmax(0,1fr)] dark:bg-zinc-900 ${
-        winner
-          ? 'border-amber-400 ring-2 ring-amber-300/50 dark:border-amber-500'
-          : 'border-zinc-200 dark:border-zinc-800'
-      }`}
+      className={`br-history-battle grid grid-cols-1 overflow-hidden sm:grid-cols-[14rem_minmax(0,1fr)] ${winner ? 'br-history-battle--winner' : ''}`}
       data-testid="history-battle"
       data-battle={b.battle_id}
       data-rank={b.build.final_rank ?? ''}
@@ -161,7 +154,7 @@ function HistoryItem({ battle: b }: { battle: HistoryBattle }) {
       data-removed={removed ? 'true' : 'false'}
       data-winner={winner ? 'true' : 'false'}
     >
-      <div className="relative aspect-[16/10] bg-zinc-100 sm:aspect-auto dark:bg-zinc-800">
+      <div className="br-history-battle__image relative aspect-[16/10] sm:aspect-auto">
         {removed ? (
           <RemovedCard />
         ) : b.build.screenshot_path ? (
@@ -178,18 +171,18 @@ function HistoryItem({ battle: b }: { battle: HistoryBattle }) {
           </p>
         )}
       </div>
-      <div className="flex min-w-0 flex-col gap-2 p-4">
+      <div className="br-history-battle__details flex min-w-0 flex-col gap-2 p-4">
         <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
           <p className="text-xs font-semibold tracking-widest text-zinc-500 uppercase">
             {b.mode === 'solo' ? h.solo : h.roomBattle} ·{' '}
             <time dateTime={b.finished_at}>{formatDateTime(b.finished_at, locale)}</time>
           </p>
-          <p className="font-mono text-sm font-bold" data-testid="history-rank">
+          <p className="br-history-rank font-mono text-sm font-bold" data-testid="history-rank">
             <span aria-hidden="true">{rankMedal(b.build)}</span> {rankText(b, t)}
           </p>
         </div>
         <h2
-          className="text-xl font-black tracking-tight break-words"
+          className="br-history-challenge text-xl font-black tracking-tight break-words"
           data-testid="history-challenge"
         >
           {b.challenge.build.text}

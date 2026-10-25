@@ -12,7 +12,8 @@ import { useT } from '../../lib/i18n/context';
 import { formatTimeLimit } from '../../lib/solo/format';
 import type { Challenge } from '../../lib/solo/types';
 import { useTicker } from '../../lib/solo/use-ticker';
-import { cardClass, type CardKind } from '../results/ResultPieces';
+import type { CardKind } from '../results/ResultPieces';
+import './solo-screens.css';
 
 /**
  * Decoys that scroll past while a reel spins (not the real deck). English in every language,
@@ -78,29 +79,21 @@ function Reel({
     kind === 'time'
       ? BUILD_TIME_LIMITS_MINUTES.map((m) => formatTimeLimit(m * 60, t))
       : DECOYS[kind];
-  const tone =
-    kind === 'time'
-      ? 'border-emerald-400 bg-emerald-50 text-emerald-950 dark:bg-emerald-950/60 dark:text-emerald-50'
-      : cardClass(kind);
+  const tone = `br-spin-card--${kind}`;
   return (
     <div
-      className={`flex flex-col gap-2 rounded-2xl border-4 p-4 shadow-lg ${tone}`}
+      className={`br-spin-card ${tone}`}
       data-testid={`reel-${kind}`}
       data-landed={landed ? 'true' : 'false'}
     >
-      <p className="text-xs font-black tracking-[0.3em] opacity-70">{label}</p>
+      <p className="br-spin-card__label">{label}</p>
       <div className="relative h-20 overflow-hidden" aria-live="polite">
         {landed ? (
-          <p className="br-reel-land flex h-20 items-center justify-center text-center text-xl font-black sm:text-2xl">
-            {value}
-          </p>
+          <p className="br-reel-land br-spin-card__value">{value}</p>
         ) : (
           <div className="br-reel-strip blur-[1px]" aria-hidden="true">
             {[...decoys, ...decoys].map((d, i) => (
-              <p
-                key={i}
-                className="flex h-20 items-center justify-center text-center text-xl font-black opacity-60 sm:text-2xl"
-              >
+              <p key={i} className="br-spin-card__value br-spin-card__value--decoy">
                 {d}
               </p>
             ))}
@@ -138,17 +131,12 @@ export function SpinReels({
   const allLanded = landed('time');
 
   return (
-    <div
-      className="fixed inset-0 z-40 flex flex-col items-center justify-center gap-8 overflow-auto bg-zinc-950/95 px-4 py-10 text-white backdrop-blur"
-      data-testid="spin"
-    >
-      <header className="text-center">
-        <p className="text-sm font-semibold tracking-widest text-zinc-400 uppercase">
-          {heading ?? t.spin.heading(playerName)}
-        </p>
-        <h1 className="mt-2 text-5xl font-black tracking-tight sm:text-6xl">{t.spin.title}</h1>
+    <div className="br-spin-overlay" data-testid="spin">
+      <header className="br-spin-heading">
+        <p>{heading ?? t.spin.heading(playerName)}</p>
+        <h1>{t.spin.title}</h1>
       </header>
-      <div className="grid w-full max-w-5xl grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="br-spin-grid">
         {(['build', 'rule', 'style'] as const).map((k) => (
           <Reel key={k} kind={k} label={t.cards[k]} value={challenge[k].text} landed={landed(k)} />
         ))}
@@ -159,7 +147,7 @@ export function SpinReels({
           landed={allLanded}
         />
       </div>
-      <p className="h-6 text-lg font-bold text-zinc-300" aria-live="polite">
+      <p className="br-spin-ready" aria-live="polite">
         {allLanded ? t.spin.getReady : ''}
       </p>
     </div>

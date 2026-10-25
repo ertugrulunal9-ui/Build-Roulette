@@ -5,21 +5,28 @@
  * /battles/[id] page, in the page's language (T-050).
  */
 import { VOTE_CATEGORIES } from '@br/game';
+import { LightningIcon } from '@phosphor-icons/react/dist/csr/Lightning';
+import { PaletteIcon } from '@phosphor-icons/react/dist/csr/Palette';
+import { ScrollIcon } from '@phosphor-icons/react/dist/csr/Scroll';
+import { ShuffleIcon } from '@phosphor-icons/react/dist/csr/Shuffle';
+import { SparkleIcon } from '@phosphor-icons/react/dist/csr/Sparkle';
+import { TrophyIcon } from '@phosphor-icons/react/dist/csr/Trophy';
 import { useT } from '../../lib/i18n/context';
-import {
-  awardInfo,
-  categoryEmoji,
-  categoryLabel,
-  formatTimeLimit,
-  isVoteAward,
-} from '../../lib/solo/format';
+import '../room/room-results.css';
+import { awardInfo, categoryLabel, formatTimeLimit, isVoteAward } from '../../lib/solo/format';
 import type { Award, Challenge, VoteCounts } from '../../lib/solo/types';
 
+const CATEGORY_ICONS = {
+  overall: TrophyIcon,
+  rule: ScrollIcon,
+  style: PaletteIcon,
+  chaos: ShuffleIcon,
+} as const;
+
 const CARD_STYLE = {
-  build: 'border-sky-400 bg-sky-50 text-sky-950 dark:bg-sky-950/60 dark:text-sky-50',
-  rule: 'border-amber-400 bg-amber-50 text-amber-950 dark:bg-amber-950/60 dark:text-amber-50',
-  style:
-    'border-fuchsia-400 bg-fuchsia-50 text-fuchsia-950 dark:bg-fuchsia-950/60 dark:text-fuchsia-50',
+  build: 'br-challenge-card--blue',
+  rule: 'br-challenge-card--peach',
+  style: 'br-challenge-card--lime',
 } as const;
 
 export type CardKind = keyof typeof CARD_STYLE;
@@ -43,13 +50,13 @@ export function ChallengeCards({
   const kinds: CardKind[] = ['build', 'rule', 'style'];
   return (
     <ul
-      className={`grid gap-2 ${stacked ? 'grid-cols-1' : 'grid-cols-1 sm:grid-cols-3'}`}
+      className={`br-challenge ${compact ? 'br-challenge--compact' : ''} ${stacked ? 'br-challenge--stacked' : ''} grid gap-2 ${stacked ? 'grid-cols-1' : 'grid-cols-1 sm:grid-cols-3'}`}
       data-testid="challenge"
     >
       {kinds.map((k) => (
         <li
           key={k}
-          className={`rounded-lg border-l-4 px-3 ${compact ? 'py-1.5' : 'py-2.5'} ${CARD_STYLE[k]}`}
+          className={`br-challenge__card rounded-lg px-3 ${compact ? 'py-1.5' : 'py-2.5'} ${CARD_STYLE[k]}`}
           data-card={k}
         >
           <p className="text-[10px] font-black tracking-widest opacity-70">{t.cards[k]}</p>
@@ -91,13 +98,18 @@ export function AwardBadges({ awards }: { awards: readonly Award[] }) {
             data-award={a.award}
             data-source={vote ? 'vote' : 'auto'}
             title={info.text}
-            className={
+            className={`br-award-badge ${
               vote
                 ? 'rounded-full border border-amber-500 bg-gradient-to-r from-amber-200 to-yellow-100 px-3 py-1 text-sm font-bold text-amber-950 shadow-sm dark:border-amber-500 dark:from-amber-700 dark:to-yellow-800 dark:text-amber-50'
                 : 'rounded-full border border-yellow-400 bg-yellow-50 px-3 py-1 text-sm font-semibold text-yellow-900 dark:border-yellow-600 dark:bg-yellow-950/60 dark:text-yellow-100'
-            }
+            }`}
           >
-            <span aria-hidden="true">{info.emoji}</span> {info.title}
+            {vote ? (
+              <TrophyIcon size={16} weight="fill" aria-hidden="true" />
+            ) : (
+              <LightningIcon size={16} weight="fill" aria-hidden="true" />
+            )}{' '}
+            {info.title}
             {vote && a.votes !== null && (
               <span className="font-normal opacity-80"> · {t.awards.votes(a.votes)}</span>
             )}
@@ -148,13 +160,18 @@ export function VoteTally({
           data-category={r.slug}
           data-count={votes[r.slug] ?? 0}
           title={`${r.label}: ${String(votes[r.slug] ?? 0)}`}
-          className={`rounded-md px-2 py-0.5 font-semibold tabular-nums ${
+          className={`br-vote-count-chip rounded-md px-2 py-0.5 font-semibold tabular-nums ${
             (votes[r.slug] ?? 0) > 0
               ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900'
               : 'bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400'
           }`}
         >
-          <span aria-hidden="true">{categoryEmoji(r.slug)}</span>{' '}
+          {(() => {
+            const Icon = Object.hasOwn(CATEGORY_ICONS, r.slug)
+              ? CATEGORY_ICONS[r.slug as keyof typeof CATEGORY_ICONS]
+              : SparkleIcon;
+            return <Icon size={14} weight="duotone" aria-hidden="true" />;
+          })()}{' '}
           {compact ? '' : <span className="sr-only">{r.label} </span>}
           {votes[r.slug] ?? 0}
         </li>

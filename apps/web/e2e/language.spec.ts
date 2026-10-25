@@ -38,7 +38,7 @@ test('English by default on a Turkish browser; TR switches the home page, welcom
   const errors = watchErrors(page);
   await page.goto('/');
   await expect(page.locator('html')).toHaveAttribute('lang', 'en');
-  await expect(page.getByTestId('pitch')).toContainText('A party game for vibe coders');
+  await expect(page.getByTestId('pitch')).toContainText('Same challenge. Your own AI tools.');
   const picker = page.getByRole('group', { name: 'Language' });
   await expect(picker.getByRole('button', { name: /English/ })).toHaveAttribute(
     'aria-pressed',
@@ -48,7 +48,7 @@ test('English by default on a Turkish browser; TR switches the home page, welcom
   // Switch: the page changes in place (no navigation), and <html lang> follows.
   await picker.getByRole('button', { name: /Türkçe/ }).click();
   await expect(page.locator('html')).toHaveAttribute('lang', 'tr');
-  await expect(page.getByTestId('pitch')).toContainText('Vibe coder’lar için bir parti oyunu');
+  await expect(page.getByTestId('pitch')).toContainText('Aynı görev. Kendi yapay zekâ araçların.');
   await expect(page.getByTestId('play-solo')).toHaveText('Solo oyna');
   await expect(
     page.getByRole('heading', { level: 2, name: 'Bir kapışma nasıl geçer' }),
@@ -76,7 +76,7 @@ test('English by default on a Turkish browser; TR switches the home page, welcom
   await page.reload();
   await expect(page.locator('html')).toHaveAttribute('lang', 'tr');
   await expect(page.locator('html')).toHaveAttribute('data-locale-ready', '');
-  await expect(page.getByTestId('pitch')).toContainText('Vibe coder’lar için');
+  await expect(page.getByTestId('pitch')).toContainText('Aynı görev. Kendi yapay zekâ araçların.');
 
   // The guide.
   await page.getByTestId('home-guide').click();
@@ -101,7 +101,7 @@ test('English by default on a Turkish browser; TR switches the home page, welcom
   await expect(page.locator('html')).toHaveAttribute('lang', 'en');
   await expect(page).toHaveTitle('How it works · Build Roulette');
   await page.goto('/');
-  await expect(page.getByTestId('pitch')).toContainText('A party game for vibe coders');
+  await expect(page.getByTestId('pitch')).toContainText('Same challenge. Your own AI tools.');
   expect(errors).toEqual([]);
 });
 
@@ -172,7 +172,7 @@ test('a phone: Turkish (longer words) at 390 px, no sideways scroll on home, the
     expect(overflow).toBeLessThanOrEqual(0);
   };
   await page.goto('/');
-  await expect(page.getByTestId('pitch')).toContainText('Vibe coder’lar için');
+  await expect(page.getByTestId('pitch')).toContainText('Aynı görev. Kendi yapay zekâ araçların.');
   await page.getByTestId('create-room').click();
   await expect(page.getByTestId('create-room-form')).toContainText('Adın');
   await noSidewaysScroll();

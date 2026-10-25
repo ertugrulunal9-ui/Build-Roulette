@@ -10,10 +10,12 @@ import { myBuild, type SoloController, type SoloState } from '../../lib/solo/con
 import { awardsOf, formatCompletion, formatCountdown } from '../../lib/solo/format';
 import { statsPhrases } from '../../lib/solo/stats';
 import { screenshotUrl } from '../../lib/supabase/config';
-import { LanguagePicker } from '../i18n/LanguagePicker';
 import { Rich } from '../i18n/Rich';
 import { AwardBadges, ChallengeCards } from '../results/ResultPieces';
+import { AppHeader } from '../ui/AppHeader';
+import { PhaseTrack } from '../ui/PhaseTrack';
 import { RevealPane } from './RevealPane';
+import './solo-screens.css';
 
 interface ResultsStageProps {
   controller: SoloController;
@@ -48,122 +50,116 @@ export function ResultsStage({ controller, state, remaining }: ResultsStageProps
   const statusText = <span data-testid="build-status-text">{t.status[mine?.status ?? 'dnf']}</span>;
 
   return (
-    <main
-      className="mx-auto flex min-h-dvh max-w-6xl flex-col gap-6 px-4 py-8"
-      data-testid="results"
-    >
-      <header className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <div className="flex flex-wrap items-center gap-3">
-            <p className="text-sm font-semibold tracking-widest text-zinc-500 uppercase">
-              {destroyed ? r.eyebrowDestroy : r.eyebrowResults}
-            </p>
-            <LanguagePicker />
-          </div>
-          <h1 className="text-4xl font-black tracking-tight" data-testid="result-title">
-            {mine?.name ?? (mine?.status === 'dnf' ? t.common.didNotFinish : r.yourBuild)}
-          </h1>
-          <p className="text-zinc-600 dark:text-zinc-400">
-            {mine?.completion_ms !== null && mine?.completion_ms !== undefined && shipped ? (
-              <Rich
-                text={r.byStatusTime}
-                slots={{
-                  name,
-                  status: statusText,
-                  time: (
-                    <span className="font-mono font-bold" data-testid="completion-time">
-                      {formatCompletion(mine.completion_ms)}
-                    </span>
-                  ),
-                }}
-              />
-            ) : (
-              <Rich text={r.byStatus} slots={{ name, status: statusText }} />
-            )}
-          </p>
-        </div>
-        <AwardBadges awards={awards} />
-      </header>
-
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        <section className="flex flex-col gap-4">
-          <figure className="overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-            <div className="relative aspect-[16/10] bg-zinc-100 dark:bg-zinc-800">
-              {shipped &&
-              mine.screenshot_path &&
-              (capture === 'captured' || capture === 'fallback') ? (
-                // eslint-disable-next-line @next/next/no-img-element -- a public Supabase Storage URL
-                <img
-                  src={screenshotUrl(mine.screenshot_path)}
-                  alt={t.common.screenshotOf(mine.name ?? t.common.theBuild)}
-                  data-testid="screenshot"
-                  data-capture={capture}
-                  className="absolute inset-0 h-full w-full object-cover object-top"
+    <main className="br-page br-results-page" data-testid="results">
+      <AppHeader context={destroyed ? r.eyebrowDestroy : r.eyebrowResults} />
+      <div className="br-results-content">
+        <PhaseTrack phase={battle.phase} />
+        <header className="br-results-heading">
+          <div>
+            <p className="br-eyebrow">{destroyed ? r.eyebrowDestroy : r.eyebrowResults}</p>
+            <h1 className="br-display" data-testid="result-title">
+              {mine?.name ?? (mine?.status === 'dnf' ? t.common.didNotFinish : r.yourBuild)}
+            </h1>
+            <p className="br-results-byline">
+              {mine?.completion_ms !== null && mine?.completion_ms !== undefined && shipped ? (
+                <Rich
+                  text={r.byStatusTime}
+                  slots={{
+                    name,
+                    status: statusText,
+                    time: (
+                      <span className="br-results-time" data-testid="completion-time">
+                        {formatCompletion(mine.completion_ms)}
+                      </span>
+                    ),
+                  }}
                 />
               ) : (
-                <p
-                  className="absolute inset-0 grid place-items-center p-6 text-center text-sm text-zinc-500"
-                  data-testid="screenshot-placeholder"
-                  data-capture={shipped ? capture : 'none'}
-                >
-                  {shipped ? t.capture[capture] : r.noShot}
-                </p>
+                <Rich text={r.byStatus} slots={{ name, status: statusText }} />
               )}
-            </div>
-            <figcaption className="px-4 py-2 text-xs text-zinc-500">
-              {shipped ? t.capture[capture] : t.common.didNotFinish}
-            </figcaption>
-          </figure>
-          <ChallengeCards challenge={snapshot.challenge} />
-          {stats.length > 0 && (
-            <p className="text-sm text-zinc-500" data-testid="build-stats">
-              {stats.join(' · ')}
             </p>
-          )}
-        </section>
+          </div>
+          <AwardBadges awards={awards} />
+        </header>
 
-        <section className="flex flex-col gap-4">
-          <RevealPane
-            battleId={battle.id}
-            build={state.reveal.build}
-            status={state.reveal.status}
-            destroy={state.destroy}
-            caption={caption}
-          />
-          {state.destroy === 'done' && (
-            <div className="flex flex-col gap-3 rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
-              <p className="text-sm text-zinc-600 dark:text-zinc-400" data-testid="source-status">
-                {state.sourceDestroyed ? r.sourceDeleted : r.sourceDeleting}
-              </p>
-              <div className="flex flex-wrap gap-3">
-                <a
-                  href={`/battles/${battle.id}`}
-                  data-testid="permanent-link"
-                  className="rounded-lg bg-zinc-900 px-4 py-2 text-sm font-bold text-white dark:bg-zinc-100 dark:text-zinc-900"
-                >
-                  {r.permanent}
-                </a>
-                <a
-                  href={`/u/${snapshot.me.user_id}`}
-                  data-testid="my-history-link"
-                  className="rounded-lg border border-zinc-300 px-4 py-2 text-sm font-semibold dark:border-zinc-700"
-                >
-                  {t.common.myHistory}
-                </a>
-                <button
-                  type="button"
-                  data-testid="play-again"
-                  onClick={() => {
-                    controller.playAgain();
-                  }}
-                  className="rounded-lg border border-zinc-300 px-4 py-2 text-sm font-semibold dark:border-zinc-700"
-                >
-                  {r.playAgain}
-                </button>
+        <div className="br-results-grid">
+          <section className="br-results-left">
+            <figure className="br-results-screenshot">
+              <div className="br-results-screenshot__frame">
+                {shipped &&
+                mine.screenshot_path &&
+                (capture === 'captured' || capture === 'fallback') ? (
+                  // eslint-disable-next-line @next/next/no-img-element -- a public Supabase Storage URL
+                  <img
+                    src={screenshotUrl(mine.screenshot_path)}
+                    alt={t.common.screenshotOf(mine.name ?? t.common.theBuild)}
+                    data-testid="screenshot"
+                    data-capture={capture}
+                    className="br-results-screenshot__image"
+                  />
+                ) : (
+                  <p
+                    className="br-results-screenshot__placeholder"
+                    data-testid="screenshot-placeholder"
+                    data-capture={shipped ? capture : 'none'}
+                  >
+                    {shipped ? t.capture[capture] : r.noShot}
+                  </p>
+                )}
               </div>
-            </div>
-          )}
-        </section>
+              <figcaption>{shipped ? t.capture[capture] : t.common.didNotFinish}</figcaption>
+            </figure>
+            <ChallengeCards challenge={snapshot.challenge} />
+            {stats.length > 0 && (
+              <p className="br-results-stats" data-testid="build-stats">
+                {stats.join(' · ')}
+              </p>
+            )}
+          </section>
+
+          <section className="br-results-right">
+            <RevealPane
+              battleId={battle.id}
+              build={state.reveal.build}
+              status={state.reveal.status}
+              destroy={state.destroy}
+              caption={caption}
+            />
+            {state.destroy === 'done' && (
+              <div className="br-results-actions-card">
+                <p data-testid="source-status">
+                  {state.sourceDestroyed ? r.sourceDeleted : r.sourceDeleting}
+                </p>
+                <div className="br-results-actions">
+                  <a
+                    href={`/battles/${battle.id}`}
+                    data-testid="permanent-link"
+                    className="br-btn br-btn--primary"
+                  >
+                    {r.permanent}
+                  </a>
+                  <a
+                    href={`/u/${snapshot.me.user_id}`}
+                    data-testid="my-history-link"
+                    className="br-btn br-btn--secondary"
+                  >
+                    {t.common.myHistory}
+                  </a>
+                  <button
+                    type="button"
+                    data-testid="play-again"
+                    onClick={() => {
+                      controller.playAgain();
+                    }}
+                    className="br-btn br-btn--secondary"
+                  >
+                    {r.playAgain}
+                  </button>
+                </div>
+              </div>
+            )}
+          </section>
+        </div>
       </div>
     </main>
   );

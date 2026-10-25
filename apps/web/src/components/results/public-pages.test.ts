@@ -206,7 +206,7 @@ describe('/battles/{id} with a removed rank-1 build (T-028)', () => {
 
       const removed = cardOf('mallory');
       expect(removed.dataset['removed']).toBe('true');
-      expect(removed.className).not.toContain('ring-amber');
+      expect(removed.className).not.toContain('br-public-build--winner');
       expect(within(removed).getByTestId('public-build-name').textContent).toBe(
         '#1Removed by moderators',
       );
@@ -231,7 +231,7 @@ describe('/battles/{id} with a removed rank-1 build (T-028)', () => {
     render(createElement(BattleResults, { data }));
     expect(screen.getAllByTestId('public-winner')).toHaveLength(1);
     expect(cardOf('mallory').dataset['winner']).toBe('true');
-    expect(cardOf('mallory').className).toContain('ring-amber');
+    expect(cardOf('mallory').className).toContain('br-public-build--winner');
     expect(chipsOf(cardOf('mallory'))).toEqual(['overall']);
   });
 
@@ -446,7 +446,7 @@ describe('/u/{id} with a removed rank-1 build (T-028)', () => {
     expect(removed.dataset['removed']).toBe('true');
     expect(removed.dataset['rank']).toBe('1');
     expect(removed.dataset['winner']).toBe('false');
-    expect(removed.className).not.toContain('ring-amber');
+    expect(removed.className).not.toContain('br-history-battle--winner');
     expect(within(removed).getByTestId('history-rank').textContent).toBe('· #1 of 3');
     expect(within(removed).getByTestId('history-build-name').textContent).toBe(
       'Removed by moderators',
@@ -455,7 +455,7 @@ describe('/u/{id} with a removed rank-1 build (T-028)', () => {
     expect(within(removed).getByTestId('vote-tally').dataset['total']).toBe('5');
 
     expect(won.dataset['winner']).toBe('true');
-    expect(won.className).toContain('ring-amber');
+    expect(won.className).toContain('br-history-battle--winner');
     expect(within(won).getByTestId('history-rank').textContent).toBe('🥇 #1 of 3');
     expect(chipsOf(won)).toEqual(['overall']);
   });

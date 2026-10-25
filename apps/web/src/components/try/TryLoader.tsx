@@ -3,11 +3,15 @@
 import dynamic from 'next/dynamic';
 import { useT } from '../../lib/i18n/context';
 import { PageTitle } from '../i18n/PageTitle';
+import '../solo/solo-screens.css';
 
 function Loading() {
   return (
-    <main className="grid h-dvh place-items-center text-sm text-zinc-500">
-      {useT().common.loading}
+    <main className="br-app-loading">
+      <div className="br-app-loading__card">
+        <span aria-hidden="true" className="br-loading-dot" />
+        {useT().common.loading}
+      </div>
     </main>
   );
 }

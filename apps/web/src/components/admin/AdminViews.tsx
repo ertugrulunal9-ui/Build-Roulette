@@ -63,7 +63,11 @@ export function QueueView({
 }) {
   const items = res.data?.builds ?? [];
   return (
-    <section className="flex flex-col gap-4" aria-label="Report queue" data-testid="admin-queue">
+    <section
+      className="br-admin__section flex flex-col gap-4"
+      aria-label="Report queue"
+      data-testid="admin-queue"
+    >
       <h2 className="text-xl font-black">
         {resolved ? 'Resolved reports' : 'Open reports'}{' '}
         <span className="text-zinc-500">({items.length})</span>

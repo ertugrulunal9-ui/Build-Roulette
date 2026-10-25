@@ -44,6 +44,8 @@ import {
   smallButton,
 } from './AdminViews';
 import { HealthView } from './HealthView';
+import { Brand } from '../ui/AppHeader';
+import './admin.css';
 
 type Gate = 'checking' | 'admin' | 'none' | 'error';
 
@@ -72,7 +74,7 @@ export function AdminApp() {
     return (
       <>
         {neutral}
-        <main className="min-h-dvh" data-testid="admin-checking" aria-busy="true" />
+        <main className="br-admin min-h-dvh" data-testid="admin-checking" aria-busy="true" />
       </>
     );
   }
@@ -89,7 +91,7 @@ export function AdminApp() {
       <>
         {neutral}
         <main
-          className="mx-auto flex min-h-dvh max-w-md flex-col items-center justify-center gap-4 px-6 text-center"
+          className="br-admin br-admin__error mx-auto flex min-h-dvh max-w-md flex-col items-center justify-center gap-4 px-6 text-center"
           data-testid="admin-check-error"
         >
           <p className="text-sm text-zinc-600 dark:text-zinc-400">
@@ -232,11 +234,14 @@ function AdminConsole({ client }: { client: AdminClient }) {
   };
 
   return (
-    <main className="mx-auto flex min-h-dvh max-w-6xl flex-col gap-6 px-4 py-8" data-testid="admin">
+    <main
+      className="br-admin mx-auto flex min-h-dvh max-w-6xl flex-col gap-6 px-4 py-8"
+      data-testid="admin"
+    >
       <DocumentTitle title="Moderation" />
       <header className="flex flex-wrap items-center gap-3">
         <div className="mr-auto">
-          <p className="text-sm font-semibold text-zinc-500">Build Roulette</p>
+          <Brand compact />
           <h1 className="text-3xl font-black tracking-tight">Moderation</h1>
         </div>
         <nav className="flex flex-wrap gap-2 text-sm font-semibold">

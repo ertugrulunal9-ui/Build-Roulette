@@ -10,6 +10,8 @@
  * Shared by the drop zone and the "Paste a link…" row of the import bar.
  */
 import { IMPORT_URL_HOSTS } from '@br/site';
+import { LinkSimpleIcon } from '@phosphor-icons/react/dist/csr/LinkSimple';
+import { HourglassIcon } from '@phosphor-icons/react/dist/csr/Hourglass';
 import { useId, useState, type ReactNode } from 'react';
 import { useT } from '../../lib/i18n/context';
 
@@ -29,8 +31,7 @@ export interface LinkFormProps {
   compact?: boolean;
 }
 
-const control =
-  'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500 disabled:cursor-not-allowed disabled:opacity-50';
+const control = 'br-link-control';
 
 export function LinkForm({
   initial,
@@ -59,12 +60,9 @@ export function LinkForm({
         e.preventDefault();
         if (!busy) onSubmit(value);
       }}
-      className={`flex w-full flex-col gap-2 text-left ${compact ? '' : 'max-w-xl'}`}
+      className={`br-link-form${compact ? ' is-compact' : ''}`}
     >
-      <label
-        htmlFor={`${id}-url`}
-        className={`font-semibold text-zinc-800 dark:text-zinc-200 ${compact ? 'text-xs' : 'text-sm'}`}
-      >
+      <label htmlFor={`${id}-url`} className="br-link-form__label">
         {words.linkLabel}
       </label>
       <div className="flex flex-wrap gap-2">
@@ -86,30 +84,21 @@ export function LinkForm({
           aria-invalid={error ? true : undefined}
           aria-describedby={error ? `${errorId} ${hintId}` : hintId}
           data-testid="link-input"
-          className={`min-w-0 flex-1 basis-40 rounded-xl border border-zinc-300 bg-white px-3 font-mono text-zinc-900 placeholder:text-zinc-400 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:placeholder:text-zinc-500 ${
-            error ? 'border-red-400 dark:border-red-700' : ''
-          } ${compact ? 'min-h-9 py-1.5 text-xs' : 'min-h-11 py-2 text-sm'} ${control}`}
+          className={`br-link-input${error ? ' has-error' : ''} ${control}`}
         />
         <button
           type="submit"
           disabled={busy}
           data-testid="link-import"
-          className={`shrink-0 rounded-xl bg-sky-600 font-bold text-white shadow-sm hover:bg-sky-500 dark:bg-sky-500 dark:text-sky-950 dark:hover:bg-sky-400 ${
-            compact ? 'min-h-9 px-3 py-1.5 text-xs' : 'min-h-11 px-5 py-2.5 text-sm'
-          } ${control}`}
+          className={`br-btn br-btn--primary br-link-submit ${control}`}
         >
-          🔗 {words.linkImport}
+          <LinkSimpleIcon size={17} aria-hidden="true" /> {words.linkImport}
         </button>
       </div>
       {copying && (
         <div className="flex flex-wrap items-center gap-3">
-          <p
-            role="status"
-            className="text-sm font-semibold text-sky-700 dark:text-sky-300"
-            data-testid="link-copying"
-          >
-            <span aria-hidden="true">⏳ </span>
-            {words.linkCopying}
+          <p role="status" className="br-import-reading" data-testid="link-copying">
+            <HourglassIcon size={16} aria-hidden="true" /> {words.linkCopying}
           </p>
           <button
             type="button"

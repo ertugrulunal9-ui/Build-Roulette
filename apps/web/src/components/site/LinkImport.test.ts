@@ -527,8 +527,8 @@ describe('the import bar after a link', () => {
 
   it('"Copied from <host>" instead of a folder name', () => {
     bar({ status: 'idle' });
-    expect(screen.getByTestId('import-summary').textContent).toMatch(
-      /^🔗 Copied from my-app\.lovable\.app · 1 file · \d+ B$/,
+    expect(screen.getByTestId('import-summary').textContent.trim()).toMatch(
+      /^Copied from my-app\.lovable\.app · 1 file · \d+ B$/,
     );
   });
 

@@ -20,6 +20,9 @@ import {
   isTerminalPhase,
 } from '@br/game';
 import { useState } from 'react';
+import { CrownIcon } from '@phosphor-icons/react/dist/csr/Crown';
+import { DesktopIcon } from '@phosphor-icons/react/dist/csr/Desktop';
+import { HandWavingIcon } from '@phosphor-icons/react/dist/csr/HandWaving';
 import { useTouchPrimary } from '../../lib/device';
 import { useI18n } from '../../lib/i18n/context';
 import { formatAgo } from '../../lib/i18n/format';
@@ -53,8 +56,7 @@ interface LobbyProps {
   lastBattle: BattleSnapshot | null;
 }
 
-const panel =
-  'rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900';
+const panel = 'br-lobby-panel';
 
 export function Lobby({ controller, state, room, lastBattle }: LobbyProps) {
   const { locale, t } = useI18n();
@@ -95,14 +97,19 @@ export function Lobby({ controller, state, room, lastBattle }: LobbyProps) {
         data-role={m.role}
         data-ready={m.is_ready ? 'true' : 'false'}
         data-host={m.is_host ? 'true' : 'false'}
-        className="flex items-center gap-3 rounded-xl px-2 py-2 hover:bg-zinc-50 dark:hover:bg-zinc-800/50"
+        className="br-member-row flex items-center gap-3 rounded-xl px-2 py-2"
       >
         <Avatar userId={m.user_id} name={m.display_name} />
         <div className="min-w-0 flex-1">
           <p className="flex items-center gap-1.5 truncate font-semibold">
             {m.is_host && (
-              <span title={t.common.host} aria-label={t.common.host} data-testid="host-crown">
-                👑
+              <span
+                className="br-host-icon"
+                title={t.common.host}
+                aria-label={t.common.host}
+                data-testid="host-crown"
+              >
+                <CrownIcon size={15} weight="fill" aria-hidden="true" />
               </span>
             )}
             <span className="truncate">{m.display_name}</span>
@@ -115,26 +122,20 @@ export function Lobby({ controller, state, room, lastBattle }: LobbyProps) {
         </div>
         <span
           data-testid="role-badge"
-          className={`hidden rounded-full px-2 sm:inline py-0.5 text-[10px] font-black tracking-widest uppercase ${
-            m.role === 'player'
-              ? 'bg-sky-100 text-sky-900 dark:bg-sky-950 dark:text-sky-200'
-              : 'bg-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300'
-          }`}
+          className={`br-role-tag hidden rounded-full px-2 sm:inline py-0.5 text-[10px] font-black tracking-widest uppercase br-role-tag--${m.role}`}
         >
           {m.role === 'player' ? words.player : words.spectator}
         </span>
         {m.role === 'player' && m.state === 'active' && (
           <span
-            className={`w-16 shrink-0 text-right text-xs font-bold sm:w-20 ${
-              m.is_ready ? 'text-emerald-600 dark:text-emerald-400' : 'text-zinc-400'
-            }`}
+            className={`br-ready-status w-16 shrink-0 text-right text-xs font-bold sm:w-20 ${m.is_ready ? 'br-ready-status--ready' : 'br-ready-status--waiting'}`}
           >
             {m.is_ready ? words.ready : words.notReady}
           </span>
         )}
         {me.is_host &&
           (isMe ? (
-            <span className="w-12" aria-hidden="true" />
+            <span className="br-host-row-spacer w-12" aria-hidden="true" />
           ) : (
             <button
               type="button"
@@ -143,7 +144,7 @@ export function Lobby({ controller, state, room, lastBattle }: LobbyProps) {
               onClick={() => {
                 setKickTarget(m);
               }}
-              className="w-12 rounded-md border border-zinc-300 py-1 text-xs font-semibold text-red-700 hover:bg-red-50 dark:border-zinc-700 dark:text-red-300 dark:hover:bg-red-950"
+              className="br-kick-button w-12 rounded-md border py-1 text-xs font-semibold"
             >
               {words.kick}
             </button>
@@ -153,48 +154,57 @@ export function Lobby({ controller, state, room, lastBattle }: LobbyProps) {
   };
 
   return (
-    <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_22rem]" data-testid="lobby">
-      <section className={panel}>
-        <header className="mb-3 flex items-baseline justify-between gap-3">
-          <h2 className="text-lg font-black tracking-tight">{words.players}</h2>
-          <p className="text-sm font-semibold text-zinc-500" data-testid="player-count">
+    <div
+      className="br-lobby grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_22rem]"
+      data-testid="lobby"
+    >
+      <section className={`${panel} br-lobby-roster`}>
+        <header className="br-lobby-section-heading mb-3 flex items-baseline justify-between gap-3">
+          <div>
+            <p className="br-eyebrow">{t.room.eyebrow}</p>
+            <h2 className="text-3xl font-black tracking-tight">{words.players}</h2>
+          </div>
+          <p className="br-player-count text-sm font-semibold" data-testid="player-count">
             {words.playerCount(players.length, room.room.max_players)}
           </p>
         </header>
-        <ul className="flex flex-col gap-1" aria-label={words.players}>
+        <ul className="br-member-list flex flex-col gap-1" aria-label={words.players}>
           {players.map(memberRow)}
         </ul>
         {spectators.length > 0 && (
           <>
-            <h3 className="mt-5 mb-2 text-sm font-bold tracking-wide text-zinc-500 uppercase">
+            <h3 className="br-roster-group-label mt-5 mb-2 text-sm font-bold tracking-wide uppercase">
               {words.spectators(spectators.length, room.room.max_spectators)}
             </h3>
-            <ul className="flex flex-col gap-1" aria-label={words.spectatorsLabel}>
+            <ul className="br-member-list flex flex-col gap-1" aria-label={words.spectatorsLabel}>
               {spectators.map(memberRow)}
             </ul>
           </>
         )}
         {away.length > 0 && (
           <>
-            <h3 className="mt-5 mb-2 text-sm font-bold tracking-wide text-zinc-500 uppercase">
+            <h3 className="br-roster-group-label mt-5 mb-2 text-sm font-bold tracking-wide uppercase">
               {words.leftRoom}
             </h3>
-            <ul className="flex flex-col gap-1 opacity-60" aria-label={words.leftRoom}>
+            <ul
+              className="br-member-list flex flex-col gap-1 opacity-60"
+              aria-label={words.leftRoom}
+            >
               {away.map(memberRow)}
             </ul>
           </>
         )}
       </section>
 
-      <aside className="flex flex-col gap-4">
+      <aside className="br-lobby-aside flex flex-col gap-4">
         {welcome !== 'done' && (
           <section
-            className="flex flex-col gap-2 rounded-2xl border border-sky-200 bg-sky-50 p-5 text-sky-950 shadow-sm dark:border-sky-900 dark:bg-sky-950/50 dark:text-sky-50"
+            className="br-lobby-welcome flex flex-col gap-2 rounded-2xl border p-5"
             data-testid="new-here"
             aria-labelledby="new-here-title"
           >
             <h2 id="new-here-title" className="text-lg font-black tracking-tight">
-              <span aria-hidden="true">👋 </span>
+              <HandWavingIcon size={20} weight="duotone" aria-hidden="true" />{' '}
               {t.lobbyHints.newHereTitle}
             </h2>
             <p className="text-sm">{t.lobbyHints.newHereText}</p>
@@ -220,7 +230,7 @@ export function Lobby({ controller, state, room, lastBattle }: LobbyProps) {
             </div>
           </section>
         )}
-        <section className={panel}>
+        <section className={`${panel} br-lobby-controls`}>
           {me.role === 'player' ? (
             <button
               type="button"
@@ -230,11 +240,7 @@ export function Lobby({ controller, state, room, lastBattle }: LobbyProps) {
               onClick={() => {
                 void controller.setReady(!me.is_ready);
               }}
-              className={`w-full rounded-xl px-5 py-4 text-lg font-black tracking-wide transition disabled:opacity-60 ${
-                me.is_ready
-                  ? 'bg-emerald-600 text-white hover:bg-emerald-700'
-                  : 'border-2 border-emerald-600 text-emerald-700 hover:bg-emerald-50 dark:text-emerald-300 dark:hover:bg-emerald-950'
-              }`}
+              className="br-ready-toggle w-full rounded-xl px-5 py-4 text-lg font-black tracking-wide transition disabled:opacity-60"
             >
               {me.is_ready ? words.readyDone : words.readyUp}
             </button>
@@ -248,8 +254,7 @@ export function Lobby({ controller, state, room, lastBattle }: LobbyProps) {
               className="mt-3 text-sm text-zinc-600 dark:text-zinc-400"
               data-testid="build-reminder"
             >
-              <span aria-hidden="true">💻 </span>
-              {t.lobbyHints.reminder}
+              <DesktopIcon size={18} weight="duotone" aria-hidden="true" /> {t.lobbyHints.reminder}
             </p>
           )}
 
@@ -291,7 +296,7 @@ export function Lobby({ controller, state, room, lastBattle }: LobbyProps) {
                   onClick={() => {
                     void controller.start();
                   }}
-                  className="rounded-xl bg-zinc-900 px-5 py-4 text-lg font-black tracking-wide text-white disabled:cursor-not-allowed disabled:opacity-40 dark:bg-zinc-100 dark:text-zinc-900"
+                  className="br-start-battle rounded-xl px-5 py-4 text-lg font-black tracking-wide disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   {state.pending.start
                     ? words.spinningUp
@@ -329,7 +334,7 @@ export function Lobby({ controller, state, room, lastBattle }: LobbyProps) {
           </div>
           {touch && me.role === 'player' && (
             <p
-              className="mt-4 rounded-xl bg-sky-50 px-3 py-2 text-xs text-sky-900 dark:bg-sky-950/60 dark:text-sky-100"
+              className="br-phone-lobby-note mt-4 rounded-xl px-3 py-2 text-xs"
               data-testid="phone-lobby-note"
             >
               {words.phoneNote}{' '}
@@ -356,7 +361,7 @@ export function Lobby({ controller, state, room, lastBattle }: LobbyProps) {
 
         {hadBattle && <LastBattle battle={lastBattle} />}
 
-        <section className={`${panel} text-sm text-zinc-600 dark:text-zinc-400`}>
+        <section className={`${panel} br-how-to text-sm`}>
           <h2 className="mb-2 font-bold text-zinc-900 dark:text-zinc-100">{words.howTitle}</h2>
           <ol className="list-inside list-decimal space-y-1">
             {words

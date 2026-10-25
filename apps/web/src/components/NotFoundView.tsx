@@ -4,6 +4,7 @@ import Link from 'next/link';
 import type { ReactNode } from 'react';
 import { useT } from '../lib/i18n/context';
 import { LanguagePicker } from './i18n/LanguagePicker';
+import './moderation/moderation.css';
 
 /**
  * The plain "not found" screen: the exported `404.html` (app/not-found.tsx, which Pages
@@ -26,7 +27,7 @@ export function NotFoundView({
   const t = useT();
   return (
     <main
-      className="mx-auto flex min-h-dvh max-w-xl flex-col items-center justify-center gap-4 px-6 py-16 text-center"
+      className="br-page br-not-found mx-auto flex min-h-dvh max-w-xl flex-col items-center justify-center gap-4 px-6 py-16 text-center"
       data-testid={testId}
     >
       <p className="font-mono text-5xl font-black text-zinc-300 dark:text-zinc-700">404</p>

@@ -9,16 +9,23 @@
  * progress but cannot vote.
  */
 import type { ReactNode } from 'react';
+import { EyeIcon } from '@phosphor-icons/react/dist/csr/Eye';
+import { PaletteIcon } from '@phosphor-icons/react/dist/csr/Palette';
+import { ScrollIcon } from '@phosphor-icons/react/dist/csr/Scroll';
+import { ShuffleIcon } from '@phosphor-icons/react/dist/csr/Shuffle';
+import { TrophyIcon } from '@phosphor-icons/react/dist/csr/Trophy';
 import { useT } from '../../lib/i18n/context';
 import { en, type Messages } from '../../lib/i18n/messages/en';
 import type { RevealVoteController, RevealVoteState } from '../../lib/room/reveal-vote';
 import type { SoloController, SoloState } from '../../lib/solo/controller';
 import { describeVoteError } from '../../lib/solo/errors';
-import { categoryDescription, categoryEmoji, categoryLabel } from '../../lib/solo/format';
+import { categoryDescription, categoryLabel } from '../../lib/solo/format';
 import type { BattleSnapshot, SnapshotBuild, VoteCategoryInfo } from '../../lib/solo/types';
-import { LanguagePicker } from '../i18n/LanguagePicker';
 import { Countdown } from '../solo/Countdown';
+import { AppHeader } from '../ui/AppHeader';
+import { PhaseTrack } from '../ui/PhaseTrack';
 import { PlaceholderCard, SHORT_PHASE_LOW_MS, buildImage } from './RevealStage';
+import { CopyInvite } from './pieces';
 
 interface VoteStageProps {
   battle: SoloController;
@@ -31,6 +38,13 @@ interface VoteStageProps {
 
 /** The image of a build in the VOTE grid: its screenshot, its thumbnail, or nothing. */
 export { buildImage };
+
+const CATEGORY_ICONS = {
+  overall: TrophyIcon,
+  rule: ScrollIcon,
+  style: PaletteIcon,
+  chaos: ShuffleIcon,
+} as const;
 
 /** Why this viewer has no ballot, or null when they can vote (default English). */
 export function ballotNote(snapshot: BattleSnapshot, m: Messages = en): string | null {
@@ -70,36 +84,40 @@ export function VoteStage({
 
   return (
     <main
-      className="flex min-h-dvh flex-col bg-zinc-50 dark:bg-zinc-950"
+      className="br-room-stage br-vote-screen flex min-h-dvh flex-col"
       data-testid="vote-stage"
       data-can-vote={canVote ? 'true' : 'false'}
     >
-      <header className="sticky top-0 z-10 flex flex-wrap items-center gap-3 border-b border-zinc-200 bg-white/95 px-4 py-3 backdrop-blur dark:border-zinc-800 dark:bg-zinc-900/95">
-        {/* The header stays on screen while voting: on a phone, only what matters. */}
-        <h1 className="hidden text-sm font-bold tracking-tight sm:block">
-          Build Roulette{' '}
-          <span className="font-normal text-zinc-500">· {t.common.roomCode(code)}</span>
-        </h1>
-        <span className="rounded-full bg-emerald-600 px-2.5 py-0.5 text-xs font-black tracking-widest text-white uppercase">
-          {v.badge}
-        </span>
-        <LanguagePicker />
-        {headerActions}
-        <div className="ml-auto flex items-center gap-3">
-          {progress && (
-            <VoteProgressBadge voted={progress.voted_count} eligible={progress.eligible_count} />
-          )}
-          <Countdown
-            getRemaining={() => battle.remainingMs()}
-            label={v.countdown}
-            lowMs={SHORT_PHASE_LOW_MS}
-          />
-        </div>
-      </header>
+      <AppHeader
+        compact
+        practice={false}
+        className="br-phase-header br-phase-header--vote"
+        context={
+          <div className="br-phase-context">
+            <h1>{t.common.roomCode(code)}</h1>
+            <span className="br-phase-pill">{v.badge}</span>
+          </div>
+        }
+        actions={
+          <>
+            <CopyInvite code={code} />
+            {headerActions}
+            {progress && (
+              <VoteProgressBadge voted={progress.voted_count} eligible={progress.eligible_count} />
+            )}
+            <Countdown
+              getRemaining={() => battle.remainingMs()}
+              label={v.countdown}
+              lowMs={SHORT_PHASE_LOW_MS}
+            />
+          </>
+        }
+      />
+      <PhaseTrack phase={snapshot.battle.phase} />
 
-      <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-6">
-        <div className="flex flex-col gap-1">
-          <h2 className="text-3xl font-black tracking-tight">{v.heading}</h2>
+      <div className="br-vote-content mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-6">
+        <div className="br-vote-intro flex flex-col gap-1">
+          <h2 className="text-4xl font-black tracking-tight">{v.heading}</h2>
           <p className="text-sm text-zinc-600 dark:text-zinc-400">
             {canVote ? v.intro(picked, categories.length) : note}
           </p>
@@ -128,7 +146,7 @@ export function VoteStage({
             className="rounded-2xl border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300"
             data-testid="vote-spectator-note"
           >
-            👀 {note}
+            <EyeIcon size={19} weight="duotone" aria-hidden="true" /> {note}
           </p>
         )}
 
@@ -159,7 +177,7 @@ export function VoteProgressBadge({ voted, eligible }: { voted: number; eligible
   const pct = eligible > 0 ? Math.round((voted / eligible) * 100) : 0;
   return (
     <div
-      className="flex items-center gap-2 rounded-lg bg-emerald-100 px-3 py-1.5 text-sm font-bold text-emerald-900 dark:bg-emerald-950 dark:text-emerald-100"
+      className="br-vote-progress flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm font-bold"
       data-testid="vote-progress"
       data-voted={voted}
       data-eligible={eligible}
@@ -196,6 +214,7 @@ function CategorySection({
   const t = useT();
   const v = t.vote;
   const label = categoryLabel(category.slug, t, category.label);
+  const CategoryIcon = CATEGORY_ICONS[category.slug as keyof typeof CATEGORY_ICONS];
   const ballot = showState.ballot;
   const chosen = ballot.votes[category.slug];
   const pending = ballot.pending[category.slug];
@@ -212,28 +231,25 @@ function CategorySection({
           : 'none';
   return (
     <section
-      className="rounded-2xl border border-zinc-200 bg-white p-3 shadow-sm sm:p-4 dark:border-zinc-800 dark:bg-zinc-900"
+      className="br-vote-category rounded-2xl border bg-white p-3 shadow-sm sm:p-4"
       data-testid="vote-category"
       data-category={category.slug}
       data-state={state}
       aria-labelledby={`cat-${category.slug}`}
     >
       <header className="mb-3 flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <h3 id={`cat-${category.slug}`} className="text-xl font-black tracking-tight">
-          <span aria-hidden="true">{categoryEmoji(category.slug)}</span> {label}
+        <h3
+          id={`cat-${category.slug}`}
+          className="br-vote-category__title text-xl font-black tracking-tight"
+        >
+          <CategoryIcon size={22} weight="duotone" aria-hidden="true" /> {label}
         </h3>
-        <p className="text-sm text-zinc-500">
+        <p className="br-vote-category__description text-sm">
           {categoryDescription(category.slug, t, category.description)}
         </p>
         {canVote && (
           <span
-            className={`ml-auto text-xs font-bold ${
-              state === 'unsent'
-                ? 'text-amber-700 dark:text-amber-300'
-                : chosen
-                  ? 'text-emerald-600 dark:text-emerald-400'
-                  : 'text-zinc-400'
-            }`}
+            className={`br-vote-category__status ml-auto text-xs font-bold br-vote-category__status--${state}`}
             data-testid="category-status"
           >
             {state === 'saving'
@@ -247,7 +263,7 @@ function CategorySection({
         )}
       </header>
       {/* Phones: one build per row (a big tap target); wider screens: a grid of cards. */}
-      <ul className="grid grid-cols-1 gap-2 sm:grid-cols-3 sm:gap-3 lg:grid-cols-4">
+      <ul className="br-vote-grid grid grid-cols-1 gap-2 sm:gap-3">
         {builds.map((b) => {
           const own = b.builder_id === snapshot.me.user_id;
           const shown = pending ?? unsent ?? chosen;
@@ -256,10 +272,10 @@ function CategorySection({
           const image = buildImage(b, showState.thumbs[b.id] ?? null);
           const name = b.name ?? t.common.buildOf(nameOf(b.builder_id));
           const badge = confirmed
-            ? { text: v.yourPick, tone: 'bg-emerald-600' }
+            ? { text: v.yourPick, state: 'confirmed' }
             : pending === b.id
-              ? { text: v.saving, tone: 'bg-emerald-600' }
-              : { text: v.notSaved, tone: 'bg-amber-600' };
+              ? { text: v.saving, state: 'saving' }
+              : { text: v.notSaved, state: 'unsent' };
           const body = (
             <div className="flex items-center gap-3 sm:block">
               <div className="relative aspect-[16/10] w-28 shrink-0 overflow-hidden rounded-lg bg-zinc-100 sm:w-auto dark:bg-zinc-800">
@@ -276,7 +292,7 @@ function CategorySection({
                 )}
                 {selected && (
                   <span
-                    className={`absolute top-1.5 right-1.5 hidden rounded-full px-2 py-0.5 text-xs font-black text-white shadow sm:inline ${badge.tone}`}
+                    className={`br-vote-pick-status br-vote-pick-status--${badge.state} absolute top-1.5 right-1.5 hidden rounded-full px-2 py-0.5 text-xs font-black shadow sm:inline`}
                   >
                     {badge.text}
                   </span>
@@ -297,7 +313,7 @@ function CategorySection({
                 </p>
                 {selected && (
                   <span
-                    className={`mt-1 inline-block rounded-full px-2 py-0.5 text-xs font-black text-white sm:hidden ${badge.tone}`}
+                    className={`br-vote-pick-status br-vote-pick-status--${badge.state} mt-1 inline-block rounded-full px-2 py-0.5 text-xs font-black sm:hidden`}
                   >
                     {badge.text}
                   </span>
@@ -317,7 +333,7 @@ function CategorySection({
               {own || !canVote ? (
                 <div
                   {...common}
-                  className={`rounded-xl border-2 p-2 ${own ? 'border-dashed border-zinc-300 opacity-60 dark:border-zinc-700' : 'border-zinc-200 dark:border-zinc-800'}`}
+                  className={`br-vote-option rounded-xl border-2 p-2 ${own ? 'border-dashed border-zinc-300 opacity-60' : 'border-zinc-200'}`}
                   title={own ? v.ownTitle : undefined}
                 >
                   {body}
@@ -331,13 +347,7 @@ function CategorySection({
                   onClick={() => {
                     onVote(b.id);
                   }}
-                  className={`min-h-16 w-full rounded-xl border-2 p-2 text-left transition hover:-translate-y-0.5 hover:shadow-md ${
-                    selected
-                      ? unsent === b.id
-                        ? 'border-amber-500 bg-amber-50 dark:bg-amber-950/40'
-                        : 'border-emerald-500 bg-emerald-50 dark:bg-emerald-950/40'
-                      : 'border-zinc-200 hover:border-emerald-300 dark:border-zinc-800'
-                  }`}
+                  className="br-vote-option min-h-16 w-full rounded-xl border-2 p-2 text-left transition hover:-translate-y-0.5 hover:shadow-md"
                 >
                   {body}
                 </button>

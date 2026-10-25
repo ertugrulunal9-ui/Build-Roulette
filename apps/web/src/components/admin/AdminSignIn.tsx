@@ -11,6 +11,8 @@ import { useEffect, useState } from 'react';
 import { checkAdmin, getAdminClient, signInAdmin } from '../../lib/admin/client';
 import { loadPage, replacePage } from '../../lib/hosting/navigate';
 import { useHydrated } from '../../lib/hosting/use-browser-url';
+import { Brand } from '../ui/AppHeader';
+import './admin.css';
 
 export function AdminSignIn() {
   const [email, setEmail] = useState('');
@@ -47,9 +49,9 @@ export function AdminSignIn() {
   };
 
   return (
-    <main className="mx-auto flex min-h-dvh max-w-sm flex-col justify-center gap-6 px-4 py-10">
+    <main className="br-admin br-admin__sign-in mx-auto flex min-h-dvh max-w-sm flex-col justify-center gap-6 px-4 py-10">
       <header className="flex flex-col gap-1">
-        <p className="text-sm font-semibold text-zinc-500">Build Roulette</p>
+        <Brand compact />
         <h1 className="text-3xl font-black tracking-tight">Moderator sign-in</h1>
       </header>
       <form

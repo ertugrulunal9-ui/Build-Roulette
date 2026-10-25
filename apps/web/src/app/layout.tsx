@@ -29,7 +29,7 @@ export default function RootLayout({ children }: Readonly<{ children: ReactNode 
       <head>
         <script dangerouslySetInnerHTML={{ __html: LOCALE_SCRIPT }} />
       </head>
-      <body className="min-h-dvh bg-zinc-50 font-sans text-zinc-900 antialiased dark:bg-zinc-950 dark:text-zinc-100">
+      <body className="br-app-body min-h-dvh antialiased">
         <I18nProvider>{children}</I18nProvider>
       </body>
     </html>

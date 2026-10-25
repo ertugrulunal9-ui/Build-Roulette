@@ -5,15 +5,22 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useSyncExternalStore } from 'react';
 import { useT } from '../../lib/i18n/context';
+import { CircleNotchIcon } from '@phosphor-icons/react/dist/csr/CircleNotch';
 import { roomCodeFromPath } from '../../lib/room/path';
 import { DocumentTitle } from '../DocumentTitle';
-import { LanguagePicker } from '../i18n/LanguagePicker';
+import { AppHeader } from '../ui/AppHeader';
+import './room-results.css';
 
 function Loading() {
+  const t = useT();
   return (
-    <main className="grid h-dvh place-items-center text-sm text-zinc-500">
-      {useT().room.loading}
-    </main>
+    <div className="br-room-loader min-h-dvh">
+      <AppHeader className="br-public-header" />
+      <main className="br-room-loader__body" aria-busy="true">
+        <CircleNotchIcon className="br-loading-spinner" size={28} aria-hidden="true" />
+        <span>{t.room.loading}</span>
+      </main>
+    </div>
   );
 }
 
@@ -60,17 +67,19 @@ export function RoomLoader() {
     return (
       <>
         {title}
-        <main className="grid h-dvh place-items-center p-6 text-center">
-          <div className="flex flex-col items-center gap-4">
-            <p className="flex flex-col gap-3 text-sm text-zinc-500">
-              {t.room.noCode}
-              <Link href="/" className="font-semibold text-zinc-900 underline dark:text-zinc-100">
-                {t.room.createOrJoin}
-              </Link>
-            </p>
-            <LanguagePicker />
-          </div>
-        </main>
+        <div className="br-room-loader min-h-dvh">
+          <AppHeader className="br-public-header" />
+          <main className="br-room-loader__empty">
+            <div className="flex flex-col items-center gap-4">
+              <p className="flex flex-col gap-3 text-sm">
+                {t.room.noCode}
+                <Link href="/" className="br-primary-link font-semibold">
+                  {t.room.createOrJoin}
+                </Link>
+              </p>
+            </div>
+          </main>
+        </div>
       </>
     );
   }

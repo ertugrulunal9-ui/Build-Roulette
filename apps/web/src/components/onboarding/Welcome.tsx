@@ -14,6 +14,7 @@
  * step, focus kept inside (Tab wraps), Esc and "Skip" close it, focus returns to where it was.
  */
 import Link from 'next/link';
+import { LightbulbIcon } from '@phosphor-icons/react/dist/csr/Lightbulb';
 import { useEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent } from 'react';
 import {
   closeWelcome,
@@ -28,8 +29,9 @@ import { useT } from '../../lib/i18n/context';
 import { LanguagePicker } from '../i18n/LanguagePicker';
 import { Rich } from '../i18n/Rich';
 import { CodeText } from '../site/CodeText';
-import { GUIDE_PATH, STEP_EMOJI, STEP_IDS, TRY_PATH } from './copy';
+import { GUIDE_PATH, STEP_IDS, TRY_PATH } from './copy';
 import { PILL, StepArt } from './Steps';
+import './onboarding.css';
 
 /** Whether the welcome shows now (false on the server: the page HTML never has it). */
 export function useWelcomeOpen(): boolean {
@@ -156,7 +158,7 @@ export function WelcomeDialog({
         close(false);
       }}
       onKeyDown={onKeyDown}
-      className="fixed inset-0 m-0 h-dvh max-h-none w-full max-w-none overflow-y-auto overscroll-contain bg-zinc-50 p-0 text-zinc-900 backdrop:bg-zinc-950/70 dark:bg-zinc-950 dark:text-zinc-100"
+      className="br-welcome fixed inset-0 m-0 h-dvh max-h-none w-full max-w-none overflow-y-auto overscroll-contain p-0 backdrop:bg-zinc-950/70"
     >
       <div className="mx-auto flex min-h-full w-full max-w-xl flex-col px-4 py-4 sm:px-6 sm:py-8">
         <div className="flex items-center justify-between gap-3">
@@ -187,7 +189,7 @@ export function WelcomeDialog({
           className="flex flex-1 flex-col items-center justify-center gap-6 py-6 text-center"
           aria-live="polite"
         >
-          <div className="w-full rounded-3xl border border-zinc-200 bg-white px-4 py-8 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+          <div className="br-welcome__art w-full rounded-3xl border border-zinc-200 bg-white px-4 py-8 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
             <StepArt id={step} />
           </div>
           <div className="flex flex-col gap-2">
@@ -196,10 +198,12 @@ export function WelcomeDialog({
             </p>
             <h2
               id="welcome-step-title"
-              className="text-3xl font-black tracking-tight sm:text-4xl"
+              className="br-welcome__title text-3xl font-black tracking-tight sm:text-4xl"
               data-testid="welcome-step-title"
             >
-              <span aria-hidden="true">{STEP_EMOJI[step]} </span>
+              <span aria-hidden="true" className="br-welcome__step-number">
+                {String(index + 1).padStart(2, '0')}{' '}
+              </span>
               {words.title}
             </h2>
             <p
@@ -268,7 +272,7 @@ export function WelcomeDialog({
                 onClick={() => {
                   close(true);
                 }}
-                className={`${button} bg-emerald-600 text-white hover:bg-emerald-700`}
+                className={`br-welcome__action ${button} hover:brightness-95`}
               >
                 {t.welcome.play}
               </button>
@@ -331,7 +335,7 @@ export function HowItWorksButton({ className = PILL }: { className?: string }) {
       onClick={openWelcome}
       className={className}
     >
-      <span aria-hidden="true">💡</span> {t.common.howItWorks}
+      <LightbulbIcon aria-hidden="true" size={16} weight="duotone" /> {t.common.howItWorks}
     </button>
   );
 }
@@ -355,7 +359,7 @@ export function HowItWorksLink({
       {...(newTab ? { target: '_blank', rel: 'noopener' } : {})}
       className={className}
     >
-      <span aria-hidden="true">💡</span> {t.common.howItWorks}
+      <LightbulbIcon aria-hidden="true" size={16} weight="duotone" /> {t.common.howItWorks}
       {newTab && (
         <>
           <span aria-hidden="true"> ↗</span>

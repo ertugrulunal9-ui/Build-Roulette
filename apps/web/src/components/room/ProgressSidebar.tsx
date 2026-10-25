@@ -8,6 +8,8 @@
  * No database writes: Presence is client-claimed and only decorates; the ship badges are
  * server state.
  */
+import { CrownIcon } from '@phosphor-icons/react/dist/csr/Crown';
+import { DeviceMobileIcon } from '@phosphor-icons/react/dist/csr/DeviceMobile';
 import { useT } from '../../lib/i18n/context';
 import type { PresenceMap } from '../../lib/room/types';
 import { formatCountdown } from '../../lib/solo/format';
@@ -61,7 +63,7 @@ export function ProgressSidebar({ battle, presence, layout }: ProgressSidebarPro
           data-state={state}
           data-online={live ? 'true' : 'false'}
           data-host={battle.battle.host_id === p.user_id ? 'true' : 'false'}
-          className={`flex min-w-52 flex-col gap-1.5 rounded-xl border p-3 text-sm ${
+          className={`br-progress-player flex min-w-52 flex-col gap-1.5 rounded-xl border p-3 text-sm ${
             state === 'shipped'
               ? 'border-emerald-300 bg-emerald-50 dark:border-emerald-800 dark:bg-emerald-950/50'
               : 'border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900'
@@ -71,8 +73,13 @@ export function ProgressSidebar({ battle, presence, layout }: ProgressSidebarPro
             <Avatar userId={p.user_id} name={p.display_name} size="sm" />
             <span className="min-w-0 flex-1 truncate font-bold">
               {battle.battle.host_id === p.user_id && (
-                <span title={t.common.host} aria-label={t.common.host} data-testid="host-crown">
-                  👑{' '}
+                <span
+                  className="br-host-icon"
+                  title={t.common.host}
+                  aria-label={t.common.host}
+                  data-testid="host-crown"
+                >
+                  <CrownIcon size={14} weight="fill" aria-hidden="true" />{' '}
                 </span>
               )}
               {p.display_name}
@@ -112,7 +119,11 @@ export function ProgressSidebar({ battle, presence, layout }: ProgressSidebarPro
               ) : (
                 <span>{words.building}</span>
               )}
-              {live.device === 'mobile' && <span title={words.onPhone}>📱</span>}
+              {live.device === 'mobile' && (
+                <span title={words.onPhone}>
+                  <DeviceMobileIcon size={15} aria-hidden="true" />
+                </span>
+              )}
             </p>
           ) : (
             <p className="text-xs text-zinc-500">{words.offline}</p>
@@ -127,7 +138,7 @@ export function ProgressSidebar({ battle, presence, layout }: ProgressSidebarPro
     <aside
       data-testid="progress-sidebar"
       aria-label={words.players}
-      className="flex shrink-0 flex-col gap-2 border-t border-zinc-200 bg-zinc-50 p-3 lg:w-72 lg:overflow-y-auto lg:border-t-0 lg:border-l dark:border-zinc-800 dark:bg-zinc-950"
+      className="br-progress-panel flex shrink-0 flex-col gap-2 border-t p-3 lg:w-72 lg:overflow-y-auto lg:border-t-0 lg:border-l"
     >
       <p className="text-xs font-bold tracking-widest text-zinc-500 uppercase">
         {words.header(shipped, battle.players.length)}

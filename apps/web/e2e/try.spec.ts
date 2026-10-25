@@ -202,15 +202,24 @@ test('a click into the preview gives the keyboard to the site', async ({ page })
   await expect(h1).toHaveText('x');
 });
 
-test('keyboard and colour scheme: the pickers are reachable with Tab; dark mode is dark', async ({
+test('keyboard and colour scheme: the light palette stays in both system modes', async ({
   page,
 }) => {
+  const html = page.locator('html');
+  const body = page.locator('body');
+  const zone = page.getByTestId('drop-zone');
+  const expectLightPalette = async () => {
+    await expect(html).toHaveCSS('color-scheme', 'light');
+    await expect(body).toHaveCSS('background-color', 'rgb(250, 249, 245)');
+    await expect(body).toHaveCSS('color', 'rgb(16, 21, 38)');
+    await expect(zone).toHaveCSS('background-image', /^linear-gradient\(/);
+  };
+
   await page.emulateMedia({ colorScheme: 'light' });
   await openTry(page);
-  const zone = page.getByTestId('drop-zone');
-  await expect(zone).toHaveCSS('background-color', 'rgb(255, 255, 255)');
+  await expectLightPalette();
   await page.emulateMedia({ colorScheme: 'dark' });
-  await expect(zone).not.toHaveCSS('background-color', 'rgb(255, 255, 255)');
+  await expectLightPalette();
   // Tab reaches "Choose folder" (after the header's link), Enter would open the picker.
   const chooser = page.waitForEvent('filechooser');
   await page.getByTestId('choose-folder').focus();

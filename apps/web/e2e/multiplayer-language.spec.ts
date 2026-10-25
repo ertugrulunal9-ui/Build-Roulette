@@ -54,7 +54,7 @@ test('a Turkish host and an English guest: lobby, toast, spin and BUILD each in 
   await waitForBuild(guest.page);
   // The same cards (server content, English) for both; only the labels differ.
   const cardText = (page: typeof host.page) =>
-    page.getByTestId('challenge').locator('li').first().locator('span.font-semibold');
+    page.getByTestId('challenge').locator('li').first().locator('strong');
   await expect(cardText(host.page)).toHaveText((await cardText(guest.page).textContent()) ?? '');
   await expect(host.page.getByTestId('challenge')).toContainText('PROJE');
   await expect(host.page.getByTestId('progress-sidebar')).toContainText(

@@ -121,7 +121,7 @@ export function LinkForm({
             setHostsOpen((o) => !o);
           }}
           data-testid="link-hosts-toggle"
-          className={`rounded font-semibold text-zinc-700 underline underline-offset-2 dark:text-zinc-300 ${control}`}
+          className={`inline-block rounded py-1 font-semibold text-zinc-700 underline underline-offset-2 dark:text-zinc-300 ${control}`}
         >
           {hostsOpen ? words.linkHostsHide : words.linkHostsShow}
         </button>

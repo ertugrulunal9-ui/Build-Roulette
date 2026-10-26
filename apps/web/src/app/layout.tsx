@@ -2,20 +2,23 @@ import type { Metadata } from 'next';
 import type { ReactNode } from 'react';
 import { I18nProvider } from '../lib/i18n/context';
 import { LOCALE_SCRIPT } from '../lib/i18n/locale';
+import { SITE_URL, shareMetadata } from '../lib/hosting/site';
 
 import './globals.css';
 
-/** The app's public origin, so OG image URLs are absolute (NEXT_PUBLIC_SITE_URL). */
-const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? 'http://localhost:3000';
+const description =
+  'A multiplayer party game for vibe coders. Spin a challenge, build, ship, reveal, vote. Builds are temporary. Results are permanent.';
 
 export const metadata: Metadata = {
-  metadataBase: new URL(siteUrl),
+  // OG image URLs are absolute (NEXT_PUBLIC_SITE_URL).
+  metadataBase: new URL(SITE_URL),
   title: {
     default: 'Build Roulette',
     template: '%s · Build Roulette',
   },
-  description:
-    'A multiplayer party game for vibe coders. Spin a challenge, build, ship, reveal, vote. Builds are temporary. Results are permanent.',
+  description,
+  // The home page's link preview; the other pages set their own (lib/hosting/site.ts).
+  ...shareMetadata('Build Roulette', description),
 };
 
 /**

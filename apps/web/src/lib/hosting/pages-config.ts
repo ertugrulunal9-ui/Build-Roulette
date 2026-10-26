@@ -129,7 +129,7 @@ export function contentSecurityPolicy(s: CspSources): string {
  * own `allow` (autoplay, fullscreen, gamepad, clipboard-write: @br/runtime) is left alone.
  */
 export const PERMISSIONS_POLICY =
-  'camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), hid=(), bluetooth=(), midi=(), display-capture=(), browsing-topics=()';
+  'camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), hid=(), midi=(), display-capture=(), browsing-topics=()';
 
 export interface HeaderRule {
   path: string;

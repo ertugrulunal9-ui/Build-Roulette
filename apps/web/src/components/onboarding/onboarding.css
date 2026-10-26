@@ -83,7 +83,7 @@
   text-decoration: none;
 }
 .br-guide__contents-link span {
-  color: #9ca5b8;
+  color: var(--br-muted);
   font: 700 10px var(--br-sans);
   font-variant-numeric: tabular-nums;
 }

@@ -209,7 +209,7 @@ export function Guide() {
                       <tr key={i}>
                         <th scope="row" className="w-3/5 px-4 py-3 align-top font-normal">
                           <span className="block font-semibold">{f.project}</span>
-                          <span className="text-zinc-500">
+                          <span className="text-zinc-600">
                             <CodeText text={f.how} />
                           </span>
                         </th>

@@ -312,7 +312,7 @@ export function WelcomeDialog({
                 close(false);
               }}
               {...linkProps}
-              className="text-sm font-semibold text-zinc-600 underline underline-offset-2 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+              className="inline-block py-1.5 text-sm font-semibold text-zinc-600 underline underline-offset-2 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
             >
               {t.welcome.guide}
               {newTab && <span className="sr-only"> {t.common.newTab}</span>}

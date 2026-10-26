@@ -200,6 +200,7 @@
 }
 .br-home__join-trigger {
   display: inline-flex;
+  min-height: 28px;
   align-items: center;
   gap: 8px;
   border: 0;

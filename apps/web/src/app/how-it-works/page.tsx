@@ -1,5 +1,9 @@
 import type { Metadata } from 'next';
+import { shareMetadata } from '../../lib/hosting/site';
 import { Guide } from '../../components/onboarding/Guide';
+
+const description =
+  'How to play Build Roulette: spin a challenge, build it with your own AI tools, run the build, drop the dist folder into the game, ship, reveal and vote. Tool guides, limits and troubleshooting.';
 
 /**
  * The description stays English (static); the tab title is the guide's own `<title>`, in the
@@ -7,8 +11,8 @@ import { Guide } from '../../components/onboarding/Guide';
  */
 export const metadata: Metadata = {
   title: null,
-  description:
-    'How to play Build Roulette: spin a challenge, build it with your own AI tools, run the build, drop the dist folder into the game, ship, reveal and vote. Tool guides, limits and troubleshooting.',
+  description,
+  ...shareMetadata('How it works · Build Roulette', description),
 };
 
 /** `/how-it-works`: the full guide (T-049). A static page; the welcome screen links here. */

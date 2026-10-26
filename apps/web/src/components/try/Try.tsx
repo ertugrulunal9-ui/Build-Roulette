@@ -23,7 +23,7 @@ export default function Try() {
       <AppHeader
         context={
           <>
-            <span>{t.try.title}</span>
+            <h1>{t.try.title}</h1>
             <span className="br-try-intro">{t.try.intro}</span>
           </>
         }

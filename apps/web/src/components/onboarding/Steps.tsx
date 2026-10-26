@@ -54,9 +54,7 @@ function SpinArt({ large }: { large: boolean }) {
         large ? 'h-24 w-24 p-2' : 'h-18 w-18 p-1.5'
       } ${['-rotate-6', 'translate-y-1', 'rotate-6'][i] ?? ''}`}
     >
-      <span
-        className={`font-black tracking-widest opacity-70 ${large ? 'text-[10px]' : 'text-[8px]'}`}
-      >
+      <span className={`font-black tracking-widest ${large ? 'text-[11px]' : 'text-[10px]'}`}>
         {t.cards[k]}
       </span>
       <span className={`leading-tight font-semibold ${large ? 'text-xs' : 'text-[10px]'}`}>

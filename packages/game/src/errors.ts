@@ -57,6 +57,8 @@ export const RPC_ERROR_CODES = [
   'invalid_details',
   'own_build',
   'already_reported',
+  // Custom cards (T-053): a card the name filter blocks (`update_room_settings`)
+  'card_not_allowed',
 ] as const;
 
 export type RpcErrorCode = (typeof RPC_ERROR_CODES)[number];

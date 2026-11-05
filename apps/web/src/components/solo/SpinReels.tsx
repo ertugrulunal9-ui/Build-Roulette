@@ -63,6 +63,17 @@ const LANDS_AT: Record<CardKind | 'time', number> = {
   time: 0.72,
 };
 
+/**
+ * A landed value's size by its length: the deck's longest card has 60 characters, a host's
+ * own card up to 80 (T-053). A landed reel also grows to fit its value (it is no longer
+ * clipped to the spinning strip's height), so a long card never loses lines.
+ */
+function valueSize(value: string): string {
+  if (value.length > 55) return ' br-spin-card__value--long';
+  if (value.length > 28) return ' br-spin-card__value--medium';
+  return '';
+}
+
 function Reel({
   kind,
   label,
@@ -87,9 +98,16 @@ function Reel({
       data-landed={landed ? 'true' : 'false'}
     >
       <p className="br-spin-card__label">{label}</p>
-      <div className="relative h-20 overflow-hidden" aria-live="polite">
+      <div
+        className={landed ? 'relative min-h-20' : 'relative h-20 overflow-hidden'}
+        aria-live="polite"
+      >
         {landed ? (
-          <p className="br-reel-land br-spin-card__value">{value}</p>
+          <p
+            className={`br-reel-land br-spin-card__value br-spin-card__value--landed${valueSize(value)}`}
+          >
+            {value}
+          </p>
         ) : (
           <div className="br-reel-strip blur-[1px]" aria-hidden="true">
             {[...decoys, ...decoys].map((d, i) => (

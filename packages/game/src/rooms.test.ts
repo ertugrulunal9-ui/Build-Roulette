@@ -8,6 +8,8 @@ import {
   roomMaxPlayers,
   roomTopic,
   activityMatters,
+  isCustomCardLength,
+  normalizeCustomCard,
 } from './rooms';
 
 describe('room codes', () => {
@@ -72,5 +74,23 @@ describe('activityMatters (which BUILD activity is worth a presence message)', (
   it('the same activity again does not', () => {
     expect(activityMatters(none, { ...none })).toBe(false);
     expect(activityMatters(first, { ...first })).toBe(false);
+  });
+});
+
+describe('custom cards (T-053)', () => {
+  it('normalizeCustomCard trims and collapses whitespace like the server', () => {
+    expect(normalizeCustomCard('  A pet rock\n\n  that   judges you ')).toBe(
+      'A pet rock that judges you',
+    );
+    expect(normalizeCustomCard('\tNo buttons\n')).toBe('No buttons');
+  });
+
+  it('isCustomCardLength accepts 3 to 80 characters after cleaning', () => {
+    expect(isCustomCardLength('  ab  ')).toBe(false);
+    expect(isCustomCardLength('abc')).toBe(true);
+    expect(isCustomCardLength('x'.repeat(80))).toBe(true);
+    expect(isCustomCardLength('x'.repeat(81))).toBe(false);
+    // Characters, not UTF-16 units (like Postgres char_length).
+    expect(isCustomCardLength('🎲'.repeat(80))).toBe(true);
   });
 });

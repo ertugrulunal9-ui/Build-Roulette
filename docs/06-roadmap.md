@@ -156,6 +156,8 @@ there's a written cost per 1,000 battles. Every runbook has been rehearsed once 
 **Scope**
 - Sounds and haptics for spin, ship and destroy; a first-time tooltip tour beyond M6's welcome screen
 - A curated deck with weights and tag-based combo filtering
+- Custom cards: the host writes the room's own BUILD / RULE / STYLE cards and picks the build
+  time (T-053, user request 2026-11-05)
 - Share flows: results card image, "challenge a friend with this exact spin"
 - Optional account linking (GitHub or Google) to claim history
 

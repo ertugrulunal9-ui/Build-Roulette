@@ -176,6 +176,36 @@ export function normalizeRoomCode(input: string): string | null {
   return isRoomCode(code) ? code : null;
 }
 
+/**
+ * Custom cards (T-053): the host may write the room's own BUILD, RULE and STYLE cards (room
+ * settings `custom_build`, `custom_rule`, `custom_style`). The server cleans a card like
+ * {@link normalizeCustomCard} and accepts 3 to 80 characters (`private.check_custom_card`,
+ * drift-tested); a card the name filter blocks is refused with `card_not_allowed`.
+ */
+export const CUSTOM_CARD_LIMITS = { min_chars: 3, max_chars: 80 } as const;
+
+/** The room setting that holds the host's own card of each kind. */
+export const CUSTOM_CARD_SETTINGS = {
+  build: 'custom_build',
+  rule: 'custom_rule',
+  style: 'custom_style',
+} as const;
+
+export type CustomCardKind = keyof typeof CUSTOM_CARD_SETTINGS;
+export type CustomCardSetting = (typeof CUSTOM_CARD_SETTINGS)[CustomCardKind];
+
+/** A card as the server stores it: trimmed, each run of whitespace one space. */
+export function normalizeCustomCard(text: string): string {
+  return text.trim().replace(/\s+/g, ' ');
+}
+
+/** Whether the server accepts the length of `text` (after {@link normalizeCustomCard}). */
+export function isCustomCardLength(text: string): boolean {
+  // Code points, like Postgres char_length (an emoji is one character).
+  const n = normalizeCustomCard(text).match(/./gsu)?.length ?? 0;
+  return n >= CUSTOM_CARD_LIMITS.min_chars && n <= CUSTOM_CARD_LIMITS.max_chars;
+}
+
 /** `max_players` of a room's settings, clamped like `private.room_max_players`. */
 export function roomMaxPlayers(settings: { max_players?: unknown } | null | undefined): number {
   const raw = settings?.max_players;

@@ -592,6 +592,19 @@
 .br-spin-card__value--decoy {
   opacity: 0.45;
 }
+/* A landed value grows to fit: long deck cards and a host's own cards (T-053) wrap to more
+   lines than the spinning strip's height. */
+.br-spin-card__value--landed {
+  height: auto;
+  min-height: 82px;
+  overflow-wrap: anywhere;
+}
+.br-spin-card__value--medium {
+  font-size: clamp(15px, 1.6vw, 20px);
+}
+.br-spin-card__value--long {
+  font-size: clamp(13px, 1.25vw, 16px);
+}
 .br-spin-ready {
   min-height: 24px;
   color: var(--br-muted);

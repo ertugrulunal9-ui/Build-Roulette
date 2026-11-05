@@ -193,6 +193,7 @@ const errors: Record<ErrorCode, string> = {
   self_vote: 'You cannot vote for your own build.',
   not_votable: 'That build cannot get votes: it was not shipped.',
   name_not_allowed: 'That name is not allowed here. Pick another one.',
+  card_not_allowed: 'That card is not allowed here. Write another one.',
   invalid_reason: 'Pick a reason for the report.',
   invalid_details: 'The details are too long (500 characters at most).',
   own_build: 'You cannot report your own build.',
@@ -1028,6 +1029,18 @@ export const en = {
     timePerBuild: 'Time per build',
     auto: (range: string) => `Auto (${range})`,
     votingTime: 'Voting time',
+    challenge: 'The challenge',
+    customCardsNote:
+      'Write your own cards, or leave one empty to draw it from the deck. The players see your cards at the spin.',
+    randomCard: 'Random from the deck',
+    cardLength: (min: number, max: number) => `A card is ${s(min)} to ${s(max)} characters.`,
+    buildTime: 'Build time',
+    randomTime: (limits: string) => `Random (${limits} min)`,
+    customCardsSummary: (cards: string, count: number) =>
+      count === 1
+        ? `The host wrote the ${cards} card: you see it at the spin.`
+        : `The host wrote the ${cards} cards: you see them at the spin.`,
+    buildTimeSummary: (minutes: number) => `Build time: ${s(minutes)} min.`,
   },
 
   reveal: {

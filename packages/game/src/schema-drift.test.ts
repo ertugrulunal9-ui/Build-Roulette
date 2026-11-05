@@ -56,6 +56,8 @@ import {
   BATTLE_EVENT_TYPES,
   BUILD_STATUSES,
   CAPTURE_STATUSES,
+  CUSTOM_CARD_LIMITS,
+  CUSTOM_CARD_SETTINGS,
   MEMBER_CHANGES,
   MEMBER_ROLES,
   ROOM_CHANGES,
@@ -464,6 +466,30 @@ function assignedTypes(body: string): string[] {
 describe('schema drift: rooms and Realtime', () => {
   it('ROOM_LIMITS matches private.room_limits()', () => {
     expect(roomLimitsFromMigrations(readMigrations())).toEqual({ ...ROOM_LIMITS });
+  });
+
+  it('CUSTOM_CARD_LIMITS matches private.check_custom_card (T-053)', () => {
+    const body = lastPrivateFunctionBody(readMigrations(), 'check_custom_card', { anyArgs: true });
+    const range =
+      body === null ? null : /\bchar_length\(v\)\s+not\s+between\s+(\d+)\s+and\s+(\d+)/i.exec(body);
+    expect(range?.slice(1).map(Number)).toEqual([
+      CUSTOM_CARD_LIMITS.min_chars,
+      CUSTOM_CARD_LIMITS.max_chars,
+    ]);
+  });
+
+  it('public.update_room_settings accepts the custom card settings and time_limit_s (T-053)', () => {
+    const body = lastPrivateFunctionBody(readMigrations(), 'update_room_settings', {
+      anyArgs: true,
+      schema: 'public',
+    });
+    const keys = body === null ? [] : inList(body, /\bv_key\s+not\s+in\b/i);
+    expect(keys).toEqual(
+      expect.arrayContaining([...Object.values(CUSTOM_CARD_SETTINGS), 'time_limit_s']),
+    );
+    expect(body ?? '').toMatch(
+      /v_key\s+in\s*\(\s*'custom_build',\s*'custom_rule',\s*'custom_style'\s*\)[\s\S]*?private\.check_custom_card\(/,
+    );
   });
 
   it('BATTLE_EVENT_TYPES (what the client applies) matches private.battle_broadcast()', () => {

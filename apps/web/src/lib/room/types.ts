@@ -20,6 +20,15 @@ export interface RoomSettings {
   voting_s?: number;
   /** M4: REVEAL and VOTING after SHIPPING (default true). */
   reveal_vote?: boolean;
+  /**
+   * T-053: the host's own cards (3–80 characters, cleaned by the server). A card that is not
+   * set is drawn from the deck at the start of each battle.
+   */
+  custom_build?: string;
+  custom_rule?: string;
+  custom_style?: string;
+  /** T-053: the build time limit in seconds (default: drawn, 10, 15 or 20 minutes). */
+  time_limit_s?: number;
 }
 
 /**

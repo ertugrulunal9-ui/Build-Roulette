@@ -371,6 +371,15 @@ section.
     account linking exists.
   - **Lobby settings (host only):** `reveal_vote`, the time per build (Auto or
     30–60 s) and the voting time (30 s–3 min).
+  - **Custom cards (T-053, host only, lobby only):** the host may write the room's own
+    BUILD, RULE and STYLE cards (`custom_build`, `custom_rule`, `custom_style`: 3–80
+    characters after trimming, through the name filter word by word, `card_not_allowed`) and
+    pick the build time limit (`time_limit_s`, one of 10/15/20/30/45 min). `start_battle`
+    draws from the deck as before, then each custom card replaces the drawn card of its kind
+    (no card id, no hint); without `time_limit_s` the limit is drawn (10, 15 or 20 min). The
+    settings stay for the room's next battles. The other members' lobby names the custom
+    cards but not their text: the reels reveal it at SPINNING (the text is in the room
+    settings every member can read; hiding it is a UI choice, not a secret).
   - ~~Known server gap~~ **fixed in T-022:** `sweep_deadlines` also re-checks the early end
     of VOTING, so a battle ends about 30–35 s after the last unfinished voter goes silent
     (`reason: all_voted`, no actor).

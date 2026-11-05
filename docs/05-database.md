@@ -404,7 +404,8 @@ migrations in `supabase/migrations/` are the source of truth.
   - `rooms.version` and a `room_events` log (service role only).
   - Room RPCs: `create_room` → `{room_id, code}` (no settings argument),
     `join_room` → `{room_id, code, role}`, `leave_room`, `set_ready`,
-    `update_room_settings` (keys `max_players`, `reveal_slot_s`, `voting_s`),
+    `update_room_settings` (keys `max_players`, `reveal_slot_s`, `voting_s`; T-053 adds
+    `custom_build`, `custom_rule`, `custom_style` and `time_limit_s`),
     `kick_member`, `heartbeat` → `{server_now, room_version, host_id, status}`,
     `get_room_snapshot`, and `start_battle`.
   - New `ship_build` errors: `kicked`, `not_a_member`, `disqualified`.

@@ -2,7 +2,15 @@
 
 Status: `todo` · `in-progress` · `review` · `fix` · `done` · `blocked`
 
-## Current milestone: M7 Import from a published link ([docs/10](10-url-import.md)) — all tasks merged; **deployed 2026-10-22** (Deploy run 7 from `claude/intelligent-maxwell-ddael3`: migration 20261021120000, `import-url` function with `APP_ORIGINS`, shell and app; deploy-check 34 passed incl. the import-url 401 and preflight checks). **Merged** into `claude/build-roulette-architecture-9dl8zr` on 2026-10-24 (PR #2), so the default branch matches what is deployed. Open: a real published link imported in production. Next: M8 Polish and launch ([docs/06](06-roadmap.md))
+## Current milestone: M8 Polish and launch ([docs/06](06-roadmap.md))
+
+**User request (2026-11-05):** the host of a room can write the room's own cards (their own hard build), besides the challenges we run.
+
+| ID | Task | Scope | Status | Notes |
+|---|---|---|---|---|
+| T-053 | Custom cards: room settings `custom_build` / `custom_rule` / `custom_style` (3–80 chars, name filter word by word, `card_not_allowed`) and `time_limit_s`; `start_battle` replaces the drawn cards with them; the lobby's "The challenge" fieldset (English + Turkish), the members' summary without the card text; landed reels grow to fit long cards; tests | `supabase/`, `packages/game/`, `apps/web/`, docs | review | pgTAP 1404 (29_custom_cards 39), game 145, web 537, multi e2e 7 (incl. `multiplayer-custom-cards`, desktop + phone), default 25, solo 10, check-runbooks 51. Not deployed: needs migration 20261105120000 |
+
+## Previous milestone: M7 Import from a published link ([docs/10](10-url-import.md)) — all tasks merged; **deployed 2026-10-22** (Deploy run 7 from `claude/intelligent-maxwell-ddael3`: migration 20261021120000, `import-url` function with `APP_ORIGINS`, shell and app; deploy-check 34 passed incl. the import-url 401 and preflight checks). **Merged** into `claude/build-roulette-architecture-9dl8zr` on 2026-10-24 (PR #2), so the default branch matches what is deployed. Open: a real published link imported in production. Next: M8 Polish and launch ([docs/06](06-roadmap.md))
 
 **Hub decision (2026-10-21, the user left the next step to us):** players using web builders (Lovable, Bolt, v0, Replit) paste the link of their published site instead of running `npm run build` locally.
 

@@ -32,10 +32,15 @@ env:
   NEXT_TELEMETRY_DISABLED: 1
   TURBO_TELEMETRY_DISABLED: 1
 
+# Every job runs on ubuntu-24.04, not ubuntu-latest. When ubuntu-latest moved to Ubuntu 26.04
+# (nightly run 144), `playwright install --with-deps chromium` failed in every browser job:
+# Playwright 1.56.1 does not support chromium on ubuntu26.04-x64. Move to a newer image together
+# with a Playwright version that supports it, and keep all the jobs on the same image (psql,
+# docker and the browser libraries come from it).
 jobs:
   check:
     name: Format, lint, typecheck, test, build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Checkout
@@ -71,7 +76,7 @@ jobs:
 
   db:
     name: Database tests (local Supabase stack, pgTAP + API and Realtime e2e)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
       contents: read
@@ -144,7 +149,7 @@ jobs:
 
   capture:
     name: Capture worker + jobs function integration, solo game e2e (local Supabase stack + Playwright Chromium)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
       SUPABASE_CLI: supabase@2.119.0
@@ -239,7 +244,7 @@ jobs:
 
   multiplayer:
     name: Rooms e2e (local Supabase stack with Realtime + Playwright Chromium, 3+ players)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
       SUPABASE_CLI: supabase@2.119.0
@@ -314,7 +319,7 @@ jobs:
   chaos:
     name: Rooms chaos e2e, shard ${{ matrix.shard }}/3 (network drops, skewed clocks, refreshes, host leaves, T-0, abandoned, 8 players, full room)
     if: github.event_name != 'workflow_dispatch' || inputs.chaos
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     strategy:
       # Every shard reports, even when another one failed.
@@ -381,7 +386,7 @@ jobs:
 
   e2e:
     name: E2E (runtime + web /try, Playwright Chromium)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
       - name: Checkout
@@ -441,7 +446,7 @@ jobs:
   loadtest:
     name: Load test (smoke profile, local Supabase stack + capture worker)
     if: github.event_name == 'workflow_dispatch' && inputs.loadtest
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
       SUPABASE_CLI: supabase@2.119.0

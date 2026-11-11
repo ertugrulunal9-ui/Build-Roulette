@@ -663,8 +663,9 @@ pnpm --filter @br/web test:e2e:telemetry      # error reporting + analytics agai
   Problems and Console, an infinite loop (crashed, Restart, a new import recovers), the
   keyboard going to the site, the pickers by keyboard, dark mode, and `/playground` → `/try`.
   It uses full Chromium (`channel: 'chromium'`), because the infinite-loop test needs site
-  isolation (see `packages/runtime/README.md`). `@playwright/test` is pinned to 1.56.1 to
-  match the preinstalled browser. Not part of `pnpm test`. (The package CDN outage suite,
+  isolation (see `packages/runtime/README.md`). `@playwright/test` is pinned to the same
+  version as everywhere else (`packages/runtime/README.md`, "Upgrading Playwright"). Not part
+  of `pnpm test`. (The package CDN outage suite,
   `cdn-outage.spec.ts`, went with the package CDN in M6.)
 - `test:e2e:solo` (`playwright.solo.config.ts`) needs the local Supabase stack running. It
   builds, then starts `scripts/solo-services.ts` (shell with the capture gate, the jobs

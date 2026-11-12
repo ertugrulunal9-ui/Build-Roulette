@@ -48,8 +48,11 @@ supabase/
 │   │                                                    (site.bin, thumb.webp, autosave/site.bin), ship and
 │   │                                                    auto-ship from it, REVEAL {site, thumb}, stats `imports`,
 │   │                                                    build limits 10–45 min (random 10/15/20)
-│   └── 20261021120000_import_url.sql                  the import-url function's rate limit (T-051, M7):
-│                                                        `import_url` 20 per 10 min, claim_import_url
+│   ├── 20261021120000_import_url.sql                  the import-url function's rate limit (T-051, M7):
+│   │                                                    `import_url` 20 per 10 min, claim_import_url
+│   └── 20261105120000_custom_cards.sql                custom cards (T-053): the room settings custom_build,
+│                                                        custom_rule, custom_style and time_limit_s, the word-by-word
+│                                                        card filter, start_battle uses them
 ├── functions/
 │   ├── jobs/                    the `jobs` Edge Function (T-034): index.ts (Deno entry) + core.js (GENERATED from
 │   │                            apps/capture-worker/src/edge by `pnpm --filter @br/capture-worker build:function`)
@@ -101,8 +104,10 @@ supabase/
 │   │                            (buckets, database, MAU, keep-alive, 80 % warnings), prune_event_logs (old logs of
 │   │                            finished battles and finished jobs go; every result, ballot, award, screenshot
 │   │                            and the public pages stay identical) (T-036)
-│   └── 28_import_url.test.sql   the import_url limit through claim_import_url: 20 then rate_limited with its hint,
-│                                per user, the window, anon refused, not_authenticated (T-051)
+│   ├── 28_import_url.test.sql   the import_url limit through claim_import_url: 20 then rate_limited with its hint,
+│   │                            per user, the window, anon refused, not_authenticated (T-051)
+│   └── 29_custom_cards.test.sql the host's own cards and time limit: every guard, cleaning, the word-by-word filter,
+│                                start_battle with one or three custom cards, the drawn fallbacks (T-053)
 └── scripts/
     ├── e2e-solo.mjs             the solo loop through the real HTTP APIs (Auth, PostgREST, Storage, pg_cron)
     ├── e2e-multiplayer.mjs      a 3-player battle + late spectator through supabase-js, with Realtime reception
@@ -365,7 +370,7 @@ curl -sS -X POST http://127.0.0.1:54321/functions/v1/import-url -H 'content-type
 | `join_room(p_code text, p_display_name text)` | authenticated | `{room_id, code, role}` | `room_not_found`, `room_closed` (both returned as an HTTP 404/400 error body since T-024, see "Abuse controls"), `kicked`, `room_full`, `invalid_display_name`, `name_not_allowed`, `rate_limited` |
 | `leave_room(p_room_id uuid)` | member | void | `room_not_found`, `not_a_member` |
 | `set_ready(p_room_id uuid, p_ready boolean)` | active player, room open | void | `invalid_ready`, `room_not_found`, `not_a_member`, `kicked`, `not_a_player`, `wrong_room_state` |
-| `update_room_settings(p_room_id uuid, p_settings jsonb)` | host, room open | the new settings | `room_not_found`, `not_a_member`, `not_host`, `wrong_room_state`, `invalid_settings` |
+| `update_room_settings(p_room_id uuid, p_settings jsonb)` | host, room open | the new settings | `room_not_found`, `not_a_member`, `not_host`, `wrong_room_state`, `invalid_settings`, `card_not_allowed` (T-053) |
 | `kick_member(p_room_id uuid, p_user_id uuid)` | host | void | `room_not_found`, `not_a_member`, `not_host`, `cannot_kick_self`, `member_not_found` |
 | `heartbeat(p_room_id uuid)` | active member | `{server_now, room_version, host_id, status, battle_id, battle_version}` (the last two since T-029) | `room_not_found`, `not_a_member`, `kicked`, `room_closed` |
 | `get_room_snapshot(p_room_id uuid)` | member (also after leaving; not kicked) | `{server_now, me, room, members, battle}` | `room_not_found` |
@@ -380,8 +385,14 @@ snapshot is unchanged.
 - **Room:** a code of 5 characters from `A–H J–N P–Z 2–9`; at most 8 players
   (`settings.max_players`, 2–8) and 20 spectators. Settings: `max_players`, and for M4
   `reveal_slot_s` (30–60), `voting_s` (30–180) and `reveal_vote` (boolean, default true; see
-  below). The build time limit is never a setting: the server draws 10, 15 or 20 minutes per
-  battle (`private.draw_build_time_limit()`, T-046; 5, 10 or 15 before).
+  below). Custom cards (T-053): `custom_build`, `custom_rule`, `custom_style` (text, 3–80
+  characters after trimming and collapsing whitespace, no control characters:
+  `invalid_settings`; blocked by the name filter word by word: `card_not_allowed`) and
+  `time_limit_s` (one of `private.build_time_limits_seconds()`). `start_battle` draws the
+  challenge as before, then each custom card replaces the drawn card of its kind (card id and
+  hint null); without `time_limit_s` the server draws 10, 15 or 20 minutes per battle
+  (`private.draw_build_time_limit()`, T-046; 5, 10 or 15 before), and a stored limit that is
+  no longer allowed falls back to that draw.
 - **Members:** active, left (can rejoin, still reads the lobby) or kicked (cannot rejoin, no
   access). Joining an open room makes you a player while a slot is free, otherwise a
   spectator; joining during a battle makes you a spectator (a roster player coming back

@@ -977,6 +977,18 @@ export const tr: Messages = {
     timePerBuild: 'Gösterim süresi',
     auto: (range) => `Otomatik (${range})`,
     votingTime: 'Oylama süresi',
+    challenge: 'Görev',
+    customCardsNote:
+      'Kendi kartlarını yaz ya da boş bırak, desteden rastgele gelsin. Oyuncular kartlarını çarkta görür.',
+    randomCard: 'Desteden rastgele',
+    cardLength: (min, max) => `Bir kart ${s(min)}–${s(max)} karakter olmalı.`,
+    buildTime: 'Süre',
+    randomTime: (limits) => `Rastgele (${limits} dk)`,
+    customCardsSummary: (cards, count) =>
+      count === 1
+        ? `Oda sahibi ${cards} kartını kendisi yazdı. Çarkta görürsün.`
+        : `Oda sahibi ${cards} kartlarını kendisi yazdı. Çarkta görürsün.`,
+    buildTimeSummary: (minutes) => `Süre: ${s(minutes)} dk.`,
   },
 
   reveal: {
@@ -1125,6 +1137,7 @@ export const tr: Messages = {
     self_vote: 'Kendi projene oy veremezsin.',
     not_votable: 'Bu proje oy alamaz: teslim edilmedi.',
     name_not_allowed: 'Bu ada burada izin verilmiyor. Başka bir ad seç.',
+    card_not_allowed: 'Bu karta burada izin verilmiyor. Başka bir kart yaz.',
     invalid_reason: 'Bildirim için bir sebep seç.',
     invalid_details: 'Ayrıntılar çok uzun (en fazla 500 karakter).',
     own_build: 'Kendi projeni bildiremezsin.',

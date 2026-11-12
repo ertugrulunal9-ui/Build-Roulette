@@ -2,14 +2,18 @@
 
 /**
  * The lobby: who is here (Presence + last_seen_at), ready-up, the host's controls
- * (max players, kick with confirmation, Start when at least 2 players are ready), the invite
- * link, and the last battle's podium once a battle has ended (rematch = start again).
+ * (max players, the room's own cards and build time (T-053), reveal and vote, kick with
+ * confirmation, Start when at least 2 players are ready), the invite link, and the last
+ * battle's podium once a battle has ended (rematch = start again).
  *
  * Onboarding (T-049): the welcome screen may show here (never once the battle runs: the lobby
  * unmounts), a "New here?" card until it was seen to the end, and a reminder to have the AI
  * tool ready.
  */
 import {
+  BUILD_TIME_LIMITS_MINUTES,
+  CUSTOM_CARD_LIMITS,
+  CUSTOM_CARD_SETTINGS,
   DEFAULT_VOTING_SECONDS,
   REVEAL_SLOT_MAX_SECONDS,
   REVEAL_SLOT_MIN_SECONDS,
@@ -17,7 +21,10 @@ import {
   ROOM_LIMITS,
   VOTING_MAX_SECONDS,
   VOTING_MIN_SECONDS,
+  isCustomCardLength,
   isTerminalPhase,
+  normalizeCustomCard,
+  type CustomCardKind,
 } from '@br/game';
 import { useState } from 'react';
 import { CrownIcon } from '@phosphor-icons/react/dist/csr/Crown';
@@ -282,6 +289,13 @@ export function Lobby({ controller, state, room, lastBattle }: LobbyProps) {
                     ))}
                   </select>
                 </label>
+                <CustomCardSettings
+                  settings={room.room.settings}
+                  disabled={state.pending.settings}
+                  onChange={(patch) => {
+                    void controller.updateSettings(patch);
+                  }}
+                />
                 <RevealVoteSettings
                   settings={room.room.settings}
                   disabled={state.pending.settings}
@@ -329,6 +343,11 @@ export function Lobby({ controller, state, room, lastBattle }: LobbyProps) {
                 <p className="text-xs text-zinc-500" data-testid="settings-summary">
                   {settingsSummary(room.room.settings, t)}
                 </p>
+                {cardsSummary(room.room.settings, t) && (
+                  <p className="text-xs text-zinc-500" data-testid="cards-summary">
+                    {cardsSummary(room.room.settings, t)}
+                  </p>
+                )}
               </div>
             )}
           </div>
@@ -448,6 +467,145 @@ function LastBattle({ battle }: { battle: BattleSnapshot }) {
         <p className="mt-3 text-sm text-zinc-500">{t.lobby.abandoned}</p>
       )}
     </section>
+  );
+}
+
+// ─── The room's own cards (T-053) ────────────────────────────────────────────────────
+
+const CARD_KINDS = Object.keys(CUSTOM_CARD_SETTINGS) as CustomCardKind[];
+
+/**
+ * "The host wrote the BUILD and RULE cards: you see them at the spin. Build time: 30 min.",
+ * for everyone but the host, or null when the room uses the deck and a drawn time limit.
+ * The card texts themselves stay hidden until the spin (the reels land on them).
+ */
+export function cardsSummary(settings: RoomSettings, m: Messages = en): string | null {
+  const custom = CARD_KINDS.filter((k) => typeof settings[CUSTOM_CARD_SETTINGS[k]] === 'string');
+  const parts: string[] = [];
+  if (custom.length > 0) {
+    parts.push(
+      m.lobby.customCardsSummary(m.units.andList(custom.map((k) => m.cards[k])), custom.length),
+    );
+  }
+  if (typeof settings.time_limit_s === 'number') {
+    parts.push(m.lobby.buildTimeSummary(Math.round(settings.time_limit_s / 60)));
+  }
+  return parts.length > 0 ? parts.join(' ') : null;
+}
+
+/** One card: saved on blur or Enter; empty = drawn from the deck. */
+function CustomCardField({
+  kind,
+  value,
+  onSave,
+}: {
+  kind: CustomCardKind;
+  value: string | undefined;
+  onSave: (text: string | null) => void;
+}) {
+  const { t } = useI18n();
+  const [draft, setDraft] = useState(value ?? '');
+  // A new value from the server (this save, cleaned, or a reset) replaces the draft. A refused
+  // save leaves the server value as it was, so the draft stays for the host to fix.
+  const [synced, setSynced] = useState(value);
+  if (synced !== value) {
+    setSynced(value);
+    setDraft(value ?? '');
+  }
+  const text = normalizeCustomCard(draft);
+  const badLength = text !== '' && !isCustomCardLength(text);
+  const save = () => {
+    if (text === (value ?? '') || badLength) return;
+    onSave(text === '' ? null : text);
+  };
+  return (
+    <label className="flex flex-col gap-1 text-sm font-semibold">
+      <span className="text-xs tracking-wide text-zinc-500 uppercase">{t.cards[kind]}</span>
+      <input
+        type="text"
+        data-testid={`setting-card-${kind}`}
+        value={draft}
+        maxLength={CUSTOM_CARD_LIMITS.max_chars}
+        placeholder={t.lobby.randomCard}
+        aria-invalid={badLength}
+        onChange={(e) => {
+          setDraft(e.target.value);
+        }}
+        onBlur={save}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            save();
+          }
+        }}
+        className="min-h-9 rounded-lg border border-zinc-300 bg-white px-2 py-1 font-normal disabled:opacity-50 aria-[invalid=true]:border-rose-500 dark:border-zinc-700 dark:bg-zinc-950"
+      />
+      {badLength && (
+        <span className="text-xs font-normal text-rose-600" data-testid={`card-length-${kind}`}>
+          {t.lobby.cardLength(CUSTOM_CARD_LIMITS.min_chars, CUSTOM_CARD_LIMITS.max_chars)}
+        </span>
+      )}
+    </label>
+  );
+}
+
+/** Host only (T-053): the room's own BUILD, RULE and STYLE cards and the build time limit. */
+export function CustomCardSettings({
+  settings,
+  disabled,
+  onChange,
+}: {
+  settings: RoomSettings;
+  disabled: boolean;
+  onChange: (patch: RoomSettingsPatch) => void;
+}) {
+  const { t } = useI18n();
+  const words = t.lobby;
+  return (
+    <fieldset
+      className="flex flex-col gap-2 rounded-xl border border-zinc-200 p-3 dark:border-zinc-800"
+      data-testid="custom-card-settings"
+      disabled={disabled}
+    >
+      <legend className="px-1 text-xs font-bold tracking-wide text-zinc-500 uppercase">
+        {words.challenge}
+      </legend>
+      <p className="text-xs text-zinc-500">{words.customCardsNote}</p>
+      {CARD_KINDS.map((kind) => (
+        <CustomCardField
+          key={kind}
+          kind={kind}
+          value={settings[CUSTOM_CARD_SETTINGS[kind]]}
+          onSave={(text) => {
+            onChange({ [CUSTOM_CARD_SETTINGS[kind]]: text });
+          }}
+        />
+      ))}
+      <label className="flex items-center justify-between gap-3 text-sm font-semibold">
+        <span className="shrink-0">{words.buildTime}</span>
+        <select
+          data-testid="setting-time-limit"
+          value={
+            typeof settings.time_limit_s === 'number' ? String(settings.time_limit_s) : 'random'
+          }
+          onChange={(e) => {
+            onChange({
+              time_limit_s: e.target.value === 'random' ? null : Number(e.target.value),
+            });
+          }}
+          className={settingSelect}
+        >
+          <option value="random">
+            {words.randomTime(t.units.orList(RANDOM_BUILD_TIME_LIMITS_MINUTES.map(String)))}
+          </option>
+          {BUILD_TIME_LIMITS_MINUTES.map((m) => (
+            <option key={m} value={m * 60}>
+              {t.units.minutes(m)}
+            </option>
+          ))}
+        </select>
+      </label>
+    </fieldset>
   );
 }
 

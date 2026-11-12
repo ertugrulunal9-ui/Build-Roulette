@@ -21,8 +21,12 @@ import { sql } from './stack';
 
 const SHOTS = process.env['MULTI_SCREENSHOT_DIR'];
 
-/** 74 characters: longer than any deck card (60). */
-const LONG_STYLE = 'Like a museum placard for a very serious exhibit about a very silly object';
+/**
+ * 80 characters, the longest card the server accepts (any deck card is at most 60), with long
+ * words: on a 360px phone it wraps to more lines than the spinning reel's height.
+ */
+const LONG_STYLE =
+  'Extraordinarily melodramatic weather announcements for houseplants in apartments';
 
 async function snap(page: Page, name: string): Promise<void> {
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/t053-${name}.png` });
@@ -38,6 +42,8 @@ test('custom cards: the host writes a BUILD card and a 30-minute limit, the reel
   await expect(bob.page.getByTestId('lobby')).toBeVisible();
   // A phone player watches the spin (and cannot build: DNF).
   const cleo = await newPhone(browser, info, 'Cleo Phone');
+  // A narrow Android phone rather than the iPhone's 390px: the long card needs its whole reel.
+  await cleo.page.setViewportSize({ width: 360, height: 740 });
   await joinByLink(cleo, code);
   await expect(cleo.page.getByTestId('lobby')).toBeVisible();
   await expect(bob.page.getByTestId('custom-card-settings')).toHaveCount(0);
@@ -85,10 +91,15 @@ test('custom cards: the host writes a BUILD card and a 30-minute limit, the reel
     await expect(p.page.getByTestId('reel-build')).toContainText('A pet rock that judges you');
     await expect(p.page.getByTestId('reel-style')).toHaveAttribute('data-landed', 'true');
     await expect(p.page.getByTestId('reel-style')).toContainText(LONG_STYLE);
-    // The long card is not clipped: every line is inside the reel.
+    // The long card is not clipped: every line is inside the reel's value, and the reel's box
+    // (overflow: hidden, for the landing animation) grows with it.
     for (const kind of ['build', 'rule', 'style']) {
-      const value = p.page.getByTestId(`reel-${kind}`).locator('.br-spin-card__value--landed');
+      const reel = p.page.getByTestId(`reel-${kind}`);
+      const value = reel.locator('.br-spin-card__value--landed');
       expect(await value.evaluate((el) => el.scrollHeight <= el.clientHeight + 1)).toBe(true);
+      await expect
+        .poll(() => reel.locator('[aria-live]').evaluate((el) => el.scrollHeight - el.clientHeight))
+        .toBeLessThanOrEqual(1);
     }
     await expect(p.page.getByTestId('reel-time')).toHaveAttribute('data-landed', 'true');
     await expect(p.page.getByTestId('reel-time')).toContainText('30');

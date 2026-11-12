@@ -580,6 +580,13 @@
   height: 82px;
   overflow: hidden;
 }
+/* The landed reel's box grows with its value too, or it clips the last line of a long card
+   on a narrow phone (an 80-character card at 360px needs 90px). It stays overflow: hidden for
+   the landing animation, which slides the value in from above. */
+.br-spin-card[data-landed='true'] [aria-live] {
+  height: auto;
+  min-height: 82px;
+}
 .br-spin-card__value {
   display: flex;
   height: 82px;

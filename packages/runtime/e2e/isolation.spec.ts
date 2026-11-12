@@ -175,9 +175,11 @@ test('frame-ancestors blocks other origins from embedding the shell', async ({ p
     f.src = shellUrl;
     document.body.append(f);
   }, SHELL_URL);
+  // Chromium 141 logs "Refused to frame '…' because an ancestor violates … "frame-ancestors …"";
+  // Chromium 153 (Playwright 1.63) logs "Framing '…' violates … "frame-ancestors …"".
   await expect
     .poll(() => consoleLines.join('\n'))
-    .toMatch(/Refused to frame .*frame-ancestors http:\/\/localhost:\d+/);
+    .toMatch(/(Refused to frame|Framing) .*frame-ancestors http:\/\/localhost:\d+/);
   // The shell never ran in that frame.
   const child = page.frames().find((f) => f !== page.mainFrame());
   expect(child?.url()).not.toBe(SHELL_URL);

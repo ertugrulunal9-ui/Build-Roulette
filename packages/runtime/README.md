@@ -283,9 +283,27 @@ pnpm --filter @br/runtime test:e2e
 pnpm --filter @br/runtime playground
 ```
 
-`@playwright/test` is pinned to **1.56.1** because that version matches the preinstalled
-`chromium-1194`. The e2e config uses `channel: 'chromium'` (full Chromium, new headless) instead of
-the default headless shell. See "Site isolation" under known limitations for why.
+`@playwright/test` is pinned to **1.63.0**, the version whose Chromium (`chromium-1243`) the
+cloud container preinstalls in `/opt/pw-browsers`, so the e2e suites run there without a download.
+The e2e config uses `channel: 'chromium'` (full Chromium, new headless) instead of the default
+headless shell. See "Site isolation" under known limitations for why.
+
+### Upgrading Playwright
+
+`packages/runtime`, `apps/web` (`@playwright/test`) and `apps/capture-worker`
+(`playwright-core`) pin one exact version: CI installs one Chromium and every suite launches it.
+`scripts/playwright-pins.test.mjs` (part of `pnpm test`) fails when the pins or the lockfile
+disagree, or when a CI job leaves the shared named runner image (`ubuntu-26.04`).
+
+Upgrade when CI moves to a newer runner image (a Playwright release that predates an Ubuntu
+version cannot install Chromium there: 1.56.1 on ubuntu-26.04 broke nightly runs 144–148), or
+when the cloud container's preinstalled Chromium changes (`ls /opt/pw-browsers`; the pin should
+use that revision, found in `browsers.json` of `playwright-core`):
+
+1. Set the new exact version in the three `package.json` files and run `pnpm install`.
+2. Run `pnpm test`, then `pnpm --filter @br/runtime test:e2e` and `pnpm --filter @br/web test:e2e`
+   locally.
+3. Push to a branch: the Supabase-backed suites (capture, rooms, chaos) only run in CI.
 
 The e2e fixtures are sites made of text files (`e2e/fixtures.ts`), packed in the page with
 `packSite`: a Vite-like build (hashed `/assets/` entry and stylesheet, a lazy chunk, an image,
